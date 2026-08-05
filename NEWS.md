@@ -1,5 +1,46 @@
 # phylloptim 0.2.0
 
+## `leaf_gradient()` reports the trait derivative of profit
+
+`gradient` gains a fifth column, `profit`. Profit is what the leaf maximises —
+carbon gained minus the hydraulic cost of the water that bought it — and a trait's
+effect on it is the most direct statement of how that trait changes the plant's
+carbon economy. It is also the cheapest derivative on this surface, and it was the
+one not emitted.
+
+At an interior optimum `dprofit/dpsi = 0`, so
+
+```
+dprofit*/dtheta = (dprofit/dpsi)(dpsi*/dtheta) + dprofit/dtheta|_psi
+                = dprofit/dtheta|_psi
+```
+
+The envelope theorem: the profit row needs no `M`, no `H` and no `dpsi*/dtheta`,
+where every other column does. No C++ change — `operating_point_values()` already
+returned `profit`, so this is one more subscript on a vector the reader was already
+handing over, and it adds **no** boundary crossing.
+
+Checked against a difference of the whole solve, which is the only valid reference
+for a supplied partial: **1.6e-08** relative for `leaf_specific_conductance_max`
+and **1.5e-09** for `resistance` on the single-potential path, and 1.8e-07 to
+7.8e-07 over six parameters at three interior multi-layer points.
+
+Two things are stated rather than left implicit:
+
+* **The identity holds at an interior optimum only.** At a pinned optimum
+  `dprofit/dpsi` is not zero and the term does not drop out; `status` already says
+  which point you are at, and `method = "auto"` routes a pinned point to the
+  difference of the whole solve.
+* **`psi_crit` returns exactly zero** in this column at an interior optimum, as in
+  the other four. It does not appear in the profit function — it only sets the dry
+  end of the feasible collar interval — so the zero is the statement that the
+  constraint is not binding, not a row that failed to be filled.
+
+At a shut-down point the fallback now also recovers the derivative of
+`set_shutdown_state`'s `profit_ = -R_d_ - hydraulic_cost_TF(psi_crit)`, which was
+discarded before: `dprofit/dcost_scale_TF24 = -0.926` where every other column is
+zero.
+
 ## Trait gradients over a batch of observations, composed in C++ -- 22x
 
 `leaf_batch()` and `leaf_gradient_batch()`. The same gradient `leaf_gradient()`

@@ -97,7 +97,8 @@ set_traits <- function(x, traits) {
 ##' Trait gradients of a solved operating point
 ##'
 ##' The derivatives of the solved outputs with respect to the traits: `dA/dtheta`,
-##' `dgc/dtheta`, `dpsi_stem/dtheta` and `dcollar/dtheta`, at one operating point.
+##' `dgc/dtheta`, `dpsi_stem/dtheta`, `dcollar/dtheta` and `dprofit/dtheta`, at one
+##' operating point.
 ##'
 ##' @section The maths, and why it is not just a finite difference:
 ##' The reported outputs are evaluated at the profit-maximising collar potential
@@ -119,6 +120,27 @@ set_traits <- function(x, traits) {
 ##'
 ##' The second term is not a correction. For `cost_scale_TF24`, `beta2`, `stem_b`
 ##' and `stem_c` it is 100% of the answer, and for `vcmax_25` 52%.
+##'
+##' @section Profit is the one column that needs none of that:
+##' Profit is what the leaf maximises — carbon gained minus the hydraulic cost of
+##' the water that bought it — so it is the objective rather than an output read at
+##' the argmax. Put `Y = profit` in the composite above and the first factor of the
+##' second term is `dprofit/dpsi`, which is zero at an interior optimum. So
+##'
+##' \deqn{d\,profit^*/d\theta = \partial profit/\partial\theta|_{\psi^*}}
+##'
+##' That is the envelope theorem, and it means the profit row needs no sensitivity
+##' of the optimiser at all: no `M`, no `H`, no `dpsi*/dtheta`. It is the cheapest
+##' derivative on this surface and it comes out of evaluations the other four rows
+##' already pay for.
+##'
+##' ⚠️ **The identity holds at an interior optimum only.** At a pinned optimum
+##' `dprofit/dpsi` is not zero and the term does not drop out. `status` says which
+##' point you are at, and under the default `method = "auto"` a pinned point is
+##' routed to the finite difference of the whole solve, which differences the
+##' constrained maximum and so needs no such premise. Forcing `method = "ift"` at a
+##' pinned point returns the partial and not the total derivative — the same caveat
+##' the other four columns carry there, for the same reason.
 ##'
 ##' @section The active set, which is the reason this function is careful:
 ##' Stationarity is the premise of the whole derivation, and it fails when the
@@ -145,7 +167,9 @@ set_traits <- function(x, traits) {
 ##' It is better in a second way, which is sharper than accuracy. `psi_crit` does
 ##' not appear in the profit function at all -- it only sets the dry end of the
 ##' feasible collar interval -- so the composite necessarily returns **exactly
-##' zero** for it. At an interior optimum that is correct. At a dry-pinned optimum
+##' zero** for it — in every column including `profit`, where it is not a missing row
+##' but the statement that the constraint is not binding. At an interior optimum that
+##' is correct. At a dry-pinned optimum
 ##' `psi_crit` *is* the binding constraint, the true `dA/dθ` is about `1.26`, and a
 ##' zero is arguably a worse answer than a wildly wrong one: it tells an optimiser
 ##' the parameter does nothing, and nothing about it looks suspicious. The
@@ -284,7 +308,11 @@ set_traits <- function(x, traits) {
 ##' @return A list with
 ##'   \describe{
 ##'     \item{`gradient`}{a matrix, one row per trait in `pars`, with columns
-##'       `A` (umol C m^-2 s^-1 per trait unit), `gc`, `psi_stem` and `collar`}
+##'       `A` (umol C m^-2 s^-1 per trait unit), `gc`, `psi_stem`, `collar` and
+##'       `profit` (umol C m^-2 s^-1 per trait unit). The `profit` column is the
+##'       envelope-theorem partial when `method` is `"ift"` and the difference of
+##'       the constrained maximum when it is `"fd"`; see the section above for when
+##'       those are the same number}
 ##'     \item{`value`}{the solved outputs the gradient is taken at}
 ##'     \item{`method`}{`"ift"` if the implicit-function composite was used,
 ##'       `"fd"` if the fallback was}
@@ -513,21 +541,29 @@ leaf_gradient <- function(psi_soil,
 
 # --- internals ---------------------------------------------------------------
 
-# The four differentiated outputs, in one place so the composite and the fallback
+# The five differentiated outputs, in one place so the composite and the fallback
 # cannot disagree about what they are. `collar` is psi* itself, which makes
 # dcollar/dtheta equal to dpsi*/dtheta -- so the two routes compute the same
 # quantity by different means, and a test can compare them.
-.gradient_output_names <- c("A", "gc", "psi_stem", "collar")
+#
+# `profit` is the objective rather than an output evaluated at the argmax, and that
+# makes it the one column the composite gets without touching the optimiser: at an
+# interior optimum dprofit/dpsi = 0, so the envelope theorem collapses
+# dprofit*/dtheta to the partial dprofit/dtheta|_psi. .gradient_ift says so in
+# code. It is appended rather than inserted so the existing column order does not
+# move.
+.gradient_output_names <- c("A", "gc", "psi_stem", "collar", "profit")
 
-# ⚠️ ONE call, not four field reads. Every `l$field` is an R6 ACTIVE BINDING -- a
+# ⚠️ ONE call, not five field reads. Every `l$field` is an R6 ACTIVE BINDING -- a
 # closure call wrapping a `.Call` -- and this function runs once per perturbation, so
-# eleven times per four-parameter gradient. Four reads cost 4.65 us against 0.93 us
-# for the one C++ reader that returns all twelve outputs, and `$` was 12.7% of a
-# gradient's self time before this. Same numbers: the reader is the same accessor the
+# eleven times per four-parameter gradient. The four reads this replaced cost 4.65 us
+# against 0.93 us for the one C++ reader that returns all twelve outputs, and `$` was
+# 12.7% of a gradient's self time before this. Same numbers: the reader is the same accessor the
 # bindings wrap, and test-gradient.R requires bit-identical gradients.
 #
-# `.operating_point_names` is the order that reader emits; the four wanted are
-# selected by position, matched once and cached.
+# `.operating_point_names` is the order that reader emits; the five wanted are
+# selected by position, matched once and cached. Adding `profit` therefore costs one
+# more subscript and no extra call: the reader already returned it.
 #
 # ⚠️ Cached at FIRST CALL, not at build time. R collates `R/` alphabetically, so this
 # file is sourced before `leaf-model.R` and `.operating_point_names` does not exist
@@ -839,6 +875,20 @@ leaf_gradient <- function(psi_soil,
     # difference of two identical numbers.
     g <- direct + dY_dpsi * dpsi_dtheta
     g[["collar"]] <- dpsi_dtheta
+    # THE ENVELOPE THEOREM, and it is the reason `profit` costs nothing here.
+    # profit is the objective, not an output read at the argmax, so
+    #   dprofit*/dtheta = (dprofit/dpsi)(dpsi*/dtheta) + dprofit/dtheta|_psi
+    # and the first term is zero at an interior optimum -- which is the premise
+    # this branch has already tested. So the direct term IS the answer: no -M/H,
+    # no dpsi*/dtheta, no H. Written explicitly rather than left to the generic
+    # line above for two reasons. It says which theorem is being used; and
+    # dY_dpsi[["profit"]] is a central difference of a FLAT maximum, so it is
+    # ~1e-09 of cancellation in the profit value divided by a ~1e-06 step in psi
+    # -- noise, not a derivative. Measured at psi_soil = 2.0: the exact dprofit at
+    # psi* is 8.7e-11 while that central difference reads -1.8e-04, and keeping
+    # the term would move this column by up to 6.6e-05 relative. So the explicit
+    # zero is the accurate arithmetic as well as the honest statement.
+    g[["profit"]] <- direct[["profit"]]
     g[.gradient_output_names]
   }, numeric(length(.gradient_output_names))))
   reset(theta)
