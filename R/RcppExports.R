@@ -654,6 +654,10 @@ gradient_par_names <- function() {
     .Call('_phylloptim_gradient_par_names', PACKAGE = 'phylloptim')
 }
 
+gradient_output_names <- function() {
+    .Call('_phylloptim_gradient_output_names', PACKAGE = 'phylloptim')
+}
+
 gradient_batch_prepare <- function(root_network, psi_soil, soil_depth, PPFD, atm_vpd, ca, leaf_temp, atm_o2_kpa, atm_kpa) {
     .Call('_phylloptim_gradient_batch_prepare', PACKAGE = 'phylloptim', root_network, psi_soil, soil_depth, PPFD, atm_vpd, ca, leaf_temp, atm_o2_kpa, atm_kpa)
 }

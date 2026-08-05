@@ -79,17 +79,22 @@ cases <- list(
        pars = c("vcmax_25", "leaf_specific_conductance_max", "resistance"))
 )
 
+# ⚠️ EVERY OUTPUT COLUMN, taken from the array's own dimnames rather than named
+# here. The committed file records four because it was last generated before
+# `profit` was added and regeneration is macOS/arm64-only -- so running this emits
+# five, and `test-gradient-batch.R` reads which columns are pinned out of the file
+# rather than out of a literal. That is what makes the fifth column start being
+# checked the moment someone regenerates on the right machine, and it is why
+# adding an output does not need an edit here.
 out <- do.call(rbind, lapply(cases, function(cs) {
   b <- do.call(leaf_batch, cs$args)
   g <- leaf_gradient_batch(b, pars = cs$pars)
+  outs <- dimnames(g$gradient)[[3]]
   do.call(rbind, lapply(cs$pars, function(p) {
+    cols <- lapply(outs, function(o) sprintf("%a", g$gradient[1, p, o]))
+    names(cols) <- outs
     data.frame(case = cs$label, status = g$status[[1]], method = g$method[[1]],
-               par = p,
-               A = sprintf("%a", g$gradient[1, p, "A"]),
-               gc = sprintf("%a", g$gradient[1, p, "gc"]),
-               psi_stem = sprintf("%a", g$gradient[1, p, "psi_stem"]),
-               collar = sprintf("%a", g$gradient[1, p, "collar"]),
-               stringsAsFactors = FALSE)
+               par = p, cols, stringsAsFactors = FALSE)
   }))
 }))
 

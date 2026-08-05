@@ -541,18 +541,39 @@ leaf_gradient <- function(psi_soil,
 
 # --- internals ---------------------------------------------------------------
 
-# The five differentiated outputs, in one place so the composite and the fallback
-# cannot disagree about what they are. `collar` is psi* itself, which makes
-# dcollar/dtheta equal to dpsi*/dtheta -- so the two routes compute the same
-# quantity by different means, and a test can compare them.
+# The five differentiated outputs, in the order both routes emit them: A, gc,
+# psi_stem, collar, profit.
 #
-# `profit` is the objective rather than an output evaluated at the argmax, and that
-# makes it the one column the composite gets without touching the optimiser: at an
-# interior optimum dprofit/dpsi = 0, so the envelope theorem collapses
-# dprofit*/dtheta to the partial dprofit/dtheta|_psi. .gradient_ift says so in
-# code. It is appended rather than inserted so the existing column order does not
-# move.
-.gradient_output_names <- c("A", "gc", "psi_stem", "collar", "profit")
+# ⚠️ READ OUT OF C++, NOT RESTATED HERE, and that is the one thing this line is
+# for. `phylloptim::gradient::output_names()` holds the list and
+# `gradient_output_names()` in src/gradient.cpp hands it over. The C++ composite
+# and this one are independent implementations of the same quantity -- which is
+# the whole basis of the bit-for-bit test in test-gradient-batch.R -- so a second
+# literal here would be a thing to keep in step, and adding a column to one and
+# not the other is exactly the mistake available. There is nothing to keep in step
+# now.
+#
+# The asymmetry with `.gradient_par_names()` below is deliberate: R's parameter
+# order is DERIVED from `leaf_traits()`, a more fundamental source than either
+# copy of the list, so there the two are compared in a test. The output list has
+# no such source.
+#
+# `collar` is psi* itself, which makes dcollar/dtheta equal to dpsi*/dtheta -- so
+# the two routes compute the same quantity by different means. `profit` is the
+# objective rather than an output evaluated at the argmax, which is what lets
+# `.gradient_ift` get it from the envelope theorem; it says so in code.
+#
+# ⚠️ Read at FIRST CALL, not at build time, for the reason `.gradient_outputs()`
+# below records.
+.gradient_output_names <- local({
+  nms <- NULL
+  function() {
+    if (is.null(nms)) {
+      nms <<- gradient_output_names()
+    }
+    nms
+  }
+})
 
 # ⚠️ ONE call, not five field reads. Every `l$field` is an R6 ACTIVE BINDING -- a
 # closure call wrapping a `.Call` -- and this function runs once per perturbation, so
@@ -562,28 +583,30 @@ leaf_gradient <- function(psi_soil,
 # bindings wrap, and test-gradient.R requires bit-identical gradients.
 #
 # `.operating_point_names` is the order that reader emits; the five wanted are
-# selected by position, matched once and cached. Adding `profit` therefore costs one
-# more subscript and no extra call: the reader already returned it.
+# selected by position, matched once and cached. `profit` therefore costs one more
+# subscript and no extra call: the reader already returned it.
 #
-# ⚠️ Cached at FIRST CALL, not at build time. R collates `R/` alphabetically, so this
-# file is sourced before `leaf-model.R` and `.operating_point_names` does not exist
-# yet -- a build-time `match()` here fails the package load with a message that names
-# neither file. Deferring costs one `is.null` per call.
-.gradient_outputs_idx <- local({
+# ⚠️ Resolved at FIRST CALL, not at build time. R collates `R/` alphabetically, so
+# this file is sourced before `leaf-model.R` and `.operating_point_names` does not
+# exist yet -- and `gradient_output_names()` is a `.Call` into a namespace that is
+# still being built. Either one evaluated at build time fails the package load,
+# with a message that names neither file. Deferring costs one `is.null` per call,
+# which is why
+# the names and the positions they map to are cached together here rather than in
+# two closures: this is the hot path.
+.gradient_outputs <- local({
   idx <- NULL
-  function() {
+  nms <- NULL
+  function(l) {
     if (is.null(idx)) {
-      idx <<- match(.gradient_output_names, .operating_point_names)
+      nms <<- .gradient_output_names()
+      idx <<- match(nms, .operating_point_names)
     }
-    idx
+    v <- l$operating_point_values()[idx]
+    names(v) <- nms
+    v
   }
 })
-
-.gradient_outputs <- function(l) {
-  v <- l$operating_point_values()[.gradient_outputs_idx()]
-  names(v) <- .gradient_output_names
-  v
-}
 
 # Outputs with the collar held at `psi` rather than optimised. NULL when the
 # clamp moved the target, because then this is not the evaluation that was asked
@@ -607,7 +630,7 @@ leaf_gradient <- function(psi_soil,
 # differentiate the wrong parameter.
 #
 # ⚠️ Computed at FIRST CALL, not at build time, for the reason
-# `.gradient_outputs_idx` records: R collates `R/` alphabetically, so this file is
+# `.gradient_outputs()` records: R collates `R/` alphabetically, so this file is
 # sourced before `leaf-model.R` and `.leaf_trait_defaults` does not exist yet.
 .gradient_par_names <- local({
   nms <- NULL
@@ -869,6 +892,11 @@ leaf_gradient <- function(psi_soil,
     # M = d2profit/dpsi dtheta, with psi held FIXED at psi*.
     dpsi_dtheta <- -((up[["dprofit"]] - dn[["dprofit"]]) / (2 * h)) / H
     direct <- (up[-1L] - dn[-1L]) / (2 * h)
+    # TWO OF THE FIVE ARE NOT THE GENERIC COMPOSITE, AND THE TWO ARGUMENTS ARE
+    # DIFFERENT ONES. In the second term, (dY/dpsi)(dpsi*/dtheta), `collar` is the
+    # case where the DIRECT term vanishes and `profit` the case where the dY/dpsi
+    # FACTOR does. Reading the two as one rule is the available mistake.
+    #
     # `collar` is not an output of the evaluation -- it IS psi*, held fixed, so
     # its direct term is zero by construction and the composite reduces to
     # dpsi*/dtheta. Setting it explicitly says so, rather than relying on the
@@ -878,19 +906,27 @@ leaf_gradient <- function(psi_soil,
     # THE ENVELOPE THEOREM, and it is the reason `profit` costs nothing here.
     # profit is the objective, not an output read at the argmax, so
     #   dprofit*/dtheta = (dprofit/dpsi)(dpsi*/dtheta) + dprofit/dtheta|_psi
-    # and the first term is zero at an interior optimum -- which is the premise
-    # this branch has already tested. So the direct term IS the answer: no -M/H,
-    # no dpsi*/dtheta, no H. Written explicitly rather than left to the generic
-    # line above for two reasons. It says which theorem is being used; and
-    # dY_dpsi[["profit"]] is a central difference of a FLAT maximum, so it is
-    # ~1e-09 of cancellation in the profit value divided by a ~1e-06 step in psi
-    # -- noise, not a derivative. Measured at psi_soil = 2.0: the exact dprofit at
-    # psi* is 8.7e-11 while that central difference reads -1.8e-04, and keeping
-    # the term would move this column by up to 6.6e-05 relative. So the explicit
-    # zero is the accurate arithmetic as well as the honest statement.
+    # and dprofit/dpsi is zero at an interior optimum -- which is the premise this
+    # branch has already tested. So the direct term IS the answer: no -M/H, no
+    # dpsi*/dtheta, no H.
+    #
+    # ⚠️ AND THE ARITHMETIC NEEDS THIS LINE EVEN SO, which is a second reason and
+    # not a restatement of the first. dY_dpsi[["profit"]] is a central difference
+    # of a FLAT maximum, so it is ~1e-09 of cancellation in the profit value
+    # divided by a ~1e-06 step in psi -- noise, not a derivative. Measured at
+    # psi_soil = 2.0: the exact dprofit at psi* is 8.7e-11 while that central
+    # difference reads -1.8e-04, and leaving the generic line to stand would move
+    # this column by up to 6.6e-05 relative. Dropping the term is the accurate
+    # arithmetic as well as the honest statement.
+    #
+    # ⚠️ THIS ROUTE ONLY. At a pinned optimum dprofit/dpsi is NOT zero and the
+    # theorem does not hold, so the profit row there has to come from differencing
+    # the solve -- which is what `.gradient_fd()` does for every output, with no
+    # special case at all. `leaf_gradient()`'s `status` chooses between the two
+    # functions and is the only place that decision is made.
     g[["profit"]] <- direct[["profit"]]
-    g[.gradient_output_names]
-  }, numeric(length(.gradient_output_names))))
+    g[.gradient_output_names()]
+  }, numeric(length(.gradient_output_names()))))
   reset(theta)
   rownames(out) <- pars
   out
@@ -899,6 +935,12 @@ leaf_gradient <- function(psi_soil,
 # The fallback: a central difference of the whole solve. Correct at a pinned
 # optimum because it differences the constrained answer, which is exactly what the
 # composite cannot do.
+#
+# ⚠️ ALL FIVE OUTPUTS COME OUT OF THE ONE DIFFERENCE, `profit` INCLUDED, and the
+# absence of a special case here is deliberate. `.gradient_ift()`'s envelope
+# shortcut assumes dprofit/dpsi = 0, which is false at the pinned optimum this
+# function exists for; differencing the solve needs no such premise, because the
+# solve it differences is the constrained maximum.
 .gradient_fd <- function(l, reset, theta, pars, step, fast_stem_curve = TRUE) {
   seat <- .gradient_reseat_base(reset, theta, pars, fast_stem_curve)
   out <- t(vapply(seq_along(pars), function(k) {
@@ -912,8 +954,8 @@ leaf_gradient <- function(psi_soil,
       l$find_root_collar_psi()
       .gradient_outputs(l)
     }
-    ((side(1) - side(-1)) / (2 * h))[.gradient_output_names]
-  }, numeric(length(.gradient_output_names))))
+    ((side(1) - side(-1)) / (2 * h))[.gradient_output_names()]
+  }, numeric(length(.gradient_output_names()))))
   rownames(out) <- pars
   reset(theta)
   out
