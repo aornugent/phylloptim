@@ -310,30 +310,69 @@ test_that("a shut-down operating point reports no gradient and still differences
   # H comes back zero with it. The composite has nothing to stand on and says so
   # -- but the gradient itself is not zero, because R_d still depends on
   # vcmax_25, so the fallback still has work to do.
-  g <- grid_gradient(6.0, pars = c("vcmax_25", "stem_b", "psi_crit",
-                                   "cost_scale_TF24"))
+  # Shut down, set_shutdown_state writes profit_ = -R_d_ - hydraulic_cost_TF(psi_crit)
+  # and A = -R_d_. Five parameters drive profit on this branch and only ONE of them
+  # reaches any other column, so `profit` is the only column that says anything here
+  # -- and its own derivative used to be discarded with the rest.
+  #
+  # ⚠️ ASSERTED AGAINST THE CLOSED FORM, not against recorded numbers, so this test
+  # says why the values are what they are. Nothing on this branch is splined:
+  #
+  #   hydraulic_cost_TF_kernel(psi) = cost_scale_TF24 * (1 - exp(-(psi/stem_b)^stem_c))^beta2
+  #
+  # evaluated at psi = psi_crit (proportion_of_conductivity_kernel is that exp, in
+  # closed form), and R_d_ = 0.015 * vcmax_ with vcmax_ == vcmax_25 at leaf_temp = 25
+  # because peak_arrh_curve is the identity at its own reference temperature. So
+  # profit = -0.015*vcmax_25 - C(psi_crit) exactly and every partial below is
+  # elementary. Write x = (psi_crit/stem_b)^stem_c and u = 1 - exp(-x); the trait
+  # enters through x for stem_b, stem_c and psi_crit, and outside it for the other two.
+  #
+  # ⚠️ NOTHING SATURATES, which is why all five are O(1) rather than rounding: x is
+  # 2.996, so exp(-x) = 0.0500 -- psi_crit IS the 5% loss point by construction. A
+  # reader who expects the cost to have flattened by psi_crit will misread these rows.
+  tr <- leaf_traits()
+  x <- (tr$psi_crit / tr$stem_b)^tr$stem_c
+  u <- 1 - exp(-x)
+  dC_dx <- tr$cost_scale_TF24 * tr$beta2 * u^(tr$beta2 - 1) * exp(-x)
+  # dprofit/dtheta = -dC/dtheta throughout, since profit = -R_d_ - C.
+  analytic <- c(
+    vcmax_25        = -0.015,                                   # via R_d_ only
+    cost_scale_TF24 = -u^tr$beta2,
+    beta2           = -tr$cost_scale_TF24 * u^tr$beta2 * log(u),
+    psi_crit        = -dC_dx * tr$stem_c * x / tr$psi_crit,     # dx/dpsi_crit
+    stem_b          =  dC_dx * tr$stem_c * x / tr$stem_b,       # dx/dstem_b < 0
+    stem_c          = -dC_dx * x * log(tr$psi_crit / tr$stem_b))
+  # root_b is the negative control: it reaches neither R_d_ nor the stem cost, so its
+  # profit row must be exactly zero. Without it, "all five are non-zero" would be
+  # consistent with a column that is non-zero everywhere for the wrong reason.
+  g <- grid_gradient(6.0, pars = c(names(analytic), "root_b"))
   expect_identical(g$status, "no-gradient")
   expect_identical(g$method, "fd")
   expect_equal(g$gradient["vcmax_25", "A"], -0.015, tolerance = 1e-4)
   expect_equal(g$gradient["stem_b", "A"], 0)
-
-  # Shut down, set_shutdown_state writes profit_ = -R_d_ - hydraulic_cost_TF(psi_crit)
-  # and A = -R_d_. So the profit column is the only one that says anything here about
-  # the traits the cost term depends on, and its own derivative used to be discarded
-  # with the rest:
-  #
-  #   * vcmax_25 reaches only R_d_, so dprofit/dtheta == dA/dtheta;
-  #   * psi_crit and cost_scale_TF24 reach only the cost, so every other column is
-  #     zero (or 1 for psi_crit, which the collar is pinned to) while profit is not.
-  #
-  # Arbitrated against least-squares slopes of the solved profit over +-1% at
-  # n = 21: -0.015, -0.75004 and -0.92595.
-  expect_equal(g$gradient["vcmax_25", "profit"],
-               g$gradient["vcmax_25", "A"], tolerance = 1e-9)
-  expect_equal(g$gradient["psi_crit", "profit"], -0.75004, tolerance = 1e-3)
-  expect_equal(g$gradient["cost_scale_TF24", "profit"], -0.92595,
-               tolerance = 1e-4)
   expect_equal(g$gradient["cost_scale_TF24", "A"], 0)
+
+  for (p in names(analytic)) {
+    # 1e-03 relative, and the loose tolerance is the DIFFERENCE QUOTIENT's floor
+    # rather than the closed form's: the solved profit carries ~1e-09 and the
+    # fallback divides a difference of two of them by a ~1e-06 step, which bounds
+    # the error at ~1e-04 relative here. Worst OBSERVED is 5.1e-06 (stem_b) with
+    # the other five at 1e-10 to 5e-10 -- but that is one draw from a distribution
+    # the floor bounds at 1e-04, so the tolerance is set from the bound. Pinning
+    # 5.1e-06 would be pinning the luck.
+    expect_equal(g$gradient[[p, "profit"]], analytic[[p]], tolerance = 1e-3,
+                 label = paste("shut-down dprofit/d", p, sep = ""))
+    # Each is a real response, not a small number that happens to pass above.
+    expect_gt(abs(analytic[[p]]), 1e-2)
+  }
+  expect_equal(g$gradient["root_b", "profit"], 0)
+  # vcmax_25 is the one parameter reaching both columns, and the cost term does not
+  # depend on it, so the two differences are differences of the same function offset
+  # by a constant. NOT bit-identical, and the reason is worth one line: profit is
+  # -8.39 where A is -1.44, so differencing profit cancels against an operand six
+  # times larger and loses ~6e-10 relative. Measured 9e-11.
+  expect_equal(g$gradient[["vcmax_25", "profit"]],
+               g$gradient[["vcmax_25", "A"]], tolerance = 1e-9)
 
   # Forcing the composite here is an error rather than a wrong number: unlike a
   # pinned point, there is no curvature to divide by at all.
