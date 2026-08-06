@@ -423,15 +423,38 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
   // So the premise is TESTED. The test is the implied Newton step
   // |dprofit(psi*) / H|, a distance in MPa that needs no scale of its own: over
   // this package's 288-point grid the worst interior point is 4.8e-11 and the
-  // mildest pinned one 6.3e-06, so the 1e-08 default sits in an empty band four
-  // orders wide on each side.
+  // mildest pinned one 1.2e-02, so the 1e-08 default sits in an empty band six
+  // orders wide above it. That lower edge used to be recorded here as 6.3e-06,
+  // which was the unguarded central difference below inflating |H| at pinned
+  // points and so shrinking |resid / H|; the tolerance was right, the reason
+  // given for it was not.
   const double h_psi = std::max(std::abs(psi_star), 1.0) * s.step;
   const double resid = l.dprofit_droot_collar_psi(psi_star);
   // Named halves: `f(a) - f(b)` has unspecified operand order in C++ and
   // left-to-right order in R, and `dprofit_droot_collar_psi` mutates the leaf.
   const double d_hi = l.dprofit_droot_collar_psi(psi_star + h_psi);
   const double d_lo = l.dprofit_droot_collar_psi(psi_star - h_psi);
-  const double H = (d_hi - d_lo) / (2.0 * h_psi);
+  // dprofit returns a bare, exact 0.0 SENTINEL rather than a derivative where
+  // the collar is shut down or the ci solve is infeasible, and the `feasible`
+  // out-parameter that would distinguish it is not carried through the R
+  // binding. So test for it EXACTLY, the same argument `outputs_at` makes with
+  // `util::identical` for the clamp: an unclamped evaluation reaches 0.0 only at
+  // a genuine stationary point, so an exact zero on one arm of the difference is
+  // the sentinel. Left in, it does not make H small, it makes H wrong -- |H| out
+  // by a median factor of 8.4e04 over the 288-point grid.
+  //
+  // One bad arm: difference the good arm against `resid` at psi* instead. That
+  // is a real one-sided second derivative of profit, it is continuous across the
+  // feasibility boundary where the centred one jumps, and it leaves `status`
+  // unchanged everywhere. Both arms bad: there is no curvature to report and the
+  // 0.0 below is the shut-down signature the next comment describes.
+  const bool hi_sentinel = util::identical(d_hi, 0.0);
+  const bool lo_sentinel = util::identical(d_lo, 0.0);
+  const double H =
+      (hi_sentinel && lo_sentinel) ? 0.0
+      : hi_sentinel                ? (resid - d_lo) / h_psi
+      : lo_sentinel                ? (d_hi - resid) / h_psi
+                                   : (d_hi - d_lo) / (2.0 * h_psi);
   // H == 0 with resid == 0 is the shut-down signature: dprofit returns a
   // sentinel zero there rather than a derivative, so the ratio would be 0/0.
   // H > 0 would not be a maximum. Both mean the composite has nothing to stand

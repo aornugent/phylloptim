@@ -133,9 +133,11 @@ set_traits <- function(x, traits) {
 ##' So the premise is **tested rather than assumed**. The test is the implied
 ##' Newton step `|dprofit(psi*) / H|`, a distance in MPa: at a stationary point it
 ##' is zero to solver precision, and at a pinned one it is not. Over the package's
-##' 288-point grid the two populations are five orders of magnitude apart -- worst
-##' interior `5e-11`, smallest pinned `6e-06` -- so `stationarity_tol` sits in an
-##' empty band rather than on a judgement call.
+##' 288-point grid the two populations are nine orders of magnitude apart -- worst
+##' interior `5e-11`, smallest pinned `1.2e-02` -- so `stationarity_tol` sits in an
+##' empty band rather than on a judgement call. That pinned edge was recorded as
+##' `6e-06` until the curvature was guarded against `dprofit`'s shut-down sentinel,
+##' which had been inflating `|H|` at exactly those points.
 ##'
 ##' When the premise does not hold, this falls back to a central finite difference
 ##' of the whole solve, which respects the constraint by construction because it
@@ -289,7 +291,9 @@ set_traits <- function(x, traits) {
 ##'     \item{`method`}{`"ift"` if the implicit-function composite was used,
 ##'       `"fd"` if the fallback was}
 ##'     \item{`status`}{`"interior"`, `"pinned"` or `"no-gradient"`}
-##'     \item{`H`}{the curvature of profit in the collar potential at `psi*`}
+##'     \item{`H`}{the curvature of profit in the collar potential at `psi*`,
+##'       one-sided where a centred difference would step outside the feasible
+##'       collar interval, and `0` where both sides would}
 ##'     \item{`stationarity`}{the implied Newton step, in MPa, that `method` was
 ##'       decided on}
 ##'   }
@@ -438,8 +442,27 @@ leaf_gradient <- function(psi_soil,
   # Newton step, which is a distance in MPa and so needs no scale of its own.
   h_psi <- max(abs(psi_star), 1) * step
   resid <- l$dprofit_droot_collar_psi(psi_star)
-  H <- (l$dprofit_droot_collar_psi(psi_star + h_psi) -
-        l$dprofit_droot_collar_psi(psi_star - h_psi)) / (2 * h_psi)
+  d_hi <- l$dprofit_droot_collar_psi(psi_star + h_psi)
+  d_lo <- l$dprofit_droot_collar_psi(psi_star - h_psi)
+  # dprofit returns a bare, exact 0 SENTINEL rather than a derivative where the
+  # collar is shut down or the ci solve is infeasible, and the `feasible`
+  # out-parameter that would distinguish it is not carried through the binding.
+  # So test for it EXACTLY, the same argument .gradient_outputs_at() makes with
+  # identical() for the clamp: an unclamped evaluation reaches 0 only at a
+  # genuine stationary point. Left in, the sentinel does not make H small, it
+  # makes H wrong -- |H| out by a median factor of 8.4e04 over the golden grid.
+  #
+  # One bad arm: difference the good arm against `resid` at psi* instead. That is
+  # a real one-sided second derivative of profit, it is continuous across the
+  # feasibility boundary where the centred one jumps, and it leaves `status`
+  # unchanged everywhere. Both arms bad: no curvature exists, and the 0 is the
+  # shut-down signature described below.
+  hi_sentinel <- isTRUE(d_hi == 0)
+  lo_sentinel <- isTRUE(d_lo == 0)
+  H <- if (hi_sentinel && lo_sentinel) 0 else
+       if (hi_sentinel) (resid - d_lo) / h_psi else
+       if (lo_sentinel) (d_hi - resid) / h_psi else
+       (d_hi - d_lo) / (2 * h_psi)
   # H == 0 with resid == 0 is the shut-down signature: dprofit returns a sentinel
   # zero there rather than a derivative, so the ratio below would be 0/0. H > 0
   # would not be a maximum. Both mean the composite has nothing to stand on.
