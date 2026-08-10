@@ -58,9 +58,9 @@ the two routes to agree. `stem_c` has no such identity and always rebuilds.}
 \value{
 A list with
   \describe{
-    \item{`gradient`}{an `n` × `length(pars)` × 4 array, the last dimension
-      being `A`, `gc`, `psi_stem` and `collar`}
-    \item{`value`}{an `n` × 4 matrix of the solved outputs}
+    \item{`gradient`}{an `n` × `length(pars)` × 5 array, the last dimension
+      being `A`, `gc`, `psi_stem`, `collar` and `profit`}
+    \item{`value`}{an `n` × 5 matrix of the solved outputs}
     \item{`method`}{`"ift"` or `"fd"` per observation}
     \item{`status`}{`"interior"`, `"pinned"`, `"no-gradient"` or `"error"`}
     \item{`H`, `stationarity`}{the curvature and the implied Newton step
@@ -75,7 +75,7 @@ observation.
 }
 \section{What it computes, and where the maths is written down}{
 
-The same four derivatives at the same solved operating point, by the same two
+The same five derivatives at the same solved operating point, by the same two
 routes, with the same active-set test deciding between them. **Read
 [leaf_gradient()]'s documentation for all of it** — the implicit function
 theorem, why the second term is not a correction, why the premise is tested

@@ -365,10 +365,17 @@ tibble::tibble(
 So in a calibration, name only the parameters you are fitting. Asking for all
 fourteen when you fit three is several times the work.
 
-⚠️ **The four outputs are not selectable** — every call returns the derivative of
-`A`, `gc`, `psi_stem` and `collar` with respect to each requested parameter,
-because they are read off the same solve and cost nothing extra. `pars` chooses
-the rows of that matrix, never the columns.
+⚠️ **The five outputs are not selectable** — every call returns the derivative of
+`A`, `gc`, `psi_stem`, `collar` and `profit` with respect to each requested
+parameter, because they are read off the same solve and cost nothing extra. `pars`
+chooses the rows of that matrix, never the columns.
+
+`profit` is the cheapest of the five. It is what the leaf maximises — carbon gained
+minus the hydraulic cost of the water that bought it — so it is the objective
+rather than an output read at the optimum, and at an interior optimum
+`dprofit/dψ = 0` makes its trait derivative the partial `∂profit/∂θ` at fixed ψ.
+That is the envelope theorem: the profit row needs no sensitivity of the optimiser,
+where the other four do.
 
 Naming something undifferentiable is an error rather than a silent omission, and
 it tells you what is available:

@@ -77,13 +77,13 @@ test_that("the composite reproduces the arbitrated reference gradients", {
   # when these were established; the tolerance below is that agreement, not the
   # composite's own precision, which is finer.
   ref <- rbind(
-    vcmax_25        = c(collar =  1.7459e-03, A =  1.7209e-02),
-    jmax_25         = c(collar =  1.0862e-04, A =  9.1320e-04),
-    cost_scale_TF24 = c(collar = -7.6704e-02, A = -3.9520e-01),
-    beta2           = c(collar = -4.2610e-02, A = -2.1954e-01),
-    stem_b          = c(collar =  5.5247e-01, A =  2.8465e+00),
-    stem_c          = c(collar = -1.6390e-01, A = -8.4448e-01),
-    root_b          = c(collar =  2.6656e-04, A =  2.3895e-02))
+    vcmax_25        = c(collar =  1.7459e-03, A =  1.7209e-02, profit =  8.2143e-03),
+    jmax_25         = c(collar =  1.0862e-04, A =  9.1320e-04, profit =  3.5411e-04),
+    cost_scale_TF24 = c(collar = -7.6704e-02, A = -3.9520e-01, profit = -4.1114e-01),
+    beta2           = c(collar = -4.2610e-02, A = -2.1954e-01, profit =  1.8272e+00),
+    stem_b          = c(collar =  5.5247e-01, A =  2.8465e+00, profit =  2.8396e+00),
+    stem_c          = c(collar = -1.6390e-01, A = -8.4448e-01, profit =  4.4233e-01),
+    root_b          = c(collar =  2.6656e-04, A =  2.3895e-02, profit =  1.3852e-02))
   # beta_R_H used to be an eighth row here (collar 8.1973e-06, A -2.8802e-04).
   # #33 removed it from the trait vector along with the root-architecture model,
   # so there is no longer a `pars` name for it. The recorded values are kept in
@@ -98,6 +98,99 @@ test_that("the composite reproduces the arbitrated reference gradients", {
   expect_equal(g$gradient[rownames(ref), "collar"], ref[, "collar"],
                tolerance = 5e-3)
   expect_equal(g$gradient[rownames(ref), "A"], ref[, "A"], tolerance = 5e-3)
+  # The profit column, arbitrated the same way. Note the SIGNS differ from A's for
+  # beta2 and stem_c: raising either lowers assimilation, and lowers the hydraulic
+  # cost by more, so A falls while profit rises. That is the whole reason profit is
+  # worth reporting -- it is not a rescaling of dA/dtheta.
+  #
+  # ⚠️ jmax_25's ratio to the arbitrated slope is 0.989, the worst in this table,
+  # and it is the FLOOR rather than the composite: its profit gradient is 3.5e-04
+  # against a difference quotient whose noise is the solve's ~1e-09 in profit
+  # divided by the step, ~3e-06 here. The other six sit within 6e-04. This is the
+  # Precision section's "do not ask for more than about 1e-09", read in a column
+  # whose values happen to be small.
+  expect_equal(g$gradient[rownames(ref), "profit"], ref[, "profit"],
+               tolerance = 5e-3)
+})
+
+test_that("the profit gradient is the envelope-theorem partial", {
+  # The claim this column rests on. profit is the OBJECTIVE, so
+  #   dprofit*/dtheta = (dprofit/dpsi)(dpsi*/dtheta) + dprofit/dtheta|_psi
+  # and at an interior optimum the first term is zero. Two consequences are
+  # checked, and the second is the one worth having:
+  #
+  #   1. the composite's profit row equals a difference of the WHOLE SOLVE. A
+  #      supplied partial cannot be checked by differencing the step that consumes
+  #      it, so the reference has to be the constrained maximum itself.
+  #   2. the same number comes out of an evaluation with the collar HELD FIXED at
+  #      psi* -- no optimisation, no H, no -M/H. That is the envelope theorem
+  #      stated as a computation rather than as algebra.
+  #
+  # `pars` here excludes root_c and jmax_25 on purpose: both have small profit
+  # gradients (8.9e-03 and 3.5e-04) against the ~1e-09/step floor of any
+  # difference quotient in profit, so the disagreement they show is the floor and
+  # not the identity. Measured at psi_soil = 2.0, step 1e-06: root_c 2.2e-02 and
+  # jmax_25 9.4e-03, against 1.2e-02 and 3.0e-03 for the SAME two parameters in
+  # the long-standing `A` column at the same point. The floor is the existing one.
+  pars <- c("vcmax_25", "stem_b", "stem_c", "cost_scale_TF24", "beta2", "root_b")
+  d <- grid_drivers(2.0)
+
+  # 2: the partial at a fixed collar potential, built from scratch rather than
+  # through leaf_gradient()'s setter, so this shares no code with the thing it is
+  # checking beyond the model itself.
+  base <- leaf_model(leaf_traits(), leaf_control(), leaf_supply_multilayer())
+  do.call(set_drivers, c(list(base), d))
+  base$find_root_collar_psi()
+  psi_star <- base$opt_root_psi_
+  partial_at_fixed_collar <- function(p, h) {
+    at <- function(sgn) {
+      tt <- leaf_traits()
+      tt[[p]] <- tt[[p]] + sgn * h
+      l <- leaf_model(tt, leaf_control(), leaf_supply_multilayer())
+      do.call(set_drivers, c(list(l), d))
+      l$evaluate_root_collar_psi(psi_star)
+      # If the clamp moved the target this is not the evaluation asked for.
+      expect_identical(l$opt_root_psi_, psi_star)
+      operating_point(l)$profit
+    }
+    (at(1) - at(-1)) / (2 * h)
+  }
+
+  ift <- do.call(leaf_gradient, c(d, list(pars = pars, method = "ift")))
+  fd <- do.call(leaf_gradient, c(d, list(pars = pars, method = "fd")))
+  expect_identical(ift$status, "interior")
+
+  for (p in pars) {
+    h <- max(abs(leaf_traits()[[p]]), 1) * 1e-6
+    # Per element, and relative: the whole-column tolerance a matrix comparison
+    # gives would let one bad row hide behind stem_b, which is 200x the others.
+    expect_equal(ift$gradient[p, "profit"], fd$gradient[p, "profit"],
+                 tolerance = 5e-3, label = paste("solve difference,", p))
+    expect_equal(ift$gradient[p, "profit"], partial_at_fixed_collar(p, h),
+                 tolerance = 5e-3, label = paste("fixed-collar partial,", p))
+  }
+})
+
+test_that("the profit gradient needs no argmax sensitivity, across the wet grid", {
+  # The same identity over the soil-moisture range the interior classification
+  # covers, and the number to quote for it. Worst per-element relative
+  # disagreement between the composite's profit row and a difference of the whole
+  # solve, over eleven parameters: 7.8e-07 at psi_soil 0.5, 2.9e-07 at 1.0 and
+  # 1.8e-07 at 3.0. psi_soil = 2.0 is the exception at 2.2e-02, and the test above
+  # records why -- two small gradients against the difference quotient's floor,
+  # exactly as the `A` column behaves there.
+  pars <- c("vcmax_25", "stem_b", "cost_scale_TF24", "beta2", "root_b",
+            "leaf_specific_conductance_max")
+  for (psi_soil in c(0.5, 1.0, 3.0)) {
+    ift <- grid_gradient(psi_soil, pars = pars, method = "ift")
+    fd <- grid_gradient(psi_soil, pars = pars, method = "fd")
+    expect_identical(ift$status, "interior")
+    for (p in pars) {
+      expect_equal(ift$gradient[p, "profit"], fd$gradient[p, "profit"],
+                   tolerance = 1e-5,
+                   label = paste("psi_soil", psi_soil, p))
+    }
+  }
 })
 
 test_that("the composite and the finite difference agree at interior points", {
@@ -191,6 +284,12 @@ test_that("at a pinned optimum the BOUND's own trait carries the gradient", {
   expect_identical(interior$status, "interior")
   expect_equal(interior$gradient["psi_crit", "A"], 0)
   expect_equal(interior$gradient["root_psi_crit", "A"], 0)
+  # Including `profit`, and there the zero is worth saying out loud rather than
+  # merely tolerating: psi_crit is absent from the profit function, so at an
+  # interior optimum the envelope-theorem partial is exactly zero because the
+  # constraint is not binding. It is a result, not a row that failed to be filled.
+  expect_equal(interior$gradient["psi_crit", "profit"], 0)
+  expect_equal(interior$gradient["root_psi_crit", "profit"], 0)
 
   pinned <- grid_gradient(4, vpd = 0.5, layers = 3L, pars = "psi_crit")
   expect_identical(pinned$status, "pinned")
@@ -200,6 +299,9 @@ test_that("at a pinned optimum the BOUND's own trait carries the gradient", {
   # because the response has a kink in it, which is the whole point).
   expect_equal(pinned$gradient["psi_crit", "A"], 1.2605, tolerance = 5e-3)
   expect_gt(pinned$gradient["psi_crit", "collar"], 0)
+  # And where the constraint IS binding the fallback recovers it in profit as well.
+  # Same arbitration, over the solved profit: 0.5099, R^2 = 0.996 -- the same kink.
+  expect_equal(pinned$gradient["psi_crit", "profit"], 0.5099, tolerance = 1e-2)
 })
 
 test_that("a shut-down operating point reports no gradient and still differences", {
@@ -208,11 +310,69 @@ test_that("a shut-down operating point reports no gradient and still differences
   # H comes back zero with it. The composite has nothing to stand on and says so
   # -- but the gradient itself is not zero, because R_d still depends on
   # vcmax_25, so the fallback still has work to do.
-  g <- grid_gradient(6.0, pars = c("vcmax_25", "stem_b"))
+  # Shut down, set_shutdown_state writes profit_ = -R_d_ - hydraulic_cost_TF(psi_crit)
+  # and A = -R_d_. Five parameters drive profit on this branch and only ONE of them
+  # reaches any other column, so `profit` is the only column that says anything here
+  # -- and its own derivative used to be discarded with the rest.
+  #
+  # ⚠️ ASSERTED AGAINST THE CLOSED FORM, not against recorded numbers, so this test
+  # says why the values are what they are. Nothing on this branch is splined:
+  #
+  #   hydraulic_cost_TF_kernel(psi) = cost_scale_TF24 * (1 - exp(-(psi/stem_b)^stem_c))^beta2
+  #
+  # evaluated at psi = psi_crit (proportion_of_conductivity_kernel is that exp, in
+  # closed form), and R_d_ = 0.015 * vcmax_ with vcmax_ == vcmax_25 at leaf_temp = 25
+  # because peak_arrh_curve is the identity at its own reference temperature. So
+  # profit = -0.015*vcmax_25 - C(psi_crit) exactly and every partial below is
+  # elementary. Write x = (psi_crit/stem_b)^stem_c and u = 1 - exp(-x); the trait
+  # enters through x for stem_b, stem_c and psi_crit, and outside it for the other two.
+  #
+  # ⚠️ NOTHING SATURATES, which is why all five are O(1) rather than rounding: x is
+  # 2.996, so exp(-x) = 0.0500 -- psi_crit IS the 5% loss point by construction. A
+  # reader who expects the cost to have flattened by psi_crit will misread these rows.
+  tr <- leaf_traits()
+  x <- (tr$psi_crit / tr$stem_b)^tr$stem_c
+  u <- 1 - exp(-x)
+  dC_dx <- tr$cost_scale_TF24 * tr$beta2 * u^(tr$beta2 - 1) * exp(-x)
+  # dprofit/dtheta = -dC/dtheta throughout, since profit = -R_d_ - C.
+  analytic <- c(
+    vcmax_25        = -0.015,                                   # via R_d_ only
+    cost_scale_TF24 = -u^tr$beta2,
+    beta2           = -tr$cost_scale_TF24 * u^tr$beta2 * log(u),
+    psi_crit        = -dC_dx * tr$stem_c * x / tr$psi_crit,     # dx/dpsi_crit
+    stem_b          =  dC_dx * tr$stem_c * x / tr$stem_b,       # dx/dstem_b < 0
+    stem_c          = -dC_dx * x * log(tr$psi_crit / tr$stem_b))
+  # root_b is the negative control: it reaches neither R_d_ nor the stem cost, so its
+  # profit row must be exactly zero. Without it, "all five are non-zero" would be
+  # consistent with a column that is non-zero everywhere for the wrong reason.
+  g <- grid_gradient(6.0, pars = c(names(analytic), "root_b"))
   expect_identical(g$status, "no-gradient")
   expect_identical(g$method, "fd")
   expect_equal(g$gradient["vcmax_25", "A"], -0.015, tolerance = 1e-4)
   expect_equal(g$gradient["stem_b", "A"], 0)
+  expect_equal(g$gradient["cost_scale_TF24", "A"], 0)
+
+  for (p in names(analytic)) {
+    # 1e-03 relative, and the loose tolerance is the DIFFERENCE QUOTIENT's floor
+    # rather than the closed form's: the solved profit carries ~1e-09 and the
+    # fallback divides a difference of two of them by a ~1e-06 step, which bounds
+    # the error at ~1e-04 relative here. Worst OBSERVED is 5.1e-06 (stem_b) with
+    # the other five at 1e-10 to 5e-10 -- but that is one draw from a distribution
+    # the floor bounds at 1e-04, so the tolerance is set from the bound. Pinning
+    # 5.1e-06 would be pinning the luck.
+    expect_equal(g$gradient[[p, "profit"]], analytic[[p]], tolerance = 1e-3,
+                 label = paste("shut-down dprofit/d", p, sep = ""))
+    # Each is a real response, not a small number that happens to pass above.
+    expect_gt(abs(analytic[[p]]), 1e-2)
+  }
+  expect_equal(g$gradient["root_b", "profit"], 0)
+  # vcmax_25 is the one parameter reaching both columns, and the cost term does not
+  # depend on it, so the two differences are differences of the same function offset
+  # by a constant. NOT bit-identical, and the reason is worth one line: profit is
+  # -8.39 where A is -1.44, so differencing profit cancels against an operand six
+  # times larger and loses ~6e-10 relative. Measured 9e-11.
+  expect_equal(g$gradient[["vcmax_25", "profit"]],
+               g$gradient[["vcmax_25", "A"]], tolerance = 1e-9)
 
   # Forcing the composite here is an error rather than a wrong number: unlike a
   # pinned point, there is no curvature to divide by at all.
@@ -362,7 +522,8 @@ test_that("the two non-trait parameters agree with a resolved reference", {
       a[[par]] <- value
     }
     x <- do.call(leaf_solve, a)
-    c(A = x$A, gc = x$gc, psi_stem = x$psi_stem, collar = x$collar)
+    c(A = x$A, gc = x$gc, psi_stem = x$psi_stem, collar = x$collar,
+      profit = x$profit)
   }
 
   g <- do.call(leaf_gradient,
@@ -487,16 +648,29 @@ test_that("leaf_gradient() rejects bad arguments", {
 
 test_that("the gradient is reported for every output the fit needs", {
   # leaf-calibration fits three responses -- A, gs and psi_leaf -- so all three
-  # are differentiated, not just A. `collar` comes along because it is psi*.
+  # are differentiated, not just A. `collar` comes along because it is psi*, and
+  # `profit` because it is what the leaf maximises and what feeds net production.
+  # The order is appended, not inserted, so a caller selecting by position does not
+  # move.
   g <- grid_gradient(2.0, pars = "vcmax_25")
-  expect_identical(colnames(g$gradient), c("A", "gc", "psi_stem", "collar"))
-  expect_identical(names(g$value), c("A", "gc", "psi_stem", "collar"))
+  expect_identical(colnames(g$gradient),
+                   c("A", "gc", "psi_stem", "collar", "profit"))
+  expect_identical(names(g$value),
+                   c("A", "gc", "psi_stem", "collar", "profit"))
   expect_true(all(is.finite(g$gradient)))
   # Raising vcmax_25 raises assimilation and opens the stomata, and the leaf pays
-  # for it with a more negative water potential (a larger positive magnitude).
+  # for it with a more negative water potential (a larger positive magnitude). The
+  # carbon it gains exceeds the water it spends, or the optimum would not have
+  # moved that way, so profit rises too -- by less than A.
   expect_gt(g$gradient["vcmax_25", "A"], 0)
   expect_gt(g$gradient["vcmax_25", "gc"], 0)
   expect_gt(g$gradient["vcmax_25", "psi_stem"], 0)
+  expect_gt(g$gradient["vcmax_25", "profit"], 0)
+  expect_lt(g$gradient["vcmax_25", "profit"], g$gradient["vcmax_25", "A"])
+  # `value` carries the solved profit alongside the gradient, so a fit reading
+  # profit as a response needs no second call.
+  expect_identical(g$value[["profit"]],
+                   do.call(leaf_solve, grid_drivers(2.0))$profit)
 })
 
 # ---------------------------------------------------------------------------

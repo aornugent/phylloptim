@@ -1844,6 +1844,16 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// gradient_output_names
+std::vector<std::string> gradient_output_names();
+RcppExport SEXP _phylloptim_gradient_output_names() {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    rcpp_result_gen = Rcpp::wrap(gradient_output_names());
+    return rcpp_result_gen;
+END_RCPP
+}
 // gradient_batch_prepare
 SEXP gradient_batch_prepare(Rcpp::List root_network, Rcpp::List psi_soil, Rcpp::List soil_depth, Rcpp::NumericVector PPFD, Rcpp::NumericVector atm_vpd, Rcpp::NumericVector ca, Rcpp::NumericVector leaf_temp, Rcpp::NumericVector atm_o2_kpa, Rcpp::NumericVector atm_kpa);
 RcppExport SEXP _phylloptim_gradient_batch_prepare(SEXP root_networkSEXP, SEXP psi_soilSEXP, SEXP soil_depthSEXP, SEXP PPFDSEXP, SEXP atm_vpdSEXP, SEXP caSEXP, SEXP leaf_tempSEXP, SEXP atm_o2_kpaSEXP, SEXP atm_kpaSEXP) {
@@ -2067,6 +2077,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_phylloptim_Leaf__lambda_multilayer__get", (DL_FUNC) &_phylloptim_Leaf__lambda_multilayer__get, 1},
     {"_phylloptim_Leaf__g1_eff__get", (DL_FUNC) &_phylloptim_Leaf__g1_eff__get, 1},
     {"_phylloptim_gradient_par_names", (DL_FUNC) &_phylloptim_gradient_par_names, 0},
+    {"_phylloptim_gradient_output_names", (DL_FUNC) &_phylloptim_gradient_output_names, 0},
     {"_phylloptim_gradient_batch_prepare", (DL_FUNC) &_phylloptim_gradient_batch_prepare, 9},
     {"_phylloptim_gradient_batch_check", (DL_FUNC) &_phylloptim_gradient_batch_check, 1},
     {"_phylloptim_gradient_batch_run", (DL_FUNC) &_phylloptim_gradient_batch_run, 8},

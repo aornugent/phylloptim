@@ -155,29 +155,43 @@ inline std::string par_name(int par, int n_layers) {
   return "parameter " + std::to_string(par);
 }
 
-// --- the four differentiated outputs -----------------------------------------
+// --- the five differentiated outputs -----------------------------------------
 //
-// A, gc, psi_stem and collar, in that order, which is R's
-// `.gradient_output_names`. `collar` is psi* itself, which is what makes
-// dcollar/dtheta equal dpsi*/dtheta and lets the two routes below compute the
-// same quantity by different means.
-inline constexpr int n_outputs = 4;
+// A, gc, psi_stem, collar and profit, in that order. THIS LIST IS THE ONE
+// DEFINITION OF IT: R does not keep a second copy, it reads this one back through
+// `gradient_output_names()` in src/gradient.cpp, so the two routes cannot
+// disagree about what they are reporting. `profit` is appended rather than
+// inserted, because R hands `pars` over as positions and a caller reads gradient
+// columns by position after that.
+//
+// Two of the five are not the generic composite in `gradient_ift` below, and for
+// two DIFFERENT reasons, which is why both are named here:
+//
+//   * `collar` is psi* itself, which is what makes dcollar/dtheta equal
+//     dpsi*/dtheta and lets the two routes compute the same quantity by
+//     different means.
+//   * `profit` is the OBJECTIVE rather than an output read at the argmax, which
+//     is what brings the envelope theorem into play.
+inline constexpr int n_outputs = 5;
 inline constexpr int out_collar = 3;
+inline constexpr int out_profit = 4;
 
 inline const std::vector<std::string>& output_names() {
-  static const std::vector<std::string> names{"A", "gc", "psi_stem", "collar"};
+  static const std::vector<std::string> names{"A", "gc", "psi_stem", "collar",
+                                              "profit"};
   return names;
 }
 
 // Read straight off the members rather than through `operating_point_values()`,
-// which is what R has to use. Bit-identical: that reader copies these same four
-// fields into positions 3, 5, 0 and 1 of its twelve, and the three columns it
+// which is what R has to use. Bit-identical: that reader copies these same five
+// fields into positions 3, 5, 0, 1 and 6 of its twelve, and the three columns it
 // computes rather than copies (uptake, lambda, g1_eff) are not among them.
 inline void outputs(const Leaf& l, double* y) {
   y[0] = l.assim_colimited_;
   y[1] = l.stom_cond_CO2_;
   y[2] = l.opt_psi_stem_;
   y[3] = l.opt_root_psi_;
+  y[4] = l.profit_;
 }
 
 // The outputs with the collar held at `psi` rather than optimised. False when
@@ -298,9 +312,10 @@ struct Settings {
 };
 
 struct Result {
-  // The four outputs the gradient is taken at.
+  // The five outputs the gradient is taken at.
   double value[n_outputs];
-  // npars * n_outputs, parameter-major: d(output j)/d(pars[k]) at [k * 4 + j].
+  // npars * n_outputs, parameter-major: d(output j)/d(pars[k]) at
+  // [k * n_outputs + j].
   std::vector<double> grad;
   Status status = Status::Error;
   bool used_ift = false;
@@ -520,15 +535,45 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
     }
     // M = d2profit/dpsi dtheta, with psi held FIXED at psi*.
     const double dpsi_dtheta = -((up[0] - dn[0]) / (2.0 * h)) / H;
+    double direct[n_outputs];
     for (int j = 0; j < n_outputs; ++j) {
-      const double direct = (up[1 + j] - dn[1 + j]) / (2.0 * h);
-      out[k * n_outputs + j] = direct + rounded(dY_dpsi[j] * dpsi_dtheta);
+      direct[j] = (up[1 + j] - dn[1 + j]) / (2.0 * h);
+      out[k * n_outputs + j] = direct[j] + rounded(dY_dpsi[j] * dpsi_dtheta);
     }
+    // TWO OF THE FIVE ARE NOT THAT COMPOSITE, AND THE TWO ARGUMENTS ARE
+    // DIFFERENT. Both overwrite the generic line rather than skipping it, which
+    // is R's shape too: `.gradient_ift` computes `g` for all five and then
+    // assigns these two.
+    //
     // `collar` is not an output of the evaluation -- it IS psi*, held fixed, so
-    // its direct term is zero by construction and the composite reduces to
+    // its DIRECT term is zero by construction and the composite reduces to
     // dpsi*/dtheta. Set explicitly rather than left as the difference of two
     // identical numbers.
     out[k * n_outputs + out_collar] = dpsi_dtheta;
+    // `profit` is the objective rather than an output read at the argmax, so for
+    // it the OTHER factor of the second term is the one that vanishes:
+    //
+    //   dprofit*/dtheta = (dprofit/dpsi)(dpsi*/dtheta) + dprofit/dtheta|_psi
+    //
+    // and dprofit/dpsi = 0 at an interior optimum. That is the envelope theorem,
+    // and its premise is exactly the stationarity `at()` has already tested. So
+    // the direct term IS the answer: no M, no H, no dpsi*/dtheta.
+    //
+    // ⚠️ AND THE ARITHMETIC NEEDS THIS LINE EVEN SO, which is a second reason and
+    // not a restatement of the first. `dY_dpsi[out_profit]` is a central
+    // difference of a FLAT maximum: ~1e-09 of cancellation in profit over a
+    // ~1e-06 step in psi. Measured at psi_soil = 2.0 the exact dprofit at psi* is
+    // 8.7e-11, while that difference reads -1.8e-04 -- so leaving the generic
+    // line to stand would move this column by up to 6.6e-05 relative. That is
+    // five orders above the solve's ~1e-09 floor and entirely plausible-looking.
+    //
+    // ⚠️ THIS ROUTE ONLY. At a pinned optimum dprofit/dpsi is NOT zero, the
+    // envelope theorem does not hold, and the profit row has to come from
+    // differencing the solve -- which is what `gradient_fd` already does for
+    // every output, with no special case at all. `at()`'s `status` chooses
+    // between the two functions and is the only place that decision is made, so
+    // there is no way for this line to reach the fallback.
+    out[k * n_outputs + out_profit] = direct[out_profit];
   }
   apply(l, theta, d, single, -1, s.fast_stem_curve);
 }
@@ -536,6 +581,12 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
 // The fallback: a central difference of the whole solve. Correct at a pinned
 // optimum because it differences the CONSTRAINED answer, which is exactly what
 // the composite cannot do.
+//
+// ⚠️ ALL FIVE OUTPUTS COME OUT OF THE ONE DIFFERENCE, `profit` INCLUDED, and the
+// absence of a special case here is deliberate. `gradient_ift`'s envelope
+// shortcut assumes dprofit/dpsi = 0, which is false at the pinned optimum this
+// function exists for; differencing the solve needs no such premise, because the
+// solve it differences is the constrained maximum.
 inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
                         bool single, const int* pars, std::size_t npars,
                         const Settings& s, double* out) {

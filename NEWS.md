@@ -64,6 +64,74 @@ rows x 9 fields are bit-identical to a baseline generated on the same machine.
 instead. Costs +2.0% on the collar solve (7.33 -> 7.48 us, interleaved x11); a no-op
 wrapper around the same `.eval` measures 7.43, so two thirds of that is the extra call
 rather than the bound.
+
+## `leaf_gradient()` and `leaf_gradient_batch()` report the trait derivative of profit
+
+`gradient` gains a fifth column, `profit`. Profit is what the leaf maximises —
+carbon gained minus the hydraulic cost of the water that bought it — and a trait's
+effect on it is the most direct statement of how that trait changes the plant's
+carbon economy. It is also the cheapest derivative on this surface, and it was the
+one not emitted.
+
+At an interior optimum `dprofit/dpsi = 0`, so
+
+```
+dprofit*/dtheta = (dprofit/dpsi)(dpsi*/dtheta) + dprofit/dtheta|_psi
+                = dprofit/dtheta|_psi
+```
+
+The envelope theorem: the profit row needs no `M`, no `H` and no `dpsi*/dtheta`,
+where every other column does. It costs one more subscript on a vector
+`operating_point_values()` was already handing over, one more member read in C++,
+and no extra boundary crossing. Measured: unchanged in both routes, R-side 1020 →
+1033 µs for a four-parameter gradient off a reused leaf and the batch's
+per-observation cost identical to three significant figures, signs disagreeing
+across repeats.
+
+**Both routes report it, and they agree bit-for-bit.** The composite exists twice
+— in `R/gradient.R` and in `inst/include/phylloptim/gradient.hpp` — and the second
+is what `leaf_gradient_batch()` runs. So the list of differentiated outputs now has
+exactly **one** definition, `phylloptim::gradient::output_names()`, which R reads
+rather than restating; there is no longer a pair of literals to keep in step. 0
+mismatches over the 25 operating points × three methods the two routes are already
+compared on.
+
+Checked against a difference of the whole solve, which is the only valid reference
+for a supplied partial: **1.6e-08** relative for `leaf_specific_conductance_max`
+and **1.5e-09** for `resistance` on the single-potential path, and 1.8e-07 to
+7.8e-07 over six parameters at three interior multi-layer points. Both routes are
+now also arbitrated against `leaf_solve()`, which shares no code with either
+composite: 6.5e-07 or better at three interior points, and **bit-identical** at the
+pinned, shut-down and interior points where the fallback runs.
+
+⚠️ **`gradient_golden.tsv` is unchanged and records four of the five columns.** The
+four have not moved — the generator's output is bit-identical to the previous
+release's on the same machine — and the file cannot be extended here, because it is
+bit-exact only on macOS/arm64. `tools/gradient_golden.R` now emits every output
+column and the test reads which ones are pinned out of the file, so `profit` starts
+being pinned the moment anyone regenerates it on that platform. Until then the
+column is held by the route comparison and by the arbitration against
+`leaf_solve()`.
+
+Two things are stated rather than left implicit:
+
+* **The identity holds at an interior optimum only.** At a pinned optimum
+  `dprofit/dpsi` is not zero and the term does not drop out; `status` already says
+  which point you are at, and `method = "auto"` routes a pinned point to the
+  difference of the whole solve. The special case lives in the composite alone, in
+  both implementations, and the fallback differences every output including this
+  one — at the dry-pinned point the fixed-collar partial for `psi_crit` is exactly
+  zero while its true profit derivative is **0.507**, so a shortcut that reached
+  that path would report a zero.
+* **`psi_crit` returns exactly zero** in this column at an interior optimum, as in
+  the other four. It does not appear in the profit function — it only sets the dry
+  end of the feasible collar interval — so the zero is the statement that the
+  constraint is not binding, not a row that failed to be filled.
+
+At a shut-down point the fallback now also recovers the derivative of
+`set_shutdown_state`'s `profit_ = -R_d_ - hydraulic_cost_TF(psi_crit)`, which was
+discarded before: `dprofit/dcost_scale_TF24 = -0.926` where every other column is
+zero.
 ## Trait gradients over a batch of observations, composed in C++ -- 22x
 
 `leaf_batch()` and `leaf_gradient_batch()`. The same gradient `leaf_gradient()`

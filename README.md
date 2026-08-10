@@ -324,7 +324,7 @@ traits, which is what a gradient-based optimiser or a Hamiltonian sampler wants:
 ```r
 g <- leaf_gradient(psi_soil = 2.0, PPFD = 900,
                    pars = c("vcmax_25", "stem_b", "cost_scale_TF24"))
-g$gradient   # rows: parameters.  columns: A, gc, psi_stem, collar
+g$gradient   # rows: parameters.  columns: A, gc, psi_stem, collar, profit
 g$method     # "ift" or "fd" -- see below
 ```
 

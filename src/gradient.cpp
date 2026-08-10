@@ -4,10 +4,15 @@
 // reason src/root_network.cpp is not: these are free functions, and RcppR6 only
 // generates class glue. A plain Rcpp attribute is the whole mechanism.
 //
-// THREE FUNCTIONS, AND THE SPLIT BETWEEN THEM IS THE POINT.
+// FOUR FUNCTIONS, AND THE SPLIT BETWEEN THEM IS THE POINT.
 //
 //   * `gradient_par_names()` hands the parameter enumeration back to R so the two
 //     orders can be compared in a test rather than trusted.
+//   * `gradient_output_names()` hands the OUTPUT enumeration back to R so there is
+//     no second copy of it to compare. ⚠️ The asymmetry with the line above is
+//     deliberate: R's parameter order is derived from `leaf_traits()`, which is a
+//     more fundamental source than either list, so there the two are compared;
+//     the output list has no such source, so C++ holds it and R reads it.
 //   * `gradient_batch_prepare()` converts N observations' drivers to C++ ONCE and
 //     returns a pointer to them. ⚠️ This is not premature: a `RootNetwork` costs
 //     60-100 us to cross the boundary -- 60x a trivial `.Call` -- because it is an
@@ -69,6 +74,22 @@ DriverBatch* checked(SEXP drivers) {
 // [[Rcpp::export]]
 std::vector<std::string> gradient_par_names() {
   return phylloptim::gradient::par_names();
+}
+
+// The differentiated outputs, in the order both routes emit them: A, gc,
+// psi_stem, collar, profit.
+//
+// NOT exported to users -- they get these as the `dimnames` of what
+// `leaf_gradient()` and `leaf_gradient_batch()` return. It is here so that
+// `phylloptim::gradient::output_names()` is the ONE definition of the list and
+// R's `.gradient_output_names` reads it rather than restating it. The two routes
+// are independent implementations of the same quantity and are compared
+// bit-for-bit, so a difference of opinion about how many columns there are would
+// be a build that cannot pass its own tests; a single list makes the question
+// impossible instead.
+// [[Rcpp::export]]
+std::vector<std::string> gradient_output_names() {
+  return phylloptim::gradient::output_names();
 }
 
 // Convert N observations' drivers to C++ once. Everything is already resolved
