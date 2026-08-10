@@ -1014,6 +1014,79 @@ void test_soil_conductance_is_positive() {
   }
 }
 
+// The soil counterpart: d(E_i)/d(psi_soil[i]) per layer, which is what prices a
+// soil-potential row. Differencing E_up in one layer's potential isolates that
+// layer's derivative exactly, because the block is DIAGONAL -- so a disagreement
+// here is either the derivative or the diagonality claim, and both are worth
+// failing on.
+void test_soil_potential_derivative() {
+  printf("dE_i/d(psi_soil_i) per layer\n");
+  Drivers d;
+  for (int layers : {1, 3, 5}) {
+    std::vector<double> ps(layers), depth(layers);
+    for (int i = 0; i < layers; ++i) { ps[i] = 1.0 + 0.25 * i; depth[i] = 1.0 * (i + 1); }
+    phylloptim::Leaf l = make_leaf(d, ps, depth);
+    l.find_root_collar_psi();
+    const std::string at = " at " + std::to_string(layers) + " layers";
+
+    std::vector<double> dE(layers, 0.0);
+    l.dE_from_soil_dpsi_soil(l.opt_root_psi_, l.roots_.psi_soil_, dE);
+
+    const double h = 1e-7;
+    std::vector<double> buf(l.soil_consumption_.size(), 0.0);
+    for (int i = 0; i < layers; ++i) {
+      std::vector<double> psi_up = l.roots_.psi_soil_, psi_dn = l.roots_.psi_soil_;
+      psi_up[std::size_t(i)] += h;
+      psi_dn[std::size_t(i)] -= h;
+      double up = 0.0, dn = 0.0;
+      l.roots_.uptake_at(l.opt_root_psi_, psi_up, buf, up);
+      l.roots_.uptake_at(l.opt_root_psi_, psi_dn, buf, dn);
+      near(dE[std::size_t(i)], (up - dn) / (2.0 * h), 1e-5,
+           "layer " + std::to_string(i) + " matches a central difference" + at);
+    }
+
+    // A drier soil supplies less water, so every rooted layer's row is negative.
+    for (int i = 0; i < layers; ++i) {
+      ok(dE[std::size_t(i)] < 0.0, "layer " + std::to_string(i) + " is negative" + at);
+    }
+
+    // And it is NOT minus the collar conductance. The two moving bounds sit at
+    // different points on a non-linear vulnerability curve, so the integral
+    // terms do not cancel; writing the soil row as -duptake_dpsi would be the
+    // easy mistake and this is what refuses it.
+    const double S = l.dE_from_soil_dpsi_collar(l.opt_root_psi_, l.roots_.psi_soil_);
+    double summed = 0.0;
+    for (double v : dE) { summed += v; }
+    ok(std::abs(summed + S) > 1e-12 * std::abs(S),
+       "the soil rows are not minus the collar conductance" + at);
+  }
+}
+
+// The net price of soil water, which is what a soil row is multiplied by.
+void test_marginal_price_water() {
+  printf("net marginal price of soil water\n");
+  Drivers d;
+  for (double psi : {0.5, 1.0, 2.0, 3.0}) {
+    std::vector<double> ps(3), depth(3);
+    for (int i = 0; i < 3; ++i) { ps[std::size_t(i)] = psi; depth[std::size_t(i)] = 1.0 * (i + 1); }
+    phylloptim::Leaf l = make_leaf(d, ps, depth);
+    l.find_root_collar_psi();
+    const std::string at = " at psi_soil=" + std::to_string(psi);
+
+    const double gross = l.marginal_cost_water_multilayer();
+    const double stem = l.marginal_cost_water();
+    const double net = l.marginal_price_water();
+    if (!std::isfinite(gross)) { continue; }
+
+    // It is the difference it is defined as, computed the other way.
+    near(net, gross - stem, 1e-9, "net equals lambda_multi - lambda_stem" + at);
+    // The stem cost is a real share of the gross, so the two are not
+    // interchangeable: this is the overstatement the gross figure carries.
+    ok(net > 0.0 && net < gross, "net is positive and below gross" + at);
+    ok(gross / net > 1.1, "gross overstates the price by more than 10%" + at);
+  }
+}
+
 // Issue #1: the two root vulnerability curves stop at the 1%-conductivity point,
 // and a soil layer drier than that is an ordinary state -- plant's soil potential
 // is capped at 1000 MPa, the grid at 6.82. Taken as odelia extrapolants the
@@ -2692,6 +2765,8 @@ int main() {
   test_collar_solve_refuses_rather_than_guessing();
   test_collar_argmax_is_smooth_in_a_trait();
   test_soil_conductance_is_positive();
+  test_soil_potential_derivative();
+  test_marginal_price_water();
   test_root_vulnerability_is_bounded_past_its_grid();
   test_root_psi_crit_clamp_binds();
   test_signed_potentials_are_rejected();

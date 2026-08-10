@@ -589,6 +589,77 @@ public:
     return dEup_dT_mol * kg_per_mol_h2o;  // match E_up's kg units
   }
 
+  // d(E_i)/d(psi_soil[i]) for every rooted layer, in kg to match E_up.
+  //
+  // DIAGONAL, and that is a property of the model rather than an approximation:
+  // layer i's flux reads its own potential and the collar, and no other layer's.
+  // So this vector is the whole soil Jacobian of the supply, not its diagonal
+  // part.
+  //
+  // Same quotient rule as duptake_dpsi with the moving bound at the soil end
+  // instead of the collar. Two factors flip and nothing else does: the span
+  // shrinks as the soil approaches the collar (dspan/dpsi = -dspan/dT_collar),
+  // and the vulnerability integral's moving endpoint is psi_i rather than
+  // T_collar, so its derivative is read AT psi_i and carries the same minus.
+  // Writing it as -duptake_dpsi would be wrong: the two endpoints sit at
+  // different points on a non-linear curve, so the integral terms do not cancel.
+  //
+  // Layers past max_soil_layer carry no roots and are written zero rather than
+  // left alone -- the caller's buffer is reused across solves (hazard 8).
+  //
+  // NaN contract is duptake_dpsi's: at a branch kink the whole vector is NaN,
+  // because a caller that used some layers and not others would be mixing an
+  // analytic row with a missing one.
+  void duptake_dpsi_soil(double T_collar, const std::vector<double>& psi_soil,
+                         std::vector<double>& out) const {
+    const double kink_tol = 1e-8;
+    out.assign(psi_soil.size(), 0.0);
+
+    for (int i = 0; i < max_soil_layer; i++) {
+      if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
+          std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
+          std::abs(psi_soil[i]) < kink_tol) {
+        out.assign(psi_soil.size(), std::numeric_limits<double>::quiet_NaN());
+        return;
+      }
+
+      const double T_src_min = std::min(psi_soil[i], T_collar);
+      const double T_src_max = std::max(psi_soil[i], T_collar);
+      const double span = T_src_max - T_src_min;
+      // dspan/dT_collar was +1 when the collar pulls; the soil end moves the
+      // other way.
+      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;
+      const double dspan_dpsi = -sign_var;
+
+      const double T_pos_lo = std::max(T_src_min, 0.0);
+      const double T_neg_hi = std::min(T_src_max, 0.0);
+      double integral = 0.0;
+      if (T_pos_lo < T_src_max) {
+        integral += root_vuln_integral_at(T_src_max) -
+                    root_vuln_integral_at(T_pos_lo);
+      }
+      if (T_src_min < T_neg_hi) {
+        integral += (T_neg_hi - T_src_min);
+      }
+
+      // Read at psi_i, not at the collar: same curve, other endpoint.
+      const double fr_at =
+          (psi_soil[i] > 0.0) ? root_vuln_integral_deriv_at(psi_soil[i]) : 1.0;
+      const double dinteg_dpsi = dspan_dpsi * fr_at;
+
+      const double r_R_H = network_.r_R_H_min[i] * span / integral;
+      const double r_R = r_R_H + network_.r_R_V_sum[i];
+      const double dr_R_dpsi = network_.r_R_H_min[i] *
+                               (dspan_dpsi * integral - span * dinteg_dpsi) /
+                               (integral * integral);
+
+      const double num = T_collar - psi_soil[i] - grav_head_z_[i];
+      const double dnum_dpsi = -1.0;
+      out[std::size_t(i)] =
+          ((dnum_dpsi * r_R - num * dr_R_dpsi) / (r_R * r_R)) * kg_per_mol_h2o;
+    }
+  }
+
 private:
   // Total water drawn from all layers to the collar. Writes E_up (kg H2O m^-2
   // leaf s^-1) and soil_consumption[i] (mol H2O m^-2 leaf s^-1, note the unit

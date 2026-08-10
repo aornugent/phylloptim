@@ -705,6 +705,22 @@ public:
         return single_.duptake_dpsi(T_collar, psi_soil);
     }
   }
+  // Per-layer d(E_i)/d(psi_soil[i]), the soil counterpart of the conductance
+  // above. Diagonal, so one entry per layer is the whole of it. Same NaN-at-a-
+  // kink contract; see MultiLayerRoots::duptake_dpsi_soil.
+  void dE_from_soil_dpsi_soil(double T_collar,
+                              const std::vector<double>& psi_soil,
+                              std::vector<double>& out) {
+    require_suction_vector(psi_soil, "dE_from_soil_dpsi_soil");
+    switch (supply_kind_) {
+      case SupplyKind::MultiLayer:
+        roots_.duptake_dpsi_soil(T_collar, psi_soil, out);
+        break;
+      default:
+        single_.duptake_dpsi_soil(T_collar, psi_soil, out);
+        break;
+    }
+  }
   // Shut-down operating point used by the find_root_collar_psi early-exits: stem
   // held at psi_crit (no transpiration), paying only respiration + hydraulic
   // cost. Only opt_root_psi_ differs between the cases, so it is the argument
@@ -857,6 +873,26 @@ public:
   // Requires that a collar solve has run, so that the supply path's per-solve
   // caches are current.
   double marginal_cost_water_multilayer();
+
+  // The NET marginal value of water arriving from the soil: lambda_multi minus
+  // lambda_stem.
+  //
+  // This, and not lambda_multi, is what prices a change in soil potential. Water
+  // a wetter layer supplies still has to be pushed through the stem, and
+  // lambda_stem is by its own definition "the marginal cost seen by the stem",
+  // so that cost nets off; lambda_multi is the GROSS value and already includes
+  // the soil->collar transport the wetter soil is relieving you of. Taking the
+  // gross figure overstates the soil rows by 1.201-2.369x over the golden grid.
+  //
+  // Computed as the product rather than as the subtraction it is defined by.
+  // The two are algebraically identical -- lambda_multi = lambda_stem*(1 + k/S)
+  // so the difference is lambda_stem*k/S exactly -- and the product form does
+  // not cancel two nearby numbers to get a small one. Same reason the soil rows
+  // exist at all rather than being differenced out of profit.
+  //
+  // Returns the NA sentinel wherever marginal_cost_water_multilayer does, and
+  // for the same reason: S unavailable at a branch kink, or non-positive.
+  double marginal_price_water();
 
   // Equivalent Medlyn USO slope implied by the operating point, in kPa^0.5.
   // Defined operationally from the solved chi = ci/ca, by inverting the USO
@@ -2659,6 +2695,16 @@ inline double Leaf::marginal_cost_water_multilayer() {
   const double f_r = proportion_of_conductivity(opt_root_psi_);
   return lambda_TF24(opt_psi_stem_) *
          (1.0 + leaf_specific_conductance_max_ * f_r / S);
+}
+
+inline double Leaf::marginal_price_water() {
+  const double S = dE_from_soil_dpsi_collar(opt_root_psi_, supply_psi_soil());
+  if (!std::isfinite(S) || S <= 0.0) {
+    return util::na_value;
+  }
+  const double f_r = proportion_of_conductivity(opt_root_psi_);
+  // lambda_multi - lambda_stem, without forming either.
+  return lambda_TF24(opt_psi_stem_) * leaf_specific_conductance_max_ * f_r / S;
 }
 
 inline double Leaf::g1_eff() const {

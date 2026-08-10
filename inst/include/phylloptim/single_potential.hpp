@@ -181,6 +181,22 @@ public:
   // convention as MultiLayerRoots::duptake_dpsi, and no longer negated by
   // marginal_cost_water_multilayer (#25).
   double duptake_dpsi() const { return kg_per_mol_h2o / resistance_; }
+
+  // dE/d(psi_soil), the one-layer counterpart of
+  // MultiLayerRoots::duptake_dpsi_soil. The flux is linear in (T_collar - psi)
+  // over a constant resistance, so this is exactly minus the conductance -- and
+  // the multi-layer path is NOT that, because there the resistance depends on
+  // the span too. Element 0 only, matching uptake_at; any further elements are
+  // written zero so the buffer's length still tells the caller the layer count.
+  void duptake_dpsi_soil(double T_collar, const std::vector<double>& psi_soil,
+                         std::vector<double>& out) const {
+    static_cast<void>(T_collar);
+    if (psi_soil.empty()) {
+      util::stop("SinglePotential::duptake_dpsi_soil needs at least one potential");
+    }
+    out.assign(psi_soil.size(), 0.0);
+    out[0] = -duptake_dpsi();
+  }
 };
 
 }  // namespace phylloptim
