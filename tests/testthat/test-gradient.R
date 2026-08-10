@@ -226,9 +226,15 @@ test_that("the active-set classification splits the golden grid as measured", {
   #
   #   * the counts: 198 interior, 42 pinned, 48 with no gradient at all;
   #   * the GAP. The worst interior point is ~5e-11 and the mildest pinned one
-  #     ~6e-06, so the default 1e-08 sits in an empty band four orders wide on
-  #     each side. That is the number worth defending, because a threshold in a
-  #     populated region would be a judgement call instead.
+  #     ~1.2e-02, so the default 1e-08 sits in an empty band nine orders wide.
+  #     That is the number worth defending, because a threshold in a populated
+  #     region would be a judgement call instead.
+  #
+  #     ⚠️ The pinned edge read ~6e-06 until the curvature was guarded against
+  #     dprofit's shut-down sentinel. On 20 of these 42 pinned rows one arm of
+  #     the central difference was the sentinel, which inflated |H| and so shrank
+  #     |resid/H|. The lower bound below is set an order under the guarded figure
+  #     so that reinstating the sentinel fails here rather than passing quietly.
   psi_soils <- c(0.5, 1.0, 2.0, 3.0, 4.0, 6.0)
   vpds <- c(0.5, 1.0, 2.0, 4.0)
   layer_counts <- c(1L, 3L, 5L)
@@ -265,7 +271,7 @@ test_that("the active-set classification splits the golden grid as measured", {
   worst_interior <- max(res$stationarity[res$status == "interior"])
   mildest_pinned <- min(res$stationarity[res$status == "pinned"])
   expect_lt(worst_interior, 1e-9)
-  expect_gt(mildest_pinned, 1e-7)
+  expect_gt(mildest_pinned, 1e-3)
 
   # The second guard, over the whole grid: the composite runs on every interior
   # row and refuses on every other one. So a caller who forces `ift` cannot
