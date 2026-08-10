@@ -93,6 +93,68 @@ inline const std::vector<std::string>& par_names() {
   return names;
 }
 
+// --- the environment rows: the two things plants share ------------------------
+//
+// Everything above differentiates the leaf with respect to what it IS. These rows
+// differentiate it with respect to what it EXPERIENCES. Plants in this model are
+// coupled through exactly two quantities -- the light they cast on each other and
+// the soil water they draw from -- so a gradient that stops at the traits has
+// nothing to say about competition: one plant's uptake is the next plant's
+// `psi_soil`, one plant's canopy is the next plant's `PPFD`, and neither had a
+// row.
+//
+// THE ENVIRONMENT ROWS ARE NOT IN `theta`, and that is the design decision. Their
+// values already have exactly one home -- the observation's `Drivers` -- and
+// copying them into `theta` would give one solve two soil states free to
+// disagree. So `theta` stays fifteen wide, R's fifteen-column contract and
+// `gradient_par_names()` are untouched, and an environment row is addressed by an
+// index PAST the end of `theta` whose value is read from the drivers instead
+// (`par_value` below). Nothing else about the two routes changes: `psi_soil` and
+// `PPFD` are drivers exactly as `leaf_specific_conductance_max` is, so the
+// existing perturbation loops differentiate them with no new algebra.
+//
+// ARITY IS THE NEW THING. Everything in `theta` is a scalar; `psi_soil` is a
+// vector of length L, so the row count depends on the layer configuration and is
+// not a compile-time constant. It is handled by keeping the FIXED part fixed:
+// `PPFD` sits at `par_PPFD` whatever L is, and the L soil rows follow it. An
+// index therefore means the same parameter across observations with different
+// layer counts, which it would not if the variable-length block came first. The
+// soil rows are named `psi_soil_1..psi_soil_L`, one-based to match the layer
+// numbering the caller already has, and generated per call rather than cached
+// because L is a property of the observation and not of this header.
+inline constexpr int par_PPFD = n_pars;
+inline constexpr int par_psi_soil_first = n_pars + 1;
+
+// Total rows for a given layer count, and the full row names in index order.
+inline constexpr int n_pars_total(int n_layers) {
+  return par_psi_soil_first + n_layers;
+}
+
+inline std::vector<std::string> par_names(int n_layers) {
+  std::vector<std::string> out = par_names();
+  out.reserve(std::size_t(n_pars_total(n_layers)));
+  out.emplace_back("PPFD");
+  for (int i = 0; i < n_layers; ++i) {
+    out.push_back("psi_soil_" + std::to_string(i + 1));
+  }
+  return out;
+}
+
+// One name, for a diagnostic message. Does not build the whole vector.
+inline std::string par_name(int par, int n_layers) {
+  if (par >= 0 && par < n_pars) {
+    return par_names()[std::size_t(par)];
+  }
+  if (par == par_PPFD) {
+    return "PPFD";
+  }
+  const int layer = par - par_psi_soil_first;
+  if (layer >= 0 && layer < n_layers) {
+    return "psi_soil_" + std::to_string(layer + 1);
+  }
+  return "parameter " + std::to_string(par);
+}
+
 // --- the four differentiated outputs -----------------------------------------
 //
 // A, gc, psi_stem and collar, in that order, which is R's
@@ -192,6 +254,26 @@ struct Drivers {
   double atm_kpa = 0.0;
 };
 
+// How many soil-water rows this observation has. The multi-layer path reads the
+// whole profile; the single-potential path reads element 0 and nothing else, so
+// it has exactly one soil row however long the caller's vector happens to be.
+inline int n_soil_layers(const Drivers& d, bool single) {
+  return single ? 1 : static_cast<int>(d.psi_soil.size());
+}
+
+// The value a parameter currently holds: in `theta` for the fifteen, in the
+// observation's drivers for the environment rows. See the environment block above
+// for why those two are different places rather than one.
+inline double par_value(const double* theta, const Drivers& d, int par) {
+  if (par < n_pars) {
+    return theta[par];
+  }
+  if (par == par_PPFD) {
+    return d.PPFD;
+  }
+  return d.psi_soil[std::size_t(par - par_psi_soil_first)];
+}
+
 enum class Method { Auto, Ift, Fd };
 
 // What the OPERATING POINT is, not whether the call worked -- except for `Error`,
@@ -250,8 +332,14 @@ struct Result {
 // saw, and reports plausible numbers throughout.
 //
 // `only` names the single parameter that has moved, or -1 for "all of them".
+//
+// `PPFD` and `psi_soil` are passed rather than read off `d`, so that an
+// environment perturbation is applied by handing over a different environment
+// rather than by editing the observation's drivers in place. Every other caller
+// takes the two-argument overload below and gets `d`'s own values.
 inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
-                  int only, bool fast_stem_curve) {
+                  int only, bool fast_stem_curve, double PPFD,
+                  const std::vector<double>& psi_soil) {
   // THE FAST PATH FOR stem_b, which is the whole of PLAN 11f. The stem
   // cumulative-vulnerability integral is homogeneous of degree 1 in stem_b, so
   // the spline for a perturbed stem_b is the existing one with its argument
@@ -279,13 +367,89 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
     // disagree about what the other four fields hold.
     RootNetwork net;
     net.r_R_V_sum.assign(1, theta[par_resistance]);
-    l.set_physiology(net, d.PPFD, d.psi_soil, d.soil_depth, theta[par_kmax],
+    l.set_physiology(net, PPFD, psi_soil, d.soil_depth, theta[par_kmax],
                      d.atm_vpd, d.ca, d.leaf_temp, d.atm_o2_kpa, d.atm_kpa);
   } else {
-    l.set_physiology(d.root_network, d.PPFD, d.psi_soil, d.soil_depth,
+    l.set_physiology(d.root_network, PPFD, psi_soil, d.soil_depth,
                      theta[par_kmax], d.atm_vpd, d.ca, d.leaf_temp,
                      d.atm_o2_kpa, d.atm_kpa);
   }
+}
+
+// At the observation's own environment, which is what every parameter except the
+// environment rows is differentiated in.
+inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
+                  int only, bool fast_stem_curve) {
+  apply(l, theta, d, single, only, fast_stem_curve, d.PPFD, d.psi_soil);
+}
+
+// Put parameter `par` at `value` and everything else at base. One function so
+// that both routes below address the fifteen and the environment rows the same
+// way, and so that the water and light channels are written where they can be
+// read side by side.
+//
+// ⚠️ THE TWO ENVIRONMENT CHANNELS ARE NOT ALIKE, and the difference is structural
+// rather than a matter of which field gets assigned.
+//
+//   LIGHT is read before the plant's decision. `PPFD` enters assimilation
+//   directly through the photosynthesis kernel; at a fixed collar the hydraulics
+//   do not move at all, because E and psi_stem are set by the collar and the soil
+//   and not by how much carbon the leaf gains. Its row is a plain partial
+//   derivative, carrying the intercellular-CO2 root-find's implicit-function
+//   term and nothing else.
+//
+//   WATER is written as a consequence of that decision. `psi_soil` reaches profit
+//   only through uptake -- the hydraulic cost depends on stem tension, not on how
+//   wet the soil is -- so at a fixed collar potential
+//
+//       dprofit/dpsi_soil_j = price * dE_up/dpsi_soil_j,
+//
+//   ONE scalar price times L layer conductances. The whole soil block is rank one
+//   across layers, which is a free self-test with real content: over the 198
+//   interior points of the golden grid, dprofit/dpsi_soil_j divided by
+//   dE_up/dpsi_soil_j varies across layers by at most 2.1e-05. Asserted in
+//   `test_leaf.cpp: environment rows: the water channel is rank one across
+//   layers`.
+//
+//   ⚠️ That price is NOT `marginal_cost_water_multilayer()`, though that is the
+//   lambda `find_root_collar_psi` equalises and so the obvious thing to reach
+//   for. The multilayer lambda is dA/dE along the COLLAR direction, where the
+//   stem's own cost is already netted against dA/dE by the first-order condition.
+//   Along the soil direction the collar is held FIXED, so water arriving from a
+//   wetter layer still has to leave through the stem, and the leaf pays
+//   `marginal_cost_water()` for that:
+//
+//       price = marginal_cost_water_multilayer() - marginal_cost_water().
+//
+//   Measured against a differenced solve over the same 198 points: the difference
+//   agrees to 6.3e-05 relative, while the bare multilayer lambda overstates the
+//   price by a factor of 1.20 to 2.37.
+//
+//   ⚠️ LAYERS BELOW THE DEEPEST ROOTED ONE GET EXACTLY ZERO UPTAKE, so their four
+//   rows are exactly 0.0 on both routes. That zero is CORRECT and is asserted
+//   (`environment rows: an unrooted layer's rows are exactly zero`). It is called
+//   out because in this codebase an exact zero is otherwise the signature of a
+//   missing accumulator -- and equally so that a genuinely missing row is not
+//   read as this.
+//
+// `psi_scratch` is the caller's buffer rather than a local so that the copy
+// allocates once per gradient instead of once per perturbation.
+inline void set_one(Leaf& l, double* th, const double* theta, const Drivers& d,
+                    bool single, int par, double value, bool fast_stem_curve,
+                    std::vector<double>& psi_scratch) {
+  std::copy(theta, theta + n_pars, th);
+  if (par < n_pars) {
+    th[par] = value;
+    apply(l, th, d, single, par, fast_stem_curve);
+    return;
+  }
+  if (par == par_PPFD) {
+    apply(l, th, d, single, par, fast_stem_curve, value, d.psi_soil);
+    return;
+  }
+  psi_scratch = d.psi_soil;
+  psi_scratch[std::size_t(par - par_psi_soil_first)] = value;
+  apply(l, th, d, single, par, fast_stem_curve, d.PPFD, psi_scratch);
 }
 
 // --- the two routes ----------------------------------------------------------
@@ -326,6 +490,7 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
   double th[n_pars];
   double up[1 + n_outputs];
   double dn[1 + n_outputs];
+  std::vector<double> psi_scratch;
   bool at_base = true;
   for (std::size_t k = 0; k < npars; ++k) {
     const int p = pars[k];
@@ -333,18 +498,19 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
       apply(l, theta, d, single, -1, s.fast_stem_curve);
     }
     at_base = false;
-    const double h = step_for(p, theta[p], s.step);
+    const double base = par_value(theta, d, p);
+    const double h = step_for(p, base, s.step);
     for (int side = 0; side < 2; ++side) {
       // Up first, then down: R evaluates `up <- side(1)` before `dn <- side(-1)`
       // and both mutate the leaf.
-      std::copy(theta, theta + n_pars, th);
-      th[p] = side == 0 ? theta[p] + h : theta[p] - h;
-      apply(l, th, d, single, p, s.fast_stem_curve);
+      set_one(l, th, theta, d, single, p, side == 0 ? base + h : base - h,
+              s.fast_stem_curve, psi_scratch);
       double* dst = side == 0 ? up : dn;
       // Evaluate first, then read dprofit at the same fixed collar -- R's order,
       // and `evaluate_root_collar_psi` is what seats the state `dprofit` reads.
       if (!outputs_at(l, psi_star, dst + 1)) {
-        util::stop("leaf_gradient(): perturbing `" + par_names()[std::size_t(p)] +
+        util::stop("leaf_gradient(): perturbing `" +
+                   par_name(p, n_soil_layers(d, single)) +
                    "` moved the feasible collar interval past psi*, so the "
                    "operating point could not be evaluated there. This point is "
                    "on an active-set boundary; lower `stationarity_tol` or "
@@ -376,6 +542,7 @@ inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
   double th[n_pars];
   double up[n_outputs];
   double dn[n_outputs];
+  std::vector<double> psi_scratch;
   bool at_base = true;
   for (std::size_t k = 0; k < npars; ++k) {
     const int p = pars[k];
@@ -383,11 +550,11 @@ inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
       apply(l, theta, d, single, -1, s.fast_stem_curve);
     }
     at_base = false;
-    const double h = step_for(p, theta[p], s.step);
+    const double base = par_value(theta, d, p);
+    const double h = step_for(p, base, s.step);
     for (int side = 0; side < 2; ++side) {
-      std::copy(theta, theta + n_pars, th);
-      th[p] = side == 0 ? theta[p] + h : theta[p] - h;
-      apply(l, th, d, single, p, s.fast_stem_curve);
+      set_one(l, th, theta, d, single, p, side == 0 ? base + h : base - h,
+              s.fast_stem_curve, psi_scratch);
       l.find_root_collar_psi();
       outputs(l, side == 0 ? up : dn);
     }
@@ -407,6 +574,21 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
                const int* pars, std::size_t npars, const Settings& s,
                Result& out) {
   out.reset(npars);
+
+  // ⚠️ CHECKED HERE, because with the environment rows the valid range depends on
+  // the OBSERVATION rather than on this header: a five-layer row and a one-layer
+  // row in the same batch do not have the same number of parameters. An index
+  // past the end used to be impossible (R validates against the fixed fifteen);
+  // now it is an out-of-bounds read of `psi_soil`, so it is a per-row error.
+  const int n_layers = n_soil_layers(d, single);
+  for (std::size_t k = 0; k < npars; ++k) {
+    if (pars[k] < 0 || pars[k] >= n_pars_total(n_layers)) {
+      util::stop("leaf_gradient(): parameter index " + std::to_string(pars[k]) +
+                 " is out of range; this observation has " +
+                 std::to_string(n_layers) + " soil layer(s), so there are " +
+                 std::to_string(n_pars_total(n_layers)) + " parameters.");
+    }
+  }
 
   apply(l, theta, d, single, -1, s.fast_stem_curve);
   l.find_root_collar_psi();

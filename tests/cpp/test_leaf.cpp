@@ -2129,6 +2129,300 @@ void test_out_of_domain_under_rescale() {
      "the rescale is named so the two domains are not confused");
 }
 
+// ---------------------------------------------------------------------------
+// THE ENVIRONMENT ROWS
+// ---------------------------------------------------------------------------
+// The gradient's parameter dimension now carries the two quantities plants share
+// -- incident light and the per-layer soil water they draw from -- so these four
+// tests are about the parameter dimension, not about the model. The header block
+// on `par_PPFD` in gradient.hpp has the derivation each of them checks.
+
+namespace env {
+
+namespace grad = phylloptim::gradient;
+
+// The suite's trait defaults, in `set_traits`' argument order, then the two
+// non-trait parameters. `resistance` is never perturbed here: these are
+// multi-layer points.
+const double kTheta15[grad::n_pars] = {
+    96.0, 2.680147, 3.898245, 5.870283, 2.680147, 3.898245, 5.870283, 1.5,
+    157.44, 0.30, 0.7, 0.99, 7.5, 1.0 * 0.000157 / 5.0, 1e3};
+
+// `rooted` layers of root carbon spread over `layers` soil layers, drying with
+// depth -- the golden grid's soil, so a point named here is a point that grid
+// already covers.
+grad::Drivers drivers(double psi_soil, double ppfd, double vpd, int layers,
+                      int rooted) {
+  grad::Drivers d;
+  std::vector<double> ps(layers), depth(layers), root(layers, 0.0);
+  for (int i = 0; i < layers; ++i) {
+    ps[i] = psi_soil + 0.25 * i;
+    depth[i] = 1.0 * (i + 1);
+    if (i < rooted) {
+      root[i] = 1.0 / rooted / 0.05;  // per unit leaf area (hazard 4)
+    }
+  }
+  d.root_network = fixture::root_network(root, depth);
+  d.PPFD = ppfd;
+  d.psi_soil = ps;
+  d.soil_depth = depth;
+  d.atm_vpd = vpd;
+  d.ca = 40.0;
+  d.leaf_temp = 25.0;
+  d.atm_o2_kpa = 21.0;
+  d.atm_kpa = 101.3;
+  return d;
+}
+
+std::vector<int> all_env_pars(int layers) {
+  std::vector<int> pars{grad::par_PPFD};
+  for (int j = 0; j < layers; ++j) {
+    pars.push_back(grad::par_psi_soil_first + j);
+  }
+  return pars;
+}
+
+phylloptim::Leaf fresh() {
+  phylloptim::Leaf l;
+  l.setup_transpiration(100);
+  l.setup_root_vulnerability(100);
+  return l;
+}
+
+}  // namespace env
+
+// The row count and the row names, which is the whole of the arity decision:
+// fifteen fixed parameters, then PPFD at a FIXED index, then L soil rows. PPFD
+// keeps its index whatever L is, so an index means the same parameter across
+// observations with different layer counts.
+void test_environment_par_names() {
+  printf("environment rows: names and arity\n");
+  namespace grad = phylloptim::gradient;
+  ok(grad::par_PPFD == grad::n_pars, "PPFD sits immediately after theta");
+  for (int L : {1, 3, 5}) {
+    const std::vector<std::string> nms = grad::par_names(L);
+    const std::string tag = std::to_string(L) + " layers";
+    ok(int(nms.size()) == grad::n_pars_total(L), "row count, " + tag);
+    ok(nms[grad::n_pars] == "PPFD", "PPFD is named, " + tag);
+    ok(nms.back() == "psi_soil_" + std::to_string(L),
+       "the last soil row is one-based, " + tag);
+    // The fifteen R indexes into are untouched.
+    ok(std::equal(grad::par_names().begin(), grad::par_names().end(),
+                  nms.begin()),
+       "the fixed fifteen are unchanged, " + tag);
+    ok(grad::par_name(grad::par_psi_soil_first, L) == "psi_soil_1",
+       "par_name agrees with par_names, " + tag);
+  }
+  // A row past this observation's layer count is a per-row error, not an
+  // out-of-bounds read of psi_soil.
+  phylloptim::Leaf l = env::fresh();
+  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
+  const int bad = grad::par_psi_soil_first + 3;
+  grad::Settings s;
+  grad::Result r;
+  bool threw = false;
+  try {
+    grad::at(l, env::kTheta15, d, false, &bad, 1, s, r);
+  } catch (const std::runtime_error &) {
+    threw = true;
+  }
+  ok(threw, "a soil row past the layer count throws");
+}
+
+// The strongest available reference: `psi_soil` and `PPFD` are already
+// `set_physiology` arguments, so differencing the WHOLE solve with respect to
+// them needs no new machinery and is independent of the envelope algebra the IFT
+// route uses. Scaled by the largest entry in the same output row, because a
+// derivative that is 1e-10 next to a neighbour of 1 is not a useful denominator.
+//
+// The water rows land in the same band as the existing
+// `leaf_specific_conductance_max` row (measured over the golden grid: 6.4e-04
+// against its 5.4e-04) and for the same reason -- both move the argmax hard, and
+// the composite's dY/dpsi and H are themselves differences taken at a flat
+// maximum. The light row does not move the collar at all and comes in at 1.1e-06.
+void test_environment_rows_match_a_differenced_solve() {
+  printf("environment rows: IFT composite vs a differenced solve\n");
+  namespace grad = phylloptim::gradient;
+  for (int L : {1, 3, 5}) {
+    for (double psi_soil : {1.0, 2.0, 3.0}) {
+      phylloptim::Leaf l = env::fresh();
+      grad::Drivers d = env::drivers(psi_soil, 900.0, 2.0, L, L);
+      const std::vector<int> pars = env::all_env_pars(L);
+      grad::Settings s;
+      grad::Result ift;
+      grad::at(l, env::kTheta15, d, false, pars.data(), pars.size(), s, ift);
+      const std::string tag =
+          std::to_string(L) + " layers, psi_soil=" + std::to_string(psi_soil);
+      ok(ift.status == grad::Status::Interior, "interior point, " + tag);
+      ok(ift.used_ift, "the composite ran, " + tag);
+
+      grad::Settings sf = s;
+      sf.method = grad::Method::Fd;
+      grad::Result fd;
+      grad::at(l, env::kTheta15, d, false, pars.data(), pars.size(), sf, fd);
+
+      for (int j = 0; j < grad::n_outputs; ++j) {
+        double scale = 0.0;
+        for (std::size_t k = 0; k < pars.size(); ++k) {
+          scale = std::max(scale, std::abs(fd.grad[k * grad::n_outputs + j]));
+        }
+        for (std::size_t k = 0; k < pars.size(); ++k) {
+          const double a = ift.grad[k * grad::n_outputs + j];
+          const double b = fd.grad[k * grad::n_outputs + j];
+          ok(std::abs(a - b) <= 2e-3 * scale,
+             grad::par_name(pars[k], L) + "/" + grad::output_names()[j] +
+                 " agrees with the differenced solve, " + tag);
+        }
+      }
+    }
+  }
+
+  // And on the OTHER supply path (hazard 6), where the whole soil profile is one
+  // potential however long the caller's vector is -- so there is exactly one soil
+  // row, and it is the element the path actually reads.
+  {
+    phylloptim::Leaf l = env::fresh();
+    l.set_supply_single();
+    grad::Drivers d = env::drivers(1.0, 900.0, 2.0, 1, 1);
+    d.root_network = fixture::series_resistance(1e3);
+    ok(grad::n_soil_layers(d, true) == 1, "the single path has one soil row");
+    const std::vector<int> pars{grad::par_PPFD, grad::par_psi_soil_first};
+    grad::Settings s;
+    grad::Result ift, fd;
+    grad::at(l, env::kTheta15, d, true, pars.data(), pars.size(), s, ift);
+    grad::Settings sf = s;
+    sf.method = grad::Method::Fd;
+    grad::at(l, env::kTheta15, d, true, pars.data(), pars.size(), sf, fd);
+    ok(ift.status == grad::Status::Interior, "interior, single path");
+    for (int j = 0; j < grad::n_outputs; ++j) {
+      const double scale =
+          std::max(std::abs(fd.grad[j]), std::abs(fd.grad[grad::n_outputs + j]));
+      for (std::size_t k = 0; k < pars.size(); ++k) {
+        ok(std::abs(ift.grad[k * grad::n_outputs + j] -
+                    fd.grad[k * grad::n_outputs + j]) <= 2e-3 * scale,
+           grad::par_name(pars[k], 1) + "/" + grad::output_names()[j] +
+               " agrees with the differenced solve, single path");
+      }
+    }
+    ok(std::abs(ift.grad[grad::n_outputs + 0]) > 0.0,
+       "the single path's soil row moves the leaf");
+  }
+}
+
+// The rank-one self-test, and it has real content: psi_soil reaches profit only
+// through uptake, at a price the collar's own first-order condition fixes, so
+// dprofit/dpsi_soil_j divided by dE_up/dpsi_soil_j must be the SAME number for
+// every layer j. If it is not, either the formula or the price is wrong.
+//
+// It also pins WHICH price. `marginal_cost_water_multilayer()` is the lambda the
+// collar solve equalises and the obvious candidate; it is 1.20x to 2.37x too
+// large over the golden grid, because along the soil direction the collar is
+// held fixed and the stem's own cost has not been netted out. See gradient.hpp.
+void test_environment_water_rows_are_rank_one() {
+  printf("environment rows: the water channel is rank one across layers\n");
+  namespace grad = phylloptim::gradient;
+  for (int L : {3, 5}) {
+    for (double psi_soil : {1.0, 3.0}) {
+      phylloptim::Leaf l = env::fresh();
+      grad::Drivers d = env::drivers(psi_soil, 900.0, 2.0, L, L);
+      grad::apply(l, env::kTheta15, d, false, -1, true);
+      l.find_root_collar_psi();
+      const double psi_star = l.opt_root_psi_;
+      const double lambda_multi = l.marginal_cost_water_multilayer();
+      const double lambda_stem = l.marginal_cost_water();
+      const double price = lambda_multi - lambda_stem;
+      const std::string tag =
+          std::to_string(L) + " layers, psi_soil=" + std::to_string(psi_soil);
+      ok(std::isfinite(price) && price > 0.0, "the price is finite, " + tag);
+
+      double first = 0.0;
+      for (int j = 0; j < L; ++j) {
+        const double h = 1e-4 * std::max(1.0, std::abs(d.psi_soil[j]));
+        std::vector<double> up = d.psi_soil, dn = d.psi_soil;
+        up[j] += h;
+        dn[j] -= h;
+
+        // dE_up/dpsi_soil_j at the FIXED collar. Uptake is an ordinary smooth
+        // function of the soil state, so a difference here is well conditioned.
+        grad::apply(l, env::kTheta15, d, false, -1, true);
+        l.find_root_collar_psi();
+        l.E_from_Soil_to_Root_Collar(psi_star, up);
+        const double e_up = l.E_up_;
+        l.E_from_Soil_to_Root_Collar(psi_star, dn);
+        const double e_dn = l.E_up_;
+        const double dE = (e_up - e_dn) / (2.0 * h);
+
+        // dprofit/dpsi_soil_j from a differenced SOLVE. Differencing profit
+        // against the COLLAR would be the mistake this formulation exists to
+        // avoid -- profit is flat there. Against psi_soil it is not.
+        grad::Drivers du = d, dd = d;
+        du.psi_soil = up;
+        dd.psi_soil = dn;
+        grad::apply(l, env::kTheta15, du, false, -1, true);
+        l.find_root_collar_psi();
+        const double p_up = l.profit_;
+        grad::apply(l, env::kTheta15, dd, false, -1, true);
+        l.find_root_collar_psi();
+        const double p_dn = l.profit_;
+        const double dP = (p_up - p_dn) / (2.0 * h);
+
+        const double ratio = dP / dE;
+        const std::string what =
+            "layer " + std::to_string(j + 1) + ", " + tag;
+        if (j == 0) {
+          first = ratio;
+        }
+        near(ratio / first, 1.0, 1e-3, "same price in every layer: " + what);
+        near(ratio / price, 1.0, 1e-3,
+             "the price is lambda_multi - lambda_stem: " + what);
+      }
+      // And the bare multilayer lambda is not it, by a wide margin.
+      ok(lambda_multi / first > 1.1,
+         "the bare multilayer lambda overstates the price, " + tag);
+      grad::apply(l, env::kTheta15, d, false, -1, true);
+    }
+  }
+}
+
+// ⚠️ A CORRECT EXACT ZERO. Layers below the deepest rooted one contribute nothing
+// to uptake, so wetting or drying one of them cannot reach the leaf and all four
+// of its rows are exactly 0.0. In this codebase an exact zero is otherwise the
+// signature of a missing accumulator, so it is asserted rather than left to be
+// rediscovered -- and asserting it is also what stops a genuinely missing row
+// from being read as this.
+void test_environment_rows_are_zero_below_the_rooted_layers() {
+  printf("environment rows: an unrooted layer's rows are exactly zero\n");
+  namespace grad = phylloptim::gradient;
+  const int L = 5, rooted = 2;
+  phylloptim::Leaf l = env::fresh();
+  grad::Drivers d = env::drivers(1.0, 900.0, 2.0, L, rooted);
+  ok(d.root_network.r_R_H_min.size() == std::size_t(rooted),
+     "the network is sized to the rooted layers");
+  const std::vector<int> pars = env::all_env_pars(L);
+
+  for (int route = 0; route < 2; ++route) {
+    grad::Settings s;
+    s.method = route == 0 ? grad::Method::Ift : grad::Method::Fd;
+    const std::string tag = route == 0 ? "ift" : "fd";
+    grad::Result r;
+    grad::at(l, env::kTheta15, d, false, pars.data(), pars.size(), s, r);
+    for (int j = 0; j < grad::n_outputs; ++j) {
+      // Rooted layers move the leaf...
+      ok(std::abs(r.grad[1 * grad::n_outputs + j]) > 0.0 ||
+             grad::output_names()[j] == "collar",
+         "a rooted layer's " + grad::output_names()[j] + " row is non-zero, " +
+             tag);
+      // ...and unrooted ones cannot.
+      for (int k = rooted; k < L; ++k) {
+        const std::size_t row = std::size_t(1 + k);
+        ok(r.grad[row * grad::n_outputs + j] == 0.0,
+           "psi_soil_" + std::to_string(k + 1) + "/" +
+               grad::output_names()[j] + " is exactly zero, " + tag);
+      }
+    }
+  }
+}
+
 void benchmark() {
   printf("\ntiming\n");
   Drivers d;
@@ -2194,6 +2488,10 @@ int main() {
   test_bad_input_throws();
   test_out_of_domain_names_the_spline();
   test_out_of_domain_under_rescale();
+  test_environment_par_names();
+  test_environment_rows_match_a_differenced_solve();
+  test_environment_water_rows_are_rank_one();
+  test_environment_rows_are_zero_below_the_rooted_layers();
   benchmark();
 
   printf("\n%d checks, %d failures\n", checks, failures);
