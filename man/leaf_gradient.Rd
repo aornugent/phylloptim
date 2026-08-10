@@ -112,7 +112,11 @@ the two routes to agree. `stem_c` has no such identity and always rebuilds.}
 A list with
   \describe{
     \item{`gradient`}{a matrix, one row per trait in `pars`, with columns
-      `A` (umol C m^-2 s^-1 per trait unit), `gc`, `psi_stem` and `collar`}
+      `A` (umol C m^-2 s^-1 per trait unit), `gc`, `psi_stem`, `collar` and
+      `profit` (umol C m^-2 s^-1 per trait unit). The `profit` column is the
+      envelope-theorem partial when `method` is `"ift"` and the difference of
+      the constrained maximum when it is `"fd"`; see the section above for when
+      those are the same number}
     \item{`value`}{the solved outputs the gradient is taken at}
     \item{`method`}{`"ift"` if the implicit-function composite was used,
       `"fd"` if the fallback was}
@@ -124,7 +128,8 @@ A list with
 }
 \description{
 The derivatives of the solved outputs with respect to the traits: `dA/dtheta`,
-`dgc/dtheta`, `dpsi_stem/dtheta` and `dcollar/dtheta`, at one operating point.
+`dgc/dtheta`, `dpsi_stem/dtheta`, `dcollar/dtheta` and `dprofit/dtheta`, at one
+operating point.
 }
 \section{The maths, and why it is not just a finite difference}{
 
@@ -147,6 +152,29 @@ stable to seven significant figures across five decades of step size.
 
 The second term is not a correction. For `cost_scale_TF24`, `beta2`, `stem_b`
 and `stem_c` it is 100% of the answer, and for `vcmax_25` 52%.
+}
+
+\section{Profit is the one column that needs none of that}{
+
+Profit is what the leaf maximises — carbon gained minus the hydraulic cost of
+the water that bought it — so it is the objective rather than an output read at
+the argmax. Put `Y = profit` in the composite above and the first factor of the
+second term is `dprofit/dpsi`, which is zero at an interior optimum. So
+
+\deqn{d\,profit^*/d\theta = \partial profit/\partial\theta|_{\psi^*}}
+
+That is the envelope theorem, and it means the profit row needs no sensitivity
+of the optimiser at all: no `M`, no `H`, no `dpsi*/dtheta`. It is the cheapest
+derivative on this surface and it comes out of evaluations the other four rows
+already pay for.
+
+⚠️ **The identity holds at an interior optimum only.** At a pinned optimum
+`dprofit/dpsi` is not zero and the term does not drop out. `status` says which
+point you are at, and under the default `method = "auto"` a pinned point is
+routed to the finite difference of the whole solve, which differences the
+constrained maximum and so needs no such premise. Forcing `method = "ift"` at a
+pinned point returns the partial and not the total derivative — the same caveat
+the other four columns carry there, for the same reason.
 }
 
 \section{The active set, which is the reason this function is careful}{
@@ -175,7 +203,9 @@ better, and `method` in the result says which was used.
 It is better in a second way, which is sharper than accuracy. `psi_crit` does
 not appear in the profit function at all -- it only sets the dry end of the
 feasible collar interval -- so the composite necessarily returns **exactly
-zero** for it. At an interior optimum that is correct. At a dry-pinned optimum
+zero** for it — in every column including `profit`, where it is not a missing row
+but the statement that the constraint is not binding. At an interior optimum that
+is correct. At a dry-pinned optimum
 `psi_crit` *is* the binding constraint, the true `dA/dθ` is about `1.26`, and a
 zero is arguably a worse answer than a wildly wrong one: it tells an optimiser
 the parameter does nothing, and nothing about it looks suspicious. The

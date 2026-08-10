@@ -220,6 +220,18 @@ test_that("the recorded gradients have not moved", {
   # ⚠️ Read the SUMMARY LINE below for a magnitude, never the FAIL lines. The
   # figures in this package's guide were wrong twice because a truncated failure
   # list was read as if it were the distribution.
+  #
+  # ⚠️ WHICH COLUMNS ARE PINNED IS READ OUT OF THE FILE, not written here, and that
+  # matters now that there are five outputs and this file records four. It was
+  # generated before `profit` existed and CANNOT be regenerated here: hex floats
+  # off Linux would be wrong on the platform the other columns came from. So
+  # `profit` is unpinned until someone regenerates on macOS/arm64, at which point
+  # `tools/gradient_golden.R` emits it and this loop picks it up with no edit.
+  # Meanwhile the profit column is held by the two things this file cannot be: the
+  # bit-for-bit route comparison above, and test-gradient.R's arbitration against
+  # a difference of the whole solve.
+  outs <- setdiff(names(gold), c("case", "status", "method", "par"))
+  expect_true(all(outs %in% gradient_output_names()))
   worst <- 0
   for (nm in names(cases)) {
     cs <- cases[[nm]]
@@ -229,7 +241,7 @@ test_that("the recorded gradients have not moved", {
     expect_identical(g$status[[1]], rows$status[[1]], label = nm)
     expect_identical(g$method[[1]], rows$method[[1]], label = nm)
     for (i in seq_len(nrow(rows))) {
-      for (out in c("A", "gc", "psi_stem", "collar")) {
+      for (out in outs) {
         got <- g$gradient[1, rows$par[[i]], out]
         expect_golden(got, rows[[out]][[i]], out,
                       paste(nm, rows$par[[i]]))
@@ -253,6 +265,100 @@ test_that("the recorded gradients have not moved", {
   pinned <- gold[gold$case == "pinned-dry-3layer" & gold$par == "psi_crit", ]
   expect_gt(as.numeric(pinned$A), 1)
 })
+test_that("the profit column agrees across routes and with a differenced solve", {
+  # ⚠️ THE ONE COLUMN WHOSE REPORTED VALUE IS NOT A DIFFERENCE OF WHAT IT REPORTS,
+  # and that is why it needs a THIRD reference rather than the two this file uses
+  # everywhere else. Both composites take `profit` from the envelope theorem: the
+  # partial at a FIXED collar, with (dprofit/dpsi)(dpsi*/dtheta) dropped because
+  # dprofit/dpsi is zero at an interior optimum. Neither one differences the
+  # constrained maximum it claims to be the derivative of, so two independent
+  # implementations agreeing establishes the transcription and says nothing
+  # whatever about the identity. `leaf_solve()` is the arbiter: it shares no code
+  # with either composite beyond the model itself.
+  pars <- c("vcmax_25", "stem_b", "stem_c", "cost_scale_TF24", "beta2", "root_b")
+
+  # A central difference of the WHOLE SOLVE, at the step the gradient uses.
+  solve_profit_gradient <- function(bd, p) {
+    v <- leaf_traits()[[p]]
+    h <- max(abs(v), 1) * 1e-6
+    at <- function(x) {
+      tt <- leaf_traits()
+      tt[[p]] <- x
+      do.call(leaf_solve, c(bd, list(traits = tt)))$profit
+    }
+    (at(v + h) - at(v - h)) / (2 * h)
+  }
+
+  # ⚠️ psi_soil = 2.0 IS DELIBERATELY NOT IN THIS LIST, and the reason is the
+  # REFERENCE's floor rather than the composite's. There vcmax_25's profit gradient
+  # is 8.2e-03 against a step of 1.5e-04, so the solve's ~1e-09 in profit bounds
+  # any difference quotient of it at ~4e-04 relative -- and 3.3e-04 is what it
+  # shows. The three points below have larger profit gradients and land at 6.5e-07,
+  # 2.9e-07 and 8.2e-08.
+  for (psi_soil in c(0.5, 1.0, 3.0)) {
+    bd <- batch_drivers(psi_soil)
+    cpp <- leaf_gradient_batch(do.call(leaf_batch, bd), pars = pars)
+    r <- do.call(leaf_gradient, c(grid_drivers(psi_soil), list(pars = pars)))
+    expect_identical(cpp$status[[1]], "interior")
+    expect_identical(cpp$method[[1]], "ift")
+    # The two composites on this column, bit-for-bit, as everywhere else here.
+    expect_identical(cpp$gradient[1, , "profit"], r$gradient[, "profit"],
+                     label = paste("routes at", psi_soil))
+    for (p in pars) {
+      expect_equal(cpp$gradient[1, p, "profit"], solve_profit_gradient(bd, p),
+                   tolerance = 1e-5,
+                   label = paste("solve difference at", psi_soil, p))
+    }
+  }
+
+  # ⚠️ AND THE ENVELOPE SHORTCUT IS CONFINED TO THE COMPOSITE, which is the other
+  # half of the claim and the half that could fail silently. `dprofit/dpsi` is zero
+  # at an INTERIOR optimum and nowhere else, so anywhere else the fixed-collar
+  # partial is not the total derivative and the profit row has to come from
+  # differencing the solve. `gradient_fd()` and `.gradient_fd()` have no profit
+  # special case at all; this is what says so. At all three points where the
+  # fallback runs, its profit row is BIT-IDENTICAL to a central difference of
+  # `leaf_solve()` -- no tolerance, because there is nothing to tolerate: it is the
+  # same difference of the same solve.
+  #
+  # The dry-pinned row is the one a leak could not survive. `psi_crit` does not
+  # appear in the profit function, so the fixed-collar partial for it is EXACTLY
+  # ZERO -- while it is the binding constraint there and the true derivative is
+  # 0.507. A profit special case that reached this path would report the zero, and
+  # a zero is the kind of wrong answer nothing about looks suspicious.
+  #
+  # ⚠️ `fast_stem_curve = FALSE` so that `stem_b` is IN the comparison rather than
+  # excluded from it. The shortcut rescales the stem spline instead of rebuilding
+  # it, so it differentiates a marginally different model -- 4.7e-05 relative on
+  # this parameter, which is PLAN 11f's own trade and has nothing to do with
+  # profit.
+  fd_pars <- c(pars, "psi_crit", "root_c", "jmax_25", "a")
+  points <- list(pinned = batch_drivers(4.0, vpd = 0.5, layers = 3L),
+                 shutdown = batch_drivers(6.0),
+                 interior = batch_drivers(2.0))
+  status <- c(pinned = "pinned", shutdown = "no-gradient",
+              interior = "interior")
+  for (nm in names(points)) {
+    bd <- points[[nm]]
+    g <- leaf_gradient_batch(do.call(leaf_batch, bd), pars = fd_pars,
+                             method = "fd", fast_stem_curve = FALSE)
+    expect_identical(g$status[[1]], status[[nm]], label = nm)
+    expect_identical(g$method[[1]], "fd", label = nm)
+    for (p in fd_pars) {
+      expect_identical(g$gradient[1, p, "profit"], solve_profit_gradient(bd, p),
+                       label = paste("fd", nm, p))
+    }
+  }
+
+  # And under the default `method`, which is the one a caller gets: the dry-pinned
+  # point routes itself to the fallback and reports the binding constraint's
+  # derivative rather than the envelope theorem's zero.
+  auto <- leaf_gradient_batch(do.call(leaf_batch, points$pinned),
+                              pars = "psi_crit")
+  expect_identical(auto$status[[1]], "pinned")
+  expect_identical(auto$method[[1]], "fd")
+  expect_equal(auto$gradient[1, "psi_crit", "profit"], 0.5074, tolerance = 1e-3)
+})
 
 test_that("an unsolvable row costs that row and not the batch", {
   # ⚠️ THE REASON THE BATCH REPORTS A STATUS RATHER THAN THROWING. A proposal
@@ -273,7 +379,7 @@ test_that("an unsolvable row costs that row and not the batch", {
   solo <- vapply(ok, function(p) {
     as.vector(leaf_gradient_batch(leaf_batch(psi_soil = p, PPFD = 900),
                                   pars = pars, method = "ift")$gradient[1, , ])
-  }, numeric(length(pars) * 4L))
+  }, numeric(length(pars) * length(gradient_output_names())))
   for (i in seq_along(ok)) {
     expect_identical(as.vector(g$gradient[2 * i - 1, , ]), solo[, i],
                      label = paste("row", 2 * i - 1))
@@ -392,12 +498,19 @@ test_that("the result is shaped and named for a caller applying a Jacobian", {
   pars <- c("vcmax_25", "stem_b", "cost_scale_TF24")
   b <- leaf_batch(psi_soil = c(1.0, 1.5, 2.0, 2.5), PPFD = 900)
   g <- leaf_gradient_batch(b, pars = pars)
-  expect_identical(dim(g$gradient), c(4L, 3L, 4L))
+  outs <- c("A", "gc", "psi_stem", "collar", "profit")
+  # ⚠️ WRITTEN OUT HERE ON PURPOSE, and it is the one place in the package that
+  # does. Everything else derives the list from `gradient_output_names()`, which is
+  # what makes the two routes unable to disagree about it -- so nothing else would
+  # notice a column silently appearing, disappearing or moving. A caller reads
+  # these by position after applying a Jacobian, so the ORDER is as much of an
+  # interface as the names: `profit` is appended, not inserted.
+  expect_identical(gradient_output_names(), outs)
+  expect_identical(dim(g$gradient), c(4L, 3L, 5L))
   expect_identical(dimnames(g$gradient)[[2]], pars)
-  expect_identical(dimnames(g$gradient)[[3]],
-                   c("A", "gc", "psi_stem", "collar"))
-  expect_identical(dim(g$value), c(4L, 4L))
-  expect_identical(colnames(g$value), c("A", "gc", "psi_stem", "collar"))
+  expect_identical(dimnames(g$gradient)[[3]], outs)
+  expect_identical(dim(g$value), c(4L, 5L))
+  expect_identical(colnames(g$value), outs)
   for (f in c("status", "method", "message")) {
     expect_length(g[[f]], 4L)
   }
@@ -475,8 +588,15 @@ test_that("leaf_batch() recycles its drivers the way leaf_solve() does", {
   expect_identical(b$n, 3L)
   g <- leaf_gradient_batch(b, pars = "vcmax_25")
   solved <- leaf_solve(psi_soil = c(1.0, 1.5, 2.0), PPFD = 900)
-  expect_identical(g$value[, "A"], solved$A)
-  expect_identical(g$value[, "collar"], solved$collar)
+  # EVERY column, not two of them, and against a reader that names its fields
+  # independently. `gradient::outputs()` copies five `Leaf` members into an
+  # unnamed array by position while `operating_point_values()` copies the same
+  # members into a twelve-long one; `gradient_output_names()` is the only thing
+  # tying those two orders together, and it is a list of names with nothing in the
+  # types to check it against the fields. This is that check.
+  for (o in gradient_output_names()) {
+    expect_identical(g$value[, o], solved[[o]], label = paste("value", o))
+  }
 
   # A plain numeric psi_soil is N single-layer observations; a list is one
   # multi-layer observation each. Getting that backwards is the easiest mistake to
