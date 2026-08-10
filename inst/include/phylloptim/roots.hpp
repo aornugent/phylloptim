@@ -531,13 +531,46 @@ public:
   // gradient. Any alternative supply path must keep this contract.
   double duptake_dpsi(double T_collar,
                       const std::vector<double>& psi_soil) const {
+    std::vector<double> per_layer;
+    const double total_mol = duptake_dpsi_impl(T_collar, psi_soil, per_layer);
+    return total_mol * kg_per_mol_h2o;  // match E_up's kg units
+  }
+
+  // The same, per layer rather than summed, in kg to match E_up.
+  //
+  // A stand adjoint needs this and the total will not do: uptake reaches the
+  // shared soil one layer at a time, so the operating point's movement has to be
+  // priced into each layer's flux separately. Diagonality is not the point here
+  // -- this is one column, d(E_i)/d(collar), and every layer has one.
+  //
+  // Summing this in layer order and multiplying once is what duptake_dpsi does,
+  // so the two cannot disagree.
+  void duptake_dpsi_by_layer(double T_collar,
+                             const std::vector<double>& psi_soil,
+                             std::vector<double>& out) const {
+    duptake_dpsi_impl(T_collar, psi_soil, out);
+    for (double& v : out) {
+      v *= kg_per_mol_h2o;
+    }
+  }
+
+private:
+  // Per layer in mol, returning the sum in mol: the one loop both public forms
+  // read, so a change reaches them together and the total is the sum of the
+  // parts by construction rather than by agreement.
+  double duptake_dpsi_impl(double T_collar,
+                           const std::vector<double>& psi_soil,
+                           std::vector<double>& per_layer) const {
     const double kink_tol = 1e-8;
     double dEup_dT_mol = 0.0;
+    per_layer.assign(psi_soil.size(), 0.0);
 
     for (int i = 0; i < max_soil_layer; i++) {
       if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
           std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
           std::abs(T_collar) < kink_tol) {
+        per_layer.assign(psi_soil.size(),
+                         std::numeric_limits<double>::quiet_NaN());
         return std::numeric_limits<double>::quiet_NaN();
       }
 
@@ -583,11 +616,15 @@ public:
       const double num = T_collar - psi_soil[i] - grav_head_z_[i];
       const double dnum_dT = 1.0;
       // E_i = num / r_R  ->  quotient rule.
-      dEup_dT_mol += (dnum_dT * r_R - num * dr_R_dT) / (r_R * r_R);
+      const double dE_i = (dnum_dT * r_R - num * dr_R_dT) / (r_R * r_R);
+      per_layer[std::size_t(i)] = dE_i;
+      dEup_dT_mol += dE_i;
     }
 
-    return dEup_dT_mol * kg_per_mol_h2o;  // match E_up's kg units
+    return dEup_dT_mol;
   }
+
+public:
 
   // d(E_i)/d(psi_soil[i]) for every rooted layer, in kg to match E_up.
   //
@@ -657,6 +694,82 @@ public:
       const double dnum_dpsi = -1.0;
       out[std::size_t(i)] =
           ((dnum_dpsi * r_R - num * dr_R_dpsi) / (r_R * r_R)) * kg_per_mol_h2o;
+    }
+  }
+
+  // d2(E_i)/d(T_collar) d(psi_soil[i]), diagonal for duptake_dpsi_soil's reason.
+  //
+  // A stand adjoint needs this and the forward model does not, so it is worth
+  // saying what it is for: the marginal profit reads the state only through
+  // total uptake and through uptake's own collar sensitivity, so a row of the
+  // mixed second derivative of profit is a pair of scalars times this vector and
+  // d(E_i)/d(psi_soil[i]). Differencing it instead costs 2(L+1) leaf
+  // re-evaluations per cohort per stage, which is about eight collar solves.
+  //
+  // The two endpoints of the vulnerability integral are independent, so
+  // d2(integral)/dT dpsi is zero and so is d2(span)/dT dpsi; that is what keeps
+  // this to one more application of the quotient rule rather than a new object.
+  //
+  // NaN contract is duptake_dpsi's, over the union of both first derivatives'
+  // kinks: a second derivative needs both endpoints off theirs.
+  void d2uptake_dpsi_dpsi_soil(double T_collar,
+                               const std::vector<double>& psi_soil,
+                               std::vector<double>& out) const {
+    const double kink_tol = 1e-8;
+    out.assign(psi_soil.size(), 0.0);
+
+    for (int i = 0; i < max_soil_layer; i++) {
+      if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
+          std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
+          std::abs(T_collar) < kink_tol || std::abs(psi_soil[i]) < kink_tol) {
+        out.assign(psi_soil.size(), std::numeric_limits<double>::quiet_NaN());
+        return;
+      }
+
+      const double T_src_min = std::min(psi_soil[i], T_collar);
+      const double T_src_max = std::max(psi_soil[i], T_collar);
+      const double span = T_src_max - T_src_min;
+      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;
+
+      const double T_pos_lo = std::max(T_src_min, 0.0);
+      const double T_neg_hi = std::min(T_src_max, 0.0);
+      double integral = 0.0;
+      if (T_pos_lo < T_src_max) {
+        integral += root_vuln_integral_at(T_src_max) -
+                    root_vuln_integral_at(T_pos_lo);
+      }
+      if (T_src_min < T_neg_hi) {
+        integral += (T_neg_hi - T_src_min);
+      }
+
+      // The integrand at each moving endpoint, each read at its own end.
+      const double fr_T =
+          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
+      const double fr_psi =
+          (psi_soil[i] > 0.0) ? root_vuln_integral_deriv_at(psi_soil[i]) : 1.0;
+
+      const double H = network_.r_R_H_min[i];
+      const double dinteg_dT = sign_var * fr_T;
+      const double dinteg_dpsi = -sign_var * fr_psi;
+
+      const double r_R = H * span / integral + network_.r_R_V_sum[i];
+      const double dr_dT =
+          H * (sign_var * integral - span * dinteg_dT) / (integral * integral);
+      // A = dspan/dpsi * integral - span * dinteg/dpsi, so dr/dpsi = H A / I^2.
+      const double A = -sign_var * integral - span * dinteg_dpsi;
+      const double dr_dpsi = H * A / (integral * integral);
+      // dA/dT, with both second derivatives of the endpoints vanishing.
+      const double dA_dT = fr_psi - fr_T;
+      const double d2r_dT_dpsi =
+          H * (dA_dT * integral - 2.0 * A * dinteg_dT) /
+          (integral * integral * integral);
+
+      const double num = T_collar - psi_soil[i] - grav_head_z_[i];
+      // E = num / r_R; dE/dpsi = N / r^2 with N = -r - num dr/dpsi.
+      const double N = -r_R - num * dr_dpsi;
+      const double dN_dT = -dr_dT - dr_dpsi - num * d2r_dT_dpsi;
+      out[std::size_t(i)] = ((dN_dT * r_R - 2.0 * N * dr_dT) /
+                             (r_R * r_R * r_R)) * kg_per_mol_h2o;
     }
   }
 

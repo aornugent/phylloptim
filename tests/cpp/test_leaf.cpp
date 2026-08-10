@@ -1062,6 +1062,105 @@ void test_soil_potential_derivative() {
   }
 }
 
+// d2(E_i)/d(collar) d(psi_soil_i), which a stand adjoint needs and the forward
+// model does not.
+//
+// TWO REFERENCES, AND THEY ARE INDEPENDENT OF EACH OTHER. A mixed second
+// derivative can be reached down either side, and the two sides are different
+// functions here: dE_i/d(psi_soil_i) is the soil-end quotient rule and
+// dE_up/d(collar) is the collar-end one, and they differ by more than a sign
+// because the two endpoints sit at different points on a non-linear
+// vulnerability curve. So differencing each in the OTHER variable gives two
+// routes that share no arithmetic, and agreeing with both is a much stronger
+// statement than agreeing with either.
+//
+// The second route differences the TOTAL, which is what makes it a check on the
+// diagonality claim as well: sum_i d2E_i/dT dpsi_j is d2E_j/dT dpsi_j only
+// because no layer reads another's potential.
+void test_uptake_mixed_second_derivative() {
+  printf("d2(E_i)/d(collar) d(psi_soil_i) against both of its own first derivatives\n");
+  Drivers d;
+  for (int layers : {1, 3, 5}) {
+    std::vector<double> ps(layers), depth(layers);
+    for (int i = 0; i < layers; ++i) { ps[i] = 1.0 + 0.25 * i; depth[i] = 1.0 * (i + 1); }
+    phylloptim::Leaf l = make_leaf(d, ps, depth);
+    l.find_root_collar_psi();
+    const double T = l.opt_root_psi_;
+    const std::vector<double> psi = l.roots_.psi_soil_;
+    const std::string at = " at " + std::to_string(layers) + " layers";
+
+    std::vector<double> d2(layers, 0.0);
+    l.roots_.d2uptake_dpsi_dpsi_soil(T, psi, d2);
+    for (int i = 0; i < layers; ++i) {
+      ok(std::isfinite(d2[std::size_t(i)]),
+         "layer " + std::to_string(i) + " is finite" + at);
+    }
+
+    // Route one: difference the soil row in the collar.
+    const double hT = 1e-6 * std::max(1.0, std::abs(T));
+    std::vector<double> up(layers, 0.0), dn(layers, 0.0);
+    l.dE_from_soil_dpsi_soil(T + hT, psi, up);
+    l.dE_from_soil_dpsi_soil(T - hT, psi, dn);
+    for (int i = 0; i < layers; ++i) {
+      near(d2[std::size_t(i)],
+           (up[std::size_t(i)] - dn[std::size_t(i)]) / (2.0 * hT), 1e-5,
+           "layer " + std::to_string(i) +
+               " matches a difference of the soil row in the collar" + at);
+    }
+
+    // Route two: difference the collar row in the soil. It is the total, so this
+    // also asserts that layer j's potential reaches no other layer's flux.
+    for (int i = 0; i < layers; ++i) {
+      const double h = 1e-6 * std::max(1.0, std::abs(psi[std::size_t(i)]));
+      std::vector<double> pu = psi, pd = psi;
+      pu[std::size_t(i)] += h;
+      pd[std::size_t(i)] -= h;
+      const double su = l.roots_.duptake_dpsi(T, pu);
+      const double sd = l.roots_.duptake_dpsi(T, pd);
+      near(d2[std::size_t(i)], (su - sd) / (2.0 * h), 1e-5,
+           "layer " + std::to_string(i) +
+               " matches a difference of the collar row in the soil" + at);
+    }
+  }
+
+  // The per-layer collar conductance, which a stand adjoint needs because each
+  // layer is a separate write into the shared soil. Its own check is that the
+  // parts are the whole: the total is the sum in layer order, so this is exact
+  // equality and not a tolerance.
+  for (int layers : {1, 3, 5}) {
+    std::vector<double> ps(layers), depth(layers);
+    for (int i = 0; i < layers; ++i) { ps[i] = 1.0 + 0.25 * i; depth[i] = 1.0 * (i + 1); }
+    phylloptim::Leaf l = make_leaf(d, ps, depth);
+    l.find_root_collar_psi();
+    const double T = l.opt_root_psi_;
+    const std::string at = " at " + std::to_string(layers) + " layers";
+
+    std::vector<double> by_layer;
+    l.dE_from_soil_dpsi_collar_by_layer(T, l.roots_.psi_soil_, by_layer);
+    double summed = 0.0;
+    for (int i = 0; i < layers; ++i) {
+      summed += by_layer[std::size_t(i)];
+    }
+    // Not bit-exact, and the reason is the only difference between the two:
+    // the total converts to kg once after summing and the parts convert each
+    // before, so they differ by reassociation and by nothing else.
+    near(summed, l.dE_from_soil_dpsi_collar(T, l.roots_.psi_soil_), 1e-14,
+         "the per-layer conductances sum to the total" + at);
+  }
+
+  // The kink contract is the union of the two first derivatives' kinks, because
+  // a second derivative needs BOTH endpoints off theirs. A collar sitting on a
+  // layer's potential is the one every caller meets.
+  {
+    std::vector<double> ps{1.0, 1.5}, depth{1.0, 2.0};
+    phylloptim::Leaf l = make_leaf(d, ps, depth);
+    std::vector<double> out;
+    l.roots_.d2uptake_dpsi_dpsi_soil(ps[0], l.roots_.psi_soil_, out);
+    ok(!out.empty() && std::isnan(out[0]),
+       "a collar on a layer's own potential refuses the whole vector");
+  }
+}
+
 // The light row. Its referee is the envelope theorem: at an interior optimum the
 // direct partial at a FIXED collar equals the TOTAL derivative of the solved
 // profit, so a central difference of the whole re-solve checks it without
@@ -1111,10 +1210,10 @@ void test_env_adjoint() {
     const std::string at = " at psi_soil=" + std::to_string(psi);
 
     // A weight of 2 rather than 1, so a dropped or doubled factor shows.
-    phylloptim::gradient::EnvAdjoint adj;
-    phylloptim::gradient::env_adjoint(l, 2.0, adj);
+    phylloptim::gradient::ProfitEnvDerivatives adj;
+    phylloptim::gradient::profit_env_derivatives(l, adj);
     ok(adj.usable, "the rows exist at an interior optimum" + at);
-    ok(adj.soil.size() == 3, "one row per layer" + at);
+    ok(adj.dprofit_dpsi_soil.size() == 3, "one row per layer" + at);
 
     const double h = 1e-6;
     for (int j = 0; j < 3; ++j) {
@@ -1125,10 +1224,10 @@ void test_env_adjoint() {
       phylloptim::Leaf ld = make_leaf(d, dn, depth);
       lu.find_root_collar_psi();
       ld.find_root_collar_psi();
-      const double fd = 2.0 * (lu.profit_ - ld.profit_) / (2.0 * h);
-      near(adj.soil[std::size_t(j)], fd, 2e-3,
+      const double fd = (lu.profit_ - ld.profit_) / (2.0 * h);
+      near(adj.dprofit_dpsi_soil[std::size_t(j)], fd, 2e-3,
            "layer " + std::to_string(j) + " matches a re-solve" + at);
-      ok(adj.soil[std::size_t(j)] < 0.0,
+      ok(adj.dprofit_dpsi_soil[std::size_t(j)] < 0.0,
          "a drier layer is worth less carbon, layer " + std::to_string(j) + at);
     }
   }
@@ -1139,8 +1238,8 @@ void test_env_adjoint() {
   std::vector<double> ps(3, 12.0), depth{1.0, 2.0, 3.0};
   phylloptim::Leaf l = make_leaf(d, ps, depth);
   l.find_root_collar_psi();
-  phylloptim::gradient::EnvAdjoint adj;
-  phylloptim::gradient::env_adjoint(l, 1.0, adj);
+  phylloptim::gradient::ProfitEnvDerivatives adj;
+  phylloptim::gradient::profit_env_derivatives(l, adj);
   if (l.operating_point_kind() != phylloptim::Leaf::OperatingPointKind::Interior) {
     ok(!adj.usable && !adj.message.empty(),
        "a non-interior point is refused by name, not answered");
@@ -2851,6 +2950,7 @@ int main() {
   test_collar_argmax_is_smooth_in_a_trait();
   test_soil_conductance_is_positive();
   test_soil_potential_derivative();
+  test_uptake_mixed_second_derivative();
   test_light_row();
   test_env_adjoint();
   test_marginal_price_water();

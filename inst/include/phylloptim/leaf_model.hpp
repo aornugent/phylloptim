@@ -705,6 +705,23 @@ public:
         return single_.duptake_dpsi(T_collar, psi_soil);
     }
   }
+  // The same conductance per layer rather than summed. A stand adjoint prices
+  // the operating point's movement into each layer's flux separately, because
+  // each layer is a separate write into the shared soil; the total cannot say
+  // which layer moved.
+  void dE_from_soil_dpsi_collar_by_layer(double T_collar,
+                                         const std::vector<double>& psi_soil,
+                                         std::vector<double>& out) {
+    require_suction_vector(psi_soil, "dE_from_soil_dpsi_collar_by_layer");
+    switch (supply_kind_) {
+      case SupplyKind::MultiLayer:
+        roots_.duptake_dpsi_by_layer(T_collar, psi_soil, out);
+        return;
+      default:
+        out.assign(1, single_.duptake_dpsi(T_collar, psi_soil));
+        return;
+    }
+  }
   // Per-layer d(E_i)/d(psi_soil[i]), the soil counterpart of the conductance
   // above. Diagonal, so one entry per layer is the whole of it. Same NaN-at-a-
   // kink contract; see MultiLayerRoots::duptake_dpsi_soil.

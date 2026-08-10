@@ -1088,11 +1088,12 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
 //
 // Profit only. The other four outputs' environment rows are still `transpose_at`'s
 // to difference; this contracts the one output a census functional reads.
-struct EnvAdjoint {
-  // vbar_profit * dprofit/dPPFD.
-  double light = util::na_value;
-  // vbar_profit * dprofit/dpsi_soil_j, one per layer, in the caller's layer order.
-  std::vector<double> soil;
+struct ProfitEnvDerivatives {
+  // Named for what they are rather than for their place in a matrix: a reader
+  // should not have to know which way round "row" and "column" run here.
+  double dprofit_dlight = util::na_value;
+  // One per layer, in the caller's layer order.
+  std::vector<double> dprofit_dpsi_soil;
   // False where the operating point has no analytic rows: a branch kink leaves
   // the supply derivative undefined, and a pinned or shut-down point is not an
   // interior optimum, so the envelope step these rows take does not hold. A
@@ -1101,16 +1102,45 @@ struct EnvAdjoint {
   std::string message;
 
   void reset(std::size_t n_layers) {
-    light = util::na_value;
-    soil.assign(n_layers, util::na_value);
+    dprofit_dlight = util::na_value;
+    dprofit_dpsi_soil.assign(n_layers, util::na_value);
     usable = false;
     message.clear();
   }
 };
 
+// dprofit/d(radiation) and dprofit/d(psi_soil_j) at whatever collar the leaf is
+// currently seated at. False where a piece of it is undefined.
+//
+// Split out because it is read at two collars, not one: the rows themselves are
+// taken at the operating point, and their derivative in the collar -- which is
+// what moves the operating point, and therefore the uptake -- is a difference of
+// this same function either side of it. One expression, so the two cannot
+// describe different models.
+inline bool profit_env_rows_here(Leaf& l, double& light,
+                                 std::vector<double>& soil,
+                                 std::string& message) {
+  const std::vector<double>& psi_soil = l.supply_psi_soil();
+  const double price = l.marginal_price_water();
+  light = l.dprofit_dPPFD();
+  if (!std::isfinite(price) || !std::isfinite(light)) {
+    message = "the supply derivative or the ci residual is undefined here";
+    return false;
+  }
+  l.dE_from_soil_dpsi_soil(l.opt_root_psi_, psi_soil, soil);
+  for (double& v : soil) {
+    if (!std::isfinite(v)) {
+      message = "a layer sits on a branch kink, so its row does not exist";
+      return false;
+    }
+    v *= price;
+  }
+  return true;
+}
+
 // Requires a solved operating point on `l` -- the caller's own solve, not one
 // taken here, so this reads state rather than moving it.
-inline void env_adjoint(Leaf& l, double vbar_profit, EnvAdjoint& out) {
+inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
   const std::vector<double>& psi_soil = l.supply_psi_soil();
   out.reset(psi_soil.size());
 
@@ -1122,28 +1152,50 @@ inline void env_adjoint(Leaf& l, double vbar_profit, EnvAdjoint& out) {
     return;
   }
 
-  const double price = l.marginal_price_water();
-  const double light = l.dprofit_dPPFD();
-  if (!std::isfinite(price) || !std::isfinite(light)) {
-    out.message = "the supply derivative or the ci residual is undefined here";
+  double light = 0.0;
+  std::vector<double> soil;
+  if (!profit_env_rows_here(l, light, soil, out.message)) {
     return;
   }
 
-  std::vector<double> dE;
-  l.dE_from_soil_dpsi_soil(l.opt_root_psi_, psi_soil, dE);
-  for (double v : dE) {
-    if (!std::isfinite(v)) {
-      out.message = "a layer sits on a branch kink, so its row does not exist";
-      return;
-    }
-  }
-
-  out.light = rounded(vbar_profit * light);
-  for (std::size_t j = 0; j < dE.size(); ++j) {
-    out.soil[j] = rounded(vbar_profit * price * dE[j]);
-  }
+  out.dprofit_dlight = light;
+  out.dprofit_dpsi_soil = soil;
   out.usable = true;
 }
+
+// --- a route that does not work, recorded so it is not tried again -----------
+//
+// A stand adjoint needs per-layer uptake rows, and those are TOTAL derivatives:
+// uptake is set as a side effect at the operating point, so it consumes the
+// argmax rather than being it and the operating point's own movement is part of
+// the answer,
+//
+//     dE_i/du  =  dE_i/du|_p  +  (dE_i/dp) * (dp*/du),
+//     dp*/du   = -(d2profit/dp du) / (d2profit/dp2).
+//
+// The cheap-looking route is to notice that d2profit/dp du is the collar
+// derivative of dprofit/du, which `profit_env_derivatives` already computes analytically,
+// and so to difference THAT in the collar: two seatings, no re-driving, every
+// column at once.
+//
+// ⚠️ IT IS WRONG, AND MEASURABLY SO -- the collar row comes back at -1.40x the
+// answer a re-solve gives. The reason is worth keeping. `marginal_price_water()`
+// is `marginal_cost_water_multilayer() - marginal_cost_water()`, and the
+// multilayer lambda is the one `find_root_collar_psi` EQUALISES -- it is defined
+// by the first-order condition. So the analytic soil row is a valid expression
+// for dprofit/dpsi_soil AT the operating point and not away from it, and
+// differencing it in the collar differentiates something that is not the profit
+// row off the optimum.
+//
+// So d2profit/dp du has to come from the marginal profit itself, and that is
+// what report 05 s7.3's rank-two factorisation over the state directions is for:
+// R = dprofit/dp reads the state only through total uptake and uptake's own
+// collar sensitivity, so dR/du = a * dE_up/du + b * d(dE_up/dp)/du with two
+// scalars shared across every direction. Both vectors are closed form --
+// `MultiLayerRoots::duptake_dpsi_soil` and `d2uptake_dpsi_dpsi_soil` -- and the
+// pair is recovered from two perturbed evaluations in directions of different
+// families, which is verified out of sample in
+// plant-dev/docs/design/verify-factorisation.R.
 
 }  // namespace gradient
 }  // namespace phylloptim
