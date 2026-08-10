@@ -224,11 +224,18 @@ struct Result {
   bool used_ift = false;
   double H = util::na_value;
   double stationarity = util::na_value;
+  // dY/dpsi at the base point: the composite's psi-channel, and the third of its
+  // three ingredients alongside `H` and the per-parameter M. Reported for the
+  // same reason those two are -- it is what the composite stands on -- and NA
+  // unless `used_ift`, because the fallback never forms it. `transpose_at` below
+  // is its first consumer.
+  double dY_dpsi[n_outputs];
   std::string message;
 
   void reset(std::size_t npars) {
     for (int j = 0; j < n_outputs; ++j) {
       value[j] = util::na_value;
+      dY_dpsi[j] = util::na_value;
     }
     grad.assign(npars * n_outputs, util::na_value);
     status = Status::Error;
@@ -455,7 +462,9 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
                "determined operating point; use method = \"auto\".");
   }
 
-  double dY_dpsi[n_outputs];
+  // Written straight into the result rather than into a local, so that the
+  // transpose can read the same numbers instead of measuring them again.
+  double* const dY_dpsi = out.dY_dpsi;
   if (use_ift) {
     // dY/dpsi at fixed traits, and a SECOND, INDEPENDENT detector of a pinned
     // optimum. At a pinned point psi* sits one step-in fraction (1e-06 of the
@@ -550,6 +559,255 @@ inline std::vector<Result> batch(Leaf& l, const double* theta,
     }
   }
   return out;
+}
+
+// --- the transpose ------------------------------------------------------------
+//
+// WHAT IT IS FOR. Everything above runs FORWARD: one perturbation per parameter,
+// so the cost is however many parameters you ask about, which is why
+// `leaf_gradient()` warns that asking for all fourteen is the most expensive
+// thing you can do. That is the right direction for a leaf, where the parameter
+// count is small. It is the wrong direction for a STAND. A forest model wants
+// the sensitivity of a few whole-stand summaries -- total leaf area, basal area,
+// biomass -- to EVERY trait at once, over a trajectory carrying thousands of
+// individuals. Done forwards that is one full model run per trait; done
+// backwards it is one run and one sweep whatever the trait count is.
+//
+// A backward sweep cannot use a forward derivative. When it reaches an
+// individual it is holding the sensitivity of the final answer to that
+// individual's OUTPUTS, and what it needs is the sensitivity to that
+// individual's INPUTS. That is the transpose of what everything above computes,
+// and this is it: one output adjoint in, one input adjoint out.
+//
+// THE CONTRACTION, which is all this is. The forward composite is
+//
+//   dY/dtheta  =  dY/dtheta|_psi  +  (dY/dpsi) * (-M/H)
+//
+// so for an output adjoint v the transpose is two scalars and one scaled row:
+//
+//   s    = v . (dY/dpsi)                a scalar
+//   m    = -s / H                       a scalar
+//   row  = v . (dY/dtheta|_psi)  +  m * M
+//
+// THE MATRIX (dY/dpsi)(dpsi*/dtheta) IS NEVER FORMED. It is rank one, because
+// the collar potential is a single number, and in this direction it collapses to
+// s and m. That is the whole economy and it is why the transpose is cheap: the
+// combination drops from npars * n_outputs multiply-adds to npars + n_outputs,
+// and nothing npars * n_outputs is ever allocated.
+//
+// ⚠️ WHAT IS *NOT* CHEAPER, AND SAYING SO HERE SAVES A DISAPPOINTMENT. There is
+// no tape and no reverse mode through the model. The per-parameter quantities M
+// and dY/dtheta|_psi are the same two perturbed evaluations `gradient_ift` takes,
+// so AT THE LEAF the transpose costs what the forward gradient over the same
+// parameters costs. Measured interleaved at one interior point: 1.00x over
+// fourteen parameters, 1.00x over the nine that rebuild no spline, and a marginal
+// cost per parameter within 0.4% of the forward path's. The saving is at the
+// STAND, where this is the primitive one adjoint sweep calls per individual and
+// the forward alternative is a whole trajectory per trait.
+//
+// THE IDENTITY THAT CHECKS IT, and it is exact:
+//
+//   <v, J u>  ==  <J^T v, u>
+//
+// for any output adjoint v and any input direction u. Both sides multiply the
+// same numbers and sum them in a different order, so they agree to
+// reassociation and to nothing looser --
+// `test_gradient_transpose_matches_the_forward_jacobian` in tests/cpp requires
+// that over the whole golden grid and over randomised v and u. Measured worst
+// 1.41e-14, five orders below the solve's ~1e-09 floor, at a tolerance of 1e-12.
+
+// The index of the OBJECTIVE among the reported outputs, or -1 where it is not
+// reported at all -- which is the case here, `n_outputs` being four.
+//
+// ⚠️ THE OBJECTIVE'S PSI-CHANNEL MUST BE EXCLUDED FROM `s`. At an interior
+// optimum dprofit/dpsi = 0 by the envelope theorem, so profit's psi-channel
+// contributes nothing and adding a measured central difference of it would
+// double-count -- and that difference is not small noise either, being a
+// difference of a FLAT maximum. #8 appends `profit` as a fifth output and gives
+// it exactly that special case in the forward composite; when it lands this
+// constant becomes `out_profit` and nothing else here changes. The dot-product
+// identity is what makes that one line rather than a hazard: it compares the
+// transpose against the forward path column by column, so a forward path that
+// special-cases profit and a transpose that does not fails immediately.
+inline constexpr int out_objective = -1;
+
+// dY_j/dpsi as the TRANSPOSE must weight it, which is not always the measured
+// central difference. Two outputs are exceptions, for two different reasons, and
+// both are exceptions in `gradient_ift` too -- a transpose that disagreed with
+// the forward path about either would be the transpose of a different operator.
+//
+//   * `collar` IS psi, so its psi-channel is exactly 1 and its direct term
+//     exactly 0; `gradient_ift` writes dpsi*/dtheta into that row rather than
+//     composing it. Using the measured difference instead is wrong by about
+//     eps * psi / h_psi, i.e. ~1e-10 relative -- small, and still two orders
+//     above the residual this transpose is required to leave.
+//   * the objective's psi-channel is zero by the envelope theorem, above.
+inline double psi_channel(int j, const double* dY_dpsi) {
+  if (j == out_collar) {
+    return 1.0;
+  }
+  if (j == out_objective) {
+    return 0.0;
+  }
+  return dY_dpsi[j];
+}
+
+struct TransposeResult {
+  // The four outputs the transpose is taken at, and the operating-point
+  // diagnostics, all of them `at()`'s own -- see `transpose_at`.
+  double value[n_outputs];
+  // One entry per requested parameter: v . dY/d(pars[k]).
+  std::vector<double> adjoint;
+  Status status = Status::Error;
+  bool used_ift = false;
+  double H = util::na_value;
+  double stationarity = util::na_value;
+  // `s` above: the sensitivity of the weighted output to the collar potential,
+  // and the one number the rank-one term collapses to. NA off the composite.
+  double psi_adjoint = util::na_value;
+  std::string message;
+
+  // Cleared BEFORE anything can throw, for `Result::reset`'s reason: this is a
+  // caller's struct and may be a reused one, so a call that stops partway must
+  // not leave the previous point's numbers sitting in it looking current.
+  void reset(std::size_t npars) {
+    for (int j = 0; j < n_outputs; ++j) {
+      value[j] = util::na_value;
+    }
+    adjoint.assign(npars, util::na_value);
+    status = Status::Error;
+    used_ift = false;
+    H = util::na_value;
+    stationarity = util::na_value;
+    psi_adjoint = util::na_value;
+    message.clear();
+  }
+};
+
+// The transposed gradient at one operating point.
+//
+// ⚠️ THE OPERATING-POINT CLASSIFICATION IS `at()`'s, NOT A SECOND COPY OF IT, and
+// that is why this starts by calling `at()` with no parameters. The composite is
+// valid only where stationarity holds; at a pinned optimum the collar follows a
+// bound and -M/H is not its derivative. Rather than repeat that test -- and with
+// it the curvature, the sentinel handling and the narrow-bracket detector -- this
+// runs the forward entry point with `npars == 0`, which does the solve, the
+// classification and dY/dpsi and then loops over nothing. So `status`,
+// `used_ift`, `H` and `stationarity` are the same numbers the forward path would
+// report at this point BY CONSTRUCTION, this route refuses wherever that one
+// refuses (`at()` throws and the throw propagates), and a change to the
+// classification cannot reach one route without reaching the other.
+//
+// The fallback is transposed too. Where `at()` declines the composite it
+// differences the whole solve, and the transpose of that is the same contraction
+// against a plainer Jacobian -- no s, no m, no H. So the identity below holds at
+// pinned and shut-down points as well, which is most of what makes it worth
+// having.
+inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
+                         bool single, const int* pars, std::size_t npars,
+                         const double* v, const Settings& s,
+                         TransposeResult& out) {
+  out.reset(npars);
+
+  Result point;
+  at(l, theta, d, single, nullptr, 0, s, point);
+
+  for (int j = 0; j < n_outputs; ++j) {
+    out.value[j] = point.value[j];
+  }
+  out.status = point.status;
+  out.used_ift = point.used_ift;
+  out.H = point.H;
+  out.stationarity = point.stationarity;
+
+  // psi* as `at()` recorded it. `outputs()` copies `opt_root_psi_` into the
+  // collar slot, so this is that member and not a re-derivation of it -- the
+  // leaf itself is back at base parameters and unsolved by now.
+  const double psi_star = out.value[out_collar];
+
+  double th[n_pars];
+  bool at_base = true;
+
+  if (out.used_ift) {
+    // s, the first of the two scalars. `rounded()` here and below is not for
+    // agreement with R -- there is no R implementation of this to agree with --
+    // but so that no compiler contracts a multiply-add and the identity's
+    // residual is the same number under gcc and clang. It costs a store per
+    // term against a model evaluation per parameter.
+    double s_psi = 0.0;
+    for (int j = 0; j < n_outputs; ++j) {
+      s_psi += rounded(v[j] * psi_channel(j, point.dY_dpsi));
+    }
+    out.psi_adjoint = s_psi;
+    const double m = -s_psi / point.H;
+
+    double up[1 + n_outputs];
+    double dn[1 + n_outputs];
+    for (std::size_t k = 0; k < npars; ++k) {
+      // The base-point invariant and the shortcut restore are `gradient_ift`'s,
+      // for `gradient_ift`'s reasons -- see `takes_shortcut`.
+      const int p = pars[k];
+      if (takes_shortcut(p, s) && !at_base) {
+        apply(l, theta, d, single, -1, s.fast_stem_curve);
+      }
+      at_base = false;
+      const double h = step_for(p, theta[p], s.step);
+      for (int side = 0; side < 2; ++side) {
+        std::copy(theta, theta + n_pars, th);
+        th[p] = side == 0 ? theta[p] + h : theta[p] - h;
+        apply(l, th, d, single, p, s.fast_stem_curve);
+        double* dst = side == 0 ? up : dn;
+        if (!outputs_at(l, psi_star, dst + 1)) {
+          util::stop("leaf_gradient_transpose(): perturbing `" +
+                     par_names()[std::size_t(p)] +
+                     "` moved the feasible collar interval past psi*, so the "
+                     "operating point could not be evaluated there. This point "
+                     "is on an active-set boundary; lower `stationarity_tol` or "
+                     "difference the solve directly.");
+        }
+        dst[0] = l.dprofit_droot_collar_psi(psi_star);
+      }
+      const double M = (up[0] - dn[0]) / (2.0 * h);
+      // v . dY/dtheta|_psi. `collar` is skipped rather than summed: its direct
+      // term is zero by construction, `outputs_at` having just asserted that
+      // both sides sit at exactly psi*.
+      double row = 0.0;
+      for (int j = 0; j < n_outputs; ++j) {
+        if (j == out_collar) {
+          continue;
+        }
+        row += rounded(v[j] * ((up[1 + j] - dn[1 + j]) / (2.0 * h)));
+      }
+      out.adjoint[k] = row + rounded(m * M);
+    }
+  } else {
+    // The fallback, transposed: difference the solve and contract. No output is
+    // exceptional here, `collar` included, because nothing is being composed --
+    // which is exactly why `gradient_fd` has no special case either.
+    double up[n_outputs];
+    double dn[n_outputs];
+    for (std::size_t k = 0; k < npars; ++k) {
+      const int p = pars[k];
+      if (takes_shortcut(p, s) && !at_base) {
+        apply(l, theta, d, single, -1, s.fast_stem_curve);
+      }
+      at_base = false;
+      const double h = step_for(p, theta[p], s.step);
+      for (int side = 0; side < 2; ++side) {
+        std::copy(theta, theta + n_pars, th);
+        th[p] = side == 0 ? theta[p] + h : theta[p] - h;
+        apply(l, th, d, single, p, s.fast_stem_curve);
+        l.find_root_collar_psi();
+        outputs(l, side == 0 ? up : dn);
+      }
+      double row = 0.0;
+      for (int j = 0; j < n_outputs; ++j) {
+        row += rounded(v[j] * ((up[j] - dn[j]) / (2.0 * h)));
+      }
+      out.adjoint[k] = row;
+    }
+  }
+  apply(l, theta, d, single, -1, s.fast_stem_curve);
 }
 
 }  // namespace gradient
