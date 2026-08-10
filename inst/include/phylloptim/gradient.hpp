@@ -880,12 +880,12 @@ inline std::vector<Result> batch(Leaf& l, const double* theta,
 // contributes nothing and adding a measured central difference of it would
 // double-count -- and that difference is not small noise either, being a
 // difference of a FLAT maximum. #8 appends `profit` as a fifth output and gives
-// it exactly that special case in the forward composite; when it lands this
-// constant becomes `out_profit` and nothing else here changes. The dot-product
+// it exactly that special case in the forward composite. The dot-product
 // identity is what makes that one line rather than a hazard: it compares the
 // transpose against the forward path column by column, so a forward path that
-// special-cases profit and a transpose that does not fails immediately.
-inline constexpr int out_objective = -1;
+// special-cases profit and a transpose that does not fails immediately -- which
+// is what it did when the two were first merged with this constant still unset.
+inline constexpr int out_objective = out_profit;
 
 // dY_j/dpsi as the TRANSPOSE must weight it, which is not always the measured
 // central difference. Two outputs are exceptions, for two different reasons, and
