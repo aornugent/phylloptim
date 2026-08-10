@@ -757,6 +757,182 @@ void test_collar_solve_handles_a_pinned_optimum() {
   // The gradient there is genuinely non-zero, which is what "constrained" means.
   ok(l.dprofit_droot_collar_psi(l.opt_root_psi_) < 0.0,
      "profit is decreasing at the pinned answer, so the bound is what binds");
+  ok(l.operating_point_kind() ==
+         phylloptim::Leaf::OperatingPointKind::PinnedWet,
+     "and the leaf says so: the point is tagged pinned-wet");
+}
+
+// The operating-point classification, on ONE REUSED LEAF -- which is the only way
+// to test it. `Leaf` is a value member that plant drives every individual in a
+// patch through (hazard 8), so the failure this guards is a branch that declines
+// to write the tag and thereby reports the PREVIOUS plant's kind of operating
+// point. test_golden cannot see that: it builds a fresh Leaf per grid point, so a
+// bit-identical golden run says nothing here. The sequence below alternates kinds
+// on purpose, so an unwritten tag reads as the step before it.
+//
+// The count check over the whole 288-point grid lives in test_golden.cpp; this is
+// the other half -- that every path writes, and that the tag comes from the
+// branch rather than from the numbers.
+void test_operating_point_kind_is_written_by_every_path() {
+  printf("the collar solve says which kind of operating point it found\n");
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  Drivers d;
+  phylloptim::Leaf l;
+  l.setup_transpiration(100);
+  l.setup_root_vulnerability(100);
+  ok(l.operating_point_kind() == Kind::Unsolved,
+     "a fresh Leaf reports no operating point");
+
+  const std::vector<double> depth{1.0}, root{1.0 / d.area_leaf};
+  const auto solve = [&](double psi, double ppfd) {
+    std::vector<double> ps{psi};
+    l.set_physiology(fixture::root_network(root, depth), ppfd, ps, depth,
+                     d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
+                     d.atm_o2_kpa, d.atm_kpa);
+    l.find_root_collar_psi();
+  };
+
+  solve(2.0, d.PPFD);
+  ok(l.operating_point_kind() == Kind::Interior,
+     "wet soil gives an interior profit maximum");
+
+  // Drier than psi_crit: shutdown on water. Would read `interior` if the shutdown
+  // exit did not write.
+  solve(20.0, d.PPFD);
+  ok(l.operating_point_kind() == Kind::HydraulicShutdown,
+     "past psi_crit the point is a hydraulic shutdown");
+
+  // ⚠️ THE ASSERTION THE TAG EXISTS FOR. dprofit's shut-down exit returns a hard
+  // 0.0 sentinel, so a classifier of the form "|residual| < tol => interior
+  // optimum" would call this an interior stationary point, and then read a
+  // curvature of zero off the same sentinel and agree with itself. The residual
+  // really is exactly 0.0 here, and the tag really does say shutdown.
+  bool feasible = true;
+  const double residual = l.dprofit_droot_collar_psi(l.opt_root_psi_, &feasible);
+  ok(residual == 0.0, "dprofit at a shut-down point is exactly the 0.0 sentinel");
+  ok(!feasible, "and reports itself infeasible");
+  ok(l.operating_point_kind() != Kind::Interior,
+     "so a residual test would misclassify it, and the tag does not");
+
+  // Back to wet: would read `hydraulic-shutdown` if the interior path did not
+  // write.
+  solve(2.0, d.PPFD);
+  ok(l.operating_point_kind() == Kind::Interior,
+     "and the next wet solve is interior again, not the previous plant's kind");
+
+  // Dim enough that gross assimilation cannot cover R_d: shutdown on LIGHT, on
+  // wet soil. A rainfall sweep never reaches this, which is why it is its own kind.
+  solve(1.0, 10.0);
+  ok(l.assim_max_ < 0.0, "the dim solve takes the assim_max_ < 0 exit");
+  ok(l.operating_point_kind() == Kind::ShadeDeath,
+     "and is tagged shade-death, not a water shutdown");
+
+  // A constrained optimum, then the same leaf asked to EVALUATE a prescribed
+  // collar potential rather than optimise one. The prescribed point is not an
+  // optimum of any kind, and would read `pinned-wet` if that path did not write.
+  const std::vector<double> psi5{4.0, 4.25, 4.5, 4.75, 5.0};
+  const std::vector<double> depth5{1.0, 2.0, 3.0, 4.0, 5.0};
+  const std::vector<double> root5(5, 1.0 / 5.0 / d.area_leaf);
+  l.set_physiology(fixture::root_network(root5, depth5), d.PPFD, psi5, depth5,
+                   d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
+                   d.atm_o2_kpa, d.atm_kpa);
+  l.find_root_collar_psi();
+  ok(l.operating_point_kind() == Kind::PinnedWet,
+     "psi_soil 4.0 over 5 layers is pinned to the wet bound");
+  const double pinned_collar = l.opt_root_psi_;
+
+  l.evaluate_root_collar_psi(pinned_collar);
+  ok(l.operating_point_kind() == Kind::Prescribed,
+     "evaluating a given collar potential is not an optimum, and says so");
+
+  // ...and the optimising path takes it back, so `prescribed` is not sticky.
+  l.find_root_collar_psi();
+  ok(l.operating_point_kind() == Kind::PinnedWet,
+     "and optimising again restores the pin");
+
+  // set_traits returns the object to its just-constructed state, and the
+  // classification is part of that state (hazard 10 / setup_clean_leaf).
+  l.set_traits(l.vcmax_25, l.stem_c, l.stem_b, l.psi_crit, l.roots_.root_c,
+               l.roots_.root_b, l.roots_.root_psi_crit, l.beta2, l.jmax_25, l.a,
+               l.curv_fact_elec_trans, l.curv_fact_colim, l.cost_scale_TF24);
+  ok(l.operating_point_kind() == Kind::Unsolved,
+     "set_traits clears the classification with the rest of the solved state");
+
+  // Neither failure kind is reachable from a driver sweep, and that is the point
+  // of separating them from a pin: they mean "no plant is described".
+  // test_collar_solve_refuses_rather_than_guessing drives both directly.
+  ok(std::string(phylloptim::Leaf::operating_point_kind_name(
+         Kind::SolverRefused)) == "solver-refused",
+     "the failure kinds are named, not numbered");
+}
+
+// The two branches of maximise_profit_over_collar that change the collar it
+// returns. No driver reaches either, so both are driven through the public
+// maximise_profit_over_collar with brackets built to land on them.
+void test_collar_solve_refuses_rather_than_guessing() {
+  printf("the collar solve refuses a bracket it cannot resolve\n");
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  Drivers d;
+  const std::vector<double> psi{2.0, 2.25, 2.5, 2.75, 3.0};
+  const std::vector<double> depth{1.0, 2.0, 3.0, 4.0, 5.0};
+
+  // A comfortably interior optimum, and the interval it was found in.
+  phylloptim::Leaf l = make_leaf(d, psi, depth);
+  double bound_a = 0.0, bound_b = 0.0;
+  ok(l.prepare_collar_solve(bound_a, bound_b),
+     "the reference case has a feasible collar interval");
+  l.find_root_collar_psi();
+  ok(l.operating_point_kind() == Kind::Interior,
+     "and an interior optimum inside it to straddle");
+  const double star = l.opt_root_psi_;
+
+  // Bounds handed over inverted, so the interval runs dry to wet: dprofit <= 0 at
+  // bound_a and >= 0 at bound_b, which makes each end a local maximum.
+  const double dry_end = star + 0.9 * (bound_b - star);
+  const double wet_end = star - 0.9 * (star - bound_a);
+
+  phylloptim::Leaf p = make_leaf(d, psi, depth);
+  double pa = 0.0, pb = 0.0;
+  p.prepare_collar_solve(pa, pb);
+  const double profit_dry = p.profit_psi_stem_TF(
+      p.find_psi_stem_from_psi_root(dry_end, p.supply_psi_soil()), dry_end);
+  const double profit_wet = p.profit_psi_stem_TF(
+      p.find_psi_stem_from_psi_root(wet_end, p.supply_psi_soil()), wet_end);
+  ok(profit_wet > profit_dry,
+     "the wetter end is the better of the two, by construction");
+
+  phylloptim::Leaf m = make_leaf(d, psi, depth);
+  double ma = 0.0, mb = 0.0;
+  m.prepare_collar_solve(ma, mb);
+  const double refused = m.maximise_profit_over_collar(dry_end, wet_end);
+  ok(m.operating_point_kind() == Kind::SolverRefused,
+     "the solve reports that it could not resolve the bracket");
+  ok(m.operating_point_kind() != Kind::PinnedWet &&
+         m.operating_point_kind() != Kind::PinnedDry,
+     "and does not pass it off as a constrained optimum");
+  // The endpoint the solve returns is stepped a fraction of the width inside the
+  // bound it came from, so compare against the bound rather than for equality.
+  ok(std::abs(refused - wet_end) < 1e-5,
+     "and returns the end with the higher profit");
+  ok(std::abs(refused - dry_end) > 0.1, "which is not the drier end");
+
+  // A bracket lying wholly inside the infeasible sliver at bound_a, where dprofit
+  // takes its reversed-gradient exit: no usable gradient at either end. The
+  // non-finite-gradient half of the same guard has no bracket that reaches it and
+  // is not covered.
+  phylloptim::Leaf s = make_leaf(d, psi, depth);
+  double sa = 0.0, sb = 0.0;
+  s.prepare_collar_solve(sa, sb);
+  const double sliver = 1e-9;
+  bool feasible = true;
+  s.dprofit_at_collar_psi(sa + 1e-6 * sliver, &feasible);
+  ok(!feasible, "the wet bound admits no informative gradient");
+  const double fallen_back = s.maximise_profit_over_collar(sa, sa + sliver);
+  ok(s.operating_point_kind() == Kind::SolverRefused,
+     "a bracket with no usable gradient at either end is refused too");
+  ok(std::isfinite(fallen_back) && fallen_back >= sa &&
+         fallen_back <= sa + sliver,
+     "and the fallback stays inside the bracket it was handed");
 }
 
 // Hazard 3, re-measured rather than argued. The guide's constraint is that the
@@ -1995,6 +2171,8 @@ int main() {
   test_ad_kernels_are_the_model_not_a_mirror();
   test_collar_solve_satisfies_its_own_first_order_condition();
   test_collar_solve_handles_a_pinned_optimum();
+  test_operating_point_kind_is_written_by_every_path();
+  test_collar_solve_refuses_rather_than_guessing();
   test_collar_argmax_is_smooth_in_a_trait();
   test_soil_conductance_is_positive();
   test_root_vulnerability_is_bounded_past_its_grid();
