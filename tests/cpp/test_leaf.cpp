@@ -1095,6 +1095,58 @@ void test_light_row() {
   }
 }
 
+// The contraction the stand adjoint calls: profit's environment rows, against a
+// re-solve. Same envelope licence as the light row, one layer at a time.
+void test_env_adjoint() {
+  printf("env_adjoint against a re-solve\n");
+  for (double psi : {0.5, 1.0, 2.0}) {
+    Drivers d;
+    std::vector<double> ps(3, psi), depth(3);
+    for (int i = 0; i < 3; ++i) { depth[std::size_t(i)] = 1.0 * (i + 1); }
+    phylloptim::Leaf l = make_leaf(d, ps, depth);
+    l.find_root_collar_psi();
+    if (l.operating_point_kind() != phylloptim::Leaf::OperatingPointKind::Interior) {
+      continue;
+    }
+    const std::string at = " at psi_soil=" + std::to_string(psi);
+
+    // A weight of 2 rather than 1, so a dropped or doubled factor shows.
+    phylloptim::gradient::EnvAdjoint adj;
+    phylloptim::gradient::env_adjoint(l, 2.0, adj);
+    ok(adj.usable, "the rows exist at an interior optimum" + at);
+    ok(adj.soil.size() == 3, "one row per layer" + at);
+
+    const double h = 1e-6;
+    for (int j = 0; j < 3; ++j) {
+      std::vector<double> up = ps, dn = ps;
+      up[std::size_t(j)] += h;
+      dn[std::size_t(j)] -= h;
+      phylloptim::Leaf lu = make_leaf(d, up, depth);
+      phylloptim::Leaf ld = make_leaf(d, dn, depth);
+      lu.find_root_collar_psi();
+      ld.find_root_collar_psi();
+      const double fd = 2.0 * (lu.profit_ - ld.profit_) / (2.0 * h);
+      near(adj.soil[std::size_t(j)], fd, 2e-3,
+           "layer " + std::to_string(j) + " matches a re-solve" + at);
+      ok(adj.soil[std::size_t(j)] < 0.0,
+         "a drier layer is worth less carbon, layer " + std::to_string(j) + at);
+    }
+  }
+
+  // And it refuses rather than returning a number where the envelope step does
+  // not hold. A very dry column pins or shuts the point down.
+  Drivers d;
+  std::vector<double> ps(3, 12.0), depth{1.0, 2.0, 3.0};
+  phylloptim::Leaf l = make_leaf(d, ps, depth);
+  l.find_root_collar_psi();
+  phylloptim::gradient::EnvAdjoint adj;
+  phylloptim::gradient::env_adjoint(l, 1.0, adj);
+  if (l.operating_point_kind() != phylloptim::Leaf::OperatingPointKind::Interior) {
+    ok(!adj.usable && !adj.message.empty(),
+       "a non-interior point is refused by name, not answered");
+  }
+}
+
 // The net price of soil water, which is what a soil row is multiplied by.
 void test_marginal_price_water() {
   printf("net marginal price of soil water\n");
@@ -2800,6 +2852,7 @@ int main() {
   test_soil_conductance_is_positive();
   test_soil_potential_derivative();
   test_light_row();
+  test_env_adjoint();
   test_marginal_price_water();
   test_root_vulnerability_is_bounded_past_its_grid();
   test_root_psi_crit_clamp_binds();

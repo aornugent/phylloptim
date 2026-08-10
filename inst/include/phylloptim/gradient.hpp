@@ -1066,6 +1066,85 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
   apply(l, theta, d, single, -1, s.fast_stem_curve);
 }
 
+// --- the environment rows, contracted -----------------------------------------
+//
+// `transpose_at` above is a transpose in its STRUCTURE -- one `s`, one `m`, the
+// rank-one channel collapsed once rather than per parameter -- but every column
+// is still two perturbed evaluations. That is the right trade for the fifteen
+// traits, which have no closed form. It is the wrong one for the environment,
+// which now has.
+//
+// So this is the other half: given the adjoint carried on profit, the rows for
+// the light and for each soil layer, analytically. A stand sweep calls it once
+// per cohort per stage, where differencing would be 2(L+1) solves.
+//
+// THE TWO CHANNELS ARE NOT ONE LOOP, and the reason is structural rather than
+// tidiness. A soil row is a PRICE times a supply derivative: the layer moves
+// water, and `marginal_price_water` converts water into carbon. The light row
+// has no supply derivative to multiply -- at a fixed collar PPFD moves no water
+// at all -- and is a direct kernel partial closed by the ci root-find. Writing
+// them as one loop over "environment parameters" would force one of the two into
+// the other's shape.
+//
+// Profit only. The other four outputs' environment rows are still `transpose_at`'s
+// to difference; this contracts the one output a census functional reads.
+struct EnvAdjoint {
+  // vbar_profit * dprofit/dPPFD.
+  double light = util::na_value;
+  // vbar_profit * dprofit/dpsi_soil_j, one per layer, in the caller's layer order.
+  std::vector<double> soil;
+  // False where the operating point has no analytic rows: a branch kink leaves
+  // the supply derivative undefined, and a pinned or shut-down point is not an
+  // interior optimum, so the envelope step these rows take does not hold. A
+  // caller that ignores this reads sentinels as numbers.
+  bool usable = false;
+  std::string message;
+
+  void reset(std::size_t n_layers) {
+    light = util::na_value;
+    soil.assign(n_layers, util::na_value);
+    usable = false;
+    message.clear();
+  }
+};
+
+// Requires a solved operating point on `l` -- the caller's own solve, not one
+// taken here, so this reads state rather than moving it.
+inline void env_adjoint(Leaf& l, double vbar_profit, EnvAdjoint& out) {
+  const std::vector<double>& psi_soil = l.supply_psi_soil();
+  out.reset(psi_soil.size());
+
+  if (l.operating_point_kind() != Leaf::OperatingPointKind::Interior) {
+    out.message =
+        "the environment rows are an envelope step, which needs an interior "
+        "optimum; this point is " +
+        std::string(Leaf::operating_point_kind_name(l.operating_point_kind()));
+    return;
+  }
+
+  const double price = l.marginal_price_water();
+  const double light = l.dprofit_dPPFD();
+  if (!std::isfinite(price) || !std::isfinite(light)) {
+    out.message = "the supply derivative or the ci residual is undefined here";
+    return;
+  }
+
+  std::vector<double> dE;
+  l.dE_from_soil_dpsi_soil(l.opt_root_psi_, psi_soil, dE);
+  for (double v : dE) {
+    if (!std::isfinite(v)) {
+      out.message = "a layer sits on a branch kink, so its row does not exist";
+      return;
+    }
+  }
+
+  out.light = rounded(vbar_profit * light);
+  for (std::size_t j = 0; j < dE.size(); ++j) {
+    out.soil[j] = rounded(vbar_profit * price * dE[j]);
+  }
+  out.usable = true;
+}
+
 }  // namespace gradient
 }  // namespace phylloptim
 
