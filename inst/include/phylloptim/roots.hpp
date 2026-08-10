@@ -215,6 +215,11 @@ public:
   // m = -psi. Lets uptake() obtain the mean conductivity over a potential
   // interval from 2 evals instead of (n+1).
   odelia::interpolator::Interpolator root_vuln_integral_from_psi;
+  // What the two splines do past their last knot, cached by setup_vulnerability.
+  // Both are read through the accessors below, never as bare .eval() calls --
+  // see the accessors for why. util::na_value until a curve is built.
+  double root_vuln_last_knot_ = util::na_value;
+  double root_vuln_integral_limit_ = util::na_value;
 
   // --- soil geometry -------------------------------------------------------
   // The four scalars carry the same unset sentinels clear() assigns, so a bare
@@ -269,6 +274,16 @@ public:
   // Pre-compute the root vulnerability curve and its cumulative integral over
   // [0, psi_max_root], the range where conductivity drops to 1%. Avoids repeated
   // exp(pow(...)) inside uptake().
+  //
+  // A LAYER DRIER THAN THE GRID IS AN ORDINARY STATE, NOT AN ERROR: the grid
+  // stops where conductivity has fallen to 1% (~6.8 MPa at the root defaults),
+  // while the soil potential a caller may pass is bounded only by its own ceiling
+  // -- 1000 MPa in plant. So each curve needs a stated answer out there, and the
+  // two answers differ because the two limits do. Both are applied by the
+  // accessors below, which are the only way the rest of this class reads a curve.
+  // Issue #1 measured what taking odelia's extrapolant unexamined cost instead: a
+  // conductivity that turns negative past 7.3742 MPa, and an integral 4.35x its
+  // own limit at 1000 MPa.
   void setup_vulnerability(double resolution) {
     std::vector<double> x_psi_root, y_integral;
     cumulative_vulnerability_integral(root_b, root_c, resolution, x_psi_root,
@@ -279,13 +294,73 @@ public:
     for (size_t i = 0; i < x_psi_root.size(); ++i) {
       y_f_r[i] = exp(-pow(x_psi_root[i] / root_b, root_c));
     }
+    // Conductivity: NO extrapolation, matching the stem pair in
+    // Leaf::setup_transpiration. Its limit is zero, which is unusable as the
+    // divisor it becomes, so root_vuln_at clamps the argument to the last knot
+    // instead and this setting is what stops any other reading being possible.
     root_vuln_from_psi.init(x_psi_root, y_f_r);
-    root_vuln_from_psi.set_extrapolate(true); // clamp to last value beyond range
+    root_vuln_from_psi.set_extrapolate(false);
 
+    // Integral: extrapolation stays ON, under a ceiling. Its limit is finite and
+    // non-zero, and the end-knot polynomial tracks the true G closely over the
+    // half-MPa it takes to reach that limit (3.46212 against 3.46176 at 7 MPa), so
+    // capping the VALUE is both smooth and tighter than clamping the argument
+    // would be. root_vuln_integral_at applies the cap.
+    //
+    // Do not set this false "to match" the conductivity spline: odelia's deriv()
+    // has no extrapolation check where eval() does, so eval would throw while
+    // deriv went on extrapolating.
     root_vuln_integral_from_psi.init(x_psi_root, y_integral);
-    // linear extrapolation beyond range: slope ~= f_r at the tail (~1%), so the
-    // integral keeps growing consistently with the clamped-conductivity tail.
     root_vuln_integral_from_psi.set_extrapolate(true);
+
+    // The last knot, NOT vulnerability_psi_max: the knot loop advances by
+    // accumulation and stops one step short of psi_max (6.8229 against 6.8918 at
+    // the root defaults), so psi_max is itself outside the domain and clamping to
+    // it would throw.
+    root_vuln_last_knot_ = root_vuln_from_psi.max();
+    root_vuln_integral_limit_ =
+        cumulative_vulnerability_integral_limit(root_b, root_c);
+  }
+
+  // f_r at a suction, clamped into the knot domain -- set_extrapolate(false)
+  // throws at both ends, and the last knot's ~1% is the driest conductivity this
+  // curve describes.
+  //
+  // Operand order is load-bearing: written this way both clamps return psi when
+  // psi is NaN, where the reversed forms return the bound. The uptake call site's
+  // !isfinite(f_ri) guard is what reads that NaN.
+  double root_vuln_at(double psi) const {
+    return root_vuln_from_psi.eval(
+        std::max(std::min(psi, root_vuln_last_knot_), 0.0));
+  }
+
+  // G at a suction, with the closed-form limit G(inf) = (b/c)*Gamma(1/c) as a
+  // ceiling. The spline sits below that ceiling at every knot (99.83% of it at
+  // the last), so this is continuous, monotone, and identical to a bare eval
+  // everywhere on the grid: it binds only past 7.3132 MPa, where the end-knot
+  // polynomial would otherwise carry on accumulating for ever.
+  //
+  // WHY IT MATTERS: the general branch of uptake_impl forms the layer's mean
+  // resistance as r_R_H = r_R_H_min * span / integral. Unbounded, the integral
+  // makes r_R_H FALL as the layer dries, so the drier a near-embolised layer, the
+  // harder the plant supposedly pumps water into it -- and because whole-plant
+  // shutdown keys off the wettest layer, nothing stops it. Capped, the reverse
+  // flux tends to integral/r_R_H_min <= G(inf)/r_R_H_min as the span grows, which
+  // is the whole area under the conductivity curve and is the right limit.
+  double root_vuln_integral_at(double psi) const {
+    return std::min(root_vuln_integral_from_psi.eval(psi),
+                    root_vuln_integral_limit_);
+  }
+
+  // dG/dpsi, consistent with root_vuln_integral_at: zero wherever that returns
+  // the cap, because there the value no longer depends on psi. Costs a second
+  // spline eval, which is affordable here and would not be on the uptake hot path
+  // -- duptake_dpsi runs once per gradient, not ~10^3 times per solve.
+  double root_vuln_integral_deriv_at(double psi) const {
+    if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
+      return 0.0;
+    }
+    return root_vuln_integral_from_psi.deriv(psi);
   }
 
   // Per-timestep soil state: the layer potentials, the layer depths, and the
@@ -401,8 +476,7 @@ public:
     root_vuln_integral_soil_.resize(max_soil_layer);
     double wettest_soil_layer = std::numeric_limits<double>::infinity();
     for (int i = 0; i < max_soil_layer; ++i) {
-      root_vuln_integral_soil_[i] =
-          root_vuln_integral_from_psi.eval(psi_soil_[i]);
+      root_vuln_integral_soil_[i] = root_vuln_integral_at(psi_soil_[i]);
       wettest_soil_layer = std::min(wettest_soil_layer, psi_soil_[i]);
     }
     return wettest_soil_layer;
@@ -477,8 +551,8 @@ public:
       const double T_neg_hi = std::min(T_src_max, 0.0);
       double integral = 0.0;
       if (T_pos_lo < T_src_max) {
-        integral += root_vuln_integral_from_psi.eval(T_src_max) -
-                    root_vuln_integral_from_psi.eval(T_pos_lo);
+        integral += root_vuln_integral_at(T_src_max) -
+                    root_vuln_integral_at(T_pos_lo);
       }
       if (T_src_min < T_neg_hi) {
         integral += (T_neg_hi - T_src_min);
@@ -486,15 +560,18 @@ public:
 
       // d(integral)/d(T_collar): for T_collar>0 the moving bound is in the
       // vulnerable region. The integrand is the derivative of the *same*
-      // cumulative spline that produced `integral`
-      // (root_vuln_integral_from_psi.deriv), NOT the separate root_vuln_from_psi
-      // spline: the two agree on the knot domain but extrapolate independently
-      // (both clamp-to-last-value, #527), so beyond the domain only the integral
-      // spline's own derivative stays consistent with its value. For T_collar<0
-      // (an above-atmospheric collar) the moving bound is in the f_r==1 part,
-      // contributed linearly, so the slope is 1.
+      // cumulative curve that produced `integral`
+      // (root_vuln_integral_deriv_at), NOT the separate root_vuln_from_psi
+      // spline: the two agree on the knot domain but are bounded differently past
+      // it -- the conductivity lookup clamps its argument to the last knot, the
+      // integral is capped at G(inf) -- so beyond the domain only the integral's
+      // own derivative stays consistent with the value used here (issue #1; the
+      // reasoning is #527's, the "both clamp-to-last-value" it used to cite was
+      // never true of either). For T_collar<0 (an above-atmospheric collar) the
+      // moving bound is in the f_r==1 part, contributed linearly, so the slope
+      // is 1.
       const double fr_at =
-          (T_collar > 0.0) ? root_vuln_integral_from_psi.deriv(T_collar) : 1.0;
+          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
       const double dinteg_dT = sign_var * fr_at;
 
       const double r_R_H = network_.r_R_H_min[i] * span / integral;
@@ -545,16 +622,20 @@ private:
     // once), and psi_soil[i] is constant across the whole solve (precomputed in
     // begin_solve).
     const double G_at_T_collar =
-        use_integral_cache ? root_vuln_integral_from_psi.eval(T_collar) : 0.0;
+        use_integral_cache ? root_vuln_integral_at(T_collar) : 0.0;
 
     // GUARD POLICY (the per-layer isfinite/stop guards here were added while
     // debugging the #485 drought-NaN, now fixed at source by the soil residual-
     // moisture floor). Most were defensive and redundant, so they have been
     // removed from this hot loop; the remaining two are load-bearing:
-    //   * the equal-potentials f_ri <= 0 check below: root_vuln_from_psi
-    //     LINEARLY extrapolates NEGATIVE beyond its domain, so a deep-drought
-    //     layer can produce negative conductivity -> negative-but-FINITE r_R ->
-    //     wrong-sign E_i that the post-loop isfinite(E_up) net would NOT catch.
+    //   * the equal-potentials f_ri <= 0 check below: it USED to be the only
+    //     thing standing between a deep-drought layer and the negative
+    //     conductivity root_vuln_from_psi's extrapolant produced past its
+    //     domain -- negative-but-FINITE r_R, so a wrong-sign E_i the post-loop
+    //     isfinite(E_up) net would not catch. That case is now prevented at
+    //     source: root_vuln_at clamps its argument to the last knot, so f_ri is
+    //     bounded below by the last knot's ~1% (issue #1). The check stays as a
+    //     cheap assertion on that, not as the enforcement.
     //   * the post-loop isfinite(E_up) check: any non-finite produced anywhere
     //     in the loop propagates into the sum and is caught there once per call.
     // Everything else is provably safe to drop on the valid path: psi_soil is
@@ -576,8 +657,10 @@ private:
 
       // Fraction of conductance in roots in a given layer at the driest suction
       // (which here equals the root collar's).
-      // root_vuln_from_psi is a pre-built spline of exp(-(psi/b_root)^c_root)
-      double f_ri = root_vuln_from_psi.eval(T_src_max);
+      // root_vuln_from_psi is a pre-built spline of exp(-(psi/b_root)^c_root),
+      // read through root_vuln_at so a layer drier than the grid gets the last
+      // knot's conductivity rather than an extrapolated (eventually negative) one.
+      double f_ri = root_vuln_at(T_src_max);
       if (!std::isfinite(f_ri) || f_ri <= 0.0) {
         util::stop("E_from_Soil_to_Root_Collar invalid f_ri; layer=" + std::to_string(i) +
                    "; f_ri=" + util::to_string(f_ri) +
@@ -626,7 +709,7 @@ private:
           if (arg == T_collar) return G_at_T_collar;
           if (arg == psi_soil[i]) return root_vuln_integral_soil_[i];
         }
-        return root_vuln_integral_from_psi.eval(arg);
+        return root_vuln_integral_at(arg);
       };
 
       double integral = 0.0;
@@ -641,11 +724,15 @@ private:
 
     // span = T_src_max - T_src_min > 0 here (the equal-potentials case is
     // handled in the branch above). integral comes from the monotone-increasing
-    // cumulative-vulnerability spline so it is strictly > 0 over a span>0
-    // interval; forming r_R_H as r_R_H_min * span / integral is one division
-    // (vs the old f_r_average = integral/span then r_R_H_min/f_r_average two),
-    // and needs no per-layer finiteness guard (any stray NaN/Inf propagates to
-    // the post-loop isfinite(E_up) net).
+    // cumulative-vulnerability curve so it is > 0 over a span>0 interval;
+    // forming r_R_H as r_R_H_min * span / integral is one division (vs the old
+    // f_r_average = integral/span then r_R_H_min/f_r_average two), and needs no
+    // per-layer finiteness guard (any stray NaN/Inf propagates to the post-loop
+    // isfinite(E_up) net).
+    //
+    // The exception, since the cap: with BOTH bounds past 7.3132 MPa the integral
+    // is exactly 0 and r_R_H +Inf. E_i is then -0 and duptake_dpsi NaN, which its
+    // caller reads as "use central differences".
     const double span = T_src_max - T_src_min;
 
     // Find the horizantal resistance in a given layer by dividing the minimum resistance (i.e. maximum conductivity) by the fractional loss of conductivity

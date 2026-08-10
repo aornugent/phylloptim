@@ -48,6 +48,11 @@ struct Row {
   int layers;
   // outputs
   double psi_stem, opt_root_psi, ci, assim, transpiration, gc, profit, e_up, uptake;
+  // WHICH KIND of operating point the solve found. Deliberately NOT written to
+  // the golden file: the file is compared bit-exactly and a new column would
+  // force a regeneration, which is the one thing this file must not need for a
+  // pure addition. It is checked by count instead (see check_operating_kinds).
+  phylloptim::Leaf::OperatingPointKind kind;
 };
 
 // Trait values and fixed drivers from plant's tests/testthat/test-leaf.r.
@@ -82,7 +87,8 @@ Row solve(double psi_soil, double ppfd, double vpd, int layers) {
   }
   return Row{psi_soil,        ppfd,   vpd,        layers,     l.opt_psi_stem_,
              l.opt_root_psi_, l.ci_, l.assim_colimited_, l.transpiration_,
-             l.stom_cond_CO2_,   l.profit_, l.E_up_,        uptake};
+             l.stom_cond_CO2_,   l.profit_, l.E_up_,        uptake,
+             l.operating_point_kind()};
 }
 
 std::vector<Row> run_grid() {
@@ -102,6 +108,78 @@ std::vector<Row> run_grid() {
     }
   }
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// The classification of the grid, by count
+// ---------------------------------------------------------------------------
+//
+// `Leaf::operating_point_kind()` says which branch of the collar solve produced
+// the point, and the grid's split between those branches is already an
+// established number: 240 of the 288 points are feasible, of which 198 sit at an
+// interior profit maximum and 42 at a constrained optimum pinned to a bracket
+// bound (24 wet, 18 dry); the remaining 48 shut down. Those figures were measured
+// when PLAN 11a replaced the collar solver and are quoted in the developer guide
+// and in maximise_profit_over_collar's own comment.
+//
+// So this asserts the classification against numbers that already exist rather
+// than inventing reference values for it. It is a cheap test with a specific
+// job: the tag must come from the branch that was TAKEN, and a plausible-looking
+// wrong implementation -- classifying by |dprofit| against a tolerance -- would
+// not reproduce this split, because dprofit's shut-down sentinel is exactly 0.0
+// and would move all 48 shutdown points into `interior`.
+//
+// Three kinds are expected to be EMPTY here: `shade-death` because the grid's
+// minimum assim_max_ is 3.71 (it is reached by light, not by drying);
+// `solver-refused` and `non-finite-gradient` because both bracket endpoints
+// admit a usable gradient on all 240 feasible rows.
+//
+// A zero counts for this grid, whose psi_soil values are {0.5, 1, 2, 3, 4, 6},
+// and says nothing about the model. What the two failure branches do is checked
+// by test_collar_solve_refuses_rather_than_guessing in test_leaf.cpp.
+struct KindCount {
+  phylloptim::Leaf::OperatingPointKind kind;
+  int expected;
+};
+
+int check_operating_kinds(const std::vector<Row> &rows) {
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  const KindCount expected[] = {
+      {Kind::Interior, 198},        {Kind::PinnedWet, 24},
+      {Kind::PinnedDry, 18},        {Kind::HydraulicShutdown, 48},
+      {Kind::Determined, 0},        {Kind::ShadeDeath, 0},
+      {Kind::Prescribed, 0},       {Kind::SolverRefused, 0},
+      {Kind::NonFiniteGradient, 0}, {Kind::Unsolved, 0},
+  };
+
+  int failures = 0;
+  int classified = 0;
+  for (const KindCount &e : expected) {
+    int got = 0;
+    for (const Row &r : rows) {
+      if (r.kind == e.kind) {
+        ++got;
+      }
+    }
+    classified += got;
+    if (got != e.expected) {
+      ++failures;
+      fprintf(stderr, "FAIL kinds: %s got %d, expected %d\n",
+              phylloptim::Leaf::operating_point_kind_name(e.kind), got,
+              e.expected);
+    }
+  }
+  if (classified != static_cast<int>(rows.size())) {
+    ++failures;
+    fprintf(stderr, "FAIL kinds: %d of %zu points classified\n", classified,
+            rows.size());
+  }
+  if (failures == 0) {
+    printf("kinds: %zu points -- 198 interior, 42 pinned (24 wet, 18 dry), "
+           "48 shutdown\n",
+           rows.size());
+  }
+  return failures == 0 ? 0 : 1;
 }
 
 const char *kHeader =
@@ -403,5 +481,13 @@ int main(int argc, char **argv) {
       return 2;
     }
   }
-  return compare(tol);
+  // Two independent checks over the same grid: the nine reported numbers against
+  // the golden file, and the operating-point classification against the counts
+  // recorded in the developer guide. Both run even if the first fails -- a
+  // classification change and a numeric change have different causes, and seeing
+  // only one of them is how a mixed diff gets misread. The grid is solved twice,
+  // which costs ~4 ms.
+  const int golden_status = compare(tol);
+  const int kind_status = check_operating_kinds(run_grid());
+  return (golden_status != 0 || kind_status != 0) ? 1 : 0;
 }

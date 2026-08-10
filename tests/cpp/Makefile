@@ -16,7 +16,9 @@
 CXX      ?= c++
 CXXSTD   ?= -std=c++20
 OPT      ?= -O2
-WARN     ?= -Wall -Wextra -Wno-unused-parameter
+# -Werror=switch only: operating_point_kind_name switches over OperatingPointKind
+# with no default, so a kind added without a name stops this build.
+WARN     ?= -Wall -Wextra -Wno-unused-parameter -Werror=switch
 
 PHYLLOPTIM_INC   ?= ../../inst/include
 BH_INC     ?= $(shell Rscript -e 'cat(system.file("include", package="BH"))' 2>/dev/null)

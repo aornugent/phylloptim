@@ -37,6 +37,33 @@ through to the spline and returns non-finite rather than throwing — the guard 
 
 # phylloptim 0.2.0
 
+## A near-embolised root is no longer an ever-stronger pump
+
+The two root vulnerability curves stop at the 1%-conductivity point (6.82 MPa at the
+root defaults), and both were left extrapolating. Past the last knot the conductivity
+curve crossed zero at 7.3742 MPa and reached -20.35 at 1000 MPa, while the cumulative
+integral kept accumulating past a limit it had already reached to 99.83%. The integral
+is the denominator of the per-layer mean resistance `r_R_H = r_R_H_min * span /
+integral`, so resistance *fell* as a layer dried: the drier a near-embolised layer, the
+harder the plant pumped water into it, and whole-plant shutdown keys off the wettest
+layer so nothing stopped it.
+
+Both curves are now bounded, and read only through accessors so a bare `.eval` cannot
+reintroduce the old behaviour. The integral is capped at its closed form
+`G(inf) = (b/c)*Gamma(1/c)`; the conductivity lookup clamps its argument to the last
+knot and its spline refuses extrapolation, matching the stem pair. Measured on one
+rooted layer with unit horizontal resistance and the collar at 1 MPa, the reverse flux
+into a 1000 MPa layer goes from -14.08 to -2.47 mol H2O m^-2 s^-1 — 5.70x too high
+before, and now the whole area under the conductivity curve over that interval, which is
+the right limit. A tenfold drier layer no longer pumps 4x harder.
+
+**Golden-identical.** Instrumented over the grid, the driest argument the integral ever
+sees is 7.0 MPa: past the last knot, short of the 7.3132 MPa where the cap binds. All 288
+rows x 9 fields are bit-identical to a baseline generated on the same machine.
+`test_root_vulnerability_is_bounded_past_its_grid` is what stands behind the fix
+instead. Costs +2.0% on the collar solve (7.33 -> 7.48 us, interleaved x11); a no-op
+wrapper around the same `.eval` measures 7.43, so two thirds of that is the extra call
+rather than the bound.
 ## Trait gradients over a batch of observations, composed in C++ -- 22x
 
 `leaf_batch()` and `leaf_gradient_batch()`. The same gradient `leaf_gradient()`

@@ -922,7 +922,111 @@ public:
   void optimise_psi_stem_Sperry();
   void optimise_psi_stem_TF();
 
+  // --- WHICH KIND of operating point the collar solve found -------------------
+  //
+  // The operating point is not one kind of thing, and which kind it is changes
+  // what a derivative taken from it means. Along one drydown the leaf passes
+  // through these in order: an interior profit maximum while the soil is wet,
+  // then a constrained optimum pinned against a hydraulic limit, then shutdown.
+  // At an interior optimum a trait moves a FREE optimum; at a pin it moves the
+  // LIMIT itself; at shutdown the water response is zero while the carbon
+  // response is not. A consumer of `dprofit_droot_collar_psi` needs to know
+  // which of those it is holding, and nothing in the returned numbers says.
+  //
+  // ⚠️ **This is recorded by the branch that was TAKEN, never inferred after the
+  // fact from a residual**, and that is the whole point of it.
+  // `dprofit_at_collar_psi` returns a hard 0.0 SENTINEL in the no-flow /
+  // infeasible state (see its `feasible` out-parameter). So a classifier of the
+  // form "|dprofit| within tolerance => interior optimum" records such a state as
+  // a stationary point, and then reads a curvature of zero off the same
+  // sentinel -- twice-confirmed and wrong. No residual test can separate the two,
+  // because the two return the same number.
+  enum class OperatingPointKind {
+    // No solve has run on this object since it was constructed, re-traited, or
+    // driven through one of the off-path psi_stem optimisers. Reading an
+    // operating point in this state reads NA sentinels.
+    Unsolved,
+    // Interior profit maximum: dprofit == 0 was solved for, strictly inside the
+    // feasible collar interval. 198 of the 288 golden grid points.
+    Interior,
+    // Constrained optimum pinned at the WET end of the feasible interval, just
+    // inside root_zero_E (the collar at which uptake is exactly zero). profit is
+    // still climbing toward the wet bound, so the bound is the answer. 24 golden
+    // points. The gradient here is genuinely non-zero.
+    PinnedWet,
+    // Constrained optimum pinned at the DRY end, min(root_crit,
+    // supply_psi_crit()). 18 golden points. Gradient genuinely non-zero.
+    PinnedDry,
+    // The feasible interval collapsed to a point (width <= GSS_tol_abs), so
+    // feasibility DETERMINED the collar potential and nothing was optimised.
+    // There is no free variable left to differentiate.
+    Determined,
+    // Shutdown on water: no collar potential both moves water and stays inside
+    // the stem's and the root's critical potentials. The stem holds at psi_crit,
+    // transpiration is zero, and the leaf pays respiration plus the hydraulic
+    // cost there. 48 of the 288 golden grid points. The water response is zero;
+    // the carbon response is not.
+    HydraulicShutdown,
+    // Shutdown on light: assim_max_ < 0, so gross assimilation at ci = ca cannot
+    // cover dark respiration. Governed by PPFD and temperature, not by water, so
+    // no rainfall sweep reaches it -- and the golden grid does not either (its
+    // minimum assim_max_ is 3.71).
+    ShadeDeath,
+    // The collar potential was IMPOSED by the caller (evaluate_root_collar_psi /
+    // profit_at_collar_psi), clamped into the feasible interval, not optimised.
+    // dprofit is generally non-zero and is the whole point on that path -- it is
+    // the acclimation rate, not a residual.
+    Prescribed,
+    // The solver could not move, and NO PLANT IS DESCRIBED. Either an endpoint
+    // admitted no feasible gradient (so the golden-section fallback ran), or the
+    // gradient was non-positive at the wet end AND non-negative at the dry end,
+    // which makes the interior stationary point a MINIMUM and leaves the maximum
+    // at one of the two ends with nothing to say which. This is deliberately NOT
+    // reported as a pin: attributing it to whichever bound is nearer would return
+    // a plausible, finite, wrong answer.
+    SolverRefused,
+    // A partial derivative came back non-finite where feasibility said it should
+    // not have. Distinct from SolverRefused because it is a different fault, and
+    // there is nowhere downstream to put the test.
+    NonFiniteGradient,
+  };
+
+  // Read-only on purpose: the tag is an output of the solve, and a settable one
+  // would be a way to disagree with it. Same argument as `supply_kind_`'s two
+  // entry points above, one step further.
+  OperatingPointKind operating_point_kind() const {
+    return operating_point_kind_;
+  }
+  static const char* operating_point_kind_name(OperatingPointKind kind);
+
+private:
+  // Written by every path out of the collar solve, and reset to Unsolved at the
+  // top of prepare_collar_solve. Hazard 8 in the developer guide is why: `Leaf`
+  // is a value member that plant reuses for every individual in a patch, so a
+  // branch that declines to write this would leave the PREVIOUS plant's
+  // classification -- a plausible answer about a different plant, which is the
+  // worst failure shape available here. Defaulting the reset to Unsolved means a
+  // path that forgets reports "unclassified" instead.
+  OperatingPointKind operating_point_kind_ = OperatingPointKind::Unsolved;
 };
+
+// Human-readable tag. The switch has no default, so a missing name is a -Wswitch
+// warning -- an error under the test suite's -Werror=switch, "unknown" elsewhere.
+inline const char* Leaf::operating_point_kind_name(OperatingPointKind kind) {
+  switch (kind) {
+    case OperatingPointKind::Unsolved:          return "unsolved";
+    case OperatingPointKind::Interior:          return "interior";
+    case OperatingPointKind::PinnedWet:         return "pinned-wet";
+    case OperatingPointKind::PinnedDry:         return "pinned-dry";
+    case OperatingPointKind::Determined:        return "determined";
+    case OperatingPointKind::HydraulicShutdown: return "hydraulic-shutdown";
+    case OperatingPointKind::ShadeDeath:        return "shade-death";
+    case OperatingPointKind::Prescribed:        return "prescribed";
+    case OperatingPointKind::SolverRefused:     return "solver-refused";
+    case OperatingPointKind::NonFiniteGradient: return "non-finite-gradient";
+  }
+  return "unknown";
+}
 
 
 // `namespace detail` used to live here, holding templated REPLICAS of the profit
@@ -1098,6 +1202,9 @@ inline void Leaf::setup_clean_leaf() {
   vcmax_= util::na_value; //kg m^-3
   jmax_= util::na_value; //kg m^-3
   opt_root_psi_ = util::na_value; // MPa, positive magnitude
+  // The NA sentinel's counterpart for the operating-point classification: no
+  // solve has run, so there is no kind of point to report.
+  operating_point_kind_ = OperatingPointKind::Unsolved;
   leaf_temp_= util::na_value; // deg C
   Tair_= util::na_value; // deg C
   Rn_= util::na_value; // W m^-2
@@ -1466,6 +1573,11 @@ inline void Leaf::set_shutdown_state(double root_collar) {
   opt_root_psi_ = root_collar;
   opt_psi_stem_ = psi_crit;
   profit_ = -R_d_ - hydraulic_cost_TF(psi_crit);
+  // Tagged here rather than at the four call sites, so a fifth reason to shut
+  // down cannot arrive without a classification. All four are the same
+  // ecological statement -- the soil is too dry for any collar potential that
+  // both moves water and stays inside the critical potentials.
+  operating_point_kind_ = OperatingPointKind::HydraulicShutdown;
 
   // Write the flux outputs too. Before this they were left holding whatever the
   // PREVIOUS solve on this object put there, and set_physiology did not reset them
@@ -1499,6 +1611,11 @@ inline void Leaf::set_shutdown_state(double root_collar) {
 // caller should stop; returns true with [bound_a, bound_b] set to the feasible
 // collar-potential interval (positive magnitudes) otherwise.
 inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b){
+
+  // Clear the classification FIRST, so that a path which declines to write it
+  // reports "unclassified" rather than the previous plant's kind of operating
+  // point (hazard 8). Every exit below, and both callers, write it again.
+  operating_point_kind_ = OperatingPointKind::Unsolved;
 
   // Hand the supply path the start of a solve: it builds its per-solve caches and
   // reports back the wettest rooted layer -- the SMALLEST suction, and the lower
@@ -1550,6 +1667,11 @@ if(assim_max_ < 0){
     // and it is reported. Keeps profit_ == assim_colimited_ -
     // hydraulic_cost_TF() in every branch.
     assim_colimited_ = -R_d_;
+    // Shutdown on LIGHT, not on water: gross assimilation at ci = ca cannot
+    // cover dark respiration. Tagged separately from the hydraulic exits
+    // because the two respond to different drivers -- a rainfall sequence
+    // traverses the hydraulic ones and never reaches this.
+    operating_point_kind_ = OperatingPointKind::ShadeDeath;
     // E_up_ and soil_consumption_ are already correct: the
     // E_from_Soil_to_Root_Collar call above evaluates them at root_zero_E, the
     // collar potential at which uptake is zero. The leaf-side pair is set
@@ -1625,6 +1747,9 @@ if(assim_max_ < 0){
       opt_psi_stem_ = psi_stem_single;
       profit_ = profit_psi_stem_TF(opt_psi_stem_, opt_root_psi);
       opt_root_psi_ = opt_root_psi;
+      // Feasibility DETERMINED this point; no maximisation happened, and there is
+      // no free variable left for a derivative to move.
+      operating_point_kind_ = OperatingPointKind::Determined;
 
       if (!std::isfinite(profit_)) {
         util::stop("Error: non-finite profit in collapsed-root interval; "
@@ -1714,12 +1839,26 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
     }
   }
 
-  // No usable gradient at one end. Nothing measured reaches this -- both ends are
+  // No usable gradient at one end. No driver sweep reaches this -- both ends are
   // feasible on all 240 feasible golden-grid rows -- so treat it as a signal
   // rather than a routine path if it ever fires. Falling back to the search this
   // replaced means the change cannot make a previously-working case fail, which
   // is worth six lines on a solve plant runs millions of times.
-  if (!ok_lo || !ok_hi) {
+  //
+  // Two distinguishable faults reach here, and the tag separates them because
+  // they are different things to have gone wrong. `!ok` is the supply/feasibility
+  // report: no point near that end admits an informative gradient at all.
+  // `ok && !isfinite` is a partial that came back non-finite where feasibility
+  // said it would not -- checked here because there is nowhere downstream to put
+  // that test. A NaN endpoint fails both pin comparisons below, since NaN
+  // compares false against everything, so without this it reaches the root-find
+  // on a bracket it cannot have whenever the other endpoint also fails its pin
+  // test.
+  if (!ok_lo || !ok_hi || !std::isfinite(f_lo) || !std::isfinite(f_hi)) {
+    operating_point_kind_ =
+        ((ok_lo && !std::isfinite(f_lo)) || (ok_hi && !std::isfinite(f_hi)))
+            ? OperatingPointKind::NonFiniteGradient
+            : OperatingPointKind::SolverRefused;
     return util::golden_section_max(
         [&](double bound) {
           const double psi_stem =
@@ -1758,16 +1897,45 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // to this solver -- golden section has it too -- but it is a real
   // non-differentiable set in trait space, and it sits where a calibration is most
   // likely to wander.
+  //
+  // ⚠️ The two pin tests are not exhaustive, and the leftover case is a FAILURE
+  // rather than a third pin. dprofit <= 0 at the wet end AND >= 0 at the dry end
+  // means profit falls away from both ends into the interval: the interior
+  // stationary point is a MINIMUM and the maximum sits at one of the two bounds.
+  // Tagged SolverRefused, because reporting it as a pin -- to whichever bound the
+  // ordering of the tests happens to reach first -- would hand back a plausible,
+  // finite, wrong answer with a gradient that is genuinely non-zero in the wrong
+  // direction.
+  //
+  // The gradients cannot say which of the two bounds it is; the profits can,
+  // since f_lo <= 0 makes lo a local maximum and f_hi >= 0 makes hi one.
+  if (f_lo <= 0.0 && f_hi >= 0.0) {
+    operating_point_kind_ = OperatingPointKind::SolverRefused;
+    const double p_lo = profit_psi_stem_TF(
+        find_psi_stem_from_psi_root(lo, supply_psi_soil()), lo);
+    const double p_hi = profit_psi_stem_TF(
+        find_psi_stem_from_psi_root(hi, supply_psi_soil()), hi);
+    if (!std::isfinite(p_hi)) {
+      return lo;
+    }
+    if (!std::isfinite(p_lo)) {
+      return hi;
+    }
+    return p_hi > p_lo ? hi : lo;
+  }
   if (f_lo <= 0.0) {
+    operating_point_kind_ = OperatingPointKind::PinnedWet;
     return lo;
   }
   if (f_hi >= 0.0) {
+    operating_point_kind_ = OperatingPointKind::PinnedDry;
     return hi;
   }
 
   // Interior stationary point. f_lo > 0 > f_hi, so the bracket is valid and
   // uniroot_smooth's throw-on-bad-bracket cannot fire; passing the two endpoint
   // values it already has saves it re-evaluating them.
+  operating_point_kind_ = OperatingPointKind::Interior;
   return util::uniroot_smooth(dprofit, lo, hi, f_lo, f_hi, collar_root_tol,
                               static_cast<size_t>(ci_niter));
 }
@@ -1831,6 +1999,10 @@ inline double Leaf::profit_at_collar_psi(double target_opt_root_psi,
     opt_psi_stem_ = find_psi_stem_from_psi_root(opt_root_psi, supply_psi_soil());
     opt_root_psi_ = opt_root_psi;
     profit_ = profit_psi_stem_TF(opt_psi_stem_, opt_root_psi);
+    // Not an optimum of any kind: the collar potential came from the caller. On
+    // this path a non-zero dprofit is the answer (TF24f's acclimation rate), not
+    // a residual to be checked against zero.
+    operating_point_kind_ = OperatingPointKind::Prescribed;
 
     if(!std::isfinite(profit_)){
         util::stop("Error: non-finite profit in evaluate_root_collar_psi; "
@@ -2540,6 +2712,11 @@ double benefit_ = assim_colimited_;
 // need docs on Golden Section Search.
 inline void Leaf::optimise_psi_stem_Sperry() {
 
+    // These two optimise psi_stem directly and produce no root-collar operating
+    // point, so they have no kind to report -- clear it rather than leave the
+    // last collar solve's classification standing over their outputs.
+    operating_point_kind_ = OperatingPointKind::Unsolved;
+
     if (!supply_is_single_layer()) {
     util::stop("psi soil must have only one value to use non-root-based profit optimisation methods");
   }
@@ -2567,6 +2744,9 @@ inline void Leaf::optimise_psi_stem_Sperry() {
   
 
 inline void Leaf::optimise_psi_stem_TF() {
+
+  // See optimise_psi_stem_Sperry: no root-collar operating point, so no kind.
+  operating_point_kind_ = OperatingPointKind::Unsolved;
 
   if (!supply_is_single_layer()) {
     util::stop("psi soil must have only one value to use non-root-based profit optimisation methods");
