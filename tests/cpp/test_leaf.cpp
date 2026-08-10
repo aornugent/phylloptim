@@ -1908,6 +1908,229 @@ void test_perturb_stem_b_matches_a_rebuild() {
   }
 }
 
+// --- the gradient transpose --------------------------------------------------
+//
+// <v, J u> == <J^T v, u>, for arbitrary output adjoint v and input direction u.
+//
+// ⚠️ THIS IS EXACT ARITHMETIC, NOT AN APPROXIMATION, which is what makes it the
+// cheapest correctness statement available here and what sets the tolerance.
+// Both sides multiply the SAME finite differences -- the transpose takes the same
+// two perturbed evaluations per parameter that the forward composite does -- and
+// only sum them in a different order. So the two may differ by floating-point
+// reassociation and by nothing else. A discrepancy anywhere near this package's
+// ~1e-09 solver floor is not noise; it means the transpose is the transpose of a
+// different operator.
+//
+// TWO CHECKS, AND THE FIRST IS THE SHARPER ONE. With v = e_j the transpose row
+// must BE the forward Jacobian's jth column, entry by entry, which says WHICH
+// output disagrees instead of reporting one contracted scalar. Then the identity
+// itself, against randomised v and u.
+//
+// THE TOLERANCES, MEASURED. Both are 1e-12, and both are set two orders above
+// what was measured rather than at a round number:
+//
+//   * per entry, v = e_j: worst 2.68e-14 relative, gcc and clang identical. It is
+//     not 1e-16 because it is CANCELLATION and not error -- the worst entry is
+//     dgc/droot_c at psi_soil 3, which is -2.5e-07 against a row whose largest
+//     entry is 680, i.e. 4e-10 of its own row. Against the row scale the same
+//     disagreement is 1e-23.
+//   * the identity: worst 1.41e-14, again identical under both compilers. It is
+//     taken relative to the sum of |v_j J_jk u_k| rather than to |<v, Ju>|,
+//     because that sum is the scale reassociation error is bounded by -- 56 terms
+//     times eps is 1.2e-14, which is what is observed -- while |<v, Ju>| can
+//     cancel to nothing and would make the test's strictness depend on the draw.
+//
+// gcc and clang agreeing to the last bit is not luck: `transpose_at` rounds every
+// product through `rounded()` for exactly this reason, so the residual is a
+// property of the arithmetic rather than of the compiler.
+//
+// It runs over the golden file's 288 operating points, which is deliberate: 198
+// of them are interior and take the composite, 90 are pinned or shut down and take
+// the differenced fallback. The transpose has to satisfy the identity on both
+// routes, and it also has to report the same status the forward path does at every
+// one of them. Then six more on the single-potential supply path, which is where
+// the fifteenth parameter -- `resistance` -- exists at all.
+void test_gradient_transpose_matches_the_forward_jacobian() {
+  printf("the gradient transpose satisfies <v, Ju> == <J^T v, u>\n");
+  namespace g = phylloptim::gradient;
+
+  // The trait vector used everywhere else in this suite, then
+  // leaf_specific_conductance_max and the single path's series resistance.
+  double theta[g::n_pars] = {96.0,     2.680147, 3.898245, 5.870283, 2.680147,
+                             3.898245, 5.870283, 1.5,      157.44,   0.30,
+                             0.7,      0.99,     7.5,      1.0 * 0.000157 / 5.0,
+                             1.0e4};
+  int pars[g::n_pars];
+  for (int i = 0; i < g::n_pars; ++i) {
+    pars[i] = i;
+  }
+
+  // A deterministic LCG, so that a failure is reproducible and a passing run is
+  // not a lucky draw. Values in [-1, 1).
+  unsigned long long rng = 0x9e3779b97f4a7c15ull;
+  auto unif = [&rng]() {
+    rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+    return double((rng >> 11) & ((1ull << 53) - 1)) / double(1ull << 53) * 2.0 -
+           1.0;
+  };
+
+  const g::Settings settings;
+  double worst = 0.0, worst_column = 0.0;
+  std::string worst_where;
+  int points = 0, cases = 0, interior = 0, fallback = 0;
+  int status_mismatch = 0, column_mismatch = 0;
+
+  // One leaf per supply path: the path is the leaf's own configuration and
+  // `gradient::apply()` does not set it, so a single-potential gradient needs a
+  // leaf that has been switched over.
+  phylloptim::Leaf multilayer;
+  phylloptim::Leaf single_potential;
+  single_potential.set_supply_single();
+
+  // One operating point: the forward Jacobian once, then the transpose against
+  // each basis adjoint and one random one.
+  auto check = [&](const g::Drivers &d, bool single, int npars,
+                   const std::string &where) {
+    phylloptim::Leaf &l = single ? single_potential : multilayer;
+    g::Result fwd;
+    g::at(l, theta, d, single, pars, std::size_t(npars), settings, fwd);
+    ++points;
+    if (fwd.used_ift) {
+      ++interior;
+    } else {
+      ++fallback;
+    }
+
+    for (int trial = 0; trial <= g::n_outputs; ++trial) {
+      double v[g::n_outputs];
+      for (int j = 0; j < g::n_outputs; ++j) {
+        v[j] = trial < g::n_outputs ? (j == trial ? 1.0 : 0.0) : unif();
+      }
+
+      g::TransposeResult tr;
+      g::transpose_at(l, theta, d, single, pars, std::size_t(npars), v, settings,
+                      tr);
+
+      // The classification has to travel with the numbers: the composite is
+      // valid only where the forward path says it is.
+      if (tr.status != fwd.status || tr.used_ift != fwd.used_ift) {
+        ++status_mismatch;
+      }
+
+      if (trial < g::n_outputs) {
+        for (int k = 0; k < npars; ++k) {
+          const double want = fwd.grad[std::size_t(k * g::n_outputs + trial)];
+          const double got = tr.adjoint[std::size_t(k)];
+          const double err =
+              std::abs(got - want) / std::max(std::abs(want), 1e-30);
+          if (err > worst_column) {
+            worst_column = err;
+          }
+          if (!(err <= 1e-12)) {
+            ++column_mismatch;
+          }
+        }
+      }
+
+      for (int draw = 0; draw < 3; ++draw) {
+        double u[g::n_pars];
+        for (int k = 0; k < npars; ++k) {
+          u[k] = unif();
+        }
+        double lhs = 0.0, rhs = 0.0, scale = 0.0;
+        for (int k = 0; k < npars; ++k) {
+          for (int j = 0; j < g::n_outputs; ++j) {
+            const double term =
+                v[j] * fwd.grad[std::size_t(k * g::n_outputs + j)] * u[k];
+            lhs += term;
+            scale += std::abs(term);
+          }
+          rhs += tr.adjoint[std::size_t(k)] * u[k];
+        }
+        ++cases;
+        const double err = std::abs(lhs - rhs) / (scale > 0.0 ? scale : 1.0);
+        if (err > worst) {
+          worst = err;
+          worst_where = where + ", trial " + std::to_string(trial);
+        }
+      }
+    }
+  };
+
+  const double kAreaLeaf = 0.05;
+  const double psi_soils[] = {0.5, 1.0, 2.0, 3.0, 4.0, 6.0};
+  const double ppfds[] = {100.0, 500.0, 900.0, 1500.0};
+  const double vpds[] = {0.5, 1.0, 2.0, 4.0};
+  const int layer_counts[] = {1, 3, 5};
+
+  // The golden file's grid, built the way test_golden.cpp builds it. Fourteen
+  // parameters: everything but `resistance`, which the multi-layer path does not
+  // have.
+  for (double p : psi_soils) {
+    for (double q : ppfds) {
+      for (double vp : vpds) {
+        for (int n : layer_counts) {
+          g::Drivers d;
+          std::vector<double> ps(n), depth(n), root(n);
+          for (int i = 0; i < n; ++i) {
+            ps[i] = p + 0.25 * i;
+            depth[i] = 1.0 * (i + 1);
+            root[i] = 1.0 / n / kAreaLeaf;
+          }
+          d.root_network = fixture::root_network(root, depth);
+          d.psi_soil = ps;
+          d.soil_depth = depth;
+          d.PPFD = q;
+          d.atm_vpd = vp;
+          d.ca = 40.0;
+          d.leaf_temp = 25.0;
+          d.atm_o2_kpa = 21.0;
+          d.atm_kpa = 101.3;
+          check(d, false, g::n_pars - 1,
+                " at psi_soil " + std::to_string(p) + ", ppfd " +
+                    std::to_string(q) + ", vpd " + std::to_string(vp) + ", " +
+                    std::to_string(n) + " layers");
+        }
+      }
+    }
+  }
+
+  // And the other supply path, at all fifteen. `resistance` is the one parameter
+  // whose step is relative with no floor and whose setter rebuilds the network
+  // rather than the traits, so it is a branch of `apply()` the grid above never
+  // reaches.
+  const int multilayer_points = points;
+  for (double p : psi_soils) {
+    g::Drivers d;
+    d.psi_soil = std::vector<double>{p};
+    d.soil_depth = std::vector<double>{1.0};
+    d.PPFD = 900.0;
+    d.atm_vpd = 2.0;
+    d.ca = 40.0;
+    d.leaf_temp = 25.0;
+    d.atm_o2_kpa = 21.0;
+    d.atm_kpa = 101.3;
+    check(d, true, g::n_pars,
+          " on the single-potential path at psi_soil " + std::to_string(p));
+  }
+
+  printf("  %d operating points (%d interior, %d fallback), %d dot products\n",
+         points, interior, fallback, cases);
+  printf("  worst |<v,Ju> - <J^T v,u>| / sum|v J u| = %.3g%s\n", worst,
+         worst_where.c_str());
+  printf("  worst single Jacobian entry, v = e_j:    %.3g (relative)\n",
+         worst_column);
+  ok(multilayer_points == 288, "the whole golden grid was covered");
+  ok(points - multilayer_points == 6, "and the single-potential path too");
+  ok(interior > 0 && fallback > 0,
+     "both the composite and the differenced fallback were exercised");
+  ok(status_mismatch == 0,
+     "the transpose reports the forward path's status everywhere");
+  ok(column_mismatch == 0,
+     "with v = e_j the transpose row is the Jacobian's jth column");
+  ok(worst <= 1e-12, "the dot-product identity holds to reassociation");
+}
+
 void test_set_traits_matches_a_fresh_leaf() {
   printf("set_traits is indistinguishable from constructing afresh\n");
   Drivers d;
@@ -2485,6 +2708,7 @@ int main() {
   test_temperature_parameters_are_settable();
   test_set_traits_matches_a_fresh_leaf();
   test_perturb_stem_b_matches_a_rebuild();
+  test_gradient_transpose_matches_the_forward_jacobian();
   test_bad_input_throws();
   test_out_of_domain_names_the_spline();
   test_out_of_domain_under_rescale();
