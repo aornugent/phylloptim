@@ -117,7 +117,9 @@ A list with
     \item{`method`}{`"ift"` if the implicit-function composite was used,
       `"fd"` if the fallback was}
     \item{`status`}{`"interior"`, `"pinned"` or `"no-gradient"`}
-    \item{`H`}{the curvature of profit in the collar potential at `psi*`}
+    \item{`H`}{the curvature of profit in the collar potential at `psi*`,
+      one-sided where a centred difference would step outside the feasible
+      collar interval, and `0` where both sides would}
     \item{`stationarity`}{the implied Newton step, in MPa, that `method` was
       decided on}
   }
@@ -163,9 +165,11 @@ point in six is pinned across this package's test grid, all at soil suctions of
 So the premise is **tested rather than assumed**. The test is the implied
 Newton step `|dprofit(psi*) / H|`, a distance in MPa: at a stationary point it
 is zero to solver precision, and at a pinned one it is not. Over the package's
-288-point grid the two populations are five orders of magnitude apart -- worst
-interior `5e-11`, smallest pinned `6e-06` -- so `stationarity_tol` sits in an
-empty band rather than on a judgement call.
+288-point grid the two populations are nine orders of magnitude apart -- worst
+interior `5e-11`, smallest pinned `1.2e-02` -- so `stationarity_tol` sits in an
+empty band rather than on a judgement call. That pinned edge was recorded as
+`6e-06` until the curvature was guarded against `dprofit`'s shut-down sentinel,
+which had been inflating `|H|` at exactly those points.
 
 When the premise does not hold, this falls back to a central finite difference
 of the whole solve, which respects the constraint by construction because it
