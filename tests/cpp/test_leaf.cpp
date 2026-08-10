@@ -1062,6 +1062,39 @@ void test_soil_potential_derivative() {
   }
 }
 
+// The light row. Its referee is the envelope theorem: at an interior optimum the
+// direct partial at a FIXED collar equals the TOTAL derivative of the solved
+// profit, so a central difference of the whole re-solve checks it without
+// sharing a line of code with it.
+void test_light_row() {
+  printf("dprofit/dPPFD against a re-solve\n");
+  for (double psi : {0.5, 1.0, 2.0}) {
+    Drivers d;
+    std::vector<double> ps(3, psi), depth(3);
+    for (int i = 0; i < 3; ++i) { depth[std::size_t(i)] = 1.0 * (i + 1); }
+    phylloptim::Leaf l = make_leaf(d, ps, depth);
+    l.find_root_collar_psi();
+    const std::string at = " at psi_soil=" + std::to_string(psi);
+    if (l.operating_point_kind() != phylloptim::Leaf::OperatingPointKind::Interior) {
+      continue;
+    }
+    const double analytic = l.dprofit_dPPFD();
+    ok(std::isfinite(analytic) && analytic > 0.0,
+       "more light is worth more carbon" + at);
+
+    const double h = 1e-2;  // PPFD is O(900), so this is a relative 1e-5
+    Drivers up = d, dn = d;
+    up.PPFD += h;
+    dn.PPFD -= h;
+    phylloptim::Leaf lu = make_leaf(up, ps, depth);
+    phylloptim::Leaf ld = make_leaf(dn, ps, depth);
+    lu.find_root_collar_psi();
+    ld.find_root_collar_psi();
+    const double fd = (lu.profit_ - ld.profit_) / (2.0 * h);
+    near(analytic, fd, 1e-4, "matches a re-solve of the whole leaf" + at);
+  }
+}
+
 // The net price of soil water, which is what a soil row is multiplied by.
 void test_marginal_price_water() {
   printf("net marginal price of soil water\n");
@@ -2766,6 +2799,7 @@ int main() {
   test_collar_argmax_is_smooth_in_a_trait();
   test_soil_conductance_is_positive();
   test_soil_potential_derivative();
+  test_light_row();
   test_marginal_price_water();
   test_root_vulnerability_is_bounded_past_its_grid();
   test_root_psi_crit_clamp_binds();

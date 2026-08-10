@@ -777,6 +777,11 @@ public:
   //
   double assim_rubisco_limited(double ci_);
   double electron_transport();
+  // The same expression with the light as an argument, so it can be
+  // differentiated in PPFD by the same forward-mode route the assimilation and
+  // cost kernels already use. Cold: reached once per set_physiology and once per
+  // light row, never from inside the collar solve.
+  template <typename T> T electron_transport_kernel(T ppfd) const;
   double assim_electron_limited(double ci_);
   double assim_colimited(double ci_);
 
@@ -812,6 +817,8 @@ public:
   template <typename T> T assim_rubisco_limited_kernel(T ci) const;
   template <typename T> T assim_electron_limited_kernel(T ci) const;
   template <typename T> T assim_colimited_kernel(T ci) const;
+  template <typename T> T colimit_kernel(T assim_rubisco_limited_,
+                                         T assim_electron_limited_) const;
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
   double assim_minus_stom_cond_CO2(double x, double psi_stem, double psi_upstream);
   double psi_stem_to_ci(double psi_stem, double psi_upstream);
@@ -893,6 +900,25 @@ public:
   // Returns the NA sentinel wherever marginal_cost_water_multilayer does, and
   // for the same reason: S unavailable at a branch kink, or non-positive.
   double marginal_price_water();
+
+  // d(profit)/d(absorbed light), at the solved operating point.
+  //
+  // STRUCTURALLY UNLIKE THE SOIL ROWS, which is why it is a separate function
+  // and not another layer of the same loop. A soil row is priced: it moves the
+  // water supply, and the marginal price of water converts that into carbon.
+  // Light moves no water at all. At a fixed collar the whole hydraulic side --
+  // uptake, psi_stem, the cost -- is untouched by PPFD, so this row is a direct
+  // partial of the assimilation kernel, closed by the ci root-find's own
+  // implicit-function term and nothing else:
+  //
+  //   dprofit/dPPFD = (dA/dPPFD)|_ci * (gc/P) / (A'(ci)*umol_to_mol + gc/P)
+  //
+  // The bracket is the ci residual's two partials. Writing this as a price times
+  // a supply derivative would have no supply derivative to use.
+  //
+  // Needs a solved operating point; returns the NA sentinel without one, or
+  // where the solve left no conductance to close the residual with.
+  double dprofit_dPPFD();
 
   // Equivalent Medlyn USO slope implied by the operating point, in kPa^0.5.
   // Defined operationally from the solved chi = ci/ca, by inverting the USO
@@ -2449,15 +2475,20 @@ inline double Leaf:: stom_cond_CO2(double psi_stem, double psi_upstream) {
 // biochemical photosynthesis model equations
 //ensure that units of PPFD_ actually correspond to something real.
 // electron trnansport rate based on light availability and vcmax assuming co-limitation hypothesis
+template <typename T>
+inline T Leaf::electron_transport_kernel(T ppfd) const {
+  return (a * ppfd + jmax_ - sqrt(pow(a * ppfd + jmax_, 2) -
+  4 * curv_fact_elec_trans * a * ppfd * jmax_)) / (2 * curv_fact_elec_trans);
+}
+
 inline double Leaf::electron_transport() {
 
 
 
-  double electron_transport_ = (a * PPFD_ + jmax_ - sqrt(pow(a * PPFD_ + jmax_, 2) - 
-  4 * curv_fact_elec_trans * a * PPFD_ * jmax_)) / (2 * curv_fact_elec_trans); // check brackets are correct
+  double electron_transport_ = electron_transport_kernel(PPFD_);
 
   // double electron_transport_ = (4*a*PPFD_)/sqrt(pow(4*a*PPFD_/jmax_,2)+ 1);
-    return electron_transport_;           
+    return electron_transport_;
 }
 
 //calculate the rubisco-limited assimilation rate, returns umol m^-2 s^-1
@@ -2478,13 +2509,24 @@ inline T Leaf::assim_electron_limited_kernel(T ci) const {
   ((ci - gamma_ * umol_per_mol_to_Pa_) / (ci + 2 * gamma_ * umol_per_mol_to_Pa_));
 }
 
+// The colimitation itself, lifted out so it can be differentiated in the
+// ELECTRON-LIMITED rate as well as in ci -- which is what the light row needs,
+// because PPFD reaches assimilation only through that term. The expression is
+// unchanged character for character, so the association is too and the golden
+// file is the check on that.
+template <typename T>
+inline T Leaf::colimit_kernel(T assim_rubisco_limited_,
+                              T assim_electron_limited_) const {
+  return (assim_rubisco_limited_ + assim_electron_limited_ - sqrt(pow(assim_rubisco_limited_ + assim_electron_limited_, 2) - 4 * curv_fact_colim * assim_rubisco_limited_ * assim_electron_limited_)) /
+             (2 * curv_fact_colim)- R_d_;
+}
+
 template <typename T>
 inline T Leaf::assim_colimited_kernel(T ci) const {
   T assim_rubisco_limited_ = assim_rubisco_limited_kernel(ci);
   T assim_electron_limited_ = assim_electron_limited_kernel(ci);
 
-  return (assim_rubisco_limited_ + assim_electron_limited_ - sqrt(pow(assim_rubisco_limited_ + assim_electron_limited_, 2) - 4 * curv_fact_colim * assim_rubisco_limited_ * assim_electron_limited_)) /
-             (2 * curv_fact_colim)- R_d_;
+  return colimit_kernel(assim_rubisco_limited_, assim_electron_limited_);
 }
 
 inline double Leaf::assim_rubisco_limited(double ci_) {
@@ -2695,6 +2737,50 @@ inline double Leaf::marginal_cost_water_multilayer() {
   const double f_r = proportion_of_conductivity(opt_root_psi_);
   return lambda_TF24(opt_psi_stem_) *
          (1.0 + leaf_specific_conductance_max_ * f_r / S);
+}
+
+inline double Leaf::dprofit_dPPFD() {
+  using AD = xad::fwd<double>::active_type;
+  const double ci = ci_;
+  const double gc = stom_cond_CO2_;
+  // No solved point, or a shut-down one: gc is zero there and the residual this
+  // row is closed by does not exist.
+  if (!std::isfinite(ci) || !std::isfinite(gc) || gc <= 0.0 ||
+      !std::isfinite(electron_transport_) || electron_transport_ <= 0.0) {
+    return util::na_value;
+  }
+
+  // dA/dPPFD at FIXED ci. PPFD reaches assimilation only through the
+  // electron-limited rate, which is linear in the electron transport, so the
+  // linear coefficient is read off the kernel itself rather than rewritten here
+  // -- the one arrangement that cannot drift away from the function it
+  // differentiates.
+  AD ppfd_ad = PPFD_;
+  xad::derivative(ppfd_ad) = 1.0;
+  const AD J = electron_transport_kernel(ppfd_ad);
+  const double per_J = assim_electron_limited_kernel(ci) / electron_transport_;
+  // Materialised, not passed as the expression `J * per_J`: an XAD operator
+  // returns an expression template holding references to its operands, so a
+  // temporary handed straight on would be read after it died.
+  const AD assim_electron = J * per_J;
+  const AD assim_rubisco = assim_rubisco_limited_kernel(ci);
+  const AD assim = colimit_kernel(assim_rubisco, assim_electron);
+  const double dA_dPPFD = xad::derivative(assim);
+
+  // A'(ci), by the same forward-mode route dprofit_droot_collar_psi uses.
+  AD ci_ad = ci;
+  xad::derivative(ci_ad) = 1.0;
+  const double A_prime = xad::derivative(assim_colimited_kernel(ci_ad));
+
+  // The ci residual is A(ci)*umol_to_mol - gc*(ca - ci)/P, so its two partials
+  // are these. The supply slope is positive and the demand slope negative, so
+  // the denominator cannot vanish at a solved point.
+  const double supply = gc / (atm_kpa_ * kPa_to_Pa);
+  const double denom = A_prime * umol_to_mol + supply;
+  if (!std::isfinite(denom) || denom == 0.0) {
+    return util::na_value;
+  }
+  return dA_dPPFD * supply / denom;
 }
 
 inline double Leaf::marginal_price_water() {
