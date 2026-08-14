@@ -26,7 +26,9 @@ struct RootNetwork {
   std::vector<double> r_R_H_min;
   // Cumulative vertical, inter-layer resistance from the surface down to layer i.
   std::vector<double> r_R_V_sum;
-  // Diagnostics only -- read by nothing in the model.
+  // c_r_H is a diagnostic. c_r_V and r_R_V are read by
+  // duptake_droot_carbon: the first recovers the layer's carbon, the second is
+  // the per-layer vertical resistance the cumulative sum is built from.
   std::vector<double> c_r_V, c_r_H, r_R_V;
 };
 
@@ -694,6 +696,101 @@ public:
       const double dnum_dpsi = -1.0;
       out[std::size_t(i)] =
           ((dnum_dpsi * r_R - num * dr_R_dpsi) / (r_R * r_R)) * kg_per_mol_h2o;
+    }
+  }
+
+  // d(E_i)/d(root carbon in layer a), and the same for d(E_i)/d(T_collar), both
+  // in kg to match the accessors above. Two blocks, layer by carbon-layer.
+  //
+  // The carbon reaches a flux only through the two resistances the architecture
+  // model builds from it, and both are proportional to 1/rc: the horizontal one
+  // is layer i's own, the vertical one is summed over every layer at or above i.
+  // So layer a's carbon reaches every layer i >= a and the blocks are LOWER
+  // TRIANGULAR, not diagonal. An implementation that assumes diagonality gets
+  // the shallow layers right and loses the deep ones, which on a drying profile
+  // is the half that carries the flux.
+  //
+  // Why this cannot be recovered from duptake_dpsi: there the cumulative
+  // vertical resistance drops out entirely, because it has no collar dependence,
+  // so that column carries the horizontal term alone. The carbon direction
+  // reaches both.
+  //
+  // NaN contract is duptake_dpsi's -- at a branch kink both whole blocks are
+  // NaN, because a caller using some layers and not others would be mixing an
+  // analytic row with a missing one. A layer with no carbon has no resistance
+  // and contributes nothing rather than dividing by its carbon.
+  void duptake_droot_carbon(double T_collar,
+                            const std::vector<double>& psi_soil,
+                            std::vector<std::vector<double>>& dE_drc,
+                            std::vector<std::vector<double>>& dD_drc) const {
+    const double kink_tol = 1e-8;
+    const std::size_t n = psi_soil.size();
+    dE_drc.assign(n, std::vector<double>(n, 0.0));
+    dD_drc.assign(n, std::vector<double>(n, 0.0));
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    for (int i = 0; i < max_soil_layer; i++) {
+      if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
+          std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
+          std::abs(T_collar) < kink_tol) {
+        dE_drc.assign(n, std::vector<double>(n, nan));
+        dD_drc.assign(n, std::vector<double>(n, nan));
+        return;
+      }
+
+      // Everything down to g is duptake_dpsi_impl's loop, unchanged: the same
+      // span, the same integral, the same moving-bound derivative.
+      const double T_src_min = std::min(psi_soil[i], T_collar);
+      const double T_src_max = std::max(psi_soil[i], T_collar);
+      const double span = T_src_max - T_src_min;
+      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;
+
+      const double T_pos_lo = std::max(T_src_min, 0.0);
+      const double T_neg_hi = std::min(T_src_max, 0.0);
+      double integral = 0.0;
+      if (T_pos_lo < T_src_max) {
+        integral += root_vuln_integral_at(T_src_max) -
+                    root_vuln_integral_at(T_pos_lo);
+      }
+      if (T_src_min < T_neg_hi) {
+        integral += (T_neg_hi - T_src_min);
+      }
+      const double fr_at =
+          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
+      const double dinteg_dT = sign_var * fr_at;
+
+      // A and B carry the whole of the carbon dependence; f and g carry the
+      // whole of the collar dependence. That separation is what makes the rest
+      // a quotient rule rather than a new model.
+      const double A = network_.r_R_H_min[i];
+      const double f = span / integral;
+      const double B = network_.r_R_V_sum[i];
+      const double r_R = A * f + B;
+      const double g = (sign_var * integral - span * dinteg_dT) /
+                       (integral * integral);
+      const double num = T_collar - psi_soil[i] - grav_head_z_[i];
+      const double E_i = num / r_R;
+      const double N = r_R - num * A * g;   // the numerator of dE_i/dT_collar
+      const double r3 = r_R * r_R * r_R;
+      const double dD_dA = ((f - num * g) * r_R - 2.0 * N * f) / r3;
+      const double dD_dB = (-r_R + 2.0 * num * A * g) / r3;
+
+      for (int a = 0; a < max_soil_layer; a++) {
+        // The network stores the split carbon rather than the carbon; either
+        // half recovers it, and c_r_V is the one the vertical term is built on.
+        const double rc_a = 3.0 * network_.c_r_V[std::size_t(a)];
+        if (!(rc_a > 0.0)) {
+          continue;   // no roots in that layer, so no route from its carbon
+        }
+        const double dA = (i == a) ? -A / rc_a : 0.0;
+        const double dB = (a <= i) ? -network_.r_R_V[std::size_t(a)] / rc_a
+                                   : 0.0;
+        const double dr = f * dA + dB;
+        dE_drc[std::size_t(i)][std::size_t(a)] =
+            -(E_i / r_R) * dr * kg_per_mol_h2o;
+        dD_drc[std::size_t(i)][std::size_t(a)] =
+            (dD_dA * dA + dD_dB * dB) * kg_per_mol_h2o;
+      }
     }
   }
 
