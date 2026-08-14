@@ -750,6 +750,25 @@ public:
   // Assembled from the same kernels dprofit_at_collar_psi differentiates, so the
   // two cannot disagree about A' or C'; what is repeated is the assembly.
   double dmarginal_profit_duptake_slope();
+
+  // The two cost traits reach profit through the hydraulic cost and nothing
+  // else -- not the ci residual, not the supply, not the operating point at a
+  // frozen collar -- so their rows are elementary and need no re-solve.
+  //
+  // With q = 1 - f(psi_stem) and C = cost_scale * q^beta2:
+  //   dC/dcost_scale  = C / cost_scale          dC/dbeta2  = C * log(q)
+  //   dC'/dcost_scale = C' / cost_scale         dC'/dbeta2 = C' * (1/beta2 + log(q))
+  // and profit is A - C at a frozen collar while the marginal profit carries
+  // -C' * dpsi_stem/dp, so each row is one of those times a factor the solve
+  // already forms.
+  //
+  // The same two formulae hold on the compensation-point branch: gross
+  // assimilation is identically zero there, so the cost is still the only route.
+  struct CostTraitRows {
+    double dprofit_dbeta2, dprofit_dcost_scale;
+    double dmarginal_dbeta2, dmarginal_dcost_scale;
+  };
+  CostTraitRows cost_trait_rows();
   // The energy-balance correction to the above, zero when the gate is off. Kept
   // out of line so that adding it cannot change FMA contraction in the inlined
   // gate-off path; the derivation and the two sign checks are at the definition.
@@ -2395,6 +2414,45 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   return base + dprofit_energy_balance_term(ci, gc, g_ci, inv_atm, gc_const,
                                             dgc_dpsistem, dgc_dpsi,
                                             dpsistem_dpsi, dT_dE, Tleaf_here);
+}
+
+inline Leaf::CostTraitRows Leaf::cost_trait_rows() {
+  using AD = xad::fwd<double>::active_type;
+  const double psi = opt_root_psi_;
+  const double psi_stem = opt_psi_stem_;
+
+  const double q = 1.0 - proportion_of_conductivity(psi_stem);
+  const double C = hydraulic_cost_TF(psi_stem);
+  AD ps_ad = psi_stem;  xad::derivative(ps_ad) = 1.0;
+  const double C_prime = xad::derivative(hydraulic_cost_TF_kernel(ps_ad));
+
+  // dpsi_stem/dp, formed as dprofit_at_collar_psi forms it, including its
+  // fallback: near a branch kink the analytic conductance returns NaN and the
+  // transport is differenced instead.
+  const double dEup_dp = dE_from_soil_dpsi_collar(psi, supply_psi_soil());
+  double dpsistem_dp;
+  if (std::isfinite(dEup_dp)) {
+    E_from_Soil_to_Root_Collar(psi, supply_psi_soil());
+    const double E_x =
+        E_up_ / leaf_specific_conductance_max_ +
+        stem_curve_integral(psi, "Leaf::cost_trait_rows");
+    dpsistem_dp = stem_curve_integral_inverse_deriv(E_x) *
+                  (dEup_dp / leaf_specific_conductance_max_ +
+                   stem_curve_integral_deriv(psi));
+  } else {
+    const double h = 1e-6;
+    dpsistem_dp = (find_psi_stem_from_psi_root(psi + h, supply_psi_soil()) -
+                   find_psi_stem_from_psi_root(psi - h, supply_psi_soil())) /
+                  (2.0 * h);
+  }
+
+  const double log_q = std::log(q);
+  CostTraitRows out;
+  out.dprofit_dbeta2 = -C * log_q;
+  out.dprofit_dcost_scale = -C / cost_scale_TF24;
+  out.dmarginal_dbeta2 = -C_prime * (1.0 / beta2 + log_q) * dpsistem_dp;
+  out.dmarginal_dcost_scale = -(C_prime / cost_scale_TF24) * dpsistem_dp;
+  return out;
 }
 
 inline double Leaf::dmarginal_profit_duptake_slope() {
