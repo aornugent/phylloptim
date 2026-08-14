@@ -287,15 +287,15 @@ public:
   // conductivity that turns negative past 7.3742 MPa, and an integral 4.35x its
   // own limit at 1000 MPa.
   void setup_vulnerability(double resolution) {
-    std::vector<double> x_psi_root, y_integral;
+    // Both knot vectors from one pass: dG/dpsi IS exp(-(psi/root_b)^root_c), so
+    // the conductivity knots are a quantity the integral's own series already
+    // forms rather than a second loop over pow and exp. Bit-identical to that
+    // loop at every knot, which is what says it is the same expression.
+    // f_r(0) = exp(-pow(0,root_c)) = 1.
+    std::vector<double> x_psi_root, y_integral, y_f_r;
     cumulative_vulnerability_integral(root_b, root_c, resolution, x_psi_root,
-                                      y_integral);
+                                      y_integral, y_f_r);
 
-    // f_r conductivity knots on the same grid. f_r(0) = exp(-pow(0,root_c)) = 1.
-    std::vector<double> y_f_r(x_psi_root.size());
-    for (size_t i = 0; i < x_psi_root.size(); ++i) {
-      y_f_r[i] = exp(-pow(x_psi_root[i] / root_b, root_c));
-    }
     // Conductivity: NO extrapolation, matching the stem pair in
     // Leaf::setup_transpiration. Its limit is zero, which is unusable as the
     // divisor it becomes, so root_vuln_at clamps the argument to the last knot

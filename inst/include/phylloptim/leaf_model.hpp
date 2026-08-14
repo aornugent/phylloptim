@@ -601,9 +601,10 @@ public:
   void build_cumulative_vulnerability_integral(double weibull_b, double weibull_c,
                                                double resolution,
                                                std::vector<double>& x,
-                                               std::vector<double>& y_integral) {
+                                               std::vector<double>& y_integral,
+                                               std::vector<double>& y_conductivity) {
     cumulative_vulnerability_integral(weibull_b, weibull_c, resolution, x,
-                                      y_integral);
+                                      y_integral, y_conductivity);
   }
   void setup_clean_leaf();
 
@@ -2712,9 +2713,12 @@ inline double Leaf::proportion_of_conductivity(double psi) const {
 
 // set spline for proportion of conductivity
 inline void Leaf::setup_transpiration(double resolution) {
-  std::vector<double> x_psi_, y_cumulative_transpiration_;
+  // The conductivity knots come back from the same loop and the stem does not
+  // read them -- only the root curve builds a second spline on them.
+  std::vector<double> x_psi_, y_cumulative_transpiration_, y_conductivity_;
   build_cumulative_vulnerability_integral(stem_b, stem_c, resolution, x_psi_,
-                                          y_cumulative_transpiration_);
+                                          y_cumulative_transpiration_,
+                                          y_conductivity_);
 
   // setup interpolator
   transpiration_from_psi.init(x_psi_, y_cumulative_transpiration_);
