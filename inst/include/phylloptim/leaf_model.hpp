@@ -734,6 +734,22 @@ public:
   // made for the finite-difference path, and it matters here because
   // begin_solve() is a spline evaluation per soil layer.
   double dprofit_at_collar_psi(double opt_root_psi, bool* feasible = nullptr);
+
+  // dR/d(dE_up/dp) at the operating point the last solve left, R being what
+  // dprofit_droot_collar_psi returns. A state direction reaches R through only
+  // two intermediates -- total uptake and its collar slope -- and this is the
+  // second of the two coefficients that multiply them. It is closed form where
+  // the first is not: the stem's own marginal profit times the transport slope,
+  // over the conductance.
+  //
+  // Worth having rather than fitting, because the two coefficients are fitted
+  // from directions that are nearly collinear, so a compensating pair reproduces
+  // every direction inside their span and none outside it. Root carbon is
+  // outside it.
+  //
+  // Assembled from the same kernels dprofit_at_collar_psi differentiates, so the
+  // two cannot disagree about A' or C'; what is repeated is the assembly.
+  double dmarginal_profit_duptake_slope();
   // The energy-balance correction to the above, zero when the gate is off. Kept
   // out of line so that adding it cannot change FMA contraction in the inlined
   // gate-off path; the derivation and the two sign checks are at the definition.
@@ -2379,6 +2395,42 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   return base + dprofit_energy_balance_term(ci, gc, g_ci, inv_atm, gc_const,
                                             dgc_dpsistem, dgc_dpsi,
                                             dpsistem_dpsi, dT_dE, Tleaf_here);
+}
+
+inline double Leaf::dmarginal_profit_duptake_slope() {
+  using AD = xad::fwd<double>::active_type;
+  const double psi = opt_root_psi_;
+  const double psi_stem = opt_psi_stem_;
+  // E_up_ is what the collar slope is taken against, so refresh it at the
+  // operating point rather than trusting whatever last wrote it.
+  E_from_Soil_to_Root_Collar(psi, supply_psi_soil());
+  const double E_x =
+      E_up_ / leaf_specific_conductance_max_ +
+      stem_curve_integral(psi, "Leaf::dmarginal_profit_duptake_slope");
+  const double P_prime = stem_curve_integral_inverse_deriv(E_x);
+
+  AD ps_ad = psi_stem;  xad::derivative(ps_ad) = 1.0;
+  const double C_prime = xad::derivative(hydraulic_cost_TF_kernel(ps_ad));
+  if (ci_at_compensation_point_) {
+    // Gross assimilation is identically zero there, so the stem channel into
+    // profit is the cost alone -- the same exit dprofit_at_collar_psi takes.
+    return -C_prime * P_prime / leaf_specific_conductance_max_;
+  }
+
+  AD ci_ad = ci_;  xad::derivative(ci_ad) = 1.0;
+  const double A_prime = xad::derivative(assim_colimited_kernel(ci_ad));
+  const double gc_const =
+      atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
+  const double gc = gc_const * transpiration(psi_stem, psi);
+  const double dgc_dpsistem =
+      gc_const * leaf_specific_conductance_max_ *
+      stem_curve_integral_deriv(psi_stem);
+  const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
+  const double g_ci = A_prime * umol_to_mol + gc * inv_atm;
+  const double dci_dpsistem =
+      -(-dgc_dpsistem * (ca_ - ci_) * inv_atm) / g_ci;
+  const double G = A_prime * dci_dpsistem - C_prime;
+  return G * P_prime / leaf_specific_conductance_max_;
 }
 
 // The energy-balance correction to dprofit/dpsi, and zero when the gate is off.
