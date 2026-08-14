@@ -101,6 +101,17 @@ psi_soils <- c(0.5, 1.0, 2.0, 3.0, 4.0, 6.0)
 ppfds <- c(100, 500, 900, 1500)
 vpds <- c(0.5, 1.0, 2.0, 4.0)
 layer_counts <- c(1L, 3L, 5L)
+# ⚠️ LEAF TEMPERATURE IS AN AXIS NOW (#41), not the fixed 25 C this script used to
+# assume, because the golden file it reads has four temperature blocks. Two
+# consequences before running anything:
+#
+#   * at 25 C the comparison means what it always meant -- and a difference there is
+#     a DIFFERENT bug, since #41 is inert at the reference point by construction;
+#   * at 15 / 35 / 40 C phylloptim and a pre-#41 plant are EXPECTED to differ,
+#     because R_d's shape changed. `Leaf::rd_tracks_vcmax_` is what makes that arm
+#     comparable, and it lives on the phylloptim side, so an arm that uses it cannot
+#     be read out of the golden file -- see the arm table in this file's header.
+leaf_temps <- c(15.0, 25.0, 35.0, 40.0)
 
 # Fixed drivers and traits, from plant's tests/testthat/test-leaf.r.
 theta <- 0.000157
@@ -111,7 +122,6 @@ rho <- 608.0
 a_bio <- 0.0245
 ca <- 40.0
 o2 <- 21.0
-tleaf <- 25.0
 patm <- 101.3
 
 # Every constructor argument passed explicitly, matching the C++ default
@@ -130,7 +140,7 @@ new_leaf <- function() {
   )
 }
 
-solve_one <- function(psi_soil, ppfd, vpd, layers) {
+solve_one <- function(psi_soil, ppfd, vpd, layers, leaf_temp) {
   l <- new_leaf()
   i <- seq_len(layers)
   ps <- psi_soil + 0.25 * (i - 1)
@@ -142,13 +152,14 @@ solve_one <- function(psi_soil, ppfd, vpd, layers) {
     PPFD = ppfd, psi_soil = ps, soil_depth = depth,
     leaf_specific_conductance_max = K_s * theta / h,
     atm_vpd = vpd, ca = ca, sapwood_volume_per_leaf_area = theta * h,
-    leaf_temp = tleaf, atm_o2_kpa = o2, atm_kpa = patm
+    leaf_temp = leaf_temp, atm_o2_kpa = o2, atm_kpa = patm
   )
   l$find_root_collar_psi()
 
   cons <- l$soil_consumption_
   data.frame(
-    psi_soil = psi_soil, ppfd = ppfd, vpd = vpd, layers = layers,
+    psi_soil = psi_soil, ppfd = ppfd, vpd = vpd, leaf_temp = leaf_temp,
+    layers = layers,
     psi_stem = l$opt_psi_stem_, opt_root_psi = l$opt_root_psi_,
     ci = l$ci_, assim = l$assim_colimited_,
     transpiration = l$transpiration_, gc = l$stom_cond_CO2_,
@@ -158,15 +169,15 @@ solve_one <- function(psi_soil, ppfd, vpd, layers) {
 }
 
 grid <- expand.grid(layers = layer_counts, vpd = vpds, ppfd = ppfds,
-                    psi_soil = psi_soils)
+                    psi_soil = psi_soils, leaf_temp = leaf_temps)
 # expand.grid varies the FIRST column fastest; the C++ loops nest
-# psi_soil > ppfd > vpd > layers, with layers innermost. Listing them in
-# reverse above therefore reproduces the C++ row order.
-grid <- grid[, c("psi_soil", "ppfd", "vpd", "layers")]
+# leaf_temp > psi_soil > ppfd > vpd > layers, with layers innermost. Listing them
+# in reverse above therefore reproduces the C++ row order.
+grid <- grid[, c("psi_soil", "ppfd", "vpd", "leaf_temp", "layers")]
 
 cat(sprintf("Running plant's Leaf over %d operating points...\n", nrow(grid)))
 plant_rows <- do.call(rbind, Map(solve_one, grid$psi_soil, grid$ppfd,
-                                 grid$vpd, grid$layers))
+                                 grid$vpd, grid$layers, grid$leaf_temp))
 
 # --- compare ------------------------------------------------------------------
 
@@ -201,7 +212,7 @@ stopifnot(nrow(golden) == nrow(plant_rows))
 
 # The inputs must line up before comparing outputs, or we would be comparing
 # different operating points and calling it agreement.
-for (key in c("psi_soil", "ppfd", "vpd", "layers")) {
+for (key in c("psi_soil", "ppfd", "vpd", "leaf_temp", "layers")) {
   if (!isTRUE(all.equal(golden[[key]], plant_rows[[key]], tolerance = 0))) {
     stop("grid mismatch in '", key, "': the R grid is not in the same order as ",
          "the C++ one, so the comparison would be meaningless")

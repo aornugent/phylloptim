@@ -85,9 +85,9 @@ test_that("the parameter enumeration is the same order in R and in C++", {
               "resistance")
   expect_identical(gradient_par_names(), r_side)
   # And the count, which is what a positional trait call would silently break:
-  # thirteen traits then the two that are not traits.
-  expect_length(gradient_par_names(), 15L)
-  expect_identical(gradient_par_names()[1:13], names(leaf_traits()))
+  # fourteen traits then the two that are not traits.
+  expect_length(gradient_par_names(), 16L)
+  expect_identical(gradient_par_names()[1:14], names(leaf_traits()))
 })
 
 test_that("the batch reproduces leaf_gradient() bit-for-bit across the grid", {
@@ -187,21 +187,21 @@ test_that("the recorded gradients have not moved", {
   # back one ULP out (#13).
   gold <- utils::read.delim(test_path("gradient_golden.tsv"),
                            stringsAsFactors = FALSE)
+  pars_grid <- c("vcmax_25", "stem_b", "psi_crit", "R_d_25")
   cases <- list(
-    "interior-1layer" = list(args = batch_drivers(2.0),
-                             pars = c("vcmax_25", "stem_b", "psi_crit")),
+    "interior-1layer" = list(args = batch_drivers(2.0), pars = pars_grid),
     "interior-5layer" = list(args = batch_drivers(0.5, vpd = 0.5, layers = 5L),
-                             pars = c("vcmax_25", "stem_b", "psi_crit")),
+                             pars = pars_grid),
     "pinned-dry-3layer" = list(args = batch_drivers(4.0, vpd = 0.5,
                                                     layers = 3L),
-                               pars = c("vcmax_25", "stem_b", "psi_crit")),
-    "shutdown-1layer" = list(args = batch_drivers(6.0),
-                             pars = c("vcmax_25", "stem_b", "psi_crit")),
+                               pars = pars_grid),
+    "shutdown-1layer" = list(args = batch_drivers(6.0), pars = pars_grid),
     "single-potential" = list(
       args = list(psi_soil = 1.5, PPFD = 900, atm_vpd = 2.0,
                   supply = leaf_supply_single(),
                   root_network = series_resistance(1e4)),
-      pars = c("vcmax_25", "leaf_specific_conductance_max", "resistance")))
+      pars = c("vcmax_25", "leaf_specific_conductance_max", "resistance",
+               "R_d_25")))
 
   expect_setequal(unique(gold$case), names(cases))
   # ⚠️ BIT-EXACT ONLY ON THE PLATFORM THAT GENERATED IT, macOS/arm64, exactly as
@@ -210,12 +210,10 @@ test_that("the recorded gradients have not moved", {
   # test-golden.R's first version made. libm's exp/pow are not bit-reproducible
   # between glibc on x86-64 and Apple's libm on arm64.
   #
-  # THE TOLERANCE IS NOT A GUESS AND NOT NEW. These are derivatives of outputs
-  # evaluated at the ARGMAX of a flat maximum, so they belong to the golden file's
-  # own sqrt-amplified class -- and `golden_tolerance()` is that policy, reused
-  # here rather than restated. Measured worst relative disagreement on Linux is
-  # 1.3e-4, against the golden file's 1.4e-4 for the same class: a central
-  # difference cancels the systematic part of a libm difference but not all of it.
+  # THE TOLERANCE IS `gradient_golden_tolerance()`, not the solved-output one: a
+  # gradient here is a finite difference, so it carries the solve's floor divided by
+  # the step, and the smallest-magnitude parameter sets it for the whole file. See
+  # that function for the arithmetic.
   #
   # ⚠️ Read the SUMMARY LINE below for a magnitude, never the FAIL lines. The
   # figures in this package's guide were wrong twice because a truncated failure
@@ -244,7 +242,8 @@ test_that("the recorded gradients have not moved", {
       for (out in outs) {
         got <- g$gradient[1, rows$par[[i]], out]
         expect_golden(got, rows[[out]][[i]], out,
-                      paste(nm, rows$par[[i]]))
+                      paste(nm, rows$par[[i]]),
+                      tolerance = gradient_golden_tolerance())
         ref <- as.numeric(rows[[out]][[i]])
         if (ref != 0) {
           worst <- max(worst, abs(got - ref) / abs(ref))
@@ -439,8 +438,8 @@ test_that("per-observation theta differentiates each row at its own parameters",
 
   b <- leaf_batch(psi_soil = psv, PPFD = 900)
   theta <- t(vapply(traits, function(tr) {
-    unname(c(unlist(tr)[gradient_par_names()[1:13]], 3.14e-5, NA_real_))
-  }, numeric(15)))
+    unname(c(unlist(tr)[gradient_par_names()[1:14]], 3.14e-5, NA_real_))
+  }, numeric(16)))
   g <- leaf_gradient_batch(b, theta = theta, pars = pars)
 
   for (i in seq_along(psv)) {
@@ -564,8 +563,8 @@ test_that("`pars` order does not change any gradient (#72)", {
   # ⚠️ And the predecessor that made the defect WORST, which is not the one you
   # would pick by eye: `a` = 0.30 and `curv_fact_colim` = 0.99 take the absolute
   # 1e-6 step floor rather than a relative step, and `stem_c`'s perturbation
-  # REBUILDS the very curve the `stem_b` shortcut then rescales. Each of the
-  # thirteen is checked as a predecessor rather than a sample of them.
+  # REBUILDS the very curve the `stem_b` shortcut then rescales. Every trait is
+  # checked as a predecessor rather than a sample of them.
   solo <- leaf_gradient_batch(b, pars = "stem_b")$gradient[1, "stem_b", ]
   for (p in setdiff(names(leaf_traits()), "stem_b")) {
     got <- leaf_gradient_batch(b, pars = c(p, "stem_b"))$gradient[1, "stem_b", ]
@@ -630,11 +629,11 @@ test_that("leaf_gradient_batch() rejects what it cannot do", {
 
   # `traits` and `theta` both say where the gradient is taken, so passing both is
   # refused rather than resolved in favour of one of them.
-  th <- matrix(1, nrow = 1, ncol = 15)
+  th <- matrix(1, nrow = 1, ncol = 16)
   expect_error(leaf_gradient_batch(b, traits = leaf_traits(), theta = th),
                "pass one")
-  expect_error(leaf_gradient_batch(b, theta = matrix(1, 1, 14)), "15 columns")
-  expect_error(leaf_gradient_batch(b, theta = matrix(1, 3, 15)),
+  expect_error(leaf_gradient_batch(b, theta = matrix(1, 1, 15)), "16 columns")
+  expect_error(leaf_gradient_batch(b, theta = matrix(1, 3, 16)),
                "1 row or one per observation")
   expect_error(leaf_gradient_batch(b, theta = as.data.frame(th)),
                "numeric matrix")

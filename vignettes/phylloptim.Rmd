@@ -338,9 +338,13 @@ dim(leaf_gradient(psi_soil = 2.0, PPFD = 900)$gradient)
 rownames(leaf_gradient(psi_soil = 2.0, PPFD = 900)$gradient)
 ```
 
-Fourteen on the multi-layer path — the thirteen traits from `leaf_traits()`, plus
+Fifteen on the multi-layer path — the fourteen traits from `leaf_traits()`, plus
 `leaf_specific_conductance_max`, which is not a trait but is fitted like one. The
-single-potential path adds `resistance`, making fifteen.
+single-potential path adds `resistance`, making sixteen.
+
+`R_d_25`, dark respiration at 25 °C, is one of those fourteen and behaves like any
+other trait. So `dY/dvcmax_25` is a **partial** derivative at fixed respiration: a
+fit that wants respiration to follow Vcmax moves both and adds the two columns.
 
 **Selecting fewer genuinely costs less**: the work is one solve plus two cheap
 evaluations per parameter, so it scales with what you ask for.
@@ -353,7 +357,12 @@ bench <- function(pars) {
   as.numeric(Sys.time() - t0, units = "secs") / 20 * 1000
 }
 tibble::tibble(
-  request = c("`pars = NULL` (all 16)", "4 parameters", "1 parameter"),
+  # Counted, not written down: this label said 16 for a while when the answer was
+  # 14, which is exactly the way a number beside a chunk rots (the chunk runs, the
+  # prose next to it is never asserted).
+  request = c(sprintf("`pars = NULL` (all %d)",
+                      nrow(leaf_gradient(psi_soil = 2.0, PPFD = 900)$gradient)),
+              "4 parameters", "1 parameter"),
   `ms per call` = round(c(bench(NULL),
                           bench(c("vcmax_25", "jmax_25", "stem_b",
                                   "cost_scale_TF24")),

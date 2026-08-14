@@ -44,7 +44,7 @@ const char *kGoldenPath = "golden/operating_points.tsv";
 
 struct Row {
   // inputs
-  double psi_soil, ppfd, vpd;
+  double psi_soil, ppfd, vpd, leaf_temp;
   int layers;
   // outputs
   double psi_stem, opt_root_psi, ci, assim, transpiration, gc, profit, e_up, uptake;
@@ -58,9 +58,19 @@ struct Row {
 // Trait values and fixed drivers from plant's tests/testthat/test-leaf.r.
 const double kTheta = 0.000157, kKs = 1.0, kH = 5.0;
 const double kAreaLeaf = 0.05;
-const double kCa = 40.0, kO2 = 21.0, kTleaf = 25.0, kPatm = 101.3;
+const double kCa = 40.0, kO2 = 21.0, kPatm = 101.3;
+// ⚠️ LEAF TEMPERATURE IS A GRID AXIS, NOT A FIXED DRIVER. It was fixed at 25 C, and
+// that made this file blind to every temperature response in the model: the
+// reference values of Vcmax, Jmax and R_d are DEFINED at 25 C, so a change to any
+// response curve is inert there BY CONSTRUCTION.
+//
+// Two temperatures are enough to see one: the reference, and 40 C where the response
+// bites hardest. The extra pinned rows at the hot end are a feature rather than
+// noise.
+const double kLeafTemps[] = {25.0, 40.0};
 
-Row solve(double psi_soil, double ppfd, double vpd, int layers) {
+Row solve(double psi_soil, double ppfd, double vpd, int layers,
+          double leaf_temp) {
   phylloptim::Leaf l;
   l.setup_transpiration(100);
   l.setup_root_vulnerability(100);
@@ -76,7 +86,7 @@ Row solve(double psi_soil, double ppfd, double vpd, int layers) {
   }
 
   l.set_physiology(fixture::root_network(root, depth), ppfd, ps, depth, kKs * kTheta / kH, vpd, kCa,
-                   kTleaf, kO2, kPatm);
+                   leaf_temp, kO2, kPatm);
   l.find_root_collar_psi();
 
   double uptake = 0.0;
@@ -85,7 +95,8 @@ Row solve(double psi_soil, double ppfd, double vpd, int layers) {
       uptake += s;
     }
   }
-  return Row{psi_soil,        ppfd,   vpd,        layers,     l.opt_psi_stem_,
+  return Row{psi_soil,        ppfd,   vpd,        leaf_temp,  layers,
+             l.opt_psi_stem_,
              l.opt_root_psi_, l.ci_, l.assim_colimited_, l.transpiration_,
              l.stom_cond_CO2_,   l.profit_, l.E_up_,        uptake,
              l.operating_point_kind()};
@@ -97,12 +108,19 @@ std::vector<Row> run_grid() {
   const double vpds[] = {0.5, 1.0, 2.0, 4.0};
   const int layer_counts[] = {1, 3, 5};
 
+  // ⚠️ TEMPERATURE IS THE OUTERMOST LOOP ON PURPOSE. It makes the file contiguous
+  // copies of one 288-point state grid, so a regeneration that only adds a
+  // temperature is checkable as an ADDITION: the 25 C block must come out
+  // byte-identical. Reordering these loops rewrites every row without changing any
+  // value.
   std::vector<Row> rows;
-  for (double p : psi_soils) {
-    for (double q : ppfds) {
-      for (double d : vpds) {
-        for (int n : layer_counts) {
-          rows.push_back(solve(p, q, d, n));
+  for (double t : kLeafTemps) {
+    for (double p : psi_soils) {
+      for (double q : ppfds) {
+        for (double d : vpds) {
+          for (int n : layer_counts) {
+            rows.push_back(solve(p, q, d, n, t));
+          }
         }
       }
     }
@@ -116,11 +134,11 @@ std::vector<Row> run_grid() {
 //
 // `Leaf::operating_point_kind()` says which branch of the collar solve produced
 // the point, and the grid's split between those branches is already an
-// established number: 240 of the 288 points are feasible, of which 198 sit at an
-// interior profit maximum and 42 at a constrained optimum pinned to a bracket
-// bound (24 wet, 18 dry); the remaining 48 shut down. Those figures were measured
-// when PLAN 11a replaced the collar solver and are quoted in the developer guide
-// and in maximise_profit_over_collar's own comment.
+// established number AT 25 C: 240 of those 288 points are feasible, of which 198 sit
+// at an interior profit maximum and 42 at a constrained optimum pinned to a bracket
+// bound (24 wet, 18 dry); the remaining 48 shut down. Those figures are quoted in
+// the developer guide and in maximise_profit_over_collar's own comment. The 40 C
+// counts were measured when the axis was added.
 //
 // So this asserts the classification against numbers that already exist rather
 // than inventing reference values for it. It is a cheap test with a specific
@@ -129,44 +147,70 @@ std::vector<Row> run_grid() {
 // not reproduce this split, because dprofit's shut-down sentinel is exactly 0.0
 // and would move all 48 shutdown points into `interior`.
 //
-// Three kinds are expected to be EMPTY here: `shade-death` because the grid's
-// minimum assim_max_ is 3.71 (it is reached by light, not by drying);
-// `solver-refused` and `non-finite-gradient` because both bracket endpoints
-// admit a usable gradient on all 240 feasible rows.
+// Three kinds are expected to be EMPTY here: `shade-death` because assim_max_ never
+// gets there (it is reached by light, not by drying, and not by heat either at 40 C);
+// `solver-refused` and `non-finite-gradient` because both bracket endpoints admit a
+// usable gradient on every feasible row.
+//
+// ⚠️ The hot end does NOT reach the compensation-point exit either, which is worth
+// knowing before reading the zeros as coverage: at the defaults that needs about
+// 45 C. `test_rd_temperature_response` covers it.
 //
 // A zero counts for this grid, whose psi_soil values are {0.5, 1, 2, 3, 4, 6},
 // and says nothing about the model. What the two failure branches do is checked
 // by test_collar_solve_refuses_rather_than_guessing in test_leaf.cpp.
+// ⚠️ COUNTED PER TEMPERATURE, not over the whole grid: a single total would let
+// points move between branches as the leaf warms and still add up.
 struct KindCount {
   phylloptim::Leaf::OperatingPointKind kind;
   int expected;
 };
 
+// One row per entry of kLeafTemps, in that order.
+struct TempKinds {
+  double leaf_temp;
+  int interior, pinned_wet, pinned_dry, shutdown;
+};
+//
+// The split MOVES with temperature, in a direction that is physical: a hot leaf
+// assimilates less and respires more, so it has less to gain from water and its
+// optimum presses against the WET bound instead of the dry one. The 48 shut-down
+// rows do not move, because there it is hydraulics rather than heat that forbids
+// transpiration.
+const TempKinds kExpectedKinds[] = {
+    {25.0, 198, 24, 18, 48},
+    {40.0, 160, 80, 0, 48},
+};
+
 int check_operating_kinds(const std::vector<Row> &rows) {
   using Kind = phylloptim::Leaf::OperatingPointKind;
-  const KindCount expected[] = {
-      {Kind::Interior, 198},        {Kind::PinnedWet, 24},
-      {Kind::PinnedDry, 18},        {Kind::HydraulicShutdown, 48},
-      {Kind::Determined, 0},        {Kind::ShadeDeath, 0},
-      {Kind::Prescribed, 0},       {Kind::SolverRefused, 0},
-      {Kind::NonFiniteGradient, 0}, {Kind::Unsolved, 0},
-  };
-
   int failures = 0;
   int classified = 0;
-  for (const KindCount &e : expected) {
-    int got = 0;
-    for (const Row &r : rows) {
-      if (r.kind == e.kind) {
-        ++got;
+  for (const TempKinds &e : kExpectedKinds) {
+    const KindCount expected[] = {
+        {Kind::Interior, e.interior},
+        {Kind::PinnedWet, e.pinned_wet},
+        {Kind::PinnedDry, e.pinned_dry},
+        {Kind::HydraulicShutdown, e.shutdown},
+        {Kind::Determined, 0},        {Kind::ShadeDeath, 0},
+        {Kind::Prescribed, 0},        {Kind::SolverRefused, 0},
+        {Kind::NonFiniteGradient, 0}, {Kind::Unsolved, 0},
+    };
+    for (const KindCount &k : expected) {
+      int got = 0;
+      for (const Row &r : rows) {
+        if (r.leaf_temp == e.leaf_temp && r.kind == k.kind) {
+          ++got;
+        }
       }
-    }
-    classified += got;
-    if (got != e.expected) {
-      ++failures;
-      fprintf(stderr, "FAIL kinds: %s got %d, expected %d\n",
-              phylloptim::Leaf::operating_point_kind_name(e.kind), got,
-              e.expected);
+      classified += got;
+      if (got != k.expected) {
+        ++failures;
+        fprintf(stderr, "FAIL kinds at T=%g: %s got %d, expected %d\n",
+                e.leaf_temp,
+                phylloptim::Leaf::operating_point_kind_name(k.kind), got,
+                k.expected);
+      }
     }
   }
   if (classified != static_cast<int>(rows.size())) {
@@ -175,19 +219,25 @@ int check_operating_kinds(const std::vector<Row> &rows) {
             rows.size());
   }
   if (failures == 0) {
-    printf("kinds: %zu points -- 198 interior, 42 pinned (24 wet, 18 dry), "
-           "48 shutdown\n",
-           rows.size());
+    printf("kinds: %zu points at %zu leaf temperatures\n", rows.size(),
+           sizeof kExpectedKinds / sizeof kExpectedKinds[0]);
+    for (const TempKinds &e : kExpectedKinds) {
+      printf("  T = %4.1f C  %3d interior, %2d pinned (%2d wet, %2d dry), "
+             "%2d shutdown\n",
+             e.leaf_temp, e.interior, e.pinned_wet + e.pinned_dry, e.pinned_wet,
+             e.pinned_dry, e.shutdown);
+    }
   }
   return failures == 0 ? 0 : 1;
 }
 
 const char *kHeader =
-    "psi_soil\tppfd\tvpd\tlayers\tpsi_stem\topt_root_psi\tci\tassim\ttranspiration\t"
-    "gc\tprofit\te_up\tuptake\n";
+    "psi_soil\tppfd\tvpd\tleaf_temp\tlayers\tpsi_stem\topt_root_psi\tci\tassim\t"
+    "transpiration\tgc\tprofit\te_up\tuptake\n";
 
 void write_row(FILE *f, const Row &r) {
-  fprintf(f, "%.17g\t%.17g\t%.17g\t%d", r.psi_soil, r.ppfd, r.vpd, r.layers);
+  fprintf(f, "%.17g\t%.17g\t%.17g\t%.17g\t%d", r.psi_soil, r.ppfd, r.vpd,
+          r.leaf_temp, r.layers);
   for (double v : {r.psi_stem, r.opt_root_psi, r.ci, r.assim, r.transpiration, r.gc,
                    r.profit, r.e_up, r.uptake}) {
     fprintf(f, "\t%.17g", v);
@@ -296,12 +346,14 @@ int compare(Tolerance tol) {
       break;
     }
     Row g{};
-    // 4 inputs then 9 outputs
+    // 5 inputs then 9 outputs
     const int n = sscanf(
-        line, "%lg\t%lg\t%lg\t%d\t%lg\t%lg\t%lg\t%lg\t%lg\t%lg\t%lg\t%lg\t%lg",
-        &g.psi_soil, &g.ppfd, &g.vpd, &g.layers, &g.psi_stem, &g.opt_root_psi, &g.ci,
-        &g.assim, &g.transpiration, &g.gc, &g.profit, &g.e_up, &g.uptake);
-    if (n != 13) {
+        line,
+        "%lg\t%lg\t%lg\t%lg\t%d\t%lg\t%lg\t%lg\t%lg\t%lg\t%lg\t%lg\t%lg\t%lg",
+        &g.psi_soil, &g.ppfd, &g.vpd, &g.leaf_temp, &g.layers, &g.psi_stem,
+        &g.opt_root_psi, &g.ci, &g.assim, &g.transpiration, &g.gc, &g.profit,
+        &g.e_up, &g.uptake);
+    if (n != 14) {
       fprintf(stderr, "FAIL: row %zu is malformed (%d fields)\n", i, n);
       ++failures;
       continue;
@@ -345,10 +397,10 @@ int compare(Tolerance tol) {
       if (!ok) {
         if (failures < 20) {
           fprintf(stderr,
-                  "FAIL psi_soil=%g ppfd=%g vpd=%g layers=%d %s: got %.17g, "
+                  "FAIL psi_soil=%g ppfd=%g vpd=%g T=%g layers=%d %s: got %.17g, "
                   "want %.17g  (rel %.3g)\n",
-                  r.psi_soil, r.ppfd, r.vpd, r.layers, fd.name, fd.got, fd.want,
-                  rd);
+                  r.psi_soil, r.ppfd, r.vpd, r.leaf_temp, r.layers, fd.name,
+                  fd.got, fd.want, rd);
         }
         ++failures;
       }
@@ -366,10 +418,11 @@ int compare(Tolerance tol) {
   char worst[256] = "none (bit-identical)";
   if (worst_rel > 0.0) {
     snprintf(worst, sizeof worst,
-             "%.3g  at psi_soil=%g ppfd=%g vpd=%g layers=%d %s "
+             "%.3g  at psi_soil=%g ppfd=%g vpd=%g T=%g layers=%d %s "
              "(got %.17g, want %.17g)",
              worst_rel, worst_row.psi_soil, worst_row.ppfd, worst_row.vpd,
-             worst_row.layers, worst_desc, worst_got, worst_want);
+             worst_row.leaf_temp, worst_row.layers, worst_desc, worst_got,
+             worst_want);
   }
 
   const bool exact_mode = tol.argmax < 0.0;
@@ -430,14 +483,20 @@ int compare(Tolerance tol) {
 // platform is NOT the fix -- it just moves the failure to the first one.
 //
 // The interesting part is the SIZE of the disagreement, because it is not one
-// number. Measured over the full grid on Linux, the nine reported fields split
-// into two classes three orders of magnitude apart:
+// number. Read off this program's own summary line on Linux CI, the nine reported
+// fields split into two classes five orders of magnitude apart, and gcc and clang
+// agree exactly:
 //
 //                                   gcc        clang
-//     profit                        1.85e-06   5.87e-07
+//     profit                        2.14e-09   2.14e-09
 //     psi_stem, collar, ci, assim,
 //     transpiration, gc, e_up,
-//     uptake                        5.53e-04   2.73e-04
+//     uptake                        1.4e-04    1.4e-04
+//
+// ⚠️ NOTHING ASSERTS THAT BLOCK, so it rots in silence -- it has been wrong three
+// times. **If you need a magnitude, read the summary line, not this comment and not
+// the FAIL lines**: the failure list is truncated at 20 and biased toward whichever
+// rows come first.
 //
 // That split is structural, not luck. `find_root_collar_psi` maximises profit
 // over the collar potential, and the maximum is FLAT: curvature k measured

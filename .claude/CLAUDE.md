@@ -72,7 +72,8 @@ tests/cpp/                     plain-C++ suite, no R, no framework
 tests/cpp/root_network.hpp     the suite's root-architecture fixture: the two
                                ex-Leaf-default beta_R_* constants, in ONE place
                                because the golden file's bit-exactness depends on them
-tests/cpp/golden/              bit-exact regression baseline, 288 operating points
+tests/cpp/golden/              bit-exact regression baseline, 576 operating points
+                               -- one 288-point state grid at 25 and 40 C
 tests/cpp/bench_solve.cpp      timing harness for the collar solve (hazard 5)
 tests/cpp/bench_gradient.cpp   timing harness for a TRAIT GRADIENT: the IFT
                                composite against differencing the solve, with
@@ -87,7 +88,10 @@ tests/testthat/gradient_golden.tsv
                                on that platform only, like tests/cpp/golden/ --
                                these are derivatives of argmax-evaluated outputs,
                                so they inherit its sqrt-amplified class and
-                               disagree cross-platform by up to 1.3e-4
+                               disagree cross-platform by up to 1.3e-3 -- ten
+                               times the solved outputs, because a finite
+                               difference divides the solver floor by the step
+                               and `R_d_25`'s step is the smallest here
 tests/validate/                R scripts comparing against plant (needs R)
 CMakeLists.txt                 the no-R build: C++ and Python consumers, and the
                                thing that makes "does not need R" runnable
@@ -276,12 +280,20 @@ while looking like history. Two rows were produced that way before it was notice
 
 ## The golden file is the safety net — treat it that way
 
-`tests/cpp/golden/operating_points.tsv` records 288 operating points and is
-compared **bit-exactly** (`%.17g` round-trips a double). It is what makes a large
-refactor of this code checkable rather than hopeful, and it earned that role
-repeatedly: it proved three "surely dead" `set_physiology` arguments really were
-dead, confined the shutdown fix to exactly 48 rows × 5 fields, and showed the
-`area_leaf` change was 2 ULP.
+`tests/cpp/golden/operating_points.tsv` records 576 operating points — one
+288-point state grid at 25 and 40 °C — and is compared **bit-exactly** (`%.17g`
+round-trips a double). It is what makes a large refactor of this code checkable
+rather than hopeful, and it earned that role repeatedly: it proved three "surely
+dead" `set_physiology` arguments really were dead, confined the shutdown fix to
+exactly 48 rows × 5 fields, and showed the `area_leaf` change was 2 ULP.
+
+⚠️ **A grid at one leaf temperature is blind to every temperature response in the
+model**, because every reference value is *defined* at 25 °C and a change to any
+response curve is inert there **by construction**. Hence the second temperature, and
+hence the classification being printed per temperature: points move between branches
+as the leaf warms (dry-pinned 18 → 0, wet-pinned 24 → 80). Temperature is the
+OUTERMOST loop, which is what lets a regeneration that adds one be checked as an
+addition — the 25 °C block must come out byte-identical.
 
 **Only run `make golden` deliberately.** Running it after an accidental change
 rubber-stamps the change. If a diff is intended, regenerate and say so in the
@@ -336,33 +348,26 @@ magnitude apart:
 
 | field | gcc | clang | why |
 |---|---|---|---|
-| `profit` | **1.82e-07** | **1.82e-07** | it is the maximum itself — well-conditioned |
+| `profit` | **2.14e-09** | **2.14e-09** | it is the maximum itself — well-conditioned |
 | the other eight | **1.4e-04** | **1.4e-04** | evaluated at the **argmax** — sqrt-amplified |
 
-**These figures changed when PLAN 11a replaced the collar solver, and how they
-changed is informative.** They were `profit` 1.85e-06 / 5.87e-07 and the other
-eight 5.53e-04 / 2.73e-04. Two things to take from the move:
+Read off CI's summary line: 3757 of 5184 values differ, against tolerances of 1e-05
+and 5e-03. ⚠️ **This table is a CI reading and nothing asserts it, so it goes stale
+silently** — it has been wrong three times. Read the summary line, never the FAIL
+lines, which are truncated at 20 and biased toward whichever rows come first.
 
-- **The gcc-versus-clang split was itself a golden-section artefact.** The two
-  compilers now report *identical* figures, where they used to differ by 2–3×. What
-  differed between them was which way a golden-section comparison fell; what is
-  left is libm's `exp`/`pow`, which is a property of the platform and not of the
-  compiler. So do not expect a compiler-dependent column here any more — and if one
-  reappears, something has reintroduced a discrete decision into the solve.
-- **The sqrt story now fits better than it did.** `sqrt(1.82e-07)` ≈ 4.3e-04
-  against the 1.4e-04 observed, where before it was `sqrt(1.85e-06)` ≈ 1.4e-03
-  against 5.5e-04. Same order in both cases, but the residual factor shrank, which
-  is what you would expect once the argmax stopped carrying an extra `GSS_tol_abs`
-  of arbitrary displacement on top of the flat-maximum amplification.
+gcc and clang report *identical* figures. They used to differ by 2–3×, and what
+differed was which way a golden-section comparison fell; since PLAN 11a removed that
+search, what is left is libm's `exp`/`pow` — a property of the platform, not the
+compiler. If a compiler-dependent column reappears, something has reintroduced a
+discrete decision into the solve.
 
-The maximum is *flat*: curvature measured directly at the two worst points gives
-k ≈ 1.0 and 0.9 in `profit ≈ p* − k(psi_stem−x*)²`. For a flat maximum an error
-`dp` in the profit **value** displaces its **location** by `sqrt(dp/k)`, which is
-why the well-conditioned column sits three orders below the other. Checked
-pointwise — at those points the residuals imply k = 1.01 and 1.70 against the 1.0
-and 0.9 measured from the curvature. It is *not* a global identity: the two column
-maxima fall at different operating points, so `sqrt(worst profit)` is not meant to
-reproduce `worst argmax`.
+**Why the two classes are five orders apart:** the maximum is *flat*, with curvature
+k ≈ 1.0 measured directly at the worst points in `profit ≈ p* − k(psi_stem−x*)²`, so
+an error `dp` in the profit **value** displaces its **location** by `sqrt(dp/k)`.
+That is a mechanism, not an identity — `sqrt(2.14e-09)` ≈ 4.6e-05 against the 1.4e-04
+observed, because the two column maxima fall at *different* operating points. Do not
+expect `sqrt(worst profit)` to predict `worst argmax`.
 
 Two things follow that matter beyond this file:
 

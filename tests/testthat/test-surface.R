@@ -17,8 +17,11 @@ test_that("leaf_traits() and leaf_control() partition the C++ constructor", {
   covered <- c(names(leaf_traits()), names(leaf_control()))
 
   expect_setequal(setdiff(ctor_args, covered), character(0))
+  # `R_d_25` is a trait the constructor does not take: plant's own RcppR6 bindings
+  # pin this constructor by arity, so `leaf_model()` assigns the field afterwards.
+  # The test below checks that assignment really happens.
   expect_setequal(setdiff(covered, ctor_args),
-                  c("integration_rule", "integration_tol"))
+                  c("R_d_25", "integration_rule", "integration_tol"))
   expect_length(intersect(names(leaf_traits()), names(leaf_control())), 0)
 
   # And the split is the one the issue asked for: tolerances on the control
@@ -59,6 +62,23 @@ test_that("a non-default trait reaches the model through leaf_model()", {
   brittle <- leaf_model(leaf_traits(stem_b = 2.0))
   expect_lt(brittle$proportion_of_conductivity(2.0),
             leaf_model()$proportion_of_conductivity(2.0))
+
+  # ⚠️ `R_d_25` NEEDS ITS OWN CASE, because it is the one trait the constructor does
+  # not take: if `leaf_model()`'s assignment went away, every test above would still
+  # pass while `leaf_traits(R_d_25 = )` was accepted and silently ignored.
+  default_rd <- leaf_traits()$R_d_25
+  expect_identical(
+    leaf_solve(psi_soil = 2.0, PPFD = 900,
+               traits = leaf_traits(R_d_25 = default_rd))$A,
+    base$A)
+  expect_lt(leaf_solve(psi_soil = 2.0, PPFD = 900,
+                       traits = leaf_traits(R_d_25 = 2 * default_rd))$A,
+            base$A)
+  expect_gt(leaf_solve(psi_soil = 2.0, PPFD = 900,
+                       traits = leaf_traits(R_d_25 = 0))$A,
+            base$A)
+  expect_error(leaf_traits(R_d_25 = -1), "non-negative")
+  expect_error(leaf_traits(R_d_25 = NA_real_), "finite")
 })
 
 test_that("a control setting reaches the model and is not treated as a trait", {

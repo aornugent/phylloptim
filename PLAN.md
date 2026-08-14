@@ -35,7 +35,7 @@ the user-visible history.
 | [#34](https://github.com/traitecoevo/phylloptim/issues/34) | 6d | Delete plant's `Leaf` bindings | Unblocked (plant #591 merged, and #33 is done). The hazard-7 payoff, and the only stage that can break plant |
 | [#38](https://github.com/traitecoevo/phylloptim/issues/38) | 38 | `psi_crit` above the curve's domain fails with an error naming neither | Bounds how far `stem_b` can move in one step; see 11f |
 | [#40](https://github.com/traitecoevo/phylloptim/issues/40) | 40 | Cross-validate the Medlyn path against `plantecophys` | From #6. Ties to #3, which needs Medlyn first-class |
-| [#41](https://github.com/traitecoevo/phylloptim/issues/41) | 41 | `R_d` cannot be set from R: `rd_to_vcmax_ratio_` is unbound | From #6. **74% Rd overstatement** for *Q. ilex* against Sabot's data |
+| [#41](https://github.com/traitecoevo/phylloptim/issues/41) | 41 | `R_d_25` is a trait, and respiration rises with temperature | **DONE.** From #6. The scale was the smaller half — the SHAPE was peaked and fell above the thermal optimum. Bit-identical at plant's defaults; −47% offspring production on the PM path |
 | [#49](https://github.com/traitecoevo/phylloptim/issues/49) | 14 | Is `kmax ~ h^-1` defensible? Koçillari et al. 2021 find no height trend | Split out of item 14, which had it filed nowhere |
 | [#50](https://github.com/traitecoevo/phylloptim/issues/50) | 8 | `H2O_CO2_stom_diff_ratio` is 1.67, the g1 literature uses 1.6 | **2.2% offset** in every reported `g1_eff` |
 | [#51](https://github.com/traitecoevo/phylloptim/issues/51) | 10c | `kg_to_mol_h2o` and `kg_per_mol_h2o` are not reciprocals | **0.028%**. The bit-identity baseline it was waiting for now exists |
@@ -529,15 +529,55 @@ an established external implementation to check against — and #3 needs it
 first-class. `plantecophys` also solves the coupled system analytically rather than
 by root-finding, which is worth considering on its own merits. Found doing #6.
 
-## 41. `R_d` cannot be set from R
+## 41. `R_d` — DONE, and the shape mattered more than the scale
 
-`rd_to_vcmax_ratio_` became a settable C++ member in #15, but it is **absent from
-`inst/RcppR6_classes.yml`** and is not a constructor argument, so from R a fixed
-0.015 is imposed. `R_d_` is bound read/write, but every `set_physiology()` recomputes
-it. Sabot's data imply ratios of **0.0046–0.0302** — a factor of 6.5 — and for
-*Q. ilex* the model uses 0.914 against the data's 0.525, a **74% Rd overstatement**
-and a systematic ~4% species-varying bias in A. ⚠️ Item 10b's claim that this
-parameter "is now settable" is true of C++ and false from R.
+The original complaint: `rd_to_vcmax_ratio_` was a fixed 0.015 and unreachable from
+R, while Sabot's data imply 0.0046–0.0302 across 16 species — for *Q. ilex* the model
+used 0.914 against the data's 0.525, a **74% overstatement** and a systematic ~4%
+species-varying bias in A.
+
+⚠️ **The shape was wrong, not just the scale, and no value of the ratio could fix
+it.** `R_d` was `ratio * vcmax_(T)`, so it inherited Vcmax's **peaked** Arrhenius and
+therefore **fell** above the thermal optimum, where real dark respiration rises — the
+opposite direction, and an order of magnitude out by 50 °C. Replaced with Tjoelker's
+declining Q10. A constant Q10 = 2 was implemented first and rejected on measurement
+(R_d 4.07 at 40 °C, −73% on A, no operating point at all by 45 °C).
+
+`R_d_25` is now a trait like any other: default **1.44** (`0.015 * 96`, the same
+double the old derivation gave), no sentinel, no fallback, and an unset value fails.
+`rd_to_vcmax_ratio_` is deleted.
+
+**Back-compatibility, measured.** plant's TF24 SCM offspring production is
+**bit-identical at its defaults** — 81.857087216483691 both sides — because plant's
+`vcmax_25` is 96 and it pins `leaf_temp` as a constant 25 °C driver with PM off.
+⚠️ Two configurations do move, and both are the point rather than a defect:
+
+| | master | now |
+|---|---|---|
+| `vcmax_25` = 60 / 150 (respiration no longer follows Vcmax) | 0.40692 / 73.703 | 0.34336 / 92.026 |
+| Penman-Monteith on (Tleaf to 62 °C, +22 K above air) | 2.2035 | 1.1638 |
+
+A study that wants respiration to track Vcmax should say so in its own
+parameterisation — plant's `TF24_hyperpar` is where every other derived parameter is
+computed.
+
+**How that A/B was run**, since `compare_with_plant.R` cannot do it (below) and there
+is no harness for it: install phylloptim twice (`origin/master` and the branch) into
+separate libraries, then install plant twice from a **clean** source copy each time
+with `R_LIBS` pointing at one phylloptim library and the site library — a stale
+`src/*.o` would silently give you the other arm — and run the same script under each,
+with `leaf_temp` and `vcmax_25` varied. ⚠️ Print and CHECK `find.package()` for both
+packages in the script: `R_LIBS` falls back to the site build without a word, which
+happened here and produced a plausible file describing the wrong package.
+
+⚠️ **The golden file was blind to all of this** — 288 points at one temperature, where
+every reference value is defined. It now carries a 40 °C block as well.
+
+**Still open:** `compare_with_plant.R`, against plant's own independent `Leaf`, does
+not run — item 64. The obstacle is not the constructor signature its header blames:
+against plant at 76df7169 both `Leaf()` and `set_physiology()` work, and what stops it
+is `root_collar_psi_` versus `opt_root_psi_` (the #25 rename, which flipped the sign)
+on top of results deliberately moved by #15, 11a, 11b, #25, #77 and #84.
 
 ## 14. Naming, home, publication
 
@@ -880,8 +920,9 @@ actually need, not to police one you could remove.**
 
 Done in #15: five dead entities removed and `set_physiology` taken 14 → 11 arguments,
 three further dead constants deleted, and **thirteen** temperature-response
-parameters made settable. ⚠️ One of those, `rd_to_vcmax_ratio_`, is settable in C++
-but **not bound to R** — that is #41, and this item overstated it.
+parameters made settable in C++. ⚠️ One of those, `rd_to_vcmax_ratio_`, was never
+bound to R — item 41, which resolved it by deleting the parameter rather than
+binding it. Fifteen are bound now.
 
 `area_leaf` is out of the supply contract, not merely out of `set_physiology`. Why
 that was safe is a **homogeneity property** rather than a coincidence: every term in
@@ -1336,9 +1377,8 @@ established with `stem_b` first.
 ⚠️ **And the golden file could not have been the regression guard anyway.** It is
 compared with a 1e-3 tolerance off macOS/arm64 and the defect was 3.4e-5, so a
 recurrence would pass on Linux. The guard is a test that compares two orderings **in
-the same process**, which is exact everywhere and needs no tolerance — all thirteen
-traits as predecessors, four permutations, both routes, both `fast_stem_curve`
-settings.
+the same process**, which is exact everywhere and needs no tolerance — every trait
+as a predecessor, four permutations, both routes, both `fast_stem_curve` settings.
 
 ### And what it unblocks
 

@@ -58,7 +58,7 @@
 ##' `R_d_` are derived from the traits inside `set_physiology()`, so they are
 ##' genuinely unknown until the drivers are re-supplied.
 ##'
-##' The reason it is a function rather than thirteen assignable fields is that
+##' The reason it is a function rather than fourteen assignable fields is that
 ##' `leaf$vcmax_25 <- x` could not be made correct. Three separate pieces of
 ##' derived state go stale on a bare trait write: the two pre-integrated
 ##' vulnerability splines, the solved operating point, and -- least visibly --
@@ -90,7 +90,7 @@ set_traits <- function(x, traits) {
   x$set_traits(traits$vcmax_25, traits$stem_c, traits$stem_b, traits$psi_crit,
                traits$root_c, traits$root_b, traits$root_psi_crit, traits$beta2,
                traits$jmax_25, traits$a, traits$curv_fact_elec_trans,
-               traits$curv_fact_colim, traits$cost_scale_TF24)
+               traits$curv_fact_colim, traits$cost_scale_TF24, traits$R_d_25)
   invisible(x)
 }
 
@@ -228,9 +228,9 @@ set_traits <- function(x, traits) {
 ##' 57-parameter variant costing the same as its 40-parameter one, because
 ##' `P_model` is 4 in both.
 ##'
-##' ⚠️ **Always pass `pars`.** It is `P_model`, so the default — all fourteen on
+##' ⚠️ **Always pass `pars`.** It is `P_model`, so the default — all fifteen on
 ##' the multi-layer path — is the most expensive thing you can ask for, and a fit
-##' that reads four of them pays for ten it discards.
+##' that reads four of them pays for eleven it discards.
 ##'
 ##' The intercept is a fresh `Leaf` per call, which there is currently no way to
 ##' avoid (see phylloptim#52); it is 29% of the exact gradient in the study above.
@@ -273,9 +273,13 @@ set_traits <- function(x, traits) {
 ##' @param control a [leaf_control()] object
 ##' @param supply how water reaches the root collar: [leaf_supply_multilayer()]
 ##'   (the default) or [leaf_supply_single()]
-##' @param pars what to differentiate with respect to. Any of the thirteen
+##' @param pars what to differentiate with respect to. Any of the fourteen
 ##'   [leaf_traits()] names, plus `"leaf_specific_conductance_max"` and — on the
 ##'   single-potential path only — `"resistance"`. Defaults to all of them.
+##'
+##'   `dY/dvcmax_25` is a PARTIAL at fixed respiration: `R_d_25` is its own trait,
+##'   so a fit that wants respiration to follow Vcmax moves both and adds the two
+##'   columns.
 ##'
 ##'   `beta_R_H` and `beta_R_V` were here until #33 and are not any more: they
 ##'   parameterise the root-architecture model, which the leaf no longer runs, so
@@ -419,7 +423,7 @@ leaf_gradient <- function(psi_soil,
                   atm_vpd = atm_vpd, ca = ca, leaf_temp = leaf_temp,
                   atm_o2_kpa = atm_o2_kpa, atm_kpa = atm_kpa)
 
-  # The differentiable parameters: the thirteen traits, plus the two that are not
+  # The differentiable parameters: the fourteen traits, plus the two that are not
   # traits and that a calibration nonetheless fits (#44). See .gradient_theta.
   theta <- .gradient_theta(traits, leaf_specific_conductance_max, supply,
                            root_network)
@@ -698,7 +702,7 @@ leaf_gradient <- function(psi_soil,
 
 # Everything this can differentiate, and its current value, as one named vector.
 #
-# The thirteen traits, plus the two quantities a calibration fits that are NOT
+# The fourteen traits, plus the two quantities a calibration fits that are NOT
 # traits (#44) and that `pars` therefore used to reject:
 #
 #   * `leaf_specific_conductance_max` -- a DRIVER, set through set_drivers(). It
@@ -726,6 +730,7 @@ leaf_gradient <- function(psi_soil,
   }
   theta
 }
+
 
 # Push a parameter vector back onto the leaf, in the one order that is correct.
 #
@@ -791,7 +796,7 @@ leaf_gradient <- function(psi_soil,
     }
     # Positional, straight onto the object, rather than through `set_traits()` and
     # `set_drivers()`. Those two rebuild a `leaf_traits` object with
-    # `structure(as.list(...))`, re-extract thirteen fields by name, and re-run the
+    # `structure(as.list(...))`, re-extract fourteen fields by name, and re-run the
     # driver validation -- 3.0% + 3.3% + 4.9% of a gradient's self time between them,
     # for work whose answer cannot change across perturbations.
     #
@@ -801,12 +806,14 @@ leaf_gradient <- function(psi_soil,
     # the #25 positive-magnitude invariants itself. Do not copy this pattern anywhere
     # the values are not already known-good.
     # ⚠️ POSITIONAL, so the count is load-bearing. `set_traits()`'s C++ signature and
-    # `leaf_traits()` must agree on thirteen; if a trait is ever added, this call is
-    # the one place that will not fail to compile. test-gradient.R asserts the arity.
+    # `leaf_traits()` must agree on FOURTEEN, and adding a trait breaks here and
+    # nowhere else -- at run time, with "argument <name> is missing" raised inside
+    # the generated binding, which names neither this line nor the count. That is
+    # how #41 broke; test-gradient.R asserts the arity so the next one is caught.
     tv <- theta[trait_names]
     apply_traits(tv[[1L]], tv[[2L]], tv[[3L]], tv[[4L]], tv[[5L]], tv[[6L]],
                  tv[[7L]], tv[[8L]], tv[[9L]], tv[[10L]], tv[[11L]], tv[[12L]],
-                 tv[[13L]])
+                 tv[[13L]], tv[[14L]])
     # `resistance` is a driver, so it goes in with the others rather than through
     # $set_supply_single(). That removes the second object-resetting call this
     # function used to make -- and with it the reason the ordering note above had to

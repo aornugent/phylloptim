@@ -45,7 +45,8 @@
   a = 0.30,
   curv_fact_elec_trans = 0.7,
   curv_fact_colim = 0.99,
-  cost_scale_TF24 = 7.5
+  cost_scale_TF24 = 7.5,
+  R_d_25 = 1.44
 )
 
 .leaf_control_defaults <- list(
@@ -86,6 +87,8 @@
 ##' @param curv_fact_colim curvature of the colimited photosynthesis equation
 ##' @param cost_scale_TF24 cost parameter for the TF24 profit model
 ##'   (umol m^-2 s^-1)
+##' @param R_d_25 dark respiration at 25 C (umol m^-2 s^-1). It is the value at
+##'   25 C only: respiration rises from there on Tjoelker's declining-Q10 curve.
 ##'
 ##' @section Where the two root-resistance constants went:
 ##' `beta_R_H` and `beta_R_V` were traits here until #33. They parameterise the
@@ -115,15 +118,20 @@ leaf_traits <- function(vcmax_25 = 96,
                         a = 0.30,
                         curv_fact_elec_trans = 0.7,
                         curv_fact_colim = 0.99,
-                        cost_scale_TF24 = 7.5) {
+                        cost_scale_TF24 = 7.5,
+                        R_d_25 = 1.44) {
   out <- list(vcmax_25 = vcmax_25, stem_c = stem_c, stem_b = stem_b,
               psi_crit = psi_crit, root_c = root_c, root_b = root_b,
               root_psi_crit = root_psi_crit, beta2 = beta2,
               jmax_25 = jmax_25, a = a,
               curv_fact_elec_trans = curv_fact_elec_trans,
               curv_fact_colim = curv_fact_colim,
-              cost_scale_TF24 = cost_scale_TF24)
+              cost_scale_TF24 = cost_scale_TF24,
+              R_d_25 = R_d_25)
   .check_scalars(out, "leaf_traits")
+  if (R_d_25 < 0) {
+    stop("leaf_traits(): R_d_25 must be non-negative", call. = FALSE)
+  }
   structure(out, class = c("leaf_traits", "list"))
 }
 
@@ -365,6 +373,10 @@ leaf_model <- function(traits = leaf_traits(), control = leaf_control(),
     ci_niter = control$ci_niter,
     cost_scale_TF24 = traits$cost_scale_TF24
   )
+  # ⚠️ AFTER construction, because plant's RcppR6 bindings pin the generated
+  # constructor by arity so R_d_25 cannot be an argument to it. Without this line
+  # `leaf_traits(R_d_25 = )` would be accepted and silently ignored.
+  l$R_d_25 <- traits$R_d_25
   l$initialize_integrator(control$integration_rule, control$integration_tol)
   # After the integrator, because set_supply_single clears the solved state --
   # not the integrator tolerance, but relying on that ordering would be a

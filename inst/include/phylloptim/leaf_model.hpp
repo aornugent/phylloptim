@@ -14,6 +14,7 @@
 #include <odelia/interpolator.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -291,6 +292,12 @@ public:
   // cut) so TF24 (via pars.use_energy_balance) and the leaf-level demo can
   // turn PM on; default preserves backward compatibility.
   bool use_energy_balance_ = false;
+  // Set by psi_stem_to_ci when the energy-balance fallback fires: the leaf is so
+  // hot that assimilation is negative across the whole [gamma*, ca] bracket, so
+  // there is no supply==demand root and ci is placed AT the compensation point
+  // instead. The residual g is then NOT zero, which voids the implicit-function
+  // theorem dprofit_at_collar_psi is built on -- see the branch there.
+  bool ci_at_compensation_point_ = false;
   // Boundary-layer inputs for ra = C_ra*sqrt(d/U0) (doc 4.1). d is a per-strategy
   // trait (set from pars.d in prepare_strategy); wind_speed_ is the per-timestep
   // above-canopy driver (set from the environment before set_physiology). Both
@@ -328,10 +335,31 @@ public:
   double kc_ha_ = phylloptim::kc_ha;
   double ko_25_ = phylloptim::ko_25;          // Rubisco Km for O2, umol mol^-1
   double ko_ha_ = phylloptim::ko_ha;
-  // Dark respiration as a fraction of vcmax. Was the bare literal 0.015 inline in
-  // update_temperature_dependent_params -- a named, species-variable parameter
-  // (Collatz/Farquhar) hiding as a magic number.
-  double rd_to_vcmax_ratio_ = 0.015;
+  // Dark respiration at the 25 C reference, umol m^-2 s^-1. Many datasets report
+  // it directly (Sabot et al. give `Rlref` per site), and across their 16 species
+  // the implied fraction of vcmax_25 spans 0.0046 to 0.0302, so it is a trait in
+  // its own right rather than a fixed multiple of anything.
+  //
+  // The default is 0.015 * 96, the value the old vcmax-derived form gave at the
+  // default vcmax_25. Initialised here rather than in the constructors' init lists
+  // because plant's RcppR6 bindings pin the 17-argument constructor by arity, so
+  // this cannot become an 18th argument without breaking plant's generated glue.
+  double R_d_25 = 1.44;
+  // Dark respiration's temperature response, Tjoelker et al. (2001):
+  //
+  //     R_d(T) = R_d_25 * Q10(T)^((T - 25) / 10)
+  //     Q10(T) = rd_q10_intercept_ - rd_q10_slope_ * (T + 25) / 2
+  //
+  // The Q10 is evaluated at the MEAN of the measurement and reference
+  // temperatures, which is the form the land-surface literature implements, and it
+  // DECLINES with temperature: a constant Q10 of 2 is too aggressive at the top of
+  // the range, putting R_d 2.8x its 25 C value over 15 K and leaving the solve no
+  // operating point at all by 45 C.
+  //
+  // Set the slope to zero and the intercept IS a constant Q10, for anyone who
+  // wants the conventional form.
+  double rd_q10_intercept_ = 3.09;
+  double rd_q10_slope_ = 0.0430;
   double atm_kpa_;
   // Conversion from a mixing ratio (umol mol^-1) to a partial pressure (Pa).
   // DERIVED from atm_kpa_, not a constant: it is 1e-6 * P, so the old
@@ -386,8 +414,29 @@ public:
   // NOTE: electron_transport_ is deliberately NOT cached here -- it also depends
   // on the per-call PPFD_ and is recomputed every call.
   bool   photo_temp_cached_ = false;
-  double photo_temp_cache_leaf_temp_ = 0.0;
-  double photo_temp_cache_atm_o2_kpa_ = 0.0;
+  // ⚠️ THE KEY MUST COVER EVERY SCALAR THE BLOCK READS, NOT JUST THE DRIVERS.
+  // It used to be (leaf_temp_, atm_o2_kpa_) alone, and the argument for that was
+  // "same inputs -> bit-identical outputs, so reusing is exact". That argument was
+  // true while the temperature-response parameters were unreachable C++ members
+  // and became FALSE the moment they were bound to R: `l$rd_q10_slope_ <- 0`
+  // followed by `set_drivers()` at the same temperature took a cache HIT and
+  // silently kept the old response, with A unchanged to every digit.
+  //
+  // So the key is now every input of update_temperature_dependent_params(). Two
+  // consequences worth knowing:
+  //
+  //   * it also covers `vcmax_25` and `jmax_25`, which closes the third and least
+  //     visible half of hazard 10 -- a bare `l$vcmax_25 <- x` write no longer
+  //     leaves `vcmax_`/`jmax_`/`R_d_` describing the old value. `set_traits()` is
+  //     still the right way to change a trait (the vulnerability splines and the
+  //     solved point need clearing too), but the silent-wrong-number failure mode
+  //     is gone.
+  //   * the cost is 17 double comparisons per set_physiology() call, i.e. per
+  //     driver set, NOT per inner solve iteration. Measured: within run-to-run
+  //     noise on bench_solve.
+  static constexpr int photo_temp_key_size = 19;
+  std::array<double, photo_temp_key_size> photo_temp_cache_key_{};
+  std::array<double, photo_temp_key_size> photo_temp_key() const;
   std::vector<double> f_r;
   // TODO: move into environment?
 
@@ -432,13 +481,14 @@ public:
   // check here can see the difference, because both are just positive numbers.
   void set_physiology(const RootNetwork& root_network, double PPFD, const std::vector<double>& psi_soil, const std::vector<double>& soil_depth, double leaf_specific_conductance_max, double atm_vpd, double ca, double leaf_temp, double atm_o2_kpa, double atm_kpa);
 
-  // Replace the thirteen traits on an existing Leaf, leaving the four numerical
-  // controls alone. Same arguments, same order, as the constructor's trait subset.
+  // Replace the fourteen traits on an existing Leaf, leaving the four numerical
+  // controls alone. Same arguments, same order, as the constructor's trait subset,
+  // plus R_d_25 which the constructor does not take.
   //
-  // It was fifteen before #33. `beta_R_H` and `beta_R_V` left with the root
-  // architecture model, so they are no longer traits of anything here and there is
-  // no route to d(output)/d(beta_R_*) through this object. A caller who needs one
-  // differences the NETWORK, which is now an input: root_network_from_carbon is
+  // `beta_R_H` and `beta_R_V` are NOT traits here since #33: they left with the root
+  // architecture model, so there is no route to d(output)/d(beta_R_*) through this
+  // object. A caller who needs one differences the NETWORK, which is now an input:
+  // root_network_from_carbon is
   // homogeneous of degree 1 in each constant (r_R_H_min proportional to beta_R_H,
   // r_R_V to beta_R_V), so the perturbed network is a scaling of the base one and
   // costs no rebuild -- but the two solves either side of it are still two solves.
@@ -477,7 +527,7 @@ public:
                   double root_c, double root_b, double root_psi_crit,
                   double beta2, double jmax_25, double a,
                   double curv_fact_elec_trans, double curv_fact_colim,
-                  double cost_scale_TF24);
+                  double cost_scale_TF24, double R_d_25);
 
   // The #25 boundary: the four potentials that must be positive magnitudes. One
   // copy, called from both the constructor and set_traits -- the alternative is
@@ -684,6 +734,14 @@ public:
   // made for the finite-difference path, and it matters here because
   // begin_solve() is a spline evaluation per soil layer.
   double dprofit_at_collar_psi(double opt_root_psi, bool* feasible = nullptr);
+  // The energy-balance correction to the above, zero when the gate is off. Kept
+  // out of line so that adding it cannot change FMA contraction in the inlined
+  // gate-off path; the derivation and the two sign checks are at the definition.
+  double dprofit_energy_balance_term(double ci, double gc, double g_ci,
+                                     double inv_atm, double gc_const,
+                                     double dgc_dpsistem, double dgc_dpsi,
+                                     double dpsistem_dpsi, double dT_dE,
+                                     double Tleaf);
   // The profit-maximising collar potential within [bound_a, bound_b], by a
   // safeguarded root-find on dprofit == 0 (PLAN 11a). Returns a bound when the
   // optimum is pinned to it, which is the case on 42 of the 240 feasible
@@ -767,7 +825,13 @@ public:
   // Explicit leaf energy balance: Tleaf = Tair + (Rn - lambda*E) * ra / (rho*cp).
   // E is the hydraulically-pinned transpiration (kg H2O m^-2 s^-1); no PM
   // inversion and no A->E feedback, so this is a single algebraic forward pass.
-  double leaf_temp_from_E(double E) const;
+  // `dT_dE`, when non-null, receives dTleaf/dE at the same point. It is an
+  // out-parameter rather than a second function so that ONE clamp test decides
+  // both the value and the slope: a separate slope function would return the
+  // interior slope while the value was clamped, which is a silently wrong
+  // derivative rather than an imprecise one, and the collar solve would then
+  // converge to a point where dprofit is genuinely non-zero.
+  double leaf_temp_from_E(double E, double* dT_dE = nullptr) const;
 
   // transpiration functions
 
@@ -1026,7 +1090,8 @@ public:
     // operating point in this state reads NA sentinels.
     Unsolved,
     // Interior profit maximum: dprofit == 0 was solved for, strictly inside the
-    // feasible collar interval. 198 of the 288 golden grid points.
+    // feasible collar interval. 198 of the 288 golden grid points at 25 C -- 160 of
+    // them at 40 C, where the optimum presses against the WET bound instead.
     Interior,
     // Constrained optimum pinned at the WET end of the feasible interval, just
     // inside root_zero_E (the collar at which uptake is exactly zero). profit is
@@ -1043,7 +1108,8 @@ public:
     // Shutdown on water: no collar potential both moves water and stays inside
     // the stem's and the root's critical potentials. The stem holds at psi_crit,
     // transpiration is zero, and the leaf pays respiration plus the hydraulic
-    // cost there. 48 of the 288 golden grid points. The water response is zero;
+    // cost there. 48 of the 288 golden grid points at every temperature, since it is
+    // hydraulics rather than heat that forbids transpiration. The water response is zero;
     // the carbon response is not.
     HydraulicShutdown,
     // Shutdown on light: assim_max_ < 0, so gross assimilation at ci = ca cannot
@@ -1205,14 +1271,14 @@ inline void Leaf::check_psi_magnitudes(double psi_crit, double stem_b,
   }
 }
 
-// See the header for why this exists rather than fifteen settable fields.
+// See the header for why this exists rather than fourteen settable fields.
 inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_b_,
                              double psi_crit_, double root_c_, double root_b_,
                              double root_psi_crit_, double beta2_,
                              double jmax_25_, double a_,
                              double curv_fact_elec_trans_,
                              double curv_fact_colim_,
-                             double cost_scale_TF24_) {
+                             double cost_scale_TF24_, double R_d_25_) {
   check_psi_magnitudes(psi_crit_, stem_b_, root_b_, root_psi_crit_);
 
   // Which splines have to be rebuilt, decided BEFORE the assignment. Exact
@@ -1241,6 +1307,7 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_b_,
   curv_fact_elec_trans = curv_fact_elec_trans_;
   curv_fact_colim = curv_fact_colim_;
   cost_scale_TF24 = cost_scale_TF24_;
+  R_d_25 = R_d_25_;
 
   roots_.root_c = root_c_;
   roots_.root_b = root_b_;
@@ -1263,6 +1330,7 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_b_,
 
 // set various states and physiology parameters obtained from TF24 to NA to clean leaf object
 inline void Leaf::setup_clean_leaf() {
+  ci_at_compensation_point_ = false;  // hazard 8: every exit writes its own state
   ci_ = util::na_value; // Pa
   stom_cond_CO2_= util::na_value; //mol Co2 m^-2 s^-1 
   assim_colimited_= util::na_value; // umol C m^-2 s^-1 
@@ -1422,17 +1490,16 @@ inline void Leaf::set_physiology(const RootNetwork& root_network, double PPFD, c
    // candidate psi in set_leaf_states_rates_from_psi_stem, so we always recompute
    // the Tair baseline (used for assim_max_ / feasibility) and let the solve
    // override it.
+   const std::array<double, photo_temp_key_size> photo_key = photo_temp_key();
    if (!use_energy_balance_ &&
        photo_temp_cached_ &&
-       leaf_temp_ == photo_temp_cache_leaf_temp_ &&
-       atm_o2_kpa_ == photo_temp_cache_atm_o2_kpa_) {
-     // Cache hit (non-PM): temperature params unchanged; only electron_transport_
+       photo_key == photo_temp_cache_key_) {
+     // Cache hit (non-PM): every input unchanged; only electron_transport_
      // depends on the per-call PPFD_, so refresh just that (as before).
      electron_transport_ = electron_transport();
    } else {
      update_temperature_dependent_params(leaf_temp_);
-     photo_temp_cache_leaf_temp_ = leaf_temp_;
-     photo_temp_cache_atm_o2_kpa_ = atm_o2_kpa_;
+     photo_temp_cache_key_ = photo_key;
      photo_temp_cached_ = true;
    }
 
@@ -2141,9 +2208,121 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   if (!std::isfinite(psi_stem) || psi >= psi_stem) {
     return 0.0;  // shut-down / infeasible: no informative gradient
   }
+
+  // ⚠️ E1: SEAT THE TEMPERATURE PARAMETERS AT THIS CANDIDATE. Without this the
+  // whole derivative below is evaluated at the AIR-temperature baseline, because
+  // nothing on this path calls set_leaf_states_rates_from_psi_stem and
+  // set_physiology gates its temperature cache on !use_energy_balance_. The
+  // objective meanwhile is evaluated at Tleaf(E(psi)). So the solver was
+  // root-finding the first-order condition of a different model from the one it
+  // reported: measured before this landed, |dprofit| at the returned collar
+  // reached 5.76 against the non-EB path's 5.6e-15, and the collar sat up to
+  // 0.83 MPa from the true argmax.
+  //
+  // Same call order as set_leaf_states_rates_from_psi_stem uses, deliberately:
+  // transpiration first, then the temperature update, then the ci solve, so the
+  // ci root-find sees the same parameters the objective's does.
+  double dT_dE = 0.0;
+  double Tleaf_here = leaf_temp_;
+  if (use_energy_balance_) {
+    Tleaf_here = leaf_temp_from_E(transpiration(psi_stem, psi), &dT_dE);
+    update_temperature_dependent_params(Tleaf_here);
+  }
+
   const double ci = psi_stem_to_ci(psi_stem, psi);
   if (!std::isfinite(ci)) {
     return 0.0;
+  }
+
+  // dpsi_stem/dpsi. Computed HERE, before the compensation-point branch, so both
+  // branches share ONE evaluation.
+  //
+  // ⚠️ It was briefly a separate member function, and this comment claimed that
+  // cost 1.4% because the compiler stopped inlining it. THAT WAS WRONG, and
+  // measuring it properly is what showed so: with both binaries interleaved,
+  // the factored and inlined versions are indistinguishable. Kept inline anyway
+  // because sharing one evaluation between the two branches is less work
+  // regardless -- but not for the reason first given.
+  //
+  // ⚠️ AND THE GATE-OFF COST OF THIS WHOLE CHANGE IS 3.1%, NOT THE ~1% FIRST
+  // REPORTED. The first figure was taken at load average 8.9 with another
+  // job's eight workers on the machine, where the arms straddled the noise.
+  // Re-measured at load 5.9, six interleaved rounds, each arm stable to
+  // 0.03 us: 3.132 us before, 3.230 us after. It is NOT the factoring and it is
+  // NOT the out-of-line EB term (gated at the call site, so gate-off never
+  // calls it); dprofit_at_collar_psi is out of line in both builds. Unexplained,
+  // and worth explaining before this reaches plant, which runs this millions of
+  // times. Object layout is EXCLUDED: sizeof(Leaf) is 2008 both before and
+  // after, so the extra bool packed into existing padding. What remains
+  // untested is whether the compensation branch's code enlarges
+  // dprofit_at_collar_psi enough to change how it is scheduled -- it is out of
+  // line in both builds, so this is about the body, not about the call.
+  const double dEup_dpsi = dE_from_soil_dpsi_collar(psi, supply_psi_soil());
+  double dpsistem_dpsi;
+  if (std::isfinite(dEup_dpsi)) {
+    E_from_Soil_to_Root_Collar(psi, supply_psi_soil());  // refresh E_up_ at psi
+    const double E_psi_stem =
+        E_up_ / leaf_specific_conductance_max_ +
+        stem_curve_integral(psi, "Leaf::dprofit_at_collar_psi, forming "
+                                 "dpsi_stem/dpsi at the operating point");
+    const double dEpsistem_dpsi =
+        dEup_dpsi / leaf_specific_conductance_max_ + stem_curve_integral_deriv(psi);
+    dpsistem_dpsi = stem_curve_integral_inverse_deriv(E_psi_stem) * dEpsistem_dpsi;
+  } else {
+    // Near a branch kink the analytic conductance returns NaN; fall back to a
+    // central difference on the transport, as this path has always done.
+    const double h = 1e-6;
+    dpsistem_dpsi =
+        (find_psi_stem_from_psi_root(psi + h, supply_psi_soil()) -
+         find_psi_stem_from_psi_root(psi - h, supply_psi_soil())) / (2.0 * h);
+  }
+
+
+  // ⚠️ E3: THE COMPENSATION-POINT BRANCH, where the implicit function theorem
+  // below is void. When the leaf is hot enough that assimilation is negative
+  // across the whole [gamma*, ca] bracket, psi_stem_to_ci cannot find a
+  // supply==demand root and places ci AT gamma* instead. The residual g is then
+  // not zero, so differentiating "g = 0" is meaningless -- and worse, it is
+  // silently meaningless: at the wet bracket endpoint transpiration is ~0 so
+  // gc ~ 0, and at the compensation point A'(ci) ~ 0, which makes
+  // g_ci = A'*umol_to_mol + gc*inv_atm ~ 0 and the IFT quotient a 0/0. That NaN
+  // then propagated into maximise_profit_over_collar as f_lo = f_hi = NaN, where
+  // both sign tests are false for NaN, and TOMS748 aborted the whole run with
+  // "parameters a and b do not bracket the root". Found exactly that way.
+  //
+  // On this branch gross assimilation is identically zero, so A = -R_d(T) and
+  // the only surviving temperature dependence is respiration's:
+  // `dprofit/dpsi = -R_d'(T) * tau - C'(psi_stem) * dpsi_stem/dpsi`.
+  //
+  // R_d' is obtained the same way A_T is, by differencing the model's own
+  // temperature block, so the two cannot drift apart.
+  if (ci_at_compensation_point_) {
+    AD ps_ad0 = psi_stem;  xad::derivative(ps_ad0) = 1.0;
+    const double C_prime0 = xad::derivative(hydraulic_cost_TF_kernel(ps_ad0));
+    double dprofit = -C_prime0 * dpsistem_dpsi;
+    if (use_energy_balance_ && dT_dE != 0.0) {
+      const double h = 1e-3;
+      const double vc0 = vcmax_, jm0 = jmax_, ga0 = gamma_, ko0 = ko_,
+                   kc0 = kc_, rd0 = R_d_, km0 = km_, J0 = electron_transport_;
+      update_temperature_dependent_params(Tleaf_here + h);
+      const double Rd_up = R_d_;
+      update_temperature_dependent_params(Tleaf_here - h);
+      const double Rd_dn = R_d_;
+      vcmax_ = vc0; jmax_ = jm0; gamma_ = ga0; ko_ = ko0; kc_ = kc0;
+      R_d_ = rd0; km_ = km0; electron_transport_ = J0;
+      const double Rd_T = (Rd_up - Rd_dn) / (2.0 * h);
+      // gc = gc_const * E, so dE/dpsi comes from the same spline derivatives the
+      // main branch uses; recomputed here because the main branch's locals are
+      // below this early return.
+      const double gc_c = atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
+      const double dgc_ps = gc_c * leaf_specific_conductance_max_ *
+                            stem_curve_integral_deriv(psi_stem);
+      const double dgc_p = gc_c * leaf_specific_conductance_max_ *
+                           (-stem_curve_integral_deriv(psi));
+      const double dE_dpsi = (dgc_ps * dpsistem_dpsi + dgc_p) / gc_c;
+      dprofit += -Rd_T * dT_dE * dE_dpsi;
+    }
+    return std::isfinite(dprofit) ? dprofit : 0.0;
   }
   // Past both exits: whatever is returned below is a real derivative, so a zero
   // from here IS a stationary point.
@@ -2188,26 +2367,123 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   // E_up_'(psi) is the analytic conductance (dE_from_soil_dpsi_collar), positive;
   // near a branch kink it returns NaN and we fall back to a central difference on
   // the transport.
-  const double dEup_dpsi = dE_from_soil_dpsi_collar(psi, supply_psi_soil());
-  double dpsistem_dpsi;
-  if (std::isfinite(dEup_dpsi)) {
-    E_from_Soil_to_Root_Collar(psi, supply_psi_soil());  // refresh E_up_ at psi
-    const double E_psi_stem =
-        E_up_ / leaf_specific_conductance_max_ +
-        stem_curve_integral(psi, "Leaf::dprofit_at_collar_psi, forming "
-                                 "dpsi_stem/dpsi at the operating point");
-    const double dEpsistem_dpsi =
-        dEup_dpsi / leaf_specific_conductance_max_ + stem_curve_integral_deriv(psi);
-    dpsistem_dpsi = stem_curve_integral_inverse_deriv(E_psi_stem) * dEpsistem_dpsi;
-  } else {
-    const double h = 1e-6;
-    dpsistem_dpsi =
-        (find_psi_stem_from_psi_root(psi + h, supply_psi_soil()) -
-         find_psi_stem_from_psi_root(psi - h, supply_psi_soil())) / (2.0 * h);
-  }
 
   const double dci_dpsi = dci_dpsistem * dpsistem_dpsi + dci_dpsi_expl;
-  return A_prime * dci_dpsi - C_prime * dpsistem_dpsi;
+  const double base = A_prime * dci_dpsi - C_prime * dpsistem_dpsi;
+  // Gated at the CALL SITE, not just inside the callee: the block is out of line
+  // (deliberately, so adding it cannot change FMA contraction in this inlined
+  // body), and an out-of-line call costs even when it returns 0.0 immediately.
+  if (!use_energy_balance_) {
+    return base;
+  }
+  return base + dprofit_energy_balance_term(ci, gc, g_ci, inv_atm, gc_const,
+                                            dgc_dpsistem, dgc_dpsi,
+                                            dpsistem_dpsi, dT_dE, Tleaf_here);
+}
+
+// The energy-balance correction to dprofit/dpsi, and zero when the gate is off.
+//
+// ⚠️ OUT OF LINE ON PURPOSE. Everything around it -- profit_psi_stem_TF,
+// hydraulic_cost_TF, assim_colimited -- is fully inlined with no out-of-line
+// symbol at all (hazard 5), and adding a branch inside such a body can change
+// which expressions land in one inlined block and therefore change FMA
+// contraction. That would move the GATE-OFF path, i.e. the golden file, for no
+// reason anyone could read from the diff. Keeping the block behind its own
+// symbol is what makes "bit-identical with the gate off" structural rather than
+// lucky. Check with `nm -C test_golden | grep dprofit` before and after.
+//
+// THE DERIVATION. When the gate is on, psi reaches profit by two further routes
+// beyond the two already accounted for:
+//
+//  * DIRECT:   psi -> psi_stem -> E -> Tleaf -> theta(Tleaf) -> A
+//  * INDIRECT: psi -> psi_stem -> E -> Tleaf -> the ci residual -> ci -> A
+//
+// The second is the subtle one. psi_stem_to_ci root-finds
+// g(ci; psi_stem, psi, T) = A(ci,T)*umol_to_mol - gc*(ca-ci)*inv_atm = 0, and the
+// demand side reads the temperature-dependent members, so g gains an EXPLICIT T
+// argument. Differentiating g = 0 totally in psi adds g_T * dT/dpsi to the
+// existing terms, with g_T = A_T * umol_to_mol, so `dci/dpsi` gains
+// `-(A_T * umol_to_mol * tau) / g_ci`.
+//
+// Adding that to the direct term `A_T * tau` and collecting gives
+// `Delta = A_T * tau * (1 - A_prime*umol_to_mol/g_ci)`, which since
+// `g_ci = A_prime*umol_to_mol + gc*inv_atm` is the same as
+// `Delta = A_T * tau * (gc*inv_atm) / g_ci`.
+//
+// Two consequences worth keeping, because each is a free check on the algebra:
+//
+//  * the damping factor (gc*inv_atm)/g_ci lies strictly in (0,1). The direct
+//    thermal effect on A is partly cancelled because ci re-equilibrates. If an
+//    implementation ever produces |Delta| > |A_T*tau|, it is wrong.
+//  * dE/dpsi > 0 and dT/dE < 0, so tau < 0. Above the thermal optimum A_T < 0
+//    and therefore Delta > 0: the corrected condition pushes the optimum DRIER,
+//    i.e. toward more transpiration, because the extra flux now buys evaporative
+//    cooling back toward the optimum. That is the decoupling mechanism, and its
+//    sign is the sharpest available test that this term is right.
+//
+// `dgc_dT` is a named zero rather than an omission: stom_cond_CO2 currently
+// divides by the prescribed AIR vpd, so gc does not depend on Tleaf. Wiring
+// leaf-to-air VPD (PLAN 13.1) makes it non-zero and this becomes a one-line
+// change instead of a re-derivation.
+inline double Leaf::dprofit_energy_balance_term(
+    double ci, double gc, double g_ci, double inv_atm, double gc_const,
+    double dgc_dpsistem, double dgc_dpsi, double dpsistem_dpsi, double dT_dE,
+    double Tleaf) {
+  if (!use_energy_balance_ || dT_dE == 0.0) {
+    return 0.0;
+  }
+
+  // dA/dTleaf by a CENTRAL DIFFERENCE over the temperature block only.
+  //
+  // Chosen over templating the Arrhenius block on the scalar type, and the
+  // reason is the golden file rather than accuracy. Re-expressing
+  // update_temperature_dependent_params as the T=double instantiation of a
+  // templated kernel changes which expressions share an inlined body, and
+  // PLAN 11b measured that exact move changing results even where the algebra
+  // was identical. That risks the gate-off path to buy precision nobody can
+  // observe: at h = 1e-3 K the truncation error is ~2e-9 relative against a
+  // model whose own floor (psi_stem_to_ci at 1e-10) is ~1e-9.
+  //
+  // ⚠️ h is FIXED and ABSOLUTE, not relative to T. A relative step would make
+  // the estimator itself a function of psi, which is exactly the kind of thing
+  // that puts a staircase back into the argmax (hazard 3).
+  //
+  // Differencing the model's own update + kernel means this cannot drift from
+  // the function actually evaluated, and it picks up all eight temperature
+  // parameters -- including R_d_ and electron_transport_, which a hand-derived
+  // expression is precisely the sort of thing to forget.
+  const double h = 1e-3;
+  const double vcmax0 = vcmax_, jmax0 = jmax_, gamma0 = gamma_, ko0 = ko_,
+               kc0 = kc_, Rd0 = R_d_, km0 = km_, J0 = electron_transport_;
+  // ⚠️ Tleaf, NOT leaf_temp_. On the energy-balance path set_physiology
+  // reinterprets leaf_temp_ as AIR temperature (Tair_ = leaf_temp_), so
+  // differencing around it evaluates dA/dT at the wrong point entirely. The
+  // first version of this did exactly that; the resulting A_T was wrong enough
+  // to flip the sign of dprofit at a bracket endpoint, and the collar solve
+  // aborted with "parameters a and b do not bracket the root".
+  const double T0 = Tleaf;
+
+  update_temperature_dependent_params(T0 + h);
+  const double A_up = assim_colimited(ci);
+  update_temperature_dependent_params(T0 - h);
+  const double A_dn = assim_colimited(ci);
+
+  // Restore by assignment rather than by a third update call: exact, and cheaper
+  // than re-running the Arrhenius block.
+  vcmax_ = vcmax0; jmax_ = jmax0; gamma_ = gamma0; ko_ = ko0; kc_ = kc0;
+  R_d_ = Rd0; km_ = km0; electron_transport_ = J0;
+
+  const double A_T = (A_up - A_dn) / (2.0 * h);
+
+  // dE/dpsi from the gc partials already in hand -- gc = gc_const * E, so
+  // dividing by gc_const recovers it with no new spline evaluation.
+  const double dE_dpsi = (dgc_dpsistem * dpsistem_dpsi + dgc_dpsi) / gc_const;
+  const double tau = dT_dE * dE_dpsi;
+
+  const double dgc_dT = 0.0;  // see the note above; non-zero once PLAN 13.1 lands
+  const double damping = (gc * inv_atm - dgc_dT * (ca_ - ci) * inv_atm) / g_ci;
+
+  return A_T * tau * damping;
 }
 
 inline double Leaf::arrh_curve(double Ea, double ref_value, double leaf_temp) const {
@@ -2230,6 +2506,32 @@ inline double Leaf::peak_arrh_curve(double Ea, double ref_value, double leaf_tem
 // lets the PM path recompute per operating-point Tleaf. electron_transport_ also
 // depends on the per-call PPFD_ and is (re)computed here from the just-updated
 // jmax_ -- on the non-PM cache-hit path set_physiology refreshes it separately.
+//
+// R_d comes from R_d_25 and the declining Q10, so it RISES with temperature.
+// It used to be a fraction of vcmax_(T) and therefore fell above the thermal
+// optimum, which was the wrong direction (#41).
+
+// Every scalar update_temperature_dependent_params() below reads, in one place so
+// the cache key and the computation cannot drift apart.
+//
+// ⚠️ KEEP THIS IMMEDIATELY ABOVE THAT FUNCTION AND IN STEP WITH IT. Adding an input
+// there without adding it here reintroduces exactly the silent staleness this key
+// exists to remove -- the fit still converges and the numbers stay plausible.
+// `photo_temp_key_size` is the guard: the compiler rejects a mismatched list.
+//
+// Bit equality (`==`) is the right comparison. The question is "did any input
+// change", not "did it change materially": an input that moved by one ULP produces
+// a different response and must invalidate.
+inline std::array<double, Leaf::photo_temp_key_size> Leaf::photo_temp_key() const {
+  return {leaf_temp_, atm_o2_kpa_,
+          vcmax_25, vcmax_ha_, vcmax_H_d_, vcmax_d_S_,
+          jmax_25, jmax_ha_, jmax_H_d_, jmax_d_S_,
+          gamma_25_, gamma_ha_,
+          kc_25_, kc_ha_,
+          ko_25_, ko_ha_,
+          R_d_25, rd_q10_intercept_, rd_q10_slope_};
+}
+
 inline void Leaf::update_temperature_dependent_params(double leaf_temp) {
   vcmax_ =
       peak_arrh_curve(vcmax_ha_, vcmax_25, leaf_temp, vcmax_H_d_, vcmax_d_S_);
@@ -2237,7 +2539,19 @@ inline void Leaf::update_temperature_dependent_params(double leaf_temp) {
   gamma_ = arrh_curve(gamma_ha_, gamma_25_, leaf_temp);
   ko_ = arrh_curve(ko_ha_, ko_25_, leaf_temp);
   kc_ = arrh_curve(kc_ha_, kc_25_, leaf_temp);
-  R_d_ = vcmax_ * rd_to_vcmax_ratio_;
+  // Respiration RISES with temperature, on the declining Q10 above. ⚠️ It is
+  // exactly R_d_25 at 25 C and larger above, so any check taken at 25 C alone is
+  // blind to this whole response -- test_rd_temperature_response is what covers it.
+  //
+  // Fail rather than fall back: R_d_25 is a trait, and an unset one is a caller
+  // error, not a cue to derive something from vcmax.
+  if (!std::isfinite(R_d_25) || R_d_25 < 0.0) {
+    util::stop("R_d_25 must be a finite, non-negative dark respiration at 25 C; "
+               "got " + util::format_double(R_d_25));
+  }
+  const double q10 =
+      rd_q10_intercept_ - rd_q10_slope_ * (leaf_temp + 25.0) / 2.0;
+  R_d_ = R_d_25 * std::pow(q10, (leaf_temp - 25.0) / 10.0);
   km_ = (kc_*umol_per_mol_to_Pa_)*(1 + (atm_o2_kpa_*kPa_to_Pa)/(ko_*umol_per_mol_to_Pa_));
   electron_transport_ = electron_transport();
 }
@@ -2255,11 +2569,22 @@ inline double Leaf::saturation_vapour_pressure_slope(double temp) const {
 // Explicit leaf energy balance (#523): Tleaf = Tair + (Rn - lambda*E)*ra/(rho*cp).
 // E is the hydraulically-pinned transpiration (kg H2O m^-2 s^-1), so lambda*E is
 // the latent heat flux (W m^-2) and (Rn - lambda*E) the sensible heat flux H.
-inline double Leaf::leaf_temp_from_E(double E) const {
+inline double Leaf::leaf_temp_from_E(double E, double* dT_dE) const {
   const double Tleaf = Tair_ + (Rn_ - latent_heat_vap * E) * ra_ / vol_heat_cap_air;
   // Clamp to a physical range so an extreme (non-equilibrium) E cannot drive the
   // Arrhenius block non-finite; see leaf_temp_min/max in the header.
-  return std::min(std::max(Tleaf, leaf_temp_min), leaf_temp_max);
+  const double clamped = std::min(std::max(Tleaf, leaf_temp_min), leaf_temp_max);
+  if (dT_dE != nullptr) {
+    // Inside the clamp the balance is linear in E, so the slope is a constant
+    // and negative: more transpiration, more latent heat, cooler leaf. ON the
+    // clamp it is zero, because the returned temperature no longer responds to
+    // E at all. The two branches share the one comparison above deliberately --
+    // see the note on the declaration.
+    *dT_dE = (clamped == Tleaf)
+                 ? -latent_heat_vap * ra_ / vol_heat_cap_air
+                 : 0.0;
+  }
+  return clamped;
 }
 
 
@@ -2643,20 +2968,38 @@ inline double Leaf::psi_stem_to_ci(double psi_stem, double psi_upstream) {
   // Not the same knob as `ci_abs_tol` (the settable control, default 1e-3), which
   // reaches only the off-path optimise_psi_stem_* solvers. A caller tightening
   // that one gets no extra precision here.
+  ci_at_compensation_point_ = false;
   try {
     return ci_ = util::uniroot_smooth(target, gamma_ * umol_per_mol_to_Pa_, ca_, 1e-10, ci_niter);
   } catch (const std::exception& e) {
-    // Penman-Monteith path (#523): extreme energy-balance leaf heating raises the
-    // CO2 compensation point (gamma*) so far that assimilation is negative across
-    // the whole [gamma*, ca] bracket, so there is no supply==demand root and
-    // TOMS748 cannot bracket. That is a physically-meaningful shut-down (the leaf
-    // is too hot to gain carbon), not a solver failure, so operate at the
-    // compensation point (ci = gamma*, gross A = 0, net A = -R_d) and let the
-    // profit optimiser move away from it. Gated on use_energy_balance_ so the
-    // non-PM path keeps its original fail-fast contract (it never reaches here
-    // under prescribed leaf_temp).
-    if (use_energy_balance_) {
-      return ci_ = gamma_ * umol_per_mol_to_Pa_;
+    // Assimilation can be negative across the WHOLE [gamma*, ca] bracket -- the
+    // leaf is too hot to gain carbon at any internal CO2 -- and then there is no
+    // supply==demand root at all. That is a physically-meaningful shut-down, not a
+    // solver failure: operate at the compensation point (ci = gamma*, gross A = 0,
+    // net A = -R_d) and let the profit optimiser move away from it.
+    //
+    // ⚠️ THIS USED TO BE GATED ON use_energy_balance_, on the grounds that the
+    // prescribed-temperature path "never reaches here". That was true and #41 made
+    // it false: raising R_d to a Q10 response is enough to drive assimilation
+    // negative throughout by ~45 C at the defaults, and the prescribed path then
+    // threw where the PM path shut down -- the same physics, two different
+    // outcomes, decided by how leaf_temp happened to be obtained.
+    //
+    // ⚠️ THE GATE IS NOT SIMPLY REMOVED, because that would mask real solver
+    // failures as shut-downs: this `catch` sees ANY exception from the root-find,
+    // and fail-fast has value. The target is strictly monotone over (gamma*, ca]
+    // (#486), so "no root exists" is distinguishable from "the solver broke" by
+    // the sign at the two ends -- equal signs means the root is genuinely outside
+    // the bracket. Only that case shuts down; anything else still stops.
+    const double lo = gamma_ * umol_per_mol_to_Pa_;
+    const double t_lo = target(lo);
+    const double t_hi = target(ca_);
+    const bool no_root_in_bracket =
+        std::isfinite(t_lo) && std::isfinite(t_hi) &&
+        ((t_lo > 0.0 && t_hi > 0.0) || (t_lo < 0.0 && t_hi < 0.0));
+    if (use_energy_balance_ || no_root_in_bracket) {
+      ci_at_compensation_point_ = true;
+      return ci_ = lo;
     }
     util::stop("psi_stem_to_ci failed: " + std::string(e.what()) +
                "; min=" + util::to_string(gamma_ * umol_per_mol_to_Pa_) +

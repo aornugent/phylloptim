@@ -326,6 +326,10 @@ leaf_gradient_batch <- function(batch,
 # observation -- and it reads the two non-traits back out of the resolved drivers
 # for the same reason that one does: theta has to hold the value the solve will
 # actually use.
+#
+# The two non-traits are `leaf_specific_conductance_max` and, on the
+# single-potential path only, `resistance`: both are DRIVERS that a calibration
+# fits like traits (#44), so the enumeration carries them after the traits.
 .gradient_theta_matrix <- function(batch, traits) {
   nr <- batch$theta_nrow
   par_names <- .gradient_par_names()
@@ -333,13 +337,16 @@ leaf_gradient_batch <- function(batch,
   # By NAME, not by position. `leaf_traits()` is in `set_traits()`'s order and
   # test-gradient.R asserts it, but this is the one place a silent reordering
   # would produce plausible numbers for the wrong parameters.
-  tv <- unlist(traits)[par_names[seq_len(length(par_names) - 2L)]]
+  trait_names <- par_names[seq_len(length(par_names) - 2L)]
+  tv <- unlist(traits)[trait_names]
   if (anyNA(tv)) {
-    stop("`traits` is missing: ", paste(names(tv)[is.na(tv)], collapse = ", "),
-         call. = FALSE)
+    stop("`traits` is missing: ",
+         paste(trait_names[is.na(tv)], collapse = ", "), call. = FALSE)
   }
   m[, seq_along(tv)] <- rep(tv, each = nr)
   m[, length(par_names) - 1L] <- batch$kmax
+  # NA on the multi-layer path, where there is no such parameter and C++ never
+  # reads the column.
   m[, length(par_names)] <- batch$resistance
   m
 }

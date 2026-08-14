@@ -17,7 +17,8 @@ leaf_traits(
   a = 0.3,
   curv_fact_elec_trans = 0.7,
   curv_fact_colim = 0.99,
-  cost_scale_TF24 = 7.5
+  cost_scale_TF24 = 7.5,
+  R_d_25 = 1.44
 )
 }
 \arguments{
@@ -47,6 +48,9 @@ leaf_traits(
 
 \item{cost_scale_TF24}{cost parameter for the TF24 profit model
 (umol m^-2 s^-1)}
+
+\item{R_d_25}{dark respiration at 25 C (umol m^-2 s^-1). It is the value at
+25 C only: respiration rises from there on Tjoelker's declining-Q10 curve.}
 }
 \value{
 A `leaf_traits` object; a named list.

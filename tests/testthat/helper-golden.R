@@ -39,15 +39,39 @@ golden_tolerance <- function(field) {
   if (identical(field, "profit")) 1.0e-5 else 1.0e-3
 }
 
+# ⚠️ THE RECORDED GRADIENTS NEED THEIR OWN, LOOSER TOLERANCE, and borrowing the one
+# above was wrong -- it just happened not to fail until #41 added a column.
+#
+# A gradient here is a FINITE DIFFERENCE of the solve, so cross-platform it carries
+# the solve's own ~1e-9 floor DIVIDED BY THE STEP. The step is RELATIVE, so the
+# amplification is set by the differentiated parameter's own magnitude, and the
+# smallest parameter in the file decides the tolerance for all of it.
+#
+# Measured on Linux CI: `dA/dR_d_25` at interior-1layer disagrees by 1.3e-03
+# relative, against 1.3e-04 for every column that was here before. `R_d_25` is 1.44
+# where `vcmax_25` is 96 -- a 67x smaller absolute step at the same relative one --
+# and the arithmetic closes: 1.3e-03 x 0.2487 x 2h = 9.3e-10, i.e. the floor itself.
+#
+# Confirmed independently by the step sweep: at `step = 1e-7` the `R_d_25` column has
+# already moved 1.3% while `vcmax_25` has moved 0.2%. That column goes
+# noise-dominated first, and it is the one that sets this number.
+#
+# 5e-03 leaves ~4x headroom over the one observation there is. It cannot hide a real
+# change: #41's own reallocation moved these cells by 16% to 250%, two orders above
+# this. ⚠️ It IS one CI observation, so read the worst-difference line the test
+# prints on every run rather than assuming the headroom is still there.
+gradient_golden_tolerance <- function() 5.0e-3
+
 # expect_identical where it can hold, expect_equal with the measured per-field
 # tolerance where it cannot. Wrapped in one place so no individual test has to
 # decide, and so the reason lives next to the policy rather than at every call.
-expect_golden <- function(actual, expected_hex, field, label) {
+expect_golden <- function(actual, expected_hex, field, label,
+                          tolerance = golden_tolerance(field)) {
   expected <- as.numeric(expected_hex)
   if (golden_bit_exact_platform()) {
     expect_identical(actual, expected, label = paste(label, field))
   } else {
-    expect_equal(actual, expected, tolerance = golden_tolerance(field),
+    expect_equal(actual, expected, tolerance = tolerance,
                  label = paste(label, field))
   }
 }

@@ -63,23 +63,35 @@ namespace gradient {
 
 // --- the parameter enumeration, which R indexes into --------------------------
 //
-// The thirteen traits in `Leaf::set_traits`' argument order, then the two
+// The fourteen traits in `Leaf::set_traits`' argument order, then the two
 // quantities a calibration fits that are not traits: the conductance driver and
 // the single-potential path's series resistance.
 //
-// ⚠️ APPENDING IS SAFE AND REORDERING IS NOT. R names these positions in
-// `.gradient_par_names` and passes integer indices, so a swap here silently
-// differentiates the wrong parameter. `test-gradient-batch.R` reads the names
-// back out of C++ and compares them with R's, so the two cannot drift apart
-// without a failure.
-inline constexpr int n_traits = 13;
-inline constexpr int n_pars = 15;
+// ⚠️ R INDEXES THESE POSITIONS, so a reordering silently differentiates the wrong
+// parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
+// them with R's, so the two cannot drift apart without a failure.
+inline constexpr int n_traits = 14;
+inline constexpr int n_pars = 16;
 
-// The two indices the code below has to know by name: one takes the fast
-// homogeneity path, and the two non-traits take a relative step.
+// Every index by name, so nothing below indexes `theta` with a bare integer.
+// The first `n_traits` are `set_traits`' arguments in its order, which is also
+// `leaf_traits()`'; the two non-traits follow and take a relative step.
+inline constexpr int par_vcmax_25 = 0;
+inline constexpr int par_stem_c = 1;
 inline constexpr int par_stem_b = 2;
-inline constexpr int par_kmax = 13;
-inline constexpr int par_resistance = 14;
+inline constexpr int par_psi_crit = 3;
+inline constexpr int par_root_c = 4;
+inline constexpr int par_root_b = 5;
+inline constexpr int par_root_psi_crit = 6;
+inline constexpr int par_beta2 = 7;
+inline constexpr int par_jmax_25 = 8;
+inline constexpr int par_a = 9;
+inline constexpr int par_curv_fact_elec_trans = 10;
+inline constexpr int par_curv_fact_colim = 11;
+inline constexpr int par_cost_scale_TF24 = 12;
+inline constexpr int par_R_d_25 = 13;
+inline constexpr int par_kmax = 14;
+inline constexpr int par_resistance = 15;
 
 inline const std::vector<std::string>& par_names() {
   static const std::vector<std::string> names{
@@ -87,7 +99,7 @@ inline const std::vector<std::string>& par_names() {
       "psi_crit",  "root_c",              "root_b",
       "root_psi_crit", "beta2",           "jmax_25",
       "a",         "curv_fact_elec_trans", "curv_fact_colim",
-      "cost_scale_TF24",
+      "cost_scale_TF24", "R_d_25",
       "leaf_specific_conductance_max",
       "resistance"};
   return names;
@@ -378,9 +390,12 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
     l.perturb_stem_b(theta[par_stem_b]);
     return;
   }
-  l.set_traits(theta[0], theta[1], theta[2], theta[3], theta[4], theta[5],
-               theta[6], theta[7], theta[8], theta[9], theta[10], theta[11],
-               theta[12]);
+  l.set_traits(theta[par_vcmax_25], theta[par_stem_c], theta[par_stem_b],
+               theta[par_psi_crit], theta[par_root_c], theta[par_root_b],
+               theta[par_root_psi_crit], theta[par_beta2], theta[par_jmax_25],
+               theta[par_a], theta[par_curv_fact_elec_trans],
+               theta[par_curv_fact_colim], theta[par_cost_scale_TF24],
+               theta[par_R_d_25]);
   if (single) {
     // R's `series_resistance()`: a default-constructed network carrying one
     // series resistance in `r_R_V_sum`, which is that field's own meaning with

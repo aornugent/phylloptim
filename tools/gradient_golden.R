@@ -31,10 +31,14 @@
 # on Linux would just move the failure to the platform the file came from.
 #
 # These are derivatives of outputs evaluated at the ARGMAX of a flat maximum, so
-# they inherit that file's sqrt-amplified class: measured worst cross-platform
-# disagreement 1.3e-4, against 1.4e-4 for the same class of solved outputs. A
-# central difference cancels the systematic part of a libm difference, not all of
-# it.
+# they inherit that file's sqrt-amplified class -- and, being finite differences,
+# one amplification more. Measured worst cross-platform disagreement 1.3e-3,
+# against 1.4e-4 for the solved outputs themselves. A central difference cancels
+# the systematic part of a libm difference, not all of it, and what is left is
+# divided by the step: the smallest-magnitude parameter in the file therefore sets
+# the tolerance for all of it, which since #41 is `R_d_25` at 1.44 rather than
+# `vcmax_25` at 96. `gradient_golden_tolerance()` in tests/testthat/helper-golden.R
+# carries the arithmetic.
 suppressMessages(library(phylloptim))
 
 # The golden grid's drivers, so every row here is an operating point the rest of
@@ -59,24 +63,29 @@ grid_drivers <- function(psi_soil, ppfd = 900, vpd = 2.0, layers = 1L) {
 # function at all, so the composite must return EXACTLY zero for it at an
 # interior optimum and the fallback must return ~1.26 at a dry-pinned one. A pin
 # that omitted it would miss the sharpest statement of why there are two routes.
+#
+# `R_d_25` is in `pars` throughout because it is the smallest-magnitude parameter
+# here, so it takes the smallest absolute step and sets this file's cross-platform
+# tolerance -- see `gradient_golden_tolerance()`.
 cases <- list(
   list(label = "interior-1layer",
        args = grid_drivers(2.0),
-       pars = c("vcmax_25", "stem_b", "psi_crit")),
+       pars = c("vcmax_25", "stem_b", "psi_crit", "R_d_25")),
   list(label = "interior-5layer",
        args = grid_drivers(0.5, vpd = 0.5, layers = 5L),
-       pars = c("vcmax_25", "stem_b", "psi_crit")),
+       pars = c("vcmax_25", "stem_b", "psi_crit", "R_d_25")),
   list(label = "pinned-dry-3layer",
        args = grid_drivers(4.0, vpd = 0.5, layers = 3L),
-       pars = c("vcmax_25", "stem_b", "psi_crit")),
+       pars = c("vcmax_25", "stem_b", "psi_crit", "R_d_25")),
   list(label = "shutdown-1layer",
        args = grid_drivers(6.0),
-       pars = c("vcmax_25", "stem_b", "psi_crit")),
+       pars = c("vcmax_25", "stem_b", "psi_crit", "R_d_25")),
   list(label = "single-potential",
        args = list(psi_soil = 1.5, PPFD = 900, atm_vpd = 2.0,
                    supply = leaf_supply_single(),
                    root_network = series_resistance(1e4)),
-       pars = c("vcmax_25", "leaf_specific_conductance_max", "resistance"))
+       pars = c("vcmax_25", "leaf_specific_conductance_max", "resistance",
+                "R_d_25"))
 )
 
 # ⚠️ EVERY OUTPUT COLUMN, taken from the array's own dimnames rather than named

@@ -60,13 +60,13 @@ DriverBatch* checked(SEXP drivers) {
 
 //' The differentiable parameters, in the order C++ indexes them
 //'
-//' The thirteen [leaf_traits()] in `set_traits()`'s argument order, then
+//' The fourteen [leaf_traits()] in `set_traits()`'s argument order, then
 //' `leaf_specific_conductance_max` and `resistance`. Exported so that R's own
 //' copy of this order can be compared against it in a test: R passes integer
 //' positions into this enumeration, so appending to it is safe and reordering it
 //' would silently differentiate the wrong parameter.
 //'
-//' @return A character vector of fifteen names.
+//' @return A character vector of sixteen names.
 //' @seealso [leaf_gradient_batch()]
 //' @examples
 //' gradient_par_names()
