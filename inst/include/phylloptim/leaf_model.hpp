@@ -17,6 +17,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 #include <XAD/XAD.hpp>
@@ -554,14 +555,21 @@ public:
     double b = 0.0, c = 0.0, resolution = 0.0;
     odelia::interpolator::Interpolator from_psi, to_psi;
   };
-  // Bounded, and small: past the pairs a perturbation loop visits an entry is
-  // never read again, so growing the store would be a leak rather than a hit.
+  // Bounded: past the pairs a perturbation loop visits an entry is never read
+  // again, so growing the store without limit would be a leak rather than a hit.
   // The root curve keeps its own beside its splines, in roots_.
-  static constexpr std::size_t curve_cache_size = 8;
-  std::vector<StemCurveCache> stem_curve_cache_;
+  static constexpr std::size_t curve_cache_size = 32;
+  // Held behind a pointer so a copied Leaf SHARES the store rather than
+  // duplicating it. A caller that rebuilds the leaf per cohort per stage -- which
+  // a reverse sweep does -- otherwise starts empty every time and never reads
+  // back an entry it wrote. Sharing is safe because the key determines the value
+  // completely: the splines are a pure function of (b, c, resolution) and hold no
+  // state of the plant being solved.
+  std::shared_ptr<std::vector<StemCurveCache>> stem_curve_cache_ =
+      std::make_shared<std::vector<StemCurveCache>>();
   void forget_curve_caches() {
-    stem_curve_cache_.clear();
-    roots_.curve_cache_.clear();
+    stem_curve_cache_->clear();
+    roots_.curve_cache_->clear();
   }
 
   // The stem cumulative-vulnerability integral G and its inverse, as the FOUR
@@ -2952,7 +2960,7 @@ inline double Leaf::proportion_of_conductivity(double psi) const {
 
 // set spline for proportion of conductivity
 inline void Leaf::setup_transpiration(double resolution) {
-  for (const StemCurveCache& hit : stem_curve_cache_) {
+  for (const StemCurveCache& hit : *stem_curve_cache_) {
     if (hit.b == stem_b && hit.c == stem_c && hit.resolution == resolution) {
       transpiration_from_psi = hit.from_psi;
       psi_from_transpiration = hit.to_psi;
@@ -2974,12 +2982,12 @@ inline void Leaf::setup_transpiration(double resolution) {
   psi_from_transpiration.init(y_cumulative_transpiration_, x_psi_);
   psi_from_transpiration.set_extrapolate(false);
 
-  if (stem_curve_cache_.size() >= curve_cache_size) {
-    stem_curve_cache_.erase(stem_curve_cache_.begin());
+  if (stem_curve_cache_->size() >= curve_cache_size) {
+    stem_curve_cache_->erase(stem_curve_cache_->begin());
   }
-  stem_curve_cache_.push_back(StemCurveCache{stem_b, stem_c, resolution,
-                                             transpiration_from_psi,
-                                             psi_from_transpiration});
+  stem_curve_cache_->push_back(StemCurveCache{stem_b, stem_c, resolution,
+                                              transpiration_from_psi,
+                                              psi_from_transpiration});
 
   // The splines now describe the current stem_b, so the rescaling is over.
   // Recording it HERE rather than at each caller is what makes it impossible to

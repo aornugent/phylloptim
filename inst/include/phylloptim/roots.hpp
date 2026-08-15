@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -293,11 +294,16 @@ public:
     odelia::interpolator::Interpolator conductivity, integral;
     double last_knot = 0.0, integral_limit = 0.0;
   };
-  static constexpr std::size_t curve_cache_size = 8;
-  std::vector<CurveCache> curve_cache_;
+  static constexpr std::size_t curve_cache_size = 32;
+  // Held behind a pointer so a copied MultiLayerRoots SHARES the store rather
+  // than duplicating it. A caller that rebuilds this object per cohort per stage
+  // -- which a reverse sweep does -- otherwise starts empty every time and the
+  // cache never reads back a single entry it wrote.
+  std::shared_ptr<std::vector<CurveCache>> curve_cache_ =
+      std::make_shared<std::vector<CurveCache>>();
 
   void setup_vulnerability(double resolution) {
-    for (const CurveCache& hit : curve_cache_) {
+    for (const CurveCache& hit : *curve_cache_) {
       if (hit.b == root_b && hit.c == root_c && hit.resolution == resolution) {
         root_vuln_from_psi = hit.conductivity;
         root_vuln_integral_from_psi = hit.integral;
@@ -342,14 +348,14 @@ public:
     root_vuln_integral_limit_ =
         cumulative_vulnerability_integral_limit(root_b, root_c);
 
-    if (curve_cache_.size() >= curve_cache_size) {
-      curve_cache_.erase(curve_cache_.begin());
+    if (curve_cache_->size() >= curve_cache_size) {
+      curve_cache_->erase(curve_cache_->begin());
     }
-    curve_cache_.push_back(CurveCache{root_b, root_c, resolution,
-                                      root_vuln_from_psi,
-                                      root_vuln_integral_from_psi,
-                                      root_vuln_last_knot_,
-                                      root_vuln_integral_limit_});
+    curve_cache_->push_back(CurveCache{root_b, root_c, resolution,
+                                       root_vuln_from_psi,
+                                       root_vuln_integral_from_psi,
+                                       root_vuln_last_knot_,
+                                       root_vuln_integral_limit_});
   }
 
   // f_r at a suction, clamped into the knot domain -- set_extrapolate(false)
