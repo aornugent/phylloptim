@@ -770,6 +770,38 @@ public:
     double dmarginal_dbeta2, dmarginal_dcost_scale;
   };
   CostTraitRows cost_trait_rows();
+
+  // The three photosynthesis traits, whose rows come off two second-order passes
+  // rather than six re-solves.
+  //
+  // At a frozen collar these move nothing but assimilation: the stem potential,
+  // the stomatal conductance and the hydraulic cost are all fixed, and the only
+  // thing that responds is the intercellular CO2 the residual places. So with
+  // g_ci = A'*umol_to_mol + gc*inv_atm and K = (ca - ci)*inv_atm/g_ci,
+  //
+  //   dci/dtheta  = -(dA/dtheta) * umol_to_mol / g_ci
+  //   dprofit     =  (dA/dtheta) * gc * inv_atm / g_ci
+  //   dmarginal   =  (dA'/dtheta) * D * K + A' * D * dK/dtheta
+  //
+  // with D the collar's route into gc, which carries no trait. dA'/dtheta needs
+  // the mixed second partial and A'', and both come from the assimilation kernel
+  // seeded twice -- the model's own algebra, not a hand-kept second copy.
+  //
+  // Two of the three share one intermediate: `a` and curv_fact_elec_trans reach
+  // assimilation only through the electron transport, so one pass in that
+  // direction serves both and the traits enter as dJ/dtheta. curv_fact_colim
+  // reaches it only through the colimitation and takes the second pass.
+  //
+  // Their frozen-collar uptake rows are exactly zero, for the cost traits'
+  // reason: at a fixed collar a carbon-side trait moves no water.
+  //
+  // On the compensation-point branch gross assimilation is identically zero, so
+  // none of the three reaches profit at all and every row here is zero.
+  struct PhotoTraitRows {
+    double dprofit_da, dprofit_dcurv_elec, dprofit_dcurv_colim;
+    double dmarginal_da, dmarginal_dcurv_elec, dmarginal_dcurv_colim;
+  };
+  PhotoTraitRows photo_trait_rows();
   // The energy-balance correction to the above, zero when the gate is off. Kept
   // out of line so that adding it cannot change FMA contraction in the inlined
   // gate-off path; the derivation and the two sign checks are at the definition.
@@ -899,6 +931,10 @@ public:
   // cost kernels already use. Cold: reached once per set_physiology and once per
   // light row, never from inside the collar solve.
   template <typename T> T electron_transport_kernel(T ppfd) const;
+  // The same expression again with the two traits that reach it on the scalar,
+  // which is the only route into them: both appear here and nowhere else.
+  template <typename T> T electron_transport_kernel(T ppfd, T quantum_yield,
+                                                    T curvature) const;
   double assim_electron_limited(double ci_);
   double assim_colimited(double ci_);
 
@@ -931,11 +967,25 @@ public:
   // Keep them PURE -- no writes to members. `hydraulic_cost_TF` caches into
   // `hydraulic_cost_`; its kernel must not, or the AD pass would write model state
   // while probing.
+  //
+  // Three of them take a trait on the scalar as well as the variable, and the
+  // two-argument forms forward to those with the member. `a` and
+  // `curv_fact_elec_trans` reach assimilation through the electron transport and
+  // through nothing else, and `curv_fact_colim` through the colimitation and
+  // through nothing else -- each appears in exactly one expression in this file
+  // -- so carrying them here is what lets photo_trait_rows differentiate the
+  // family instead of moving a member and re-solving.
   template <typename T> T assim_rubisco_limited_kernel(T ci) const;
   template <typename T> T assim_electron_limited_kernel(T ci) const;
+  template <typename T> T assim_electron_limited_kernel(T ci, T transport) const;
   template <typename T> T assim_colimited_kernel(T ci) const;
+  template <typename T> T assim_colimited_kernel(T ci, T transport,
+                                                 T curvature) const;
   template <typename T> T colimit_kernel(T assim_rubisco_limited_,
                                          T assim_electron_limited_) const;
+  template <typename T> T colimit_kernel(T assim_rubisco_limited_,
+                                         T assim_electron_limited_,
+                                         T curvature) const;
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
   double assim_minus_stom_cond_CO2(double x, double psi_stem, double psi_upstream);
   double psi_stem_to_ci(double psi_stem, double psi_upstream);
@@ -2456,6 +2506,104 @@ inline Leaf::CostTraitRows Leaf::cost_trait_rows() {
   return out;
 }
 
+inline Leaf::PhotoTraitRows Leaf::photo_trait_rows() {
+  using AD = xad::fwd<double>::active_type;
+  using AD2 = xad::fwd_fwd<double>::active_type;
+  PhotoTraitRows out{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  if (ci_at_compensation_point_) {
+    return out;   // gross assimilation is zero there, so none of the three reaches profit
+  }
+
+  const double psi = opt_root_psi_;
+  const double psi_stem = opt_psi_stem_;
+  const double ci = ci_;
+  const double J = electron_transport_;
+
+  // A', A'' and, in the second pass, the transport direction. Seeding the
+  // kernel twice is what gives the second derivatives without a second
+  // expression of the algebra.
+  double A_ci = 0.0, A_cici = 0.0, A_J = 0.0, A_J_ci = 0.0;
+  double A_cv = 0.0, A_cv_ci = 0.0;
+  {
+    AD2 x = ci;
+    x.value().derivative() = 1.0;
+    x.derivative().value() = 1.0;
+    const AD2 A = assim_colimited_kernel(x, AD2(J), AD2(curv_fact_colim));
+    A_ci = A.value().derivative();
+    A_cici = A.derivative().derivative();
+  }
+  {
+    AD2 x = ci;   x.value().derivative() = 1.0;
+    AD2 t = J;    t.derivative().value() = 1.0;
+    const AD2 A = assim_colimited_kernel(x, t, AD2(curv_fact_colim));
+    A_J = A.derivative().value();
+    A_J_ci = A.derivative().derivative();
+  }
+  {
+    AD2 x = ci;   x.value().derivative() = 1.0;
+    AD2 v = curv_fact_colim;  v.derivative().value() = 1.0;
+    const AD2 A = assim_colimited_kernel(x, AD2(J), v);
+    A_cv = A.derivative().value();
+    A_cv_ci = A.derivative().derivative();
+  }
+  // dJ/dtheta for the two that reach assimilation only through the transport.
+  double dJ_da = 0.0, dJ_dcurv = 0.0;
+  {
+    AD q = a;  xad::derivative(q) = 1.0;
+    dJ_da = xad::derivative(
+        electron_transport_kernel(AD(PPFD_), q, AD(curv_fact_elec_trans)));
+    AD v = curv_fact_elec_trans;  xad::derivative(v) = 1.0;
+    dJ_dcurv = xad::derivative(
+        electron_transport_kernel(AD(PPFD_), AD(a), v));
+  }
+
+  // The theta-free half of the marginal profit, formed as
+  // dprofit_at_collar_psi forms it, including its fallback near a branch kink.
+  const double gc_const =
+      atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
+  const double gc = gc_const * transpiration(psi_stem, psi);
+  const double dgc_dpsistem =
+      gc_const * leaf_specific_conductance_max_ * stem_curve_integral_deriv(psi_stem);
+  const double dgc_dpsi =
+      gc_const * leaf_specific_conductance_max_ * (-stem_curve_integral_deriv(psi));
+  const double dEup_dp = dE_from_soil_dpsi_collar(psi, supply_psi_soil());
+  double dpsistem_dp;
+  if (std::isfinite(dEup_dp)) {
+    E_from_Soil_to_Root_Collar(psi, supply_psi_soil());
+    const double E_x = E_up_ / leaf_specific_conductance_max_ +
+                       stem_curve_integral(psi, "Leaf::photo_trait_rows");
+    dpsistem_dp = stem_curve_integral_inverse_deriv(E_x) *
+                  (dEup_dp / leaf_specific_conductance_max_ +
+                   stem_curve_integral_deriv(psi));
+  } else {
+    const double h = 1e-6;
+    dpsistem_dp = (find_psi_stem_from_psi_root(psi + h, supply_psi_soil()) -
+                   find_psi_stem_from_psi_root(psi - h, supply_psi_soil())) /
+                  (2.0 * h);
+  }
+
+  const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
+  const double g_ci = A_ci * umol_to_mol + gc * inv_atm;
+  const double D = dgc_dpsistem * dpsistem_dp + dgc_dpsi;
+  const double K = (ca_ - ci) * inv_atm / g_ci;
+
+  // One trait's pair of rows, given how it reaches A and A'.
+  auto rows = [&](double dA, double dA_ci, double& dprofit, double& dmarginal) {
+    const double dci = -dA * umol_to_mol / g_ci;
+    const double dA_prime = dA_ci + A_cici * dci;
+    const double dg_ci = umol_to_mol * dA_prime;
+    const double dK =
+        -(dci * inv_atm * g_ci + (ca_ - ci) * inv_atm * dg_ci) / (g_ci * g_ci);
+    dprofit = dA * gc * inv_atm / g_ci;
+    dmarginal = dA_prime * D * K + A_ci * D * dK;
+  };
+  rows(A_J * dJ_da, A_J_ci * dJ_da, out.dprofit_da, out.dmarginal_da);
+  rows(A_J * dJ_dcurv, A_J_ci * dJ_dcurv, out.dprofit_dcurv_elec,
+       out.dmarginal_dcurv_elec);
+  rows(A_cv, A_cv_ci, out.dprofit_dcurv_colim, out.dmarginal_dcurv_colim);
+  return out;
+}
+
 inline double Leaf::dmarginal_profit_duptake_slope() {
   using AD = xad::fwd<double>::active_type;
   const double psi = opt_root_psi_;
@@ -2932,9 +3080,15 @@ inline double Leaf:: stom_cond_CO2(double psi_stem, double psi_upstream) {
 //ensure that units of PPFD_ actually correspond to something real.
 // electron trnansport rate based on light availability and vcmax assuming co-limitation hypothesis
 template <typename T>
+inline T Leaf::electron_transport_kernel(T ppfd, T quantum_yield,
+                                         T curvature) const {
+  return (quantum_yield * ppfd + jmax_ - sqrt(pow(quantum_yield * ppfd + jmax_, 2) -
+  4 * curvature * quantum_yield * ppfd * jmax_)) / (2 * curvature);
+}
+
+template <typename T>
 inline T Leaf::electron_transport_kernel(T ppfd) const {
-  return (a * ppfd + jmax_ - sqrt(pow(a * ppfd + jmax_, 2) -
-  4 * curv_fact_elec_trans * a * ppfd * jmax_)) / (2 * curv_fact_elec_trans);
+  return electron_transport_kernel(ppfd, T(a), T(curv_fact_elec_trans));
 }
 
 inline double Leaf::electron_transport() {
@@ -2960,9 +3114,14 @@ inline T Leaf::assim_rubisco_limited_kernel(T ci) const {
 }
 
 template <typename T>
-inline T Leaf::assim_electron_limited_kernel(T ci) const {
-  return electron_transport_ / 4 *
+inline T Leaf::assim_electron_limited_kernel(T ci, T transport) const {
+  return transport / 4 *
   ((ci - gamma_ * umol_per_mol_to_Pa_) / (ci + 2 * gamma_ * umol_per_mol_to_Pa_));
+}
+
+template <typename T>
+inline T Leaf::assim_electron_limited_kernel(T ci) const {
+  return assim_electron_limited_kernel(ci, T(electron_transport_));
 }
 
 // The colimitation itself, lifted out so it can be differentiated in the
@@ -2972,17 +3131,32 @@ inline T Leaf::assim_electron_limited_kernel(T ci) const {
 // file is the check on that.
 template <typename T>
 inline T Leaf::colimit_kernel(T assim_rubisco_limited_,
+                              T assim_electron_limited_,
+                              T curvature) const {
+  return (assim_rubisco_limited_ + assim_electron_limited_ - sqrt(pow(assim_rubisco_limited_ + assim_electron_limited_, 2) - 4 * curvature * assim_rubisco_limited_ * assim_electron_limited_)) /
+             (2 * curvature)- R_d_;
+}
+
+template <typename T>
+inline T Leaf::colimit_kernel(T assim_rubisco_limited_,
                               T assim_electron_limited_) const {
-  return (assim_rubisco_limited_ + assim_electron_limited_ - sqrt(pow(assim_rubisco_limited_ + assim_electron_limited_, 2) - 4 * curv_fact_colim * assim_rubisco_limited_ * assim_electron_limited_)) /
-             (2 * curv_fact_colim)- R_d_;
+  return colimit_kernel(assim_rubisco_limited_, assim_electron_limited_,
+                        T(curv_fact_colim));
+}
+
+template <typename T>
+inline T Leaf::assim_colimited_kernel(T ci, T transport, T curvature) const {
+  T assim_rubisco_limited_ = assim_rubisco_limited_kernel(ci);
+  T assim_electron_limited_ = assim_electron_limited_kernel(ci, transport);
+
+  return colimit_kernel(assim_rubisco_limited_, assim_electron_limited_,
+                        curvature);
 }
 
 template <typename T>
 inline T Leaf::assim_colimited_kernel(T ci) const {
-  T assim_rubisco_limited_ = assim_rubisco_limited_kernel(ci);
-  T assim_electron_limited_ = assim_electron_limited_kernel(ci);
-
-  return colimit_kernel(assim_rubisco_limited_, assim_electron_limited_);
+  return assim_colimited_kernel(ci, T(electron_transport_),
+                                T(curv_fact_colim));
 }
 
 inline double Leaf::assim_rubisco_limited(double ci_) {
