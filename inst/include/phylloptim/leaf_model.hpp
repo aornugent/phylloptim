@@ -787,19 +787,31 @@ public:
   // the mixed second partial and A'', and both come from the assimilation kernel
   // seeded twice -- the model's own algebra, not a hand-kept second copy.
   //
-  // Two of the three share one intermediate: `a` and curv_fact_elec_trans reach
-  // assimilation only through the electron transport, so one pass in that
-  // direction serves both and the traits enter as dJ/dtheta. curv_fact_colim
-  // reaches it only through the colimitation and takes the second pass.
+  // Six traits, four passes, because the family shares its intermediates.
+  // `a`, curv_fact_elec_trans and jmax_25 reach assimilation only through the
+  // electron transport, so ONE pass in that direction serves all three and they
+  // enter as dJ/dtheta. curv_fact_colim reaches it only through the
+  // colimitation and vcmax_25 only through the rubisco-limited rate, one pass
+  // each. R_d_25 needs no pass at all: dark respiration is subtracted from the
+  // colimitation, so dA/dR_d_ is exactly -1 and d2A/dR_d_ dci exactly 0.
+  //
+  // The three that carry a temperature-derived scalar -- vcmax_, jmax_, R_d_ --
+  // reach it from their _25 trait through a factor that does not depend on the
+  // trait, since both Arrhenius forms are the reference value times a function
+  // of temperature. So the chain is the derived value over the trait, exactly.
   //
   // Their frozen-collar uptake rows are exactly zero, for the cost traits'
   // reason: at a fixed collar a carbon-side trait moves no water.
   //
   // On the compensation-point branch gross assimilation is identically zero, so
-  // none of the three reaches profit at all and every row here is zero.
+  // none of them reaches profit at all and every row here is zero -- except
+  // R_d_25, which is what net assimilation is reduced BY, and so still carries
+  // its own row there.
   struct PhotoTraitRows {
     double dprofit_da, dprofit_dcurv_elec, dprofit_dcurv_colim;
+    double dprofit_dvcmax_25, dprofit_djmax_25, dprofit_dR_d_25;
     double dmarginal_da, dmarginal_dcurv_elec, dmarginal_dcurv_colim;
+    double dmarginal_dvcmax_25, dmarginal_djmax_25, dmarginal_dR_d_25;
   };
   PhotoTraitRows photo_trait_rows();
   // The energy-balance correction to the above, zero when the gate is off. Kept
@@ -931,10 +943,12 @@ public:
   // cost kernels already use. Cold: reached once per set_physiology and once per
   // light row, never from inside the collar solve.
   template <typename T> T electron_transport_kernel(T ppfd) const;
-  // The same expression again with the two traits that reach it on the scalar,
-  // which is the only route into them: both appear here and nowhere else.
+  // The same expression again with the three traits that reach it on the
+  // scalar, which is the only route into them: each appears here and nowhere
+  // else. jmax_ arrives from jmax_25 through the temperature block, which is
+  // exactly linear in it.
   template <typename T> T electron_transport_kernel(T ppfd, T quantum_yield,
-                                                    T curvature) const;
+                                                    T curvature, T jmax) const;
   double assim_electron_limited(double ci_);
   double assim_colimited(double ci_);
 
@@ -976,10 +990,11 @@ public:
   // -- so carrying them here is what lets photo_trait_rows differentiate the
   // family instead of moving a member and re-solving.
   template <typename T> T assim_rubisco_limited_kernel(T ci) const;
+  template <typename T> T assim_rubisco_limited_kernel(T ci, T vcmax) const;
   template <typename T> T assim_electron_limited_kernel(T ci) const;
   template <typename T> T assim_electron_limited_kernel(T ci, T transport) const;
   template <typename T> T assim_colimited_kernel(T ci) const;
-  template <typename T> T assim_colimited_kernel(T ci, T transport,
+  template <typename T> T assim_colimited_kernel(T ci, T vcmax, T transport,
                                                  T curvature) const;
   template <typename T> T colimit_kernel(T assim_rubisco_limited_,
                                          T assim_electron_limited_) const;
@@ -2517,18 +2532,31 @@ inline Leaf::CostTraitRows Leaf::cost_trait_rows() {
 inline Leaf::PhotoTraitRows Leaf::photo_trait_rows() {
   using AD = xad::fwd<double>::active_type;
   using AD2 = xad::fwd_fwd<double>::active_type;
-  PhotoTraitRows out{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  PhotoTraitRows out{0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   if (use_energy_balance_) {
     // With the gate on, psi reaches profit by two further routes through the
     // leaf temperature, and dprofit_at_collar_psi carries them as a term this
     // assembly has no analogue of -- so a marginal row formed here would be
     // short by it. Refuse rather than return the interior-branch number, which
     // would be finite, plausible and missing a channel.
-    const double nan = util::na_value;
-    return PhotoTraitRows{nan, nan, nan, nan, nan, nan};
+    const double n = util::na_value;
+    return PhotoTraitRows{n, n, n, n, n, n, n, n, n, n, n, n};
   }
+
+  // Each temperature-derived scalar is its _25 trait times a factor of
+  // temperature alone, so the chain from one to the other is their ratio.
+  const double dvcmax_dtrait = vcmax_ / vcmax_25;
+  const double djmax_dtrait = jmax_ / jmax_25;
+  const double dR_d_dtrait = R_d_ / R_d_25;
+
   if (ci_at_compensation_point_) {
-    return out;   // gross assimilation is zero there, so none of the three reaches profit
+    // Gross assimilation is identically zero, so nothing that scales it reaches
+    // profit. Dark respiration is not one of those: net assimilation is -R_d_
+    // there, so the profit row survives while the marginal row -- which is the
+    // hydraulic cost alone on that branch -- does not read it.
+    out.dprofit_dR_d_25 = -dR_d_dtrait;
+    return out;
   }
 
   const double psi = opt_root_psi_;
@@ -2536,42 +2564,54 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows() {
   const double ci = ci_;
   const double J = electron_transport_;
 
-  // A', A'' and, in the second pass, the transport direction. Seeding the
-  // kernel twice is what gives the second derivatives without a second
-  // expression of the algebra.
+  // A', A'' and one direction per intermediate. Seeding the kernel twice is
+  // what gives the second derivatives without a second expression of the
+  // algebra.
   double A_ci = 0.0, A_cici = 0.0, A_J = 0.0, A_J_ci = 0.0;
-  double A_cv = 0.0, A_cv_ci = 0.0;
+  double A_cv = 0.0, A_cv_ci = 0.0, A_vc = 0.0, A_vc_ci = 0.0;
   {
     AD2 x = ci;
     x.value().derivative() = 1.0;
     x.derivative().value() = 1.0;
-    const AD2 A = assim_colimited_kernel(x, AD2(J), AD2(curv_fact_colim));
+    const AD2 A = assim_colimited_kernel(x, AD2(vcmax_), AD2(J),
+                                         AD2(curv_fact_colim));
     A_ci = A.value().derivative();
     A_cici = A.derivative().derivative();
   }
   {
     AD2 x = ci;   x.value().derivative() = 1.0;
     AD2 t = J;    t.derivative().value() = 1.0;
-    const AD2 A = assim_colimited_kernel(x, t, AD2(curv_fact_colim));
+    const AD2 A = assim_colimited_kernel(x, AD2(vcmax_), t,
+                                         AD2(curv_fact_colim));
     A_J = A.derivative().value();
     A_J_ci = A.derivative().derivative();
   }
   {
     AD2 x = ci;   x.value().derivative() = 1.0;
     AD2 v = curv_fact_colim;  v.derivative().value() = 1.0;
-    const AD2 A = assim_colimited_kernel(x, AD2(J), v);
+    const AD2 A = assim_colimited_kernel(x, AD2(vcmax_), AD2(J), v);
     A_cv = A.derivative().value();
     A_cv_ci = A.derivative().derivative();
   }
-  // dJ/dtheta for the two that reach assimilation only through the transport.
-  double dJ_da = 0.0, dJ_dcurv = 0.0;
+  {
+    AD2 x = ci;   x.value().derivative() = 1.0;
+    AD2 w = vcmax_;  w.derivative().value() = 1.0;
+    const AD2 A = assim_colimited_kernel(x, w, AD2(J), AD2(curv_fact_colim));
+    A_vc = A.derivative().value();
+    A_vc_ci = A.derivative().derivative();
+  }
+  // dJ/dtheta for the three that reach assimilation only through the transport.
+  double dJ_da = 0.0, dJ_dcurv = 0.0, dJ_djmax = 0.0;
   {
     AD q = a;  xad::derivative(q) = 1.0;
-    dJ_da = xad::derivative(
-        electron_transport_kernel(AD(PPFD_), q, AD(curv_fact_elec_trans)));
+    dJ_da = xad::derivative(electron_transport_kernel(
+        AD(PPFD_), q, AD(curv_fact_elec_trans), AD(jmax_)));
     AD v = curv_fact_elec_trans;  xad::derivative(v) = 1.0;
-    dJ_dcurv = xad::derivative(
-        electron_transport_kernel(AD(PPFD_), AD(a), v));
+    dJ_dcurv = xad::derivative(electron_transport_kernel(
+        AD(PPFD_), AD(a), v, AD(jmax_)));
+    AD m = jmax_;  xad::derivative(m) = 1.0;
+    dJ_djmax = xad::derivative(electron_transport_kernel(
+        AD(PPFD_), AD(a), AD(curv_fact_elec_trans), m));
   }
 
   // The theta-free half of the marginal profit, formed as
@@ -2618,6 +2658,13 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows() {
   rows(A_J * dJ_dcurv, A_J_ci * dJ_dcurv, out.dprofit_dcurv_elec,
        out.dmarginal_dcurv_elec);
   rows(A_cv, A_cv_ci, out.dprofit_dcurv_colim, out.dmarginal_dcurv_colim);
+  rows(A_vc * dvcmax_dtrait, A_vc_ci * dvcmax_dtrait, out.dprofit_dvcmax_25,
+       out.dmarginal_dvcmax_25);
+  rows(A_J * dJ_djmax * djmax_dtrait, A_J_ci * dJ_djmax * djmax_dtrait,
+       out.dprofit_djmax_25, out.dmarginal_djmax_25);
+  // Dark respiration is subtracted from the colimitation, so it shifts A by
+  // exactly -1 per unit and leaves A' untouched. No pass needed.
+  rows(-dR_d_dtrait, 0.0, out.dprofit_dR_d_25, out.dmarginal_dR_d_25);
   return out;
 }
 
@@ -3098,14 +3145,15 @@ inline double Leaf:: stom_cond_CO2(double psi_stem, double psi_upstream) {
 // electron trnansport rate based on light availability and vcmax assuming co-limitation hypothesis
 template <typename T>
 inline T Leaf::electron_transport_kernel(T ppfd, T quantum_yield,
-                                         T curvature) const {
-  return (quantum_yield * ppfd + jmax_ - sqrt(pow(quantum_yield * ppfd + jmax_, 2) -
-  4 * curvature * quantum_yield * ppfd * jmax_)) / (2 * curvature);
+                                         T curvature, T jmax) const {
+  return (quantum_yield * ppfd + jmax - sqrt(pow(quantum_yield * ppfd + jmax, 2) -
+  4 * curvature * quantum_yield * ppfd * jmax)) / (2 * curvature);
 }
 
 template <typename T>
 inline T Leaf::electron_transport_kernel(T ppfd) const {
-  return electron_transport_kernel(ppfd, T(a), T(curv_fact_elec_trans));
+  return electron_transport_kernel(ppfd, T(a), T(curv_fact_elec_trans),
+                                   T(jmax_));
 }
 
 inline double Leaf::electron_transport() {
@@ -3126,8 +3174,13 @@ inline double Leaf::electron_transport() {
 // the DERIVATIVE, which now comes from this code instead of from the drifted
 // replica.
 template <typename T>
+inline T Leaf::assim_rubisco_limited_kernel(T ci, T vcmax) const {
+  return (vcmax * (ci - gamma_ * umol_per_mol_to_Pa_)) / (ci + km_);
+}
+
+template <typename T>
 inline T Leaf::assim_rubisco_limited_kernel(T ci) const {
-  return (vcmax_ * (ci - gamma_ * umol_per_mol_to_Pa_)) / (ci + km_);
+  return assim_rubisco_limited_kernel(ci, T(vcmax_));
 }
 
 template <typename T>
@@ -3162,8 +3215,9 @@ inline T Leaf::colimit_kernel(T assim_rubisco_limited_,
 }
 
 template <typename T>
-inline T Leaf::assim_colimited_kernel(T ci, T transport, T curvature) const {
-  T assim_rubisco_limited_ = assim_rubisco_limited_kernel(ci);
+inline T Leaf::assim_colimited_kernel(T ci, T vcmax, T transport,
+                                      T curvature) const {
+  T assim_rubisco_limited_ = assim_rubisco_limited_kernel(ci, vcmax);
   T assim_electron_limited_ = assim_electron_limited_kernel(ci, transport);
 
   return colimit_kernel(assim_rubisco_limited_, assim_electron_limited_,
@@ -3172,7 +3226,7 @@ inline T Leaf::assim_colimited_kernel(T ci, T transport, T curvature) const {
 
 template <typename T>
 inline T Leaf::assim_colimited_kernel(T ci) const {
-  return assim_colimited_kernel(ci, T(electron_transport_),
+  return assim_colimited_kernel(ci, T(vcmax_), T(electron_transport_),
                                 T(curv_fact_colim));
 }
 
