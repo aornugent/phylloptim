@@ -537,6 +537,33 @@ public:
 
   void setup_transpiration(double resolution);
 
+  // A built vulnerability curve, kept against the pair that determines it.
+  //
+  // The curve is a pure function of (b, c, resolution) and of nothing else --
+  // read cumulative_vulnerability_integral, which takes exactly those three --
+  // so the key is everything the value depends on rather than a subset of it,
+  // which is the one condition a cache here has to meet.
+  //
+  // It exists because a trait gradient rebuilds the SAME few pairs over and
+  // over: the curve belongs to the traits, and the traits do not depend on which
+  // plant is being differentiated, so a caller driving one trait across a stand
+  // was paying for a hundred rebuilds of five distinct curves. A perturbation
+  // loop touches five pairs per curve -- the base and two sides of each of its
+  // two traits -- so a handful of entries holds all of them.
+  struct StemCurveCache {
+    double b = 0.0, c = 0.0, resolution = 0.0;
+    odelia::interpolator::Interpolator from_psi, to_psi;
+  };
+  // Bounded, and small: past the pairs a perturbation loop visits an entry is
+  // never read again, so growing the store would be a leak rather than a hit.
+  // The root curve keeps its own beside its splines, in roots_.
+  static constexpr std::size_t curve_cache_size = 8;
+  std::vector<StemCurveCache> stem_curve_cache_;
+  void forget_curve_caches() {
+    stem_curve_cache_.clear();
+    roots_.curve_cache_.clear();
+  }
+
   // The stem cumulative-vulnerability integral G and its inverse, as the FOUR
   // operations the model actually performs on them. Every read of
   // transpiration_from_psi / psi_from_transpiration goes through these, which is
@@ -2925,6 +2952,14 @@ inline double Leaf::proportion_of_conductivity(double psi) const {
 
 // set spline for proportion of conductivity
 inline void Leaf::setup_transpiration(double resolution) {
+  for (const StemCurveCache& hit : stem_curve_cache_) {
+    if (hit.b == stem_b && hit.c == stem_c && hit.resolution == resolution) {
+      transpiration_from_psi = hit.from_psi;
+      psi_from_transpiration = hit.to_psi;
+      stem_b_spline_ = stem_b;
+      return;
+    }
+  }
   // The conductivity knots come back from the same loop and the stem does not
   // read them -- only the root curve builds a second spline on them.
   std::vector<double> x_psi_, y_cumulative_transpiration_, y_conductivity_;
@@ -2938,6 +2973,13 @@ inline void Leaf::setup_transpiration(double resolution) {
 
   psi_from_transpiration.init(y_cumulative_transpiration_, x_psi_);
   psi_from_transpiration.set_extrapolate(false);
+
+  if (stem_curve_cache_.size() >= curve_cache_size) {
+    stem_curve_cache_.erase(stem_curve_cache_.begin());
+  }
+  stem_curve_cache_.push_back(StemCurveCache{stem_b, stem_c, resolution,
+                                             transpiration_from_psi,
+                                             psi_from_transpiration});
 
   // The splines now describe the current stem_b, so the rescaling is over.
   // Recording it HERE rather than at each caller is what makes it impossible to

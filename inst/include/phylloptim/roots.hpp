@@ -286,7 +286,26 @@ public:
   // Issue #1 measured what taking odelia's extrapolant unexamined cost instead: a
   // conductivity that turns negative past 7.3742 MPa, and an integral 4.35x its
   // own limit at 1000 MPa.
+  // The built curve against the pair that determines it; see Leaf's cache for
+  // why the key is (b, c, resolution) and why a handful of entries is enough.
+  struct CurveCache {
+    double b = 0.0, c = 0.0, resolution = 0.0;
+    odelia::interpolator::Interpolator conductivity, integral;
+    double last_knot = 0.0, integral_limit = 0.0;
+  };
+  static constexpr std::size_t curve_cache_size = 8;
+  std::vector<CurveCache> curve_cache_;
+
   void setup_vulnerability(double resolution) {
+    for (const CurveCache& hit : curve_cache_) {
+      if (hit.b == root_b && hit.c == root_c && hit.resolution == resolution) {
+        root_vuln_from_psi = hit.conductivity;
+        root_vuln_integral_from_psi = hit.integral;
+        root_vuln_last_knot_ = hit.last_knot;
+        root_vuln_integral_limit_ = hit.integral_limit;
+        return;
+      }
+    }
     // Both knot vectors from one pass: dG/dpsi IS exp(-(psi/root_b)^root_c), so
     // the conductivity knots are a quantity the integral's own series already
     // forms rather than a second loop over pow and exp. Bit-identical to that
@@ -322,6 +341,15 @@ public:
     root_vuln_last_knot_ = root_vuln_from_psi.max();
     root_vuln_integral_limit_ =
         cumulative_vulnerability_integral_limit(root_b, root_c);
+
+    if (curve_cache_.size() >= curve_cache_size) {
+      curve_cache_.erase(curve_cache_.begin());
+    }
+    curve_cache_.push_back(CurveCache{root_b, root_c, resolution,
+                                      root_vuln_from_psi,
+                                      root_vuln_integral_from_psi,
+                                      root_vuln_last_knot_,
+                                      root_vuln_integral_limit_});
   }
 
   // f_r at a suction, clamped into the knot domain -- set_extrapolate(false)
