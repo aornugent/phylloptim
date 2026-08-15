@@ -2469,6 +2469,14 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
 
 inline Leaf::CostTraitRows Leaf::cost_trait_rows() {
   using AD = xad::fwd<double>::active_type;
+  if (use_energy_balance_) {
+    // photo_trait_rows' reason, and the same exposure: the marginal rows below
+    // carry no analogue of dprofit_at_collar_psi's temperature term, so with the
+    // gate on they would be short by it while a DRIVEN trait's row -- a
+    // difference of that same function -- would not.
+    const double nan = util::na_value;
+    return CostTraitRows{nan, nan, nan, nan};
+  }
   const double psi = opt_root_psi_;
   const double psi_stem = opt_psi_stem_;
 
@@ -2510,6 +2518,15 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows() {
   using AD = xad::fwd<double>::active_type;
   using AD2 = xad::fwd_fwd<double>::active_type;
   PhotoTraitRows out{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  if (use_energy_balance_) {
+    // With the gate on, psi reaches profit by two further routes through the
+    // leaf temperature, and dprofit_at_collar_psi carries them as a term this
+    // assembly has no analogue of -- so a marginal row formed here would be
+    // short by it. Refuse rather than return the interior-branch number, which
+    // would be finite, plausible and missing a channel.
+    const double nan = util::na_value;
+    return PhotoTraitRows{nan, nan, nan, nan, nan, nan};
+  }
   if (ci_at_compensation_point_) {
     return out;   // gross assimilation is zero there, so none of the three reaches profit
   }
