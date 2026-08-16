@@ -103,3 +103,97 @@ test_that("the clamped route's difference is the feasibility jump", {
   expect_gt(abs(jump), 100)
   expect_true(is.finite(jump))
 })
+
+# The arms a row is differenced along when one side is not available.
+#
+# A collar held at the operating point can fall outside the interval the
+# PERTURBED state has -- the bound moves out from under it -- and the stand meets
+# this at points classified interior, sitting a hundred-thousandth of an MPa
+# inside the dry bound. The step cannot always be reduced enough, so the row is
+# taken one-sided on the side that is still inside.
+#
+# It is taken SECOND-ORDER, at the cost of one extra evaluation, and these
+# numbers are why.
+
+fixed_collar_interior <- function() {
+  l <- leaf_model(traits = leaf_traits())
+  set_drivers(l, psi_soil = c(2.6, 2.8, 3.0, 3.2, 3.4))
+  l$find_root_collar_psi()
+  l
+}
+
+# profit at a HELD collar, with one trait moved. The quantity every driven row is
+# a difference of.
+fixed_collar_profit <- function(collar, name, delta) {
+  tr <- leaf_traits(); tr[[name]] <- tr[[name]] + delta
+  m <- leaf_model(traits = tr)
+  set_drivers(m, psi_soil = c(2.6, 2.8, 3.0, 3.2, 3.4))
+  v <- m$profit_at_fixed_collar_values(collar)
+  if (v[[1]] != 1) NA_real_ else v[[2]]
+}
+
+test_that("a one-sided second-order arm reproduces the centred one, from either side", {
+  # The fixture is a state where BOTH sides are available, because that is the
+  # only place the two can be compared at all -- where the one-sided form is
+  # actually needed there is nothing to compare it against.
+  l <- fixed_collar_interior()
+  expect_identical(l$operating_point_kind_name(), "interior")
+  collar <- l$opt_root_psi_
+  fit_step <- 1e-3
+
+  worst_2nd <- 0
+  worst_1st <- 0
+  for (nm in c("stem_c", "stem_b", "root_c", "root_b")) {
+    h <- max(abs(leaf_traits()[[nm]]), 1) * fit_step
+    f0 <- fixed_collar_profit(collar, nm, 0)
+    at <- function(d) fixed_collar_profit(collar, nm, d)
+    centred <- (at(h) - at(-h)) / (2 * h)
+    forward <- (-3 * f0 + 4 * at(h) - at(2 * h)) / (2 * h)
+    backward <- (3 * f0 - 4 * at(-h) + at(-2 * h)) / (2 * h)
+
+    worst_2nd <- max(worst_2nd, abs(forward / centred - 1), abs(backward / centred - 1))
+    worst_1st <- max(worst_1st, abs((at(h) - f0) / h / centred - 1),
+                     abs((f0 - at(-h)) / h / centred - 1))
+
+    # The property that matters most, and the one a first-order form does not
+    # have: the two sides agree with EACH OTHER. Where this arm is really used,
+    # which side is available is decided by which bound the point drifted toward
+    # -- so a formula whose answer depends on the side would make the row a
+    # function of the geometry rather than of the trait.
+    expect_equal(forward / backward, 1, tolerance = 1e-5)
+  }
+  message(sprintf("  one-sided vs centred: second order %.2e, first order %.2e",
+                  worst_2nd, worst_1st))
+  expect_lt(worst_2nd, 1e-4)
+
+  # Non-vacuity, and the reason for the extra evaluation. A first-order arm is
+  # two orders worse and its error has a SIGN that follows the side, which is
+  # what identifies it as truncation rather than noise.
+  expect_gt(worst_1st, 20 * worst_2nd)
+})
+
+test_that("the side a one-sided arm must take is the side away from the bound", {
+  # Which side is available is not a free choice, and the fixture states the rule
+  # the stand relies on: a step that moves the bound AWAY from the held collar
+  # stays feasible however far it goes, so the second point at 2h is available
+  # whenever the first at h is.
+  psi <- rep(5.0, 5)
+  l <- leaf_model(traits = leaf_traits())
+  set_drivers(l, psi_soil = psi)
+  l$find_root_collar_psi()
+  collar <- l$opt_root_psi_
+  base <- leaf_traits()
+  h <- max(abs(base$root_b), 1) * 1e-3
+
+  ok <- function(d) {
+    tr <- base; tr$root_b <- tr$root_b + d
+    m <- leaf_model(traits = tr); set_drivers(m, psi_soil = psi)
+    m$profit_at_fixed_collar_values(collar)[[1]] == 1
+  }
+  # One side crosses at this pin -- that is what test-fixed-collar's earlier
+  # block measured -- and the other carries both of its points.
+  expect_false(ok(h) && ok(-h))
+  side <- if (ok(h)) 1 else -1
+  expect_true(ok(side * h))
+  expect_true(ok(side * 2 * h))
+})
