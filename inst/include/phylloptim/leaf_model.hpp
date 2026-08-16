@@ -2484,11 +2484,22 @@ inline Leaf::BoundRow Leaf::bound_row(WhichBound which) {
     return row;
   }
 
+  // find_root_psi probes collars, and every probe writes E_up_ and
+  // soil_consumption_ on its way past. Those describe the OPERATING POINT for
+  // whoever solved it, so this restores them: a row is a read, and a read that
+  // moves the outputs is the cross-plant channel hazard 8 is about.
+  const std::vector<double> saved_consumption = soil_consumption_;
+  const double saved_E_up = E_up_;
   const double wettest = supply_begin_solve();
   const double x =
       find_root_psi(wettest, psi_soil, which == WhichBound::Wet ? 0 : 1);
   row.bound = x;
+  auto restore = [&]() -> void {
+    soil_consumption_ = saved_consumption;
+    E_up_ = saved_E_up;
+  };
   if (!std::isfinite(x)) {
+    restore();
     return row;
   }
 
@@ -2523,6 +2534,7 @@ inline Leaf::BoundRow Leaf::bound_row(WhichBound which) {
   }
   row.residual_slope = slope;
   if (!std::isfinite(slope) || slope == 0.0) {
+    restore();
     return row;
   }
 
@@ -2549,6 +2561,7 @@ inline Leaf::BoundRow Leaf::bound_row(WhichBound which) {
   row.d_dpsi_crit = -row.d_dpsi_crit / slope;
   row.d_dstem_b = -row.d_dstem_b / slope;
   row.finite = ok;
+  restore();
   return row;
 }
 

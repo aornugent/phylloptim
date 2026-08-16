@@ -1115,11 +1115,19 @@ struct ProfitEnvDerivatives {
   // caller that ignores this reads sentinels as numbers.
   bool usable = false;
   std::string message;
+  // True where the rows above carry the bound's movement as well as the direct
+  // partial. At an interior optimum the argmax contributes nothing to profit by
+  // the envelope theorem; at a pin the operating point IS the bound, so it moves
+  // with the inputs and the profit row picks the term back up. Reported because
+  // the two are different derivations, and a caller reading a pinned row as an
+  // envelope row would be reading the wrong theory's number.
+  bool pinned = false;
 
   void reset(std::size_t n_layers) {
     dprofit_dlight = util::na_value;
     dprofit_dpsi_soil.assign(n_layers, util::na_value);
     usable = false;
+    pinned = false;
     message.clear();
   }
 };
@@ -1159,11 +1167,24 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
   const std::vector<double>& psi_soil = l.supply_psi_soil();
   out.reset(psi_soil.size());
 
-  if (l.operating_point_kind() != Leaf::OperatingPointKind::Interior) {
+  using Kind = Leaf::OperatingPointKind;
+  const Kind kind = l.operating_point_kind();
+  // Which bound the point is sitting on, if it is sitting on one. The two dry
+  // arms are different functions of the inputs, so this is a three-way question
+  // rather than "pinned or not".
+  Leaf::WhichBound bound = Leaf::WhichBound::Wet;
+  bool pinned = true;
+  switch (kind) {
+  case Kind::PinnedWet:            bound = Leaf::WhichBound::Wet; break;
+  case Kind::PinnedDryRootCrit:    bound = Leaf::WhichBound::DryRootCrit; break;
+  case Kind::PinnedDryRootPsiCrit: bound = Leaf::WhichBound::DryRootPsiCrit; break;
+  default:                         pinned = false; break;
+  }
+
+  if (kind != Kind::Interior && !pinned) {
     out.message =
-        "the environment rows are an envelope step, which needs an interior "
-        "optimum; this point is " +
-        std::string(Leaf::operating_point_kind_name(l.operating_point_kind()));
+        "the environment rows need an interior optimum or a bound to follow; "
+        "this point is " + std::string(Leaf::operating_point_kind_name(kind));
     return;
   }
 
@@ -1171,6 +1192,37 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
   std::vector<double> soil;
   if (!profit_env_rows_here(l, light, soil, out.message)) {
     return;
+  }
+
+  if (pinned) {
+    // The envelope theorem fails at a boundary: the operating point is not
+    // stationary there, it IS the bound, so it moves with the inputs and the
+    // profit row carries that movement.
+    //
+    //   dProfit*/du = dProfit/du|_p  +  (dProfit/dp) * dB/du
+    //
+    // The first term is what profit_env_rows_here just computed -- it is a
+    // frozen-collar partial and does not care why the collar is where it is.
+    const Leaf::BoundRow b = l.bound_row(bound);
+    if (!b.finite) {
+      out.message = "the bound this point is pinned to has no derivative here";
+      return;
+    }
+    const double nu = l.dprofit_droot_collar_psi(l.opt_root_psi_);
+    if (!std::isfinite(nu)) {
+      out.message = "the marginal profit at the bound is not finite";
+      return;
+    }
+    if (b.d_dpsi_soil.size() != soil.size()) {
+      out.message = "the bound's row and the soil rows disagree on the layer count";
+      return;
+    }
+    for (std::size_t j = 0; j < soil.size(); ++j) {
+      soil[j] += nu * b.d_dpsi_soil[j];
+    }
+    // The light row gains nothing: neither bound reads radiation, so dB/dlight
+    // is exactly zero and the frozen-collar partial IS the whole row.
+    out.pinned = true;
   }
 
   out.dprofit_dlight = light;
