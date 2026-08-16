@@ -12,6 +12,7 @@
 #include <phylloptim/vulnerability.hpp>
 
 #include <odelia/interpolator.hpp>
+#include <odelia/hermite_interpolator.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -45,8 +46,8 @@ public:
        double ci_niter,
       double cost_scale_TF24);
 
-  odelia::interpolator::Interpolator transpiration_from_psi;
-  odelia::interpolator::Interpolator psi_from_transpiration;
+  odelia::interpolator::hermite_interpolator<double> transpiration_from_psi;
+  odelia::interpolator::hermite_interpolator<double> psi_from_transpiration;
 
   // The `stem_b` the two splines above were built at, which is normally just
   // `stem_b` -- and is not, while a gradient is perturbing it.
@@ -67,10 +68,11 @@ public:
   // of incomplete gammas plus 3.1 us per interpolator, which is the entire cost
   // of a gradient in stem_b (PLAN 11f).
   //
-  // ⚠️ There is NO SUCH IDENTITY FOR stem_c, and the obvious substitute -- read
-  // G from its closed form instead of the spline -- was built, measured and
-  // rejected: it differentiates a slightly different model and disagrees with the
-  // spline's own derivative by 3e-4. See PLAN 11f. stem_c rebuilds.
+  // ⚠️ There is NO SUCH IDENTITY FOR stem_c, so a move in stem_c rebuilds. The
+  // interpolant carries the closed-form derivative G'(psi) = exp(-(psi/stem_b)^stem_c)
+  // as the slope at each knot, so the derivative a reader gets is that closed form,
+  // not a value fit's inference of it -- the 3e-4 the two once disagreed by was the
+  // fit's error, and it is gone.
   //
   // Two rules keep this from becoming a stale-state bug of the kind hazard 8
   // records: ONLY the four stem_curve_* accessors may read the splines, so one
@@ -632,7 +634,7 @@ public:
   // magnitude), for TF24f's acclimation tracking (#525/#527). Combines
   // forward-mode AD for the analytic photosynthesis/cost algebra, the
   // implicit-function theorem at the psi_stem_to_ci root-find, and analytic
-  // spline derivatives (Interpolator::deriv) for the smooth transport. Replaces
+  // spline derivatives (the stem curve's slope) for the smooth transport. Replaces
   // the noisy finite-difference gradient. Seats the soil-side caches itself, so a
   // solve need not have run first.
   //
@@ -1912,7 +1914,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
 
   // dpsi_stem/dpsi: psi_stem = P(E_psi_stem) with
   //   E_psi_stem = E_up_(psi)/k_max + S(psi),
-  // S = transpiration_from_psi, P = psi_from_transpiration (both C2 splines), and
+  // S = transpiration_from_psi, P = psi_from_transpiration (both C1 interpolants), and
   // E_up_(psi) the soil->collar uptake at collar suction psi. The collar variable
   // IS psi now, so there is no dr/dpsi = -1 factor to carry and the two terms add:
   //   dE_psi_stem/dpsi = E_up_'(psi)/k_max + S'(psi)
@@ -2011,12 +2013,17 @@ inline void Leaf::setup_transpiration(double resolution) {
   build_cumulative_vulnerability_integral(stem_b, stem_c, resolution, x_psi_,
                                           y_cumulative_transpiration_);
 
-  // setup interpolator
-  transpiration_from_psi.init(x_psi_, y_cumulative_transpiration_);
-  transpiration_from_psi.set_extrapolate(false);
-
-  psi_from_transpiration.init(y_cumulative_transpiration_, x_psi_);
-  psi_from_transpiration.set_extrapolate(false);
+  // The exact derivative of the cumulative integral is the conductivity itself,
+  // G'(psi) = exp(-(psi/stem_b)^stem_c), so it is the slope at each knot; the
+  // inverse carries the reciprocal, d(psi)/dG = 1 / G' (finite everywhere, since
+  // G' = 1 at the wet end and stays positive to the dry end).
+  std::vector<double> conductivity(x_psi_.size()), inverse_slope(x_psi_.size());
+  for (size_t i = 0; i < x_psi_.size(); ++i) {
+    conductivity[i] = proportion_of_conductivity(x_psi_[i]);
+    inverse_slope[i] = 1.0 / conductivity[i];
+  }
+  transpiration_from_psi.init(x_psi_, y_cumulative_transpiration_, conductivity);
+  psi_from_transpiration.init(y_cumulative_transpiration_, x_psi_, inverse_slope);
 
   // The splines now describe the current stem_b, so the rescaling is over.
   // Recording it HERE rather than at each caller is what makes it impossible to
@@ -2039,9 +2046,9 @@ inline double Leaf::stem_curve_integral(double psi) const {
 
 inline double Leaf::stem_curve_integral_deriv(double psi) const {
   if (stem_b == stem_b_spline_) {
-    return transpiration_from_psi.deriv(psi);
+    return transpiration_from_psi.slope(psi);
   }
-  return transpiration_from_psi.deriv(psi / (stem_b / stem_b_spline_));
+  return transpiration_from_psi.slope(psi / (stem_b / stem_b_spline_));
 }
 
 inline double Leaf::stem_curve_integral_inverse(double w) const {
@@ -2054,9 +2061,9 @@ inline double Leaf::stem_curve_integral_inverse(double w) const {
 
 inline double Leaf::stem_curve_integral_inverse_deriv(double w) const {
   if (stem_b == stem_b_spline_) {
-    return psi_from_transpiration.deriv(w);
+    return psi_from_transpiration.slope(w);
   }
-  return psi_from_transpiration.deriv(w / (stem_b / stem_b_spline_));
+  return psi_from_transpiration.slope(w / (stem_b / stem_b_spline_));
 }
 
 inline void Leaf::perturb_stem_b(double stem_b_new) {

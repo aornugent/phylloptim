@@ -114,6 +114,27 @@ void test_spline_matches_direct_integration() {
   }
 }
 
+void test_stem_curve_derivative_is_the_closed_form() {
+  printf("stem curve slope is the closed-form conductivity\n");
+  phylloptim::Leaf l;
+  // The interpolant carries G'(psi) = exp(-(psi/stem_b)^stem_c) as the slope at
+  // each knot, so a reader's derivative is that closed form and not a value fit's
+  // inference of it. At the wet end the slope is 1 to the last bit.
+  near(l.stem_curve_integral_deriv(0.0), 1.0, 1e-14,
+       "stem curve slope is 1 at zero potential");
+  // Over the whole domain the slope tracks the closed form to well under the
+  // 3e-4 a value-fitted cubic's inferred slope carried; exact at the knots, the
+  // residual is the between-knot cubic slope near the steep wet end.
+  double worst = 0.0;
+  const int n = 4000;
+  for (int i = 0; i <= n; ++i) {
+    const double psi = l.psi_crit * i / n;
+    worst = std::max(worst, std::fabs(l.stem_curve_integral_deriv(psi) -
+                                      l.proportion_of_conductivity(psi)));
+  }
+  ok(worst < 1e-5, "slope matches the closed-form conductivity to better than 1e-5");
+}
+
 void test_arrhenius() {
   printf("temperature response\n");
   phylloptim::Leaf l;
@@ -1684,6 +1705,7 @@ int main() {
   test_defaults_are_unset();
   test_vulnerability_curve();
   test_spline_matches_direct_integration();
+  test_stem_curve_derivative_is_the_closed_form();
   test_arrhenius();
   test_saturation_vapour_pressure();
   test_solve_single_layer();
