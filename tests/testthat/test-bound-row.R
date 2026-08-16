@@ -111,3 +111,40 @@ test_that("a uniform profile cannot referee the wet bound", {
   # the soil potentials -- which is what identifies the cause as the kink.
   expect_lt(bound_row_worst(uniform, 1L), 1e-4)
 })
+
+test_that("the bound row's parameter half agrees with a rebuilt difference", {
+  # The soil rows above are only part of the row. These three are what a pinned
+  # point's kappa, psi_crit and stem_b columns are built from, and consuming them
+  # unrefereed would be building on numbers nothing had checked.
+  base <- leaf_traits()
+  kmax0 <- 3.14e-05
+  seat <- function(tr, kmax = kmax0) {
+    l <- leaf_model(traits = tr)
+    set_drivers(l, psi_soil = mild_gradient, leaf_specific_conductance_max = kmax)
+    l
+  }
+  bound_of <- function(tr, which, kmax = kmax0) {
+    seat(tr, kmax)$find_root_psi(min(mild_gradient), mild_gradient,
+                                 if (which == 0L) 0L else 1L)
+  }
+
+  # Entry 4 is kappa, 5 is the stem's psi_crit, 7 is stem_b.
+  dry <- seat(base)$bound_row_values(1L)
+  for (e in list(list(5, "psi_crit"), list(7, "stem_b"))) {
+    h <- max(abs(base[[e[[2]]]]), 1) * 1e-6
+    up <- base; up[[e[[2]]]] <- up[[e[[2]]]] + h
+    dn <- base; dn[[e[[2]]]] <- dn[[e[[2]]]] - h
+    fd <- (bound_of(up, 1L) - bound_of(dn, 1L)) / (2 * h)
+    expect_equal(dry[[e[[1]]]] / fd, 1, tolerance = 1e-4)
+  }
+  hk <- kmax0 * 1e-4
+  fd_k <- (bound_of(base, 1L, kmax0 + hk) - bound_of(base, 1L, kmax0 - hk)) / (2 * hk)
+  expect_equal(dry[[4]] / fd_k, 1, tolerance = 1e-4)
+
+  # And the wet bound has none of them, which is the derivation rather than a
+  # coincidence: its residual is total uptake and the stem is not in it.
+  wet <- seat(base)$bound_row_values(0L)
+  expect_equal(wet[[4]], 0)
+  expect_equal(wet[[5]], 0)
+  expect_equal(wet[[7]], 0)
+})
