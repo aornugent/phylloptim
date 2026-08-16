@@ -41,6 +41,18 @@ Leaf__stem_curve_integral_dstem_b <- function(obj_, psi) {
     .Call('_phylloptim_Leaf__stem_curve_integral_dstem_b', PACKAGE = 'phylloptim', obj_, psi)
 }
 
+Leaf__root_curve_integral <- function(obj_, psi) {
+    .Call('_phylloptim_Leaf__root_curve_integral', PACKAGE = 'phylloptim', obj_, psi)
+}
+
+Leaf__root_curve_integral_deriv <- function(obj_, psi) {
+    .Call('_phylloptim_Leaf__root_curve_integral_deriv', PACKAGE = 'phylloptim', obj_, psi)
+}
+
+Leaf__root_curve_integral_droot_b <- function(obj_, psi) {
+    .Call('_phylloptim_Leaf__root_curve_integral_droot_b', PACKAGE = 'phylloptim', obj_, psi)
+}
+
 Leaf__set_traits <- function(obj_, vcmax_25, stem_c, stem_b, psi_crit, root_c, root_b, root_psi_crit, beta2, jmax_25, a, curv_fact_elec_trans, curv_fact_colim, cost_scale_TF24, R_d_25) {
     invisible(.Call('_phylloptim_Leaf__set_traits', PACKAGE = 'phylloptim', obj_, vcmax_25, stem_c, stem_b, psi_crit, root_c, root_b, root_psi_crit, beta2, jmax_25, a, curv_fact_elec_trans, curv_fact_colim, cost_scale_TF24, R_d_25))
 }

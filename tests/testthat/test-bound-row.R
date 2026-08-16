@@ -187,3 +187,84 @@ test_that("the root curve's position has a closed-form row in both bounds", {
   expect_true(seat(base, mild_gradient)$bound_row_values(0L)[[8]] != 0)
   expect_true(seat(base, mild_gradient)$bound_row_values(1L)[[8]] != 0)
 })
+
+test_that("the root-carbon half agrees with a rebuilt difference, on both bounds", {
+  # The last L entries of the row, and nothing above refereed them: the soil loop
+  # stops at the potentials and the only assertion that reached these was the
+  # dry-root-psi-crit arm's "all zero", which is satisfied by a row that is always
+  # zero.
+  #
+  # Root carbon is not a leaf trait -- it is the architecture model's input -- so
+  # the difference rebuilds the NETWORK and re-solves, which is the relation the
+  # row is a derivative of and shares no code with it.
+  depth <- rep(1, 5)
+  carbon <- rep(20 / 5, 5)
+  seat <- function(cc) {
+    l <- leaf_model(traits = leaf_traits())
+    set_drivers(l, psi_soil = mild_gradient, soil_depth = depth,
+                root_network = root_network_from_carbon(cc, depth))
+    l
+  }
+  bound_of <- function(cc, w) seat(cc)$find_root_psi(min(mild_gradient),
+                                                     mild_gradient, w)
+  for (w in c(0L, 1L)) {
+    r <- seat(carbon)$bound_row_values(w)
+    expect_equal(r[[1]], 1)
+    worst <- 0
+    for (j in seq_along(carbon)) {
+      # Three steps over two orders. A rebuilt network moves every layer's
+      # resistances, so this is the same plateau question the curve rows have.
+      for (rel in c(1e-6, 1e-5, 1e-4)) {
+        h <- carbon[[j]] * rel
+        up <- carbon; up[[j]] <- up[[j]] + h
+        dn <- carbon; dn[[j]] <- dn[[j]] - h
+        fd <- (bound_of(up, w) - bound_of(dn, w)) / (2 * h)
+        worst <- max(worst, abs(r[[13 + j]] / fd - 1))
+      }
+    }
+    message(sprintf("  root-carbon half, bound %d: worst %.2e over 5 layers x 3 steps",
+                    w, worst))
+    expect_lt(worst, 5e-3)
+  }
+})
+
+test_that("the root-carbon entries are live, and their signs disagree", {
+  # Non-vacuity, and it is stronger than "not zero". Deepening the shallowest
+  # layer's roots moves the bound the OTHER way from deepening any other layer's,
+  # so a row built from one sign -- or from a magnitude with the sign dropped --
+  # cannot reproduce this and a check against magnitudes alone would not see it.
+  depth <- rep(1, 5)
+  l <- leaf_model(traits = leaf_traits())
+  set_drivers(l, psi_soil = mild_gradient, soil_depth = depth,
+              root_network = root_network_from_carbon(rep(20 / 5, 5), depth))
+  for (w in c(0L, 1L)) {
+    e <- l$bound_row_values(w)[14:18]
+    expect_true(all(abs(e) > 1e-6))
+    message(sprintf("  bound %d root-carbon entries: %s", w,
+                    paste(sprintf("%+.4g", e), collapse = " ")))
+    expect_lt(min(e), 0)
+    expect_gt(max(e), 0)
+  }
+})
+
+test_that("a bound row is a read, and leaves the operating point alone", {
+  # bound_row probes collars through find_root_psi, and every probe writes E_up_
+  # and soil_consumption_ on its way past. `Leaf` is reused for every plant in a
+  # stand, so a read that moves an output hands the NEXT plant this one's numbers
+  # -- and every one of them stays plausible. Bit-identical, not close.
+  l <- leaf_model(traits = leaf_traits())
+  set_drivers(l, psi_soil = mild_gradient)
+  l$find_root_collar_psi()
+  before <- list(E_up = l$E_up_, uptake = l$soil_consumption_,
+                 collar = l$opt_root_psi_, psi_stem = l$opt_psi_stem_,
+                 profit = l$profit_, kind = l$operating_point_kind_name())
+  for (w in 0:2) invisible(l$bound_row_values(w))
+  after <- list(E_up = l$E_up_, uptake = l$soil_consumption_,
+                collar = l$opt_root_psi_, psi_stem = l$opt_psi_stem_,
+                profit = l$profit_, kind = l$operating_point_kind_name())
+  for (nm in names(before)) expect_identical(after[[nm]], before[[nm]])
+
+  # Non-vacuity: a probe really does run, so the restore is doing work rather
+  # than guarding a call that never touched anything.
+  expect_gt(abs(l$bound_row_values(0L)[[2]] - l$opt_root_psi_), 1e-3)
+})

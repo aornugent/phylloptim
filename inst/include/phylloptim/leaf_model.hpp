@@ -616,6 +616,20 @@ public:
   double stem_curve_integral_dstem_b(double psi,
                                      const char* caller = nullptr) const;
 
+  // The ROOT curve's three, forwarded so the homogeneity they rest on can be
+  // refereed from outside C++ exactly as the stem's is. Hazard 1: these are a
+  // different curve in different parameters, and reading one for the other is the
+  // mistake that has already reached a manuscript.
+  double root_curve_integral(double psi) const {
+    return roots_.root_vuln_integral_at(psi);
+  }
+  double root_curve_integral_deriv(double psi) const {
+    return roots_.root_vuln_integral_deriv_at(psi);
+  }
+  double root_curve_integral_droot_b(double psi) const {
+    return roots_.root_vuln_integral_droot_b(psi);
+  }
+
   // Domain-guarded read behind the two accessors above. The stem curve is the
   // only interpolator in this file built with extrapolation DISABLED (the root
   // vulnerability pair clamps instead -- see setup_root_vulnerability), so it is
