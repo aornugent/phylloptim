@@ -1122,6 +1122,10 @@ struct ProfitEnvDerivatives {
   // the two are different derivations, and a caller reading a pinned row as an
   // envelope row would be reading the wrong theory's number.
   bool pinned = false;
+  // Which bound, where `pinned`. Reported rather than re-derived so a consumer
+  // that follows the bound cannot pick a different arm from the one these rows
+  // were built on; meaningless where `pinned` is false.
+  Leaf::WhichBound bound = Leaf::WhichBound::Wet;
 
   void reset(std::size_t n_layers) {
     dprofit_dlight = util::na_value;
@@ -1242,6 +1246,7 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
     // is exactly zero. It needs no price correction either -- it is closed by the
     // ci residual at a held collar rather than by the stationarity condition.
     out.pinned = true;
+    out.bound = bound;
   } else {
     for (std::size_t j = 0; j < soil.size(); ++j) {
       soil[j] = duptake[j] * price;
