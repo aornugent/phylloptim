@@ -764,6 +764,65 @@ public:
   };
   FixedCollarEval profit_at_fixed_collar(double collar);
 
+  // A feasibility bound's own derivative. Both bounds are roots of residuals the
+  // leaf already evaluates, so the implicit function theorem gives the row
+  // without differentiating the search that found it:
+  //
+  //   dB/du = -(dR/du) / (dR/dx)
+  //
+  // WHICH bound decides the residual, and they are different functions:
+  //   Wet             R0(x) = E_up(x, psi)                    -- no stem terms
+  //   DryRootCrit     R(x)  = E_up(x, psi) - kappa*[G(psi_crit) - G(x)]
+  //   DryRootPsiCrit  the bound IS a registered constant       -- the row is -1
+  //
+  // ⚠️ NO stem_c ENTRY, deliberately. stem_c reshapes the vulnerability curve
+  // rather than scaling it, so unlike stem_b it has no homogeneity identity and
+  // its row needs the grid rebuilt. Leaving a field for it here would invite a
+  // consumer to read a number nothing filled; a consumer that needs stem_c takes
+  // it from the rebuild path that already exists.
+  enum class WhichBound { Wet, DryRootCrit, DryRootPsiCrit };
+  struct BoundRow {
+    std::vector<double> d_dpsi_soil;      // per layer
+    std::vector<double> d_droot_carbon;   // per layer
+    double d_dkappa = 0.0;
+    double d_dpsi_crit = 0.0;             // the STEM's
+    double d_droot_psi_crit = 0.0;        // the ROOT's, and only the dry arm has it
+    double d_dstem_b = 0.0;
+    // dR/dx: the theorem's denominator, and the guard. For the dry arm it is a
+    // sum of two strictly positive terms so it cannot change sign, but it can
+    // approach zero in deep drought -- so a consumer guards on the amplification
+    // it produces rather than on its sign, and gets it back here to do that
+    // without recomputing.
+    double residual_slope = 0.0;
+    double bound = 0.0;                   // where the row was taken
+    bool finite = false;
+  };
+  BoundRow bound_row(WhichBound which);
+
+  // Flattened for the R boundary, as operating_point_values is and for the same
+  // reason. `which` is 0 wet, 1 dry-root-crit, 2 dry-root-psi-crit. Layout:
+  // [finite, bound, residual_slope, d_dkappa, d_dpsi_crit, d_droot_psi_crit,
+  //  d_dstem_b, d_dpsi_soil..., d_droot_carbon...]. The position of each value
+  // is the interface.
+  std::vector<double> bound_row_values(int which) {
+    const WhichBound w = which == 0   ? WhichBound::Wet
+                         : which == 1 ? WhichBound::DryRootCrit
+                                      : WhichBound::DryRootPsiCrit;
+    const BoundRow r = bound_row(w);
+    std::vector<double> out;
+    out.reserve(7 + r.d_dpsi_soil.size() + r.d_droot_carbon.size());
+    out.push_back(r.finite ? 1.0 : 0.0);
+    out.push_back(r.bound);
+    out.push_back(r.residual_slope);
+    out.push_back(r.d_dkappa);
+    out.push_back(r.d_dpsi_crit);
+    out.push_back(r.d_droot_psi_crit);
+    out.push_back(r.d_dstem_b);
+    out.insert(out.end(), r.d_dpsi_soil.begin(), r.d_dpsi_soil.end());
+    out.insert(out.end(), r.d_droot_carbon.begin(), r.d_droot_carbon.end());
+    return out;
+  }
+
   // The same, flattened for the R boundary: [feasible, profit, uptake_1 ...].
   // Flat for operating_point_values' reason, and with the same obligation --
   // the position of each value here IS the interface.
@@ -2377,6 +2436,91 @@ inline double Leaf::evaluate_root_collar_psi(double target_opt_root_psi){
 // [bound_a, bound_b] is identical to evaluate_root_collar_psi's, so near a
 // boundary a perturbed potential collapses onto the boundary -- which is exactly
 // how the FD path degrades gracefully to a one-sided difference.
+inline Leaf::BoundRow Leaf::bound_row(WhichBound which) {
+  const std::vector<double>& psi_soil = supply_psi_soil();
+  const std::size_t n = psi_soil.size();
+  BoundRow row;
+  row.d_dpsi_soil.assign(n, 0.0);
+  row.d_droot_carbon.assign(n, 0.0);
+
+  if (which == WhichBound::DryRootPsiCrit) {
+    // The bound is a registered constant, so it moves with nothing except
+    // itself. Exact, and the cheapest row here.
+    row.bound = supply_psi_crit();
+    row.d_droot_psi_crit = -1.0;
+    row.residual_slope = 1.0;
+    row.finite = true;
+    return row;
+  }
+
+  const double wettest = supply_begin_solve();
+  const double x =
+      find_root_psi(wettest, psi_soil, which == WhichBound::Wet ? 0 : 1);
+  row.bound = x;
+  if (!std::isfinite(x)) {
+    return row;
+  }
+
+  // Common to both: the residual is total uptake, so its state partials are
+  // uptake's. dE_from_soil_dpsi_soil is diagonal, so entry j IS dE_up/dpsi_j.
+  const double dEup_dx = dE_from_soil_dpsi_collar(x, psi_soil);
+  std::vector<double> dEup_dpsi;
+  dE_from_soil_dpsi_soil(x, psi_soil, dEup_dpsi);
+  // Root carbon is the multi-layer architecture's input; the single-potential
+  // path is given a series resistance and has no carbon profile to move.
+  std::vector<std::vector<double>> dE_drc, dD_drc;
+  const bool has_root_carbon = supply_kind_ == SupplyKind::MultiLayer;
+  if (has_root_carbon) {
+    roots_.duptake_droot_carbon(x, psi_soil, dE_drc, dD_drc);
+  }
+
+  double slope = dEup_dx;
+  if (which == WhichBound::DryRootCrit) {
+    // The stem's half of the residual. G'(x) is positive, so this can only make
+    // the denominator larger -- which is why the sign is safe and the magnitude
+    // is not.
+    slope += leaf_specific_conductance_max_ * stem_curve_integral_deriv(x);
+    row.d_dkappa =
+        -(stem_curve_integral(psi_crit, "Leaf::bound_row") -
+          stem_curve_integral(x, "Leaf::bound_row"));
+    row.d_dpsi_crit =
+        -leaf_specific_conductance_max_ * stem_curve_integral_deriv(psi_crit);
+    row.d_dstem_b =
+        -leaf_specific_conductance_max_ *
+        (stem_curve_integral_dstem_b(psi_crit, "Leaf::bound_row") -
+         stem_curve_integral_dstem_b(x, "Leaf::bound_row"));
+  }
+  row.residual_slope = slope;
+  if (!std::isfinite(slope) || slope == 0.0) {
+    return row;
+  }
+
+  // Every entry is the same quotient: minus the residual's partial over the
+  // residual's slope. The fields above still hold the raw partials at this
+  // point, so the conversion happens once, here.
+  bool ok = std::isfinite(row.d_dkappa) && std::isfinite(row.d_dpsi_crit) &&
+            std::isfinite(row.d_dstem_b);
+  for (std::size_t j = 0; j < n && ok; ++j) {
+    double dEup_drc = 0.0;
+    if (has_root_carbon) {
+      for (std::size_t i = 0; i < n; ++i) {
+        dEup_drc += dE_drc[i][j];
+      }
+    }
+    if (!std::isfinite(dEup_dpsi[j]) || !std::isfinite(dEup_drc)) {
+      ok = false;
+      break;
+    }
+    row.d_dpsi_soil[j] = -dEup_dpsi[j] / slope;
+    row.d_droot_carbon[j] = -dEup_drc / slope;
+  }
+  row.d_dkappa = -row.d_dkappa / slope;
+  row.d_dpsi_crit = -row.d_dpsi_crit / slope;
+  row.d_dstem_b = -row.d_dstem_b / slope;
+  row.finite = ok;
+  return row;
+}
+
 inline Leaf::FixedCollarEval Leaf::profit_at_fixed_collar(double collar) {
   FixedCollarEval out;
   out.profit = std::numeric_limits<double>::quiet_NaN();
