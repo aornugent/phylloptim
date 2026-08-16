@@ -399,6 +399,27 @@ public:
     return root_vuln_integral_from_psi.deriv(psi);
   }
 
+  // dG/d(root_b) at a fixed suction, from the homogeneity the curve already has
+  // and with NO rebuild. G integrates exp(-(sigma/root_b)^root_c), which is
+  // homogeneous of degree one in (psi, root_b), so Euler's theorem gives
+  //
+  //   psi * dG/dpsi + root_b * dG/droot_b  ==  G(psi)
+  //
+  // and rearranging is the whole derivation. Same identity as the stem curve's,
+  // on the same builder.
+  //
+  // It stays right under the cap rather than in spite of it: past the ceiling G
+  // is the complete-gamma limit (root_b/root_c)*Gamma(1/root_c), LINEAR in
+  // root_b, and dG/dpsi is zero there -- so the identity returns G/root_b, which
+  // is that limit's own derivative.
+  //
+  // root_c has no counterpart: it reshapes the curve rather than scaling it, so
+  // its row needs the grid rebuilt, exactly as stem_c's does.
+  double root_vuln_integral_droot_b(double psi) const {
+    return (root_vuln_integral_at(psi) -
+            psi * root_vuln_integral_deriv_at(psi)) / root_b;
+  }
+
   // Per-timestep soil state: the layer potentials, the layer depths, and the
   // gravitational head that follows from them.
   void set_soil_state(const std::vector<double>& psi_soil,
@@ -660,7 +681,82 @@ private:
     return dEup_dT_mol;
   }
 
+  // d(E_i)/d(root_b) at a fixed collar, mirroring duptake_dpsi_impl term for
+  // term. root_b enters through ONE quantity -- the layer's mean conductivity
+  // integral -- so span, the numerator and both resistances are constants here
+  // and the quotient rule has a single moving part.
+  //
+  // Same kink contract as duptake_dpsi_impl, and for the same reason: the
+  // general branch is not valid across them, and a caller mixing an analytic row
+  // with a missing one is worse off than one told the whole block is undefined.
+  double duptake_droot_b_impl(double T_collar,
+                              const std::vector<double>& psi_soil,
+                              std::vector<double>& per_layer) const {
+    const double kink_tol = 1e-8;
+    double dEup_db_mol = 0.0;
+    per_layer.assign(psi_soil.size(), 0.0);
+
+    for (int i = 0; i < max_soil_layer; i++) {
+      if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
+          std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
+          std::abs(T_collar) < kink_tol) {
+        per_layer.assign(psi_soil.size(),
+                         std::numeric_limits<double>::quiet_NaN());
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+
+      const double T_src_min = std::min(psi_soil[i], T_collar);
+      const double T_src_max = std::max(psi_soil[i], T_collar);
+      const double span = T_src_max - T_src_min;
+
+      // integral, replicated bit-for-bit from uptake_impl.
+      const double T_pos_lo = std::max(T_src_min, 0.0);
+      const double T_neg_hi = std::min(T_src_max, 0.0);
+      double integral = 0.0;
+      double dinteg_db = 0.0;
+      if (T_pos_lo < T_src_max) {
+        integral += root_vuln_integral_at(T_src_max) -
+                    root_vuln_integral_at(T_pos_lo);
+        dinteg_db += root_vuln_integral_droot_b(T_src_max) -
+                     root_vuln_integral_droot_b(T_pos_lo);
+      }
+      if (T_src_min < T_neg_hi) {
+        // The above-atmospheric part contributes its width, with f_r == 1
+        // throughout. No curve, so no root_b.
+        integral += (T_neg_hi - T_src_min);
+      }
+
+      const double r_R_H = network_.r_R_H_min[i] * span / integral;
+      const double r_R = r_R_H + network_.r_R_V_sum[i];
+      // Only the integral moves, and it is in the denominator.
+      const double dr_R_db =
+          -network_.r_R_H_min[i] * span * dinteg_db / (integral * integral);
+
+      const double num = T_collar - psi_soil[i] - grav_head_z_[i];
+      // E_i = num / r_R with num constant in root_b.
+      const double dE_i = -num * dr_R_db / (r_R * r_R);
+      per_layer[std::size_t(i)] = dE_i;
+      dEup_db_mol += dE_i;
+    }
+
+    return dEup_db_mol;
+  }
+
 public:
+
+  // d(E_up)/d(root_b) at a fixed collar, in kg to match E_up. Closed form: the
+  // curve is scaled rather than reshaped by root_b, so no rebuild.
+  double duptake_droot_b(double T_collar,
+                         const std::vector<double>& psi_soil) const {
+    std::vector<double> per_layer;
+    return duptake_droot_b_impl(T_collar, psi_soil, per_layer) * kg_per_mol_h2o;
+  }
+
+  void duptake_droot_b_by_layer(double T_collar,
+                                const std::vector<double>& psi_soil,
+                                std::vector<double>& out) const {
+    duptake_droot_b_impl(T_collar, psi_soil, out);
+  }
 
   // d(E_i)/d(psi_soil[i]) for every rooted layer, in kg to match E_up.
   //

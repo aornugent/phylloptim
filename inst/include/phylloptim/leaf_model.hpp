@@ -775,11 +775,11 @@ public:
   //   DryRootCrit     R(x)  = E_up(x, psi) - kappa*[G(psi_crit) - G(x)]
   //   DryRootPsiCrit  the bound IS a registered constant       -- the row is -1
   //
-  // ⚠️ NO stem_c ENTRY, deliberately. stem_c reshapes the vulnerability curve
-  // rather than scaling it, so unlike stem_b it has no homogeneity identity and
-  // its row needs the grid rebuilt. Leaving a field for it here would invite a
-  // consumer to read a number nothing filled; a consumer that needs stem_c takes
-  // it from the rebuild path that already exists.
+  // ⚠️ NO stem_c OR root_c ENTRY, deliberately. Both reshape their vulnerability
+  // curve rather than scaling it, so unlike stem_b and root_b they have no
+  // homogeneity identity and their rows need the grid rebuilt. Leaving fields for
+  // them here would invite a consumer to read numbers nothing filled; a consumer
+  // that needs them takes them from the rebuild path that already exists.
   enum class WhichBound { Wet, DryRootCrit, DryRootPsiCrit };
   struct BoundRow {
     std::vector<double> d_dpsi_soil;      // per layer
@@ -788,6 +788,10 @@ public:
     double d_dpsi_crit = 0.0;             // the STEM's
     double d_droot_psi_crit = 0.0;        // the ROOT's, and only the dry arm has it
     double d_dstem_b = 0.0;
+    // The root curve's position. It enters BOTH bounds by the same route -- the
+    // layer mean-conductivity integral inside total uptake -- because the stem
+    // half of the dry residual does not read it.
+    double d_droot_b = 0.0;
     // dR/dx: the theorem's denominator, and the guard. For the dry arm it is a
     // sum of two strictly positive terms so it cannot change sign, but it can
     // approach zero in deep drought -- so a consumer guards on the amplification
@@ -802,7 +806,7 @@ public:
   // Flattened for the R boundary, as operating_point_values is and for the same
   // reason. `which` is 0 wet, 1 dry-root-crit, 2 dry-root-psi-crit. Layout:
   // [finite, bound, residual_slope, d_dkappa, d_dpsi_crit, d_droot_psi_crit,
-  //  d_dstem_b, d_dpsi_soil..., d_droot_carbon...]. The position of each value
+  //  d_dstem_b, d_droot_b, d_dpsi_soil..., d_droot_carbon...]. The position of each
   // is the interface.
   // Flattened for R: [finite, d_dpsi_stem, d_dstem_b, d_dstem_c, d_dbeta2,
   // d_dcost_scale]. Position is the interface.
@@ -826,6 +830,7 @@ public:
     out.push_back(r.d_dpsi_crit);
     out.push_back(r.d_droot_psi_crit);
     out.push_back(r.d_dstem_b);
+    out.push_back(r.d_droot_b);
     out.insert(out.end(), r.d_dpsi_soil.begin(), r.d_dpsi_soil.end());
     out.insert(out.end(), r.d_droot_carbon.begin(), r.d_droot_carbon.end());
     return out;
@@ -2506,6 +2511,11 @@ inline Leaf::BoundRow Leaf::bound_row(WhichBound which) {
   // Common to both: the residual is total uptake, so its state partials are
   // uptake's. dE_from_soil_dpsi_soil is diagonal, so entry j IS dE_up/dpsi_j.
   const double dEup_dx = dE_from_soil_dpsi_collar(x, psi_soil);
+  // root_b reaches total uptake through the layer mean-conductivity integral and
+  // nothing else, so this is the whole of its residual partial for either bound.
+  const double dEup_droot_b = supply_kind_ == SupplyKind::MultiLayer
+                                  ? roots_.duptake_droot_b(x, psi_soil)
+                                  : 0.0;
   std::vector<double> dEup_dpsi;
   dE_from_soil_dpsi_soil(x, psi_soil, dEup_dpsi);
   // Root carbon is the multi-layer architecture's input; the single-potential
@@ -2541,8 +2551,9 @@ inline Leaf::BoundRow Leaf::bound_row(WhichBound which) {
   // Every entry is the same quotient: minus the residual's partial over the
   // residual's slope. The fields above still hold the raw partials at this
   // point, so the conversion happens once, here.
+  row.d_droot_b = dEup_droot_b;
   bool ok = std::isfinite(row.d_dkappa) && std::isfinite(row.d_dpsi_crit) &&
-            std::isfinite(row.d_dstem_b);
+            std::isfinite(row.d_dstem_b) && std::isfinite(row.d_droot_b);
   for (std::size_t j = 0; j < n && ok; ++j) {
     double dEup_drc = 0.0;
     if (has_root_carbon) {
@@ -2560,6 +2571,7 @@ inline Leaf::BoundRow Leaf::bound_row(WhichBound which) {
   row.d_dkappa = -row.d_dkappa / slope;
   row.d_dpsi_crit = -row.d_dpsi_crit / slope;
   row.d_dstem_b = -row.d_dstem_b / slope;
+  row.d_droot_b = -row.d_droot_b / slope;
   row.finite = ok;
   restore();
   return row;

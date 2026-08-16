@@ -33,7 +33,7 @@ bound_row_of <- function(psi_soil, which) {
   bound_row_leaf(psi_soil)$bound_row_values(which)
 }
 
-# Layout is documented at bound_row_values; entry 7 + j is layer j's soil row.
+# Layout is documented at bound_row_values; entry 8 + j is layer j's soil row.
 bound_row_worst <- function(psi_soil, which, h = 1e-5) {
   r <- bound_row_of(psi_soil, which)
   testthat::expect_equal(r[[1]], 1)          # the row is finite
@@ -42,7 +42,7 @@ bound_row_worst <- function(psi_soil, which, h = 1e-5) {
     up <- psi_soil; up[[j]] <- up[[j]] + h
     dn <- psi_soil; dn[[j]] <- dn[[j]] - h
     fd <- (bound_position(up, which) - bound_position(dn, which)) / (2 * h)
-    if (abs(fd) > 1e-12) worst <- max(worst, abs(r[[7 + j]] / fd - 1))
+    if (abs(fd) > 1e-12) worst <- max(worst, abs(r[[8 + j]] / fd - 1))
   }
   worst
 }
@@ -96,7 +96,8 @@ test_that("the root's own critical potential is an exact unit row", {
   expect_equal(r[[4]], 0)
   expect_equal(r[[5]], 0)
   expect_equal(r[[7]], 0)
-  expect_true(all(r[-(1:7)] == 0))
+  expect_equal(r[[8]], 0)
+  expect_true(all(r[-(1:8)] == 0))
 })
 
 test_that("a uniform profile cannot referee the wet bound", {
@@ -147,4 +148,42 @@ test_that("the bound row's parameter half agrees with a rebuilt difference", {
   expect_equal(wet[[4]], 0)
   expect_equal(wet[[5]], 0)
   expect_equal(wet[[7]], 0)
+})
+
+test_that("the root curve's position has a closed-form row in both bounds", {
+  # root_b scales the ROOT vulnerability curve rather than reshaping it, so the
+  # same homogeneity the stem uses applies: dG/droot_b follows from Euler with no
+  # rebuild, and it reaches both bounds through one quantity -- the layer
+  # mean-conductivity integral inside total uptake. The stem half of the dry
+  # residual does not read it, so the numerator is the same for both.
+  #
+  # ⚠️ THE STEP MATTERS, and 1e-6 is the wrong side of the plateau. A rebuilt
+  # difference in root_b moves the curve's own knot grid, so it carries a
+  # discrete artefact the analytic row cannot: measured at the wet bound, the
+  # ratio reads 1.20 at 1e-8, 0.998 at 1e-6, and 1.0000 across 1e-5 to 1e-3.
+  # Take the difference on the plateau and say which end it is at.
+  base <- leaf_traits()
+  seat <- function(tr, pv) {
+    l <- leaf_model(traits = tr); set_drivers(l, psi_soil = pv); l
+  }
+  bound_of <- function(tr, w, pv) {
+    seat(tr, pv)$find_root_psi(min(pv), pv, if (w == 0L) 0L else 1L)
+  }
+  worst <- 0
+  for (w in c(0L, 1L)) for (pv in list(mild_gradient, mild_gradient * 1.5)) {
+    r <- seat(base, pv)$bound_row_values(w)
+    expect_equal(r[[1]], 1)
+    h <- base$root_b * 1e-4
+    up <- base; up$root_b <- base$root_b + h
+    dn <- base; dn$root_b <- base$root_b - h
+    fd <- (bound_of(up, w, pv) - bound_of(dn, w, pv)) / (2 * h)
+    worst <- max(worst, abs(r[[8]] / fd - 1))
+  }
+  message(sprintf("  root_b bound row vs rebuilt difference: worst %.2e", worst))
+  expect_lt(worst, 1e-3)
+
+  # Non-vacuity: the entry is live, and it is live in BOTH bounds -- a row that
+  # only filled the dry one would pass a dry-only check.
+  expect_true(seat(base, mild_gradient)$bound_row_values(0L)[[8]] != 0)
+  expect_true(seat(base, mild_gradient)$bound_row_values(1L)[[8]] != 0)
 })
