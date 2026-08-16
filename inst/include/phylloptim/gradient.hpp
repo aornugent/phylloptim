@@ -1222,12 +1222,19 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
       out.message = "the bound's row and the soil rows disagree on the layer count";
       return;
     }
-    const double S = l.dE_from_soil_dpsi_collar(l.opt_root_psi_, psi_soil);
-    if (!std::isfinite(S) || S <= 0.0) {
-      out.message = "the soil-to-collar conductance is undefined at this pin";
+    // dmarginal_profit_duptake_slope builds dProfit/dE_up from the cost and
+    // assimilation kernels directly, with no stationarity anywhere in it, so it
+    // is the frozen-collar price wherever the point sits. marginal_price_water
+    // agrees with it at an interior optimum and only there.
+    //
+    // The interior branch keeps the price it had: the two are the same number by
+    // the first-order condition, they differ in the last bits, and a gradient
+    // that already answers must not move.
+    price = l.dmarginal_profit_duptake_slope();
+    if (!std::isfinite(price)) {
+      out.message = "the frozen-collar price of water is undefined at this pin";
       return;
     }
-    price += nu / S;
     for (std::size_t j = 0; j < soil.size(); ++j) {
       soil[j] = duptake[j] * price + nu * b.d_dpsi_soil[j];
     }

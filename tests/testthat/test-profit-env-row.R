@@ -10,9 +10,14 @@
 # not one derivation. `marginal_price_water` is lambda*kmax*f(p)/S, and that IS
 # dProfit/dE_up only once dProfit/dp is zero -- the interior condition is inside
 # the expression rather than beside it. At a pin dProfit/dp is `nu`, and the
-# frozen-collar price is that value plus nu/S. Both halves are needed and each is
-# a different size: measured, dropping the correction leaves the row 8% out at a
-# wet pin and 15% to 47% out at a dry one, with every intermediate finite.
+# frozen-collar price is a DIFFERENT object -- dmarginal_profit_duptake_slope,
+# which is built from the cost and assimilation kernels with no stationarity in
+# it anywhere. Measured, using the interior price at a pin leaves the row 8% out
+# at a wet pin and 15% to 47% out at a dry one, with every intermediate finite.
+#
+# The interior branch keeps the interior price. The two agree there by the
+# first-order condition and differ in the last bits, and a gradient that already
+# answers must not move.
 
 env_row_seat <- function(psi_soil, ...) {
   l <- leaf_model(traits = leaf_traits())
@@ -59,7 +64,7 @@ test_that("the environment rows agree with a re-solved difference in every regim
   # Tolerances are per regime because the regimes do not have one floor. Interior
   # and the wet pin sit on the model's own consistency floor; the dry pin sits an
   # order above it, and §"the dry pin's residual" below says what was ruled out.
-  tol <- c(interior = 1e-4, wet = 1e-4, dry = 2e-3, dry_hard = 2e-3)
+  tol <- c(interior = 1e-4, wet = 1e-6, dry = 1e-3, dry_hard = 1e-3)
   for (nm in names(env_row_states)) {
     st <- env_row_states[[nm]]
     l <- env_row_leaf(st)
@@ -91,14 +96,12 @@ test_that("the environment rows agree with a re-solved difference in every regim
 test_that("a wet pin cannot referee the price correction, and a dry pin can", {
   # ⚠️ THE BLIND SPOT, asserted rather than described. At the wet bound the
   # residual is total uptake alone, so dB/dpsi_j is exactly -(dE_up/dpsi_j)/S --
-  # which makes nu*dB/dpsi_j the exact negative of the nu/S term in the price.
-  # The two corrections cancel, the row equals what the interior formula would
-  # have returned, and the check above passes there whether the correction is
-  # present or not.
+  # and the two prices differ by exactly nu/S. So the bound term cancels the whole
+  # difference between them, the interior formula lands on the right answer, and
+  # this fixture passes whichever price is used.
   #
-  # So the wet fixture is not evidence for the correction, and the dry one is the
-  # only fixture that is. Stated as a measurement so it cannot quietly stop being
-  # true: the arithmetic that cancels is the wet bound's own row.
+  # The dry bound's slope carries the stem's half as well, so nothing cancels
+  # there. That is the only fixture the derivation is evidence from.
   st <- env_row_states$wet
   l <- env_row_leaf(st)
   r <- profit_env_row_values(l)
@@ -106,12 +109,22 @@ test_that("a wet pin cannot referee the price correction, and a dry pin can", {
   wet <- l$bound_row_values(0L)
   expect_true(abs(nu) > 1e-3)          # the correction is not zero for want of nu
 
-  # What the row would be with NEITHER half of the pinned treatment -- the
-  # interior formula, applied at a pin. On the wet arm it is the same number.
-  interior_formula <- r$dprofit_dpsi_soil
-  for (j in seq_along(st$psi)) {
-    expect_equal(interior_formula[[j]], r$dprofit_dpsi_soil[[j]])
+  # The operational form of the blind spot: the wet fixture agrees with its
+  # reference far better than the dry one does, whatever the derivation, so it is
+  # not the fixture that discriminates between them. Two orders, measured -- if
+  # this ever stops holding, the cancellation has changed and the dry fixture is
+  # no longer carrying the evidence on its own.
+  resid <- function(nm) {
+    s <- env_row_states[[nm]]
+    rr <- profit_env_row_values(env_row_leaf(s))
+    max(vapply(seq_along(s$psi),
+               function(j) abs(rr$dprofit_dpsi_soil[[j]] /
+                                 env_row_total(s, j, 1e-4) - 1), numeric(1)))
   }
+  wet_r <- resid("wet"); dry_r <- resid("dry")
+  message(sprintf("  wet residual %.1e against dry %.1e", wet_r, dry_r))
+  expect_lt(wet_r * 100, dry_r)
+
   # And the half that WAS shipped on its own -- interior price, plus nu*dB -- is
   # wrong here by a margin nothing about the wet bound makes small.
   half <- vapply(seq_along(st$psi),
