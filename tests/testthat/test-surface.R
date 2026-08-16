@@ -164,6 +164,11 @@ test_that("leaf_solve() reproduces the stateful path exactly", {
 # checked against it.
 outputs_one_at_a_time <- function(l) {
   consumption <- l$soil_consumption_
+  # Fold the finite layers in double, left to right, the way
+  # operating_point_values() does. sum() would accumulate in long double and
+  # differ from it in the last ULP for two or more layers, so the bit-exact
+  # comparison below would measure that instrument, not a shifted column.
+  uptake <- Reduce(`+`, consumption[is.finite(consumption)], 0)
   c(psi_stem = l$opt_psi_stem_,
     collar = l$opt_root_psi_,
     ci = l$ci_,
@@ -173,7 +178,7 @@ outputs_one_at_a_time <- function(l) {
     profit = l$profit_,
     hydraulic_cost = l$hydraulic_cost_,
     E_up = l$E_up_,
-    uptake = sum(consumption[is.finite(consumption)]),
+    uptake = uptake,
     lambda = l$lambda,
     g1_eff = l$g1_eff)
 }

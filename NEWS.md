@@ -1,3 +1,42 @@
+# phylloptim 0.3.0
+
+## The stem curve carries its own derivative
+
+The stem cumulative-transpiration curve is read for its value and its slope: the
+value on the transpiration supply path, the slope in the collar solve's
+`dprofit == 0`. It was a value-fitted cubic whose slope was inferred from the fit,
+and that inferred slope disagreed with the true `G'(psi) = exp(-(psi/stem_b)^stem_c)`
+by 3e-4 -- the fit's error, not the closed form's. `transpiration_from_psi` and its
+inverse are now `odelia::interpolator::hermite_interpolator`s built from the value
+**and** the closed-form slope at each knot, so the derivative a reader gets is that
+closed form: exact at the knots, and within 6.5e-7 of it everywhere between, against
+the 3e-4 it carried before. Requires `odelia (>= 0.4.0)`.
+
+The collar solve root-finds on this slope, so its smoothness is load-bearing. The
+argmax over a trait sweep stays as smooth as it was -- 11 of 11 steps move the
+answer, worst second difference 3.4e-7, ~500x below the step size -- so the C1
+interpolant's curvature break at each knot does not roughen the objective the solve
+climbs.
+
+The stem-`b` homogeneity rescale (moving `stem_b` by evaluating the existing curve
+at a rescaled argument, no rebuild) is unchanged and still reproduces a rebuilt
+curve.
+
+**The operating-point surface moves.** The corrected slope shifts the collar argmax,
+which is a well-conditioned maximum -- profit itself moves under 2e-7 -- so most
+outputs move at the 1e-8 scale. The exceptions are the argmax-evaluated fluxes at the
+driest corners (`psi_soil` 3-4 MPa), where near shut-down a tiny slope change moves a
+near-zero flux by a few percent. `tests/cpp/golden/operating_points.tsv` re-blesses;
+regenerate it on the reference platform (`make -C tests/cpp golden` on macOS/arm64,
+per `tests/testthat/helper-golden.R`), and the R hex baselines in
+`tests/testthat/test-golden.R` with it. The R goldens pass under their per-field
+tolerance elsewhere.
+
+The root vulnerability curves still use the value-fitted interpolator: the integral's
+slope is in hand (the conductivity knots) and can follow, but `root_vuln_from_psi`
+has no closed-form slope computed alongside it, and the integral's dry-end
+extrapolation wants its own check first.
+
 # phylloptim 0.2.1
 
 ## `R_d_25` is a trait, and respiration rises with temperature (#41)
