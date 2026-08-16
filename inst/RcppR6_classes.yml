@@ -412,6 +412,11 @@ Leaf:
     bound_row_values:
       return_type: "std::vector<double>"
       args: [which: int]
+    # The hydraulic cost's own row, which IS the trait row of a zero-flux
+    # operating point. Layout documented at hydraulic_cost_row_values.
+    hydraulic_cost_row_values:
+      return_type: "std::vector<double>"
+      args: [psi_stem: double]
     dprofit_droot_collar_psi:
       return_type: double
       args: [opt_root_psi: double]

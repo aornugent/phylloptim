@@ -121,6 +121,10 @@ Leaf__bound_row_values <- function(obj_, which) {
     .Call('_phylloptim_Leaf__bound_row_values', PACKAGE = 'phylloptim', obj_, which)
 }
 
+Leaf__hydraulic_cost_row_values <- function(obj_, psi_stem) {
+    .Call('_phylloptim_Leaf__hydraulic_cost_row_values', PACKAGE = 'phylloptim', obj_, psi_stem)
+}
+
 Leaf__dprofit_droot_collar_psi <- function(obj_, opt_root_psi) {
     .Call('_phylloptim_Leaf__dprofit_droot_collar_psi', PACKAGE = 'phylloptim', obj_, opt_root_psi)
 }

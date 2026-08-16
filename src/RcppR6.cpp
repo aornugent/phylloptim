@@ -124,6 +124,10 @@ std::vector<double> Leaf__bound_row_values(phylloptim::RcppR6::RcppR6<phylloptim
   return obj_->bound_row_values(which);
 }
 // [[Rcpp::export]]
+std::vector<double> Leaf__hydraulic_cost_row_values(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double psi_stem) {
+  return obj_->hydraulic_cost_row_values(psi_stem);
+}
+// [[Rcpp::export]]
 double Leaf__dprofit_droot_collar_psi(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double opt_root_psi) {
   return obj_->dprofit_droot_collar_psi(opt_root_psi);
 }

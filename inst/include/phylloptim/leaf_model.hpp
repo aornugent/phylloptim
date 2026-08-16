@@ -804,6 +804,14 @@ public:
   // [finite, bound, residual_slope, d_dkappa, d_dpsi_crit, d_droot_psi_crit,
   //  d_dstem_b, d_dpsi_soil..., d_droot_carbon...]. The position of each value
   // is the interface.
+  // Flattened for R: [finite, d_dpsi_stem, d_dstem_b, d_dstem_c, d_dbeta2,
+  // d_dcost_scale]. Position is the interface.
+  std::vector<double> hydraulic_cost_row_values(double psi_stem) const {
+    const HydraulicCostRow r = hydraulic_cost_row(psi_stem);
+    return {r.finite ? 1.0 : 0.0, r.d_dpsi_stem, r.d_dstem_b,
+            r.d_dstem_c, r.d_dbeta2, r.d_dcost_scale};
+  }
+
   std::vector<double> bound_row_values(int which) {
     const WhichBound w = which == 0   ? WhichBound::Wet
                          : which == 1 ? WhichBound::DryRootCrit
@@ -1068,6 +1076,12 @@ public:
   // Scalar-generic core of the above. See the `_kernel` block below the assim
   // declarations for why these exist.
   template <typename T> T proportion_of_conductivity_kernel(T psi) const;
+  // The same curve with its two parameters as arguments rather than read off
+  // the object, so forward mode can be seeded on THEM. The one-argument form
+  // above reaches only d/dpsi, which is why a trait row through this curve had
+  // no analytic route.
+  template <typename T>
+  T proportion_of_conductivity_kernel(T psi, T b, T c) const;
 
   // supply-side transpiration for a given water potential gradient between leaves and soil, 
   // references setup_transpiraiton for values (return: kg h20 s^-1 m^-2 LA)
@@ -1150,6 +1164,23 @@ public:
                                          T assim_electron_limited_,
                                          T curvature) const;
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
+  template <typename T>
+  T hydraulic_cost_TF_kernel(T psi_stem, T b, T c, T beta, T scale) const;
+
+  // dC/d(psi_stem, stem_b, stem_c, beta2, cost_scale) at a stem potential.
+  //
+  // A zero-flux operating point pays only respiration and this cost -- profit is
+  // -R_d - C(psi_crit), reading neither soil nor light -- so these ARE its trait
+  // rows, and every environment row there is exactly zero.
+  struct HydraulicCostRow {
+    double d_dpsi_stem = 0.0;
+    double d_dstem_b = 0.0;
+    double d_dstem_c = 0.0;
+    double d_dbeta2 = 0.0;
+    double d_dcost_scale = 0.0;
+    bool finite = false;
+  };
+  HydraulicCostRow hydraulic_cost_row(double psi_stem) const;
   double assim_minus_stom_cond_CO2(double x, double psi_stem, double psi_upstream);
   double psi_stem_to_ci(double psi_stem, double psi_upstream);
   void set_leaf_states_rates_from_psi_stem(double psi_stem, double psi_upstream);
@@ -3232,6 +3263,11 @@ inline T Leaf::proportion_of_conductivity_kernel(T psi) const {
   return exp(-pow((psi / stem_b), stem_c));
 }
 
+template <typename T>
+inline T Leaf::proportion_of_conductivity_kernel(T psi, T b, T c) const {
+  return exp(-pow((psi / b), c));
+}
+
 inline double Leaf::proportion_of_conductivity(double psi) const {
   return proportion_of_conductivity_kernel(psi);
 }
@@ -3859,6 +3895,33 @@ inline double Leaf::g1_eff() const {
 template <typename T>
 inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem) const {
   return cost_scale_TF24 * pow((1 - proportion_of_conductivity_kernel(psi_stem)), beta2);
+}
+
+template <typename T>
+inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem, T b, T c, T beta,
+                                        T scale) const {
+  return scale *
+         pow((1 - proportion_of_conductivity_kernel(psi_stem, b, c)), beta);
+}
+
+inline Leaf::HydraulicCostRow Leaf::hydraulic_cost_row(double psi_stem) const {
+  using AD = xad::fwd<double>::active_type;
+  HydraulicCostRow row;
+  // One seeded pass per direction. Five passes of a handful of operations each,
+  // against the alternative of five rebuilt differences of the curve.
+  double* out[5] = {&row.d_dpsi_stem, &row.d_dstem_b, &row.d_dstem_c,
+                    &row.d_dbeta2, &row.d_dcost_scale};
+  for (int k = 0; k < 5; ++k) {
+    AD in[5] = {AD(psi_stem), AD(stem_b), AD(stem_c), AD(beta2),
+                AD(cost_scale_TF24)};
+    xad::derivative(in[k]) = 1.0;
+    *out[k] = xad::derivative(
+        hydraulic_cost_TF_kernel(in[0], in[1], in[2], in[3], in[4]));
+  }
+  row.finite = std::isfinite(row.d_dpsi_stem) && std::isfinite(row.d_dstem_b) &&
+               std::isfinite(row.d_dstem_c) && std::isfinite(row.d_dbeta2) &&
+               std::isfinite(row.d_dcost_scale);
+  return row;
 }
 
 inline double Leaf::hydraulic_cost_TF(double psi_stem) {
