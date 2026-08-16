@@ -16,6 +16,10 @@ std::vector<double> Leaf__operating_point_values(phylloptim::RcppR6::RcppR6<phyl
   return obj_->operating_point_values();
 }
 // [[Rcpp::export]]
+std::string Leaf__operating_point_kind_name(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->operating_point_kind_name();
+}
+// [[Rcpp::export]]
 void Leaf__initialize_integrator(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, int integration_rule, double integration_tol) {
   obj_->initialize_integrator(integration_rule, integration_tol);
 }

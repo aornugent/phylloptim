@@ -1132,31 +1132,29 @@ struct ProfitEnvDerivatives {
   }
 };
 
-// dprofit/d(radiation) and dprofit/d(psi_soil_j) at whatever collar the leaf is
-// currently seated at. False where a piece of it is undefined.
+// The three pieces a soil row is built from, at whatever collar the leaf is
+// currently seated at: the radiation row, the price that turns water into carbon,
+// and each layer's supply derivative. False where a piece of it is undefined.
 //
-// Split out because it is read at two collars, not one: the rows themselves are
-// taken at the operating point, and their derivative in the collar -- which is
-// what moves the operating point, and therefore the uptake -- is a difference of
-// this same function either side of it. One expression, so the two cannot
-// describe different models.
-inline bool profit_env_rows_here(Leaf& l, double& light,
-                                 std::vector<double>& soil,
+// The price is handed back rather than already multiplied in because a pinned
+// point needs a DIFFERENT price from an interior one, and what differs is a term
+// inside the price rather than a factor on the row.
+inline bool profit_env_rows_here(Leaf& l, double& light, double& price,
+                                 std::vector<double>& duptake_dpsi_soil,
                                  std::string& message) {
   const std::vector<double>& psi_soil = l.supply_psi_soil();
-  const double price = l.marginal_price_water();
+  price = l.marginal_price_water();
   light = l.dprofit_dPPFD();
   if (!std::isfinite(price) || !std::isfinite(light)) {
     message = "the supply derivative or the ci residual is undefined here";
     return false;
   }
-  l.dE_from_soil_dpsi_soil(l.opt_root_psi_, psi_soil, soil);
-  for (double& v : soil) {
+  l.dE_from_soil_dpsi_soil(l.opt_root_psi_, psi_soil, duptake_dpsi_soil);
+  for (const double v : duptake_dpsi_soil) {
     if (!std::isfinite(v)) {
       message = "a layer sits on a branch kink, so its row does not exist";
       return false;
     }
-    v *= price;
   }
   return true;
 }
@@ -1189,10 +1187,12 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
   }
 
   double light = 0.0;
-  std::vector<double> soil;
-  if (!profit_env_rows_here(l, light, soil, out.message)) {
+  double price = 0.0;
+  std::vector<double> duptake;
+  if (!profit_env_rows_here(l, light, price, duptake, out.message)) {
     return;
   }
+  std::vector<double> soil(duptake.size(), 0.0);
 
   if (pinned) {
     // The envelope theorem fails at a boundary: the operating point is not
@@ -1201,8 +1201,13 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
     //
     //   dProfit*/du = dProfit/du|_p  +  (dProfit/dp) * dB/du
     //
-    // The first term is what profit_env_rows_here just computed -- it is a
-    // frozen-collar partial and does not care why the collar is where it is.
+    // ⚠️ AND THE FIRST TERM IS NOT THE INTERIOR ROW. `marginal_price_water` is
+    // λ·kmax·f(p)/S, which is what dProfit/dE_up REDUCES TO once dProfit/dp is
+    // zero -- the stationarity condition is inside it. Where dProfit/dp is `nu`
+    // instead, the frozen-collar price is that value plus nu/S, S being the
+    // soil-to-collar conductance the price is already built on. Dropping the
+    // correction leaves both terms finite and the row wrong by 15% at a dry pin;
+    // at a WET pin it cancels the second term exactly and reads 8% out.
     const Leaf::BoundRow b = l.bound_row(bound);
     if (!b.finite) {
       out.message = "the bound this point is pinned to has no derivative here";
@@ -1217,12 +1222,23 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
       out.message = "the bound's row and the soil rows disagree on the layer count";
       return;
     }
+    const double S = l.dE_from_soil_dpsi_collar(l.opt_root_psi_, psi_soil);
+    if (!std::isfinite(S) || S <= 0.0) {
+      out.message = "the soil-to-collar conductance is undefined at this pin";
+      return;
+    }
+    price += nu / S;
     for (std::size_t j = 0; j < soil.size(); ++j) {
-      soil[j] += nu * b.d_dpsi_soil[j];
+      soil[j] = duptake[j] * price + nu * b.d_dpsi_soil[j];
     }
     // The light row gains nothing: neither bound reads radiation, so dB/dlight
-    // is exactly zero and the frozen-collar partial IS the whole row.
+    // is exactly zero. It needs no price correction either -- it is closed by the
+    // ci residual at a held collar rather than by the stationarity condition.
     out.pinned = true;
+  } else {
+    for (std::size_t j = 0; j < soil.size(); ++j) {
+      soil[j] = duptake[j] * price;
+    }
   }
 
   out.dprofit_dlight = light;

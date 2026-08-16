@@ -1454,6 +1454,12 @@ public:
     return operating_point_kind_;
   }
   static const char* operating_point_kind_name(OperatingPointKind kind);
+  // The branch this solve took, by name. A fixture that asserts which regime it
+  // is in has to read the classification rather than compare the collar against
+  // a bound: the two agree until a step-in or a tolerance makes them differ.
+  const char* operating_point_kind_name() const {
+    return operating_point_kind_name(operating_point_kind_);
+  }
 
 private:
   // Written by every path out of the collar solve, and reset to Unsolved at the

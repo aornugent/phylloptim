@@ -13,6 +13,10 @@ Leaf__operating_point_values <- function(obj_) {
     .Call('_phylloptim_Leaf__operating_point_values', PACKAGE = 'phylloptim', obj_)
 }
 
+Leaf__operating_point_kind_name <- function(obj_) {
+    .Call('_phylloptim_Leaf__operating_point_kind_name', PACKAGE = 'phylloptim', obj_)
+}
+
 Leaf__initialize_integrator <- function(obj_, integration_rule, integration_tol) {
     invisible(.Call('_phylloptim_Leaf__initialize_integrator', PACKAGE = 'phylloptim', obj_, integration_rule, integration_tol))
 }
@@ -812,6 +816,10 @@ gradient_batch_check <- function(drivers) {
 
 gradient_batch_run <- function(obj_, drivers, theta, pars, step, stationarity_tol, method, fast_stem_curve) {
     .Call('_phylloptim_gradient_batch_run', PACKAGE = 'phylloptim', obj_, drivers, theta, pars, step, stationarity_tol, method, fast_stem_curve)
+}
+
+profit_env_row_values <- function(obj_) {
+    .Call('_phylloptim_profit_env_row_values', PACKAGE = 'phylloptim', obj_)
 }
 
 #' Root resistances from a root carbon profile

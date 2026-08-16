@@ -282,6 +282,11 @@ Leaf:
     # the position of each value here is the interface.
     operating_point_values:
       return_type: "std::vector<double>"
+    # Which branch the last solve took, by name. Read from outside the solver so
+    # a fixture can assert the regime it is in rather than infer it from how
+    # close the collar sits to a bound.
+    operating_point_kind_name:
+      return_type: "std::string"
     initialize_integrator:
       return_type: void
       args: [integration_rule: int, integration_tol: double]
