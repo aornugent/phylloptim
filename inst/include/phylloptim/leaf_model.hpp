@@ -739,6 +739,43 @@ public:
   // exactly the same outputs as find_root_collar_psi and returns profit_. Used by
   // TF24f's gradient-ascent acclimation (#525).
   double evaluate_root_collar_psi(double target_opt_root_psi);
+
+  // The other consumer of a given collar potential, and it wants the opposite
+  // treatment. evaluate_root_collar_psi CLAMPS, which is right for a variant
+  // whose collar is a tracked state being nudged: a target outside the feasible
+  // interval means the state has drifted out and the projection back in is the
+  // model. It is wrong for a partial derivative taken at a FROZEN collar, where
+  // the clamp silently replaces the collar the caller asked about with a
+  // different one, and near a bound it does so on essentially every arm.
+  //
+  // So this one does not clamp and does not project. A collar outside the
+  // perturbed interval comes back `feasible = false` and IS NOT EVALUATED --
+  // below the wet bound the profit algebra runs on a negative conductance and
+  // returns a plausible number, so evaluating anyway would answer the question
+  // with a number from a different model. The caller refuses the row instead.
+  //
+  // Not const: it re-runs prepare_collar_solve, which is what re-establishes
+  // feasibility at the perturbed state, and that writes the soil-side caches and
+  // the classification.
+  struct FixedCollarEval {
+    double profit;
+    std::vector<double> uptake;   // per layer, at the collar as given
+    bool feasible;
+  };
+  FixedCollarEval profit_at_fixed_collar(double collar);
+
+  // The same, flattened for the R boundary: [feasible, profit, uptake_1 ...].
+  // Flat for operating_point_values' reason, and with the same obligation --
+  // the position of each value here IS the interface.
+  std::vector<double> profit_at_fixed_collar_values(double collar) {
+    const FixedCollarEval e = profit_at_fixed_collar(collar);
+    std::vector<double> out;
+    out.reserve(2 + e.uptake.size());
+    out.push_back(e.feasible ? 1.0 : 0.0);
+    out.push_back(e.profit);
+    out.insert(out.end(), e.uptake.begin(), e.uptake.end());
+    return out;
+  }
   // Evaluate profit at a given root-collar potential (positive magnitude)
   // *assuming prepare_collar_solve has already run this step* (soil-side caches
   // built, feasible interval [bound_a, bound_b] known). Clamps the target into
@@ -2340,6 +2377,36 @@ inline double Leaf::evaluate_root_collar_psi(double target_opt_root_psi){
 // [bound_a, bound_b] is identical to evaluate_root_collar_psi's, so near a
 // boundary a perturbed potential collapses onto the boundary -- which is exactly
 // how the FD path degrades gracefully to a one-sided difference.
+inline Leaf::FixedCollarEval Leaf::profit_at_fixed_collar(double collar) {
+  FixedCollarEval out;
+  out.profit = std::numeric_limits<double>::quiet_NaN();
+  out.feasible = false;
+
+  double bound_a, bound_b;
+  if (!prepare_collar_solve(bound_a, bound_b)) {
+    // Feasibility fixed the operating point on its own, so there is no interval
+    // for a collar to be held inside and no frozen-collar partial to take.
+    return out;
+  }
+  if (collar < bound_a || collar > bound_b) {
+    return out;
+  }
+
+  // find_psi_stem_from_psi_root seats the uptake at this collar on its way past,
+  // and the profit is taken at the stem potential it returns, so both outputs
+  // describe the collar that was asked for.
+  opt_root_psi_ = collar;
+  opt_psi_stem_ = find_psi_stem_from_psi_root(collar, supply_psi_soil());
+  profit_ = profit_psi_stem_TF(opt_psi_stem_, collar);
+  E_from_Soil_to_Root_Collar(collar, supply_psi_soil());
+  operating_point_kind_ = OperatingPointKind::Prescribed;
+
+  out.profit = profit_;
+  out.uptake = soil_consumption_;
+  out.feasible = std::isfinite(profit_);
+  return out;
+}
+
 inline double Leaf::profit_at_collar_psi(double target_opt_root_psi,
                                   double bound_a, double bound_b){
     const double opt_root_psi =

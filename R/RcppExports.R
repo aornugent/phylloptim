@@ -113,6 +113,10 @@ Leaf__evaluate_root_collar_psi <- function(obj_, target_opt_root_psi) {
     .Call('_phylloptim_Leaf__evaluate_root_collar_psi', PACKAGE = 'phylloptim', obj_, target_opt_root_psi)
 }
 
+Leaf__profit_at_fixed_collar_values <- function(obj_, collar) {
+    .Call('_phylloptim_Leaf__profit_at_fixed_collar_values', PACKAGE = 'phylloptim', obj_, collar)
+}
+
 Leaf__dprofit_droot_collar_psi <- function(obj_, opt_root_psi) {
     .Call('_phylloptim_Leaf__dprofit_droot_collar_psi', PACKAGE = 'phylloptim', obj_, opt_root_psi)
 }

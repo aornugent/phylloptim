@@ -400,6 +400,12 @@ Leaf:
     evaluate_root_collar_psi:
       return_type: double
       args: [target_opt_root_psi: double]
+    # [feasible, profit, uptake_1 ...] at a collar held EXACTLY as given -- no
+    # clamp, and not evaluated at all when the collar is outside the feasible
+    # interval. The position of each value is the interface.
+    profit_at_fixed_collar_values:
+      return_type: "std::vector<double>"
+      args: [collar: double]
     dprofit_droot_collar_psi:
       return_type: double
       args: [opt_root_psi: double]

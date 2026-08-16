@@ -116,6 +116,10 @@ double Leaf__evaluate_root_collar_psi(phylloptim::RcppR6::RcppR6<phylloptim::Lea
   return obj_->evaluate_root_collar_psi(target_opt_root_psi);
 }
 // [[Rcpp::export]]
+std::vector<double> Leaf__profit_at_fixed_collar_values(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double collar) {
+  return obj_->profit_at_fixed_collar_values(collar);
+}
+// [[Rcpp::export]]
 double Leaf__dprofit_droot_collar_psi(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double opt_root_psi) {
   return obj_->dprofit_droot_collar_psi(opt_root_psi);
 }
