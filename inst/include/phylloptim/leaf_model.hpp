@@ -237,13 +237,17 @@ public:
   double a;
   double curv_fact_elec_trans; // unitless - obtained from Smith and Keenan (2020)
   double curv_fact_colim;
-  // Still a settable control, and it still has two jobs after PLAN 11a replaced
-  // the collar golden-section search: prepare_collar_solve's "this interval is too
-  // narrow to solve over" threshold, and the single-layer optimisers
-  // (optimise_psi_stem_TF / _Sperry), which are off the production path and keep
-  // brent_fmin because their argmax feeds no gradient. It no longer sets how well
-  // the reported operating point is determined -- collar_root_tol does.
+  // The single-layer optimisers (optimise_psi_stem_TF / _Sperry) only. They are
+  // off the production path and keep brent_fmin because their argmax feeds no
+  // gradient. This does not set how well the reported operating point is
+  // determined -- collar_root_tol does.
   double GSS_tol_abs;
+  // Below this width prepare_collar_solve stops optimising and substitutes the
+  // interval's midpoint. That is a decision about which kind of operating point
+  // the leaf reports, not a tolerance on a search, so it is a separate number
+  // from GSS_tol_abs however similar the two look: a caller loosening a search
+  // must not thereby widen the set of points it declines to optimise.
+  double collar_interval_min_width;
   double vulnerability_curve_ncontrol;
   double ci_abs_tol;
   double ci_niter;
@@ -598,6 +602,19 @@ public:
   double stem_curve_integral_deriv(double psi) const;
   double stem_curve_integral_inverse(double w, const char* caller = nullptr) const;
   double stem_curve_integral_inverse_deriv(double w) const;
+
+  // dG/d(stem_b) at fixed psi, from the same homogeneity and with NO rebuild.
+  // G is homogeneous of degree one in (psi, stem_b), so Euler's theorem gives
+  //
+  //   psi * G'(psi) + stem_b * dG/dstem_b  ==  G(psi)
+  //
+  // identically, and rearranging it is the whole derivation. Cheap enough to be
+  // free beside the two reads it is built from.
+  //
+  // stem_c has NO counterpart, for the reason perturb_stem_b refuses it: it
+  // reshapes the curve rather than scaling it, so its row needs the rebuild.
+  double stem_curve_integral_dstem_b(double psi,
+                                     const char* caller = nullptr) const;
 
   // Domain-guarded read behind the two accessors above. The stem curve is the
   // only interpolator in this file built with extrapolation DISABLED (the root
@@ -1236,9 +1253,16 @@ public:
     PinnedWet,
     // Constrained optimum pinned at the DRY end, min(root_crit,
     // supply_psi_crit()). 18 golden points. Gradient genuinely non-zero.
-    PinnedDry,
-    // The feasible interval collapsed to a point (width <= GSS_tol_abs), so
-    // feasibility DETERMINED the collar potential and nothing was optimised.
+    // The dry bound is a min of two limits that are DIFFERENT FUNCTIONS of the
+    // inputs, so a consumer forming the bound's row needs to know which won. The
+    // stem's continuity root is a search result and its row is dense; the root's
+    // own critical potential is a registered constant, and its row is exactly
+    // minus the unit vector in its own direction and zero everywhere else.
+    PinnedDryRootCrit,
+    PinnedDryRootPsiCrit,
+    // The feasible interval collapsed to a point (width below
+    // collar_interval_min_width), so feasibility DETERMINED the collar
+    // potential and nothing was optimised.
     // There is no free variable left to differentiate.
     Determined,
     // Shutdown on water: no collar potential both moves water and stays inside
@@ -1248,6 +1272,13 @@ public:
     // hydraulics rather than heat that forbids transpiration. The water response is zero;
     // the carbon response is not.
     HydraulicShutdown,
+    // The feasible interval INVERTED: the dry bound landed wetter than the
+    // collar at which uptake is exactly zero, so no operating point both moves
+    // water and stays inside the critical potentials. Reported apart from
+    // HydraulicShutdown because it is reached by a different branch, and whether
+    // it is a dry soil or a parameterisation the model cannot represent is then
+    // a question a counter can answer rather than one this tag has to assume.
+    InfeasibleBracket,
     // Shutdown on light: assim_max_ < 0, so gross assimilation at ci = ca cannot
     // cover dark respiration. Governed by PPFD and temperature, not by water, so
     // no rainfall sweep reaches it -- and the golden grid does not either (its
@@ -1275,6 +1306,18 @@ public:
   // Read-only on purpose: the tag is an output of the solve, and a settable one
   // would be a way to disagree with it. Same argument as `supply_kind_`'s two
   // entry points above, one step further.
+  // Which limit won the dry bound. Recorded where the min is taken, because a
+  // min is the one operation that destroys the information a consumer needs
+  // afterwards: the two arms are different functions of the inputs.
+  enum class DryBoundArm { None, RootCrit, RootPsiCrit };
+  DryBoundArm dry_bound_arm() const { return dry_bound_arm_; }
+
+  // How many kinds there are, derived from the last enumerator rather than
+  // written out, so a kind added before it is counted without a second edit.
+  // NonFiniteGradient must stay last.
+  static constexpr std::size_t operating_point_kind_count =
+      static_cast<std::size_t>(OperatingPointKind::NonFiniteGradient) + 1;
+
   OperatingPointKind operating_point_kind() const {
     return operating_point_kind_;
   }
@@ -1289,6 +1332,7 @@ private:
   // worst failure shape available here. Defaulting the reset to Unsolved means a
   // path that forgets reports "unclassified" instead.
   OperatingPointKind operating_point_kind_ = OperatingPointKind::Unsolved;
+  DryBoundArm dry_bound_arm_ = DryBoundArm::None;
 };
 
 // Human-readable tag. The switch has no default, so a missing name is a -Wswitch
@@ -1298,9 +1342,12 @@ inline const char* Leaf::operating_point_kind_name(OperatingPointKind kind) {
     case OperatingPointKind::Unsolved:          return "unsolved";
     case OperatingPointKind::Interior:          return "interior";
     case OperatingPointKind::PinnedWet:         return "pinned-wet";
-    case OperatingPointKind::PinnedDry:         return "pinned-dry";
+    case OperatingPointKind::PinnedDryRootCrit: return "pinned-dry-root-crit";
+    case OperatingPointKind::PinnedDryRootPsiCrit:
+      return "pinned-dry-root-psi-crit";
     case OperatingPointKind::Determined:        return "determined";
     case OperatingPointKind::HydraulicShutdown: return "hydraulic-shutdown";
+    case OperatingPointKind::InfeasibleBracket: return "infeasible-bracket";
     case OperatingPointKind::ShadeDeath:        return "shade-death";
     case OperatingPointKind::Prescribed:        return "prescribed";
     case OperatingPointKind::SolverRefused:     return "solver-refused";
@@ -1328,6 +1375,7 @@ inline Leaf::Leaf()
     curv_fact_elec_trans(0.7), //curvature factor for the light response curve (unitless)
     curv_fact_colim(0.99), //curvature factor for the colimited photosythnthesis equatiom
     GSS_tol_abs(1e-3),
+    collar_interval_min_width(1e-3),
     vulnerability_curve_ncontrol(100),
     ci_abs_tol(1e-3),
     ci_niter(1000),
@@ -1364,6 +1412,7 @@ inline Leaf::Leaf(double vcmax_25, double stem_c, double stem_b,
     curv_fact_elec_trans(curv_fact_elec_trans), //curvature factor for the light response curve (unitless)
     curv_fact_colim(curv_fact_colim), //curvature factor for the colimited photosythnthesis equation
     GSS_tol_abs(GSS_tol_abs),
+    collar_interval_min_width(GSS_tol_abs),
     vulnerability_curve_ncontrol(vulnerability_curve_ncontrol),
     ci_abs_tol(ci_abs_tol),
     ci_niter(ci_niter),
@@ -1855,10 +1904,12 @@ inline void Leaf::set_shutdown_state(double root_collar) {
   opt_root_psi_ = root_collar;
   opt_psi_stem_ = psi_crit;
   profit_ = -R_d_ - hydraulic_cost_TF(psi_crit);
-  // Tagged here rather than at the four call sites, so a fifth reason to shut
-  // down cannot arrive without a classification. All four are the same
-  // ecological statement -- the soil is too dry for any collar potential that
-  // both moves water and stays inside the critical potentials.
+  // Tagged here rather than at the call sites, so a further reason to shut down
+  // cannot arrive without a classification. The sites that take this default are
+  // one ecological statement -- the soil is too dry for any collar potential
+  // that both moves water and stays inside the critical potentials. The
+  // INVERTED-interval site is not that statement and overwrites this tag
+  // immediately; it is the only one that does, and it says so there.
   operating_point_kind_ = OperatingPointKind::HydraulicShutdown;
 
   // Write the flux outputs too. Before this they were left holding whatever the
@@ -1898,6 +1949,10 @@ inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b){
   // reports "unclassified" rather than the previous plant's kind of operating
   // point (hazard 8). Every exit below, and both callers, write it again.
   operating_point_kind_ = OperatingPointKind::Unsolved;
+  // Same reason, and it needs saying because the arm is written LATER than the
+  // classification is: an exit taken before the dry bound is formed would
+  // otherwise leave the previous plant's arm beside this plant's kind.
+  dry_bound_arm_ = DryBoundArm::None;
 
   // Hand the supply path the start of a solve: it builds its per-solve caches and
   // reports back the wettest rooted layer -- the SMALLEST suction, and the lower
@@ -1984,6 +2039,10 @@ if(assim_max_ < 0){
     // the correct form is the obvious one and the trap is gone, which is the
     // clearest argument for #25 there is: the bug was a property of having two
     // representations, not of this line.
+    // std::min returns its SECOND argument only when that is strictly smaller,
+    // so this ternary reproduces the tie-break rather than guessing at it.
+    dry_bound_arm_ = supply_psi_crit() < root_crit ? DryBoundArm::RootPsiCrit
+                                                   : DryBoundArm::RootCrit;
     bound_b = std::min(root_crit, supply_psi_crit());
 
     // ⚠️ The clamp can INVERT the interval, and nothing handled that before,
@@ -2006,13 +2065,19 @@ if(assim_max_ < 0){
     // a point between them -- past the limit the clamp exists to enforce, which is
     // the very failure #24 is about, reintroduced by its own fix.
     if (bound_b < bound_a) {
+      // The outputs are a shutdown's -- no flux, stem at the critical potential
+      // -- so they are written by the same call. The KIND is not: this is the
+      // interval inverting, which is a different branch from a soil too dry to
+      // pay for water, and the two are worth telling apart before either is
+      // answered for.
       set_shutdown_state(supply_psi_crit());
+      operating_point_kind_ = OperatingPointKind::InfeasibleBracket;
       return false;
     }
 
     // If no interval exists (single feasible root-collar value), use that
-    // point directly as the alternative solution instead of running GSS.
-    if (std::abs(bound_b - bound_a) <= GSS_tol_abs) {
+    // point directly as the alternative solution instead of optimising.
+    if (std::abs(bound_b - bound_a) <= collar_interval_min_width) {
       const double opt_root_psi = 0.5 * (bound_a + bound_b);
       const double psi_stem_single = find_psi_stem_from_psi_root(opt_root_psi, supply_psi_soil());
 
@@ -2210,7 +2275,9 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
     return lo;
   }
   if (f_hi >= 0.0) {
-    operating_point_kind_ = OperatingPointKind::PinnedDry;
+    operating_point_kind_ = dry_bound_arm_ == DryBoundArm::RootPsiCrit
+        ? OperatingPointKind::PinnedDryRootPsiCrit
+        : OperatingPointKind::PinnedDryRootCrit;
     return hi;
   }
 
@@ -3089,6 +3156,12 @@ inline double Leaf::stem_curve_integral_deriv(double psi) const {
     return transpiration_from_psi.deriv(psi);
   }
   return transpiration_from_psi.deriv(psi / (stem_b / stem_b_spline_));
+}
+
+inline double Leaf::stem_curve_integral_dstem_b(double psi,
+                                                const char* caller) const {
+  return (stem_curve_integral(psi, caller) -
+          psi * stem_curve_integral_deriv(psi)) / stem_b;
 }
 
 inline double Leaf::stem_curve_integral_inverse(double w, const char* caller) const {

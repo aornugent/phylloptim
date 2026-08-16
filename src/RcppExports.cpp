@@ -102,6 +102,42 @@ BEGIN_RCPP
     return R_NilValue;
 END_RCPP
 }
+// Leaf__stem_curve_integral
+double Leaf__stem_curve_integral(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double psi);
+RcppExport SEXP _phylloptim_Leaf__stem_curve_integral(SEXP obj_SEXP, SEXP psiSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Rcpp::traits::input_parameter< double >::type psi(psiSEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__stem_curve_integral(obj_, psi));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__stem_curve_integral_deriv
+double Leaf__stem_curve_integral_deriv(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double psi);
+RcppExport SEXP _phylloptim_Leaf__stem_curve_integral_deriv(SEXP obj_SEXP, SEXP psiSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Rcpp::traits::input_parameter< double >::type psi(psiSEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__stem_curve_integral_deriv(obj_, psi));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__stem_curve_integral_dstem_b
+double Leaf__stem_curve_integral_dstem_b(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double psi);
+RcppExport SEXP _phylloptim_Leaf__stem_curve_integral_dstem_b(SEXP obj_SEXP, SEXP psiSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Rcpp::traits::input_parameter< double >::type psi(psiSEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__stem_curve_integral_dstem_b(obj_, psi));
+    return rcpp_result_gen;
+END_RCPP
+}
 // Leaf__set_traits
 void Leaf__set_traits(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double vcmax_25, double stem_c, double stem_b, double psi_crit, double root_c, double root_b, double root_psi_crit, double beta2, double jmax_25, double a, double curv_fact_elec_trans, double curv_fact_colim, double cost_scale_TF24, double R_d_25);
 RcppExport SEXP _phylloptim_Leaf__set_traits(SEXP obj_SEXP, SEXP vcmax_25SEXP, SEXP stem_cSEXP, SEXP stem_bSEXP, SEXP psi_critSEXP, SEXP root_cSEXP, SEXP root_bSEXP, SEXP root_psi_critSEXP, SEXP beta2SEXP, SEXP jmax_25SEXP, SEXP aSEXP, SEXP curv_fact_elec_transSEXP, SEXP curv_fact_colimSEXP, SEXP cost_scale_TF24SEXP, SEXP R_d_25SEXP) {
@@ -2254,6 +2290,9 @@ static const R_CallMethodDef CallEntries[] = {
     {"_phylloptim_Leaf__initialize_integrator", (DL_FUNC) &_phylloptim_Leaf__initialize_integrator, 3},
     {"_phylloptim_Leaf__set_physiology", (DL_FUNC) &_phylloptim_Leaf__set_physiology, 11},
     {"_phylloptim_Leaf__perturb_stem_b", (DL_FUNC) &_phylloptim_Leaf__perturb_stem_b, 2},
+    {"_phylloptim_Leaf__stem_curve_integral", (DL_FUNC) &_phylloptim_Leaf__stem_curve_integral, 2},
+    {"_phylloptim_Leaf__stem_curve_integral_deriv", (DL_FUNC) &_phylloptim_Leaf__stem_curve_integral_deriv, 2},
+    {"_phylloptim_Leaf__stem_curve_integral_dstem_b", (DL_FUNC) &_phylloptim_Leaf__stem_curve_integral_dstem_b, 2},
     {"_phylloptim_Leaf__set_traits", (DL_FUNC) &_phylloptim_Leaf__set_traits, 15},
     {"_phylloptim_Leaf__proportion_of_conductivity", (DL_FUNC) &_phylloptim_Leaf__proportion_of_conductivity, 2},
     {"_phylloptim_Leaf__arrh_curve", (DL_FUNC) &_phylloptim_Leaf__arrh_curve, 4},

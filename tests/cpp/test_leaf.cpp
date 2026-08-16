@@ -916,7 +916,8 @@ void test_collar_solve_refuses_rather_than_guessing() {
   ok(m.operating_point_kind() == Kind::SolverRefused,
      "the solve reports that it could not resolve the bracket");
   ok(m.operating_point_kind() != Kind::PinnedWet &&
-         m.operating_point_kind() != Kind::PinnedDry,
+         m.operating_point_kind() != Kind::PinnedDryRootCrit &&
+         m.operating_point_kind() != Kind::PinnedDryRootPsiCrit,
      "and does not pass it off as a constrained optimum");
   // The endpoint the solve returns is stepped a fraction of the width inside the
   // bound it came from, so compare against the bound rather than for equality.

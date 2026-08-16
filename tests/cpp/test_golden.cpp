@@ -190,8 +190,14 @@ int check_operating_kinds(const std::vector<Row> &rows) {
     const KindCount expected[] = {
         {Kind::Interior, e.interior},
         {Kind::PinnedWet, e.pinned_wet},
-        {Kind::PinnedDry, e.pinned_dry},
+        // The dry pin is reported by its arm. At these defaults the root's own
+        // critical potential never wins the min, so every dry pin is the stem's
+        // continuity root -- which is a measurement, not an assumption, and it
+        // is why the second arm carries a zero here rather than being absent.
+        {Kind::PinnedDryRootCrit, e.pinned_dry},
+        {Kind::PinnedDryRootPsiCrit, 0},
         {Kind::HydraulicShutdown, e.shutdown},
+        {Kind::InfeasibleBracket, 0},
         {Kind::Determined, 0},        {Kind::ShadeDeath, 0},
         {Kind::Prescribed, 0},        {Kind::SolverRefused, 0},
         {Kind::NonFiniteGradient, 0}, {Kind::Unsolved, 0},

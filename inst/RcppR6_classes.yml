@@ -318,6 +318,18 @@ Leaf:
     perturb_stem_b:
       return_type: void
       args: [stem_b: double]
+    # The stem curve's four reads plus its stem_b row, bound so the homogeneity
+    # they rest on can be refereed against a rebuild from R rather than only
+    # asserted in C++.
+    stem_curve_integral:
+      return_type: double
+      args: [psi: double]
+    stem_curve_integral_deriv:
+      return_type: double
+      args: [psi: double]
+    stem_curve_integral_dstem_b:
+      return_type: double
+      args: [psi: double]
     set_traits:
       return_type: void
       args: [vcmax_25: double, stem_c: double, stem_b: double, psi_crit: double, root_c: double, root_b: double, root_psi_crit: double, beta2: double, jmax_25: double, a: double, curv_fact_elec_trans: double, curv_fact_colim: double, cost_scale_TF24: double, R_d_25: double]
