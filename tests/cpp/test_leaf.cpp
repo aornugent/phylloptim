@@ -3491,10 +3491,20 @@ void test_environment_rows_are_zero_below_the_rooted_layers() {
 // them having changed the algebra rather than the shape. It needs no reference
 // gradient for the same reason the transpose identity does not.
 //
-// Only where `at` takes the composite. At a pin it differences the whole solve
-// instead, which is not a factorisation of anything, so there is nothing there to
-// compare against -- what the pinned and shut points check is that the parts come
-// back off the bound, and that a refusal is a refusal on both routes.
+// At a constrained point `at` differences the whole solve, and the parts are
+// compared against that. The comparison splits, and the split is the content:
+//
+//   * an input that MOVES the bound has no held row -- p* sits one step-in
+//     fraction from the bound, so a step that moves the bound carries p* out of
+//     the perturbed feasible interval. `rows_at` differences the solve for it
+//     too, so the two are the same arithmetic and must agree EXACTLY.
+//   * an input that does not gets a held row plus a bound row that is exactly
+//     zero, and there the two DISAGREE. The parts hold the point at the bound,
+//     which is where the model puts it; `at` differences the solve, whose collar
+//     moves by the solve's own floor -- 5.5e-10 MPa over a whole step, a step-in
+//     of a millionth of the interval's width above the root-find's tolerance.
+//     Divided by the step that is a collar row of 1e-04, so the movement is what
+//     is asserted and the disagreement it produces is reported.
 void test_rows_in_parts_assemble_to_the_totals() {
   printf("the rows in parts assemble to the totals\n");
   namespace grad = phylloptim::gradient;
@@ -3511,26 +3521,35 @@ void test_rows_in_parts_assemble_to_the_totals() {
                                        : grad::Role::Ordinary;
   }
 
-  // The consumer's assembly, and its one branch on the kind: whether a condition
-  // defines the point at all. Where none does, the point is a passive number and
-  // its channel contributes nothing.
+  // The consumer's assembly, and its one branch: whether this input reaches the
+  // point at all. `dresidual` is exactly zero both for an input the condition
+  // does not read and for one whose rows already followed the point, and there
+  // the channel contributes nothing -- which has to be a branch rather than a
+  // multiply, because `dy_dp` is NA wherever the difference cannot be centred on
+  // p*, and NA times zero is not zero.
   auto assemble = [](const grad::Rows &rows, std::size_t n, std::size_t k,
                      int j) -> double {
     const double held = rows.held[std::size_t(j) * n + k];
-    if (!std::isfinite(rows.residual_slope)) {
+    const double dpoint = -rows.dresidual[k] / rows.residual_slope;
+    if (!std::isfinite(dpoint) || dpoint == 0.0) {
       return held;
     }
-    return held + rows.dy_dp[std::size_t(j)] *
-                        (-rows.dresidual[k] / rows.residual_slope);
+    return held + rows.dy_dp[std::size_t(j)] * dpoint;
   };
 
   const grad::Settings settings;
-  double worst = 0.0, worst_constrained = 0.0;
-  std::string worst_where, worst_constrained_where;
+  double worst = 0.0, worst_followed = 0.0, worst_held = 0.0;
+  std::string worst_where, worst_followed_where, worst_held_where;
+  // For an input the pinned bound does not read: how far the collar `at`
+  // differences moves over one whole step, in MPa. The parts hold it at the bound,
+  // and that movement is the whole of the disagreement between them.
+  double worst_collar_move = 0.0;
+  std::string worst_collar_move_where;
   int points = 0, compared = 0, refused = 0, contradiction = 0, parts_only = 0;
-  int constrained = 0;
+  int constrained = 0, followed_rows = 0, held_rows = 0, refused_rows = 0;
   int interior = 0, pinned = 0, shut = 0, other = 0;
   int pin_without_slope = 0, role_violation = 0, slack_violation = 0;
+  int off_branch = 0, not_a_number = 0;
 
   phylloptim::Leaf multilayer;
   phylloptim::Leaf single_potential;
@@ -3555,10 +3574,9 @@ void test_rows_in_parts_assemble_to_the_totals() {
     try {
       rows = grad::rows_at(l, env::kTheta, d, req, settings);
     } catch (const std::runtime_error &) {
-      // A perturbation moved the feasible interval past p*, so no held row
-      // exists there at all -- which is the leaf's own contract for a partial at
-      // a held collar. `at` refuses the same way on the composite, and
-      // differences the whole solve instead.
+      // Nothing on this grid reaches here: a perturbation that moves the point out
+      // of the perturbed feasible interval is answered by following it. Counted
+      // rather than let through, so a point that stops answering says so.
       ++refused;
       have_rows = false;
       // The kind the refused point had, for the accounting below: the throw left
@@ -3616,9 +3634,7 @@ void test_rows_in_parts_assemble_to_the_totals() {
       ++parts_only;
     }
     // Against the composite where `at` forms one, and against a differenced
-    // solve where it does not. The second is a weaker comparison -- the two are
-    // no longer the same arithmetic -- but it is the only referee a constrained
-    // point has, and it is what says the bound's row and `nu` are the right pair.
+    // solve where it does not.
     const bool composite = fwd.used_ift && is_interior;
     if (composite) {
       ++compared;
@@ -3627,23 +3643,99 @@ void test_rows_in_parts_assemble_to_the_totals() {
     } else {
       return;
     }
+
+    // Which inputs move the bound, asked here from the bound's own row rather
+    // than read off what `rows_at` returned, and every input at a shut collar
+    // because no condition defines one there.
+    std::vector<bool> follows(n, true);
+    std::vector<double> scratch;
+    double th[grad::n_pars];
+    grad::Branch base_branch;
+    if (!composite) {
+      grad::apply(l, env::kTheta, d, single, -1, settings.fast_stem_curve);
+      l.find_root_collar_psi();
+      base_branch = grad::branch_here(l);
+      if (!(base_branch.kind == rows.kind)) {
+        ++off_branch;
+      }
+      if (is_pinned) {
+        const phylloptim::Leaf::BoundRow cond = l.bound_row(bound);
+        bool at_base = true;
+        for (std::size_t k = 0; k < n; ++k) {
+          const double dpoint =
+              grad::bound_moves_by_re_solving(pars[k], single)
+                  ? grad::differenced_bound(l, env::kTheta, d, single, pars[k],
+                                            bound, settings, at_base, scratch)
+                  : grad::bound_dpoint(cond, pars[k],
+                                       grad::n_soil_layers(d, single));
+          follows[k] = dpoint != 0.0;
+        }
+      }
+      // Both arms of every difference, on the branch the base point took: taken
+      // here rather than trusted, because a difference across a change of branch
+      // -- another kind, or the other limit winning the dry bound -- is a
+      // difference of two functions and `rows_at` is what has to hold it.
+      for (std::size_t k = 0; k < n; ++k) {
+        const double base = grad::par_value(env::kTheta, d, pars[k]);
+        const double h = grad::step_for(pars[k], base, settings.step);
+        grad::apply(l, env::kTheta, d, single, -1, settings.fast_stem_curve);
+        for (int side = 0; side < 2; ++side) {
+          grad::set_one(l, th, env::kTheta, d, single, pars[k],
+                        side == 0 ? base + h : base - h,
+                        settings.fast_stem_curve, scratch);
+          l.find_root_collar_psi();
+          if (!(grad::branch_here(l) == base_branch)) {
+            ++off_branch;
+          }
+        }
+      }
+      grad::apply(l, env::kTheta, d, single, -1, settings.fast_stem_curve);
+    }
+
     for (std::size_t k = 0; k < n; ++k) {
+      if (!composite) {
+        ++(follows[k] ? followed_rows : held_rows);
+      }
+      if (!std::isfinite(rows.held[std::size_t(grad::out_profit) * n + k])) {
+        ++refused_rows;
+        continue;
+      }
+      // What the two routes disagree through, where one holds the point at the
+      // bound and the other differences the solve: how far the collar the solve
+      // lands on moves over the whole step.
+      if (is_pinned && !follows[k]) {
+        const double base = grad::par_value(env::kTheta, d, pars[k]);
+        const double moved =
+            std::abs(fwd.grad[k * grad::n_outputs +
+                              std::size_t(grad::out_collar)]) *
+            grad::step_for(pars[k], base, settings.step);
+        if (moved > worst_collar_move) {
+          worst_collar_move = moved;
+          worst_collar_move_where =
+              " at " + grad::par_name(pars[k], grad::n_soil_layers(d, single)) +
+              where;
+        }
+      }
       for (int j = 0; j < grad::n_outputs; ++j) {
         const double got = assemble(rows, n, k, j);
         const double want = fwd.grad[k * grad::n_outputs + std::size_t(j)];
+        if (!std::isfinite(got)) {
+          ++not_a_number;
+          continue;
+        }
         const double err =
             std::abs(got - want) / std::max(std::abs(want), 1e-30);
-        if (err > (composite ? worst : worst_constrained)) {
+        double &into = composite      ? worst
+                       : follows[k]   ? worst_followed
+                                      : worst_held;
+        if (err > into) {
+          into = err;
           const std::string what =
               " at " + grad::par_name(pars[k], grad::n_soil_layers(d, single)) +
               "/" + grad::output_names()[std::size_t(j)] + where;
-          if (composite) {
-            worst = err;
-            worst_where = what;
-          } else {
-            worst_constrained = err;
-            worst_constrained_where = what;
-          }
+          (composite ? worst_where
+           : follows[k] ? worst_followed_where
+                        : worst_held_where) = what;
         }
       }
     }
@@ -3690,16 +3782,11 @@ void test_rows_in_parts_assemble_to_the_totals() {
           " on the single-potential path at psi_soil " + std::to_string(p));
   }
   const int first_pass = points;
-  const int first_pass_refused = refused;
-  const int first_pass_compared = compared;
+  const int first_pass_constrained = constrained;
 
-  // ⚠️ EVERY CONSTRAINED POINT ABOVE REFUSES, and the second pass is what shows
-  // why rather than leaving the pinned branch unreached. At a pin p* sits one
-  // step-in fraction from its bound, so an input that MOVES that bound moves it
-  // past p* on one side of the difference about half the time -- and then no
-  // partial at a held collar exists. The three photosynthetic traits move no
-  // bound at all, so there the parts come back and the bound's row is exercised
-  // against a differenced solve.
+  // The three photosynthetic traits alone, which move no bound on either arm: at
+  // a constrained point every one of their rows is a held row, so this pass is
+  // the held family on its own rather than mixed in with the followed one.
   const std::vector<int> photosynthetic{grad::par_vcmax_25, grad::par_jmax_25,
                                         grad::par_R_d_25};
   for (double p : psi_soils) {
@@ -3712,17 +3799,13 @@ void test_rows_in_parts_assemble_to_the_totals() {
     }
   }
 
-  // The bound's own row, which the two passes above cannot referee: the inputs a
-  // pinned point yields parts for are the ones no bound reads, so their
-  // `dresidual` is exactly zero. A step small enough to keep p* feasible reaches
-  // the other case, and there -dresidual/residual_slope is the movement of the
-  // wet bound -- refereed against a difference of `find_root_psi`, which shares
-  // no code with the row.
+  // That the point really does follow the bound, refereed against a difference of
+  // `find_root_psi`, which shares no code with either route: a soil layer moves
+  // the wet bound, so its rows follow the point and the point's own row is the
+  // movement they measured.
   int wet_pins = 0;
   double worst_bound = 0.0;
   {
-    grad::Settings fine = settings;
-    fine.step = 1e-9;
     const std::vector<int> pars{grad::par_psi_soil_first};
     grad::RowRequest req;
     req.output = out_index;
@@ -3733,17 +3816,14 @@ void test_rows_in_parts_assemble_to_the_totals() {
     for (double p : psi_soils) {
       for (double q : ppfds) {
         grad::Drivers d = env::drivers(p, q, 2.0, 5, 5);
-        grad::apply(multilayer, env::kTheta, d, false, -1, fine.fast_stem_curve);
+        grad::apply(multilayer, env::kTheta, d, false, -1,
+                    settings.fast_stem_curve);
         multilayer.find_root_collar_psi();
         if (multilayer.operating_point_kind() != Kind::PinnedWet) {
           continue;
         }
-        grad::Rows rows;
-        try {
-          rows = grad::rows_at(multilayer, env::kTheta, d, req, fine);
-        } catch (const std::runtime_error &) {
-          continue;
-        }
+        const grad::Rows rows =
+            grad::rows_at(multilayer, env::kTheta, d, req, settings);
         ++wet_pins;
         const double h = 1e-6;
         double bound[2];
@@ -3755,7 +3835,7 @@ void test_rows_in_parts_assemble_to_the_totals() {
                                                  moved.psi_soil, 0);
         }
         const double want = (bound[0] - bound[1]) / (2.0 * h);
-        const double got = -rows.dresidual[0] / rows.residual_slope;
+        const double got = rows.held[std::size_t(grad::out_collar)];
         worst_bound = std::max(worst_bound, std::abs(got / want - 1.0));
       }
     }
@@ -3763,23 +3843,37 @@ void test_rows_in_parts_assemble_to_the_totals() {
 
   printf("  %d operating points: %d interior, %d pinned, %d shut, %d other\n",
          points, interior, pinned, shut, other);
-  printf("  %d refused, %d of them over the full input list\n", refused,
-         first_pass_refused);
+  printf("  %d points refused; all %d constrained points of the %d in the "
+         "full-input pass answer\n",
+         refused, first_pass_constrained, first_pass);
   printf("  %d compared against the composite (%d parts-only), %d against a "
          "differenced solve\n",
          compared, parts_only, constrained);
+  printf("  %d input rows followed the point, %d were taken at a held one, %d "
+         "refused\n",
+         followed_rows, held_rows, refused_rows);
   printf("  worst |assembled - at()| / |at()| = %.3g%s\n", worst,
          worst_where.c_str());
-  printf("  the same at a constrained point:     %.3g%s\n", worst_constrained,
-         worst_constrained_where.c_str());
-  printf("  %d wet pins: worst bound row against a differenced find_root_psi "
+  printf("  a row that followed the point:       %.3g%s\n", worst_followed,
+         worst_followed_where.c_str());
+  printf("  a row taken at a held point:         %.3g%s\n", worst_held,
+         worst_held_where.c_str());
+  printf("  the collar at() lands on moves %.3g MPa over a whole step%s\n",
+         worst_collar_move, worst_collar_move_where.c_str());
+  printf("  %d wet pins: worst point row against a differenced find_root_psi "
          "%.3g\n",
          wet_pins, worst_bound);
   ok(multilayer_points == 288, "the whole golden grid was covered");
   ok(first_pass - multilayer_points == 6, "and the single-potential path too");
   ok(pinned > 0 && shut > 0, "the pinned and the shut branches were reached");
-  ok(first_pass_refused == first_pass - first_pass_compared,
-     "over the full input list, every point that is not interior refuses");
+  ok(refused == 0 && refused_rows == 0,
+     "every point in the grid answers, and every input at it");
+  ok(off_branch == 0,
+     "every arm of every constrained difference stays on the base point's "
+     "branch");
+  ok(not_a_number == 0, "and every assembled row is a number");
+  ok(followed_rows > 0 && held_rows > 0,
+     "both the followed and the held families were reached");
   ok(wet_pins > 0 && worst_bound <= 1e-4,
      "at a wet pin the point follows the bound");
   ok(contradiction == 0,
@@ -3788,10 +3882,133 @@ void test_rows_in_parts_assemble_to_the_totals() {
   ok(pin_without_slope == 0, "a pin comes back with the bound's own slope");
   ok(slack_violation == 0, "the slack row is exactly zero and says so");
   ok(compared > 150, "the composite was compared over most of the grid");
-  ok(constrained > 0, "and the bound's row over the constrained points");
+  ok(constrained > 90, "and the differenced solve over the constrained points");
   ok(worst <= 1e-12, "the parts assemble to the totals");
-  ok(worst_constrained <= 1e-6,
-     "and at a constrained point to a differenced solve");
+  ok(worst_followed == 0.0,
+     "at a constrained point a followed row IS at()'s own difference");
+  // Why the held family does not, and why the disagreement above is reported
+  // rather than bounded. The parts hold the point at the bound, which is where
+  // the model puts it; `at` differences the solve, and the collar it lands on
+  // moves 5.5e-10 MPa over a whole step -- the solve's own floor, a step-in of a
+  // millionth of the interval's width above the root-find's tolerance. Divided by
+  // the step that is a collar row of 1e-04, and through each output's sensitivity
+  // to the collar it is as large as the rows themselves. So the movement is what
+  // is asserted and the ratio it produces is left as a measurement.
+  ok(worst_collar_move <= 1e-8,
+     "and a held row differs from it only as far as the solve's own collar moves");
+}
+
+// The two ends of the shrinking, which the grid above cannot reach: on it every
+// arm stays on the base point's branch at the requested step, and so does every
+// constrained point's at a step three orders coarser.
+//
+// So the branch is run at a point placed a chosen distance from a boundary, and
+// the boundary is FOUND rather than written down: drying one soil layer takes the
+// optimum from interior to pinned somewhere near 5.70 MPa, and where exactly is a
+// property of the solve. Two soil layers a decade apart from it are what the two
+// ends need -- one where the requested step reaches across and a tenth of it does
+// not, one where two decades of shrinking are not enough and the layer's row is
+// refused by name. Coarsening the step instead does not work: a step large enough
+// to need two decades takes the other arm outside the stem curve's domain, and the
+// solve says so rather than returning a branch.
+void test_rows_shrink_the_step_to_stay_on_one_branch() {
+  printf("the rows shrink a step that leaves the branch, and refuse below that\n");
+  namespace grad = phylloptim::gradient;
+
+  int out_index[grad::n_outputs];
+  grad::Role roles[grad::n_outputs];
+  for (int j = 0; j < grad::n_outputs; ++j) {
+    out_index[j] = j;
+    roles[j] = j == grad::out_collar   ? grad::Role::Point
+               : j == grad::out_profit ? grad::Role::Objective
+                                       : grad::Role::Ordinary;
+  }
+  const std::vector<int> pars{grad::par_psi_soil_first};
+  grad::RowRequest req;
+  req.output = out_index;
+  req.role = roles;
+  req.n_output = grad::n_outputs;
+  req.input = pars.data();
+  req.n_input = pars.size();
+
+  phylloptim::Leaf l = env::fresh();
+  auto branch_at = [&](double psi_soil) -> grad::Branch {
+    grad::Drivers d = env::drivers(psi_soil, 900.0, 2.0, 1, 1);
+    grad::apply(l, env::kTheta, d, false, -1, true);
+    l.find_root_collar_psi();
+    return grad::branch_here(l);
+  };
+
+  // Where the optimum stops being interior, to the last bit. Bisected on the
+  // classification the solve reports rather than on a comparison of the collar
+  // against a bound: those two agree until a step-in makes them differ.
+  double wet = 5.0, dry = 5.72;
+  ok(branch_at(wet).kind == grad::OperatingPointKind::Interior &&
+         branch_at(dry).kind == grad::OperatingPointKind::PinnedDryRootCrit,
+     "the interior and the pinned regimes are bracketed");
+  for (int i = 0; i < 60; ++i) {
+    const double mid = 0.5 * (wet + dry);
+    if (branch_at(mid).kind == grad::OperatingPointKind::Interior) {
+      wet = mid;
+    } else {
+      dry = mid;
+    }
+  }
+  printf("  the interior regime ends at psi_soil %.6f\n", dry);
+
+  // Whether both arms of one step stay on the branch the base point took, which
+  // is the question `rows_at` shrinks the step until the answer to is yes.
+  auto arms_stay = [&](const grad::Drivers &d, const grad::Branch &base,
+                       double h) -> bool {
+    bool stays = true;
+    double th[grad::n_pars];
+    std::vector<double> scratch;
+    for (int side = 0; side < 2; ++side) {
+      grad::set_one(l, th, env::kTheta, d, false, pars[0],
+                    d.psi_soil[0] + (side == 0 ? h : -h), true, scratch);
+      l.find_root_collar_psi();
+      stays = stays && grad::branch_here(l) == base;
+    }
+    grad::apply(l, env::kTheta, d, false, -1, true);
+    l.find_root_collar_psi();
+    return stays;
+  };
+
+  const grad::Settings settings;
+  // One decade in: two millionths of an MPa past the boundary, so the step reaches
+  // across it and a tenth of the step does not.
+  {
+    grad::Drivers d = env::drivers(dry + 2e-6, 900.0, 2.0, 1, 1);
+    const grad::Branch base = branch_at(d.psi_soil[0]);
+    const double h = grad::step_for(pars[0], d.psi_soil[0], settings.step);
+    ok(base.kind == grad::OperatingPointKind::PinnedDryRootCrit,
+       "the point is pinned to the dry bound");
+    ok(!arms_stay(d, base, h), "the requested step takes an arm off that branch");
+    ok(arms_stay(d, base, 0.1 * h), "and a tenth of it does not");
+    const grad::Rows rows = grad::rows_at(l, env::kTheta, d, req, settings);
+    ok(std::isfinite(rows.held[std::size_t(grad::out_profit)]) &&
+           rows.message.empty(),
+       "so the row comes back and nothing is refused");
+  }
+
+  // Two decades is the floor. On the boundary itself no step reaches across it,
+  // and the row is refused by name rather than taken across the branch.
+  {
+    grad::Drivers d = env::drivers(dry, 900.0, 2.0, 1, 1);
+    const grad::Branch base = branch_at(d.psi_soil[0]);
+    const double h = grad::step_for(pars[0], d.psi_soil[0], settings.step);
+    ok(!arms_stay(d, base, 0.01 * h),
+       "two decades below the step still takes an arm off the branch");
+    const grad::Rows rows = grad::rows_at(l, env::kTheta, d, req, settings);
+    ok(rows.kind == base.kind, "the point is still the pinned one");
+    bool all_na = true;
+    for (int j = 0; j < grad::n_outputs; ++j) {
+      all_na = all_na && !std::isfinite(rows.held[std::size_t(j)]);
+    }
+    ok(all_na, "the refused input's whole column is NA");
+    ok(rows.message.find("psi_soil_1") != std::string::npos,
+       "and the refusal names the input: " + rows.message);
+  }
 }
 
 void benchmark() {
@@ -3876,6 +4093,7 @@ int main() {
   test_environment_water_rows_are_rank_one();
   test_environment_rows_are_zero_below_the_rooted_layers();
   test_rows_in_parts_assemble_to_the_totals();
+  test_rows_shrink_the_step_to_stay_on_one_branch();
   benchmark();
 
   printf("\n%d checks, %d failures\n", checks, failures);

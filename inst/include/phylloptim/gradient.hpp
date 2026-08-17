@@ -567,6 +567,21 @@ inline bool takes_shortcut(int par, const Settings& s) {
 // Both entry points below and `rows_at` stand on these, so a change to the
 // algebra reaches all of them or none.
 
+// The branch a solve took: the kind of operating point, and which of the two
+// limits won the dry bound. The two travel together because a difference taken
+// across either is a difference of two functions rather than of one.
+struct Branch {
+  Leaf::OperatingPointKind kind = Leaf::OperatingPointKind::Unsolved;
+  Leaf::DryBoundArm arm = Leaf::DryBoundArm::None;
+  bool operator==(const Branch& o) const {
+    return kind == o.kind && arm == o.arm;
+  }
+};
+
+inline Branch branch_here(const Leaf& l) {
+  return {l.operating_point_kind(), l.dry_bound_arm()};
+}
+
 // The solve, the five outputs, the marginal profit at the collar the solve
 // returned, and the curvature of profit there.
 struct BasePoint {
@@ -576,7 +591,7 @@ struct BasePoint {
   double H = util::na_value;
   // ⚠️ Read the moment the solve ends, because the first evaluation at a held
   // collar overwrites it: `evaluate_root_collar_psi` tags the point Prescribed.
-  Leaf::OperatingPointKind kind = Leaf::OperatingPointKind::Unsolved;
+  Branch branch;
 };
 
 // The step in the collar potential, floored at 1 MPa for `step_for`'s reason.
@@ -590,7 +605,7 @@ inline BasePoint base_point(Leaf& l, const double* theta, const Drivers& d,
   l.find_root_collar_psi();
 
   BasePoint b;
-  b.kind = l.operating_point_kind();
+  b.branch = branch_here(l);
   b.psi_star = l.opt_root_psi_;
   outputs(l, b.value);
 
@@ -699,8 +714,20 @@ inline void held_row(Leaf& l, const double* theta, const Drivers& d,
 // One input's central difference of the WHOLE solve. Correct at a pinned optimum
 // because it differences the CONSTRAINED answer, which is exactly what the
 // composite cannot do.
-inline void solved_row(Leaf& l, const double* theta, const Drivers& d,
-                       bool single, int par, const Settings& s, bool& at_base,
+//
+// `stay` is the branch both arms have to land on, or null for a caller that
+// differences whatever they land on. Where it is given, the step shrinks by a
+// decade at a time looking for two arms that agree with it, and the row is refused
+// rather than taken across a change of branch. Two decades and no more: the
+// largest step that is still local is the best-conditioned one, and below that
+// floor a step stops moving the solve above its own noise, so the difference
+// measures rounding rather than the model.
+//
+// False only where `stay` was given and no step reached it; `row` is not written
+// then.
+inline bool solved_row(Leaf& l, const double* theta, const Drivers& d,
+                       bool single, int par, const Settings& s,
+                       const Branch* stay, bool& at_base,
                        std::vector<double>& psi_scratch, double* row) {
   if (takes_shortcut(par, s) && !at_base) {
     apply(l, theta, d, single, -1, s.fast_stem_curve);
@@ -710,15 +737,28 @@ inline void solved_row(Leaf& l, const double* theta, const Drivers& d,
   double up[n_outputs];
   double dn[n_outputs];
   const double base = par_value(theta, d, par);
-  const double h = step_for(par, base, s.step);
-  for (int side = 0; side < 2; ++side) {
-    set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
-            s.fast_stem_curve, psi_scratch);
-    l.find_root_collar_psi();
-    outputs(l, side == 0 ? up : dn);
-  }
-  for (int j = 0; j < n_outputs; ++j) {
-    row[j] = (up[j] - dn[j]) / (2.0 * h);
+  double h = step_for(par, base, s.step);
+  for (int decade = 0;; ++decade) {
+    bool on_branch = true;
+    for (int side = 0; side < 2; ++side) {
+      set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
+              s.fast_stem_curve, psi_scratch);
+      l.find_root_collar_psi();
+      // Both arms are taken before either is tested, so which one crossed does
+      // not change the order the leaf is moved in.
+      on_branch = on_branch && (stay == nullptr || branch_here(l) == *stay);
+      outputs(l, side == 0 ? up : dn);
+    }
+    if (on_branch) {
+      for (int j = 0; j < n_outputs; ++j) {
+        row[j] = (up[j] - dn[j]) / (2.0 * h);
+      }
+      return true;
+    }
+    if (decade == 2) {
+      return false;
+    }
+    h *= 0.1;
   }
 }
 
@@ -793,7 +833,9 @@ inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
   std::vector<double> psi_scratch;
   bool at_base = true;
   for (std::size_t k = 0; k < npars; ++k) {
-    solved_row(l, theta, d, single, pars[k], s, at_base, psi_scratch,
+    // No branch to hold: this route differences whatever the two arms land on and
+    // reports the base point's own kind beside the answer, so it cannot refuse.
+    solved_row(l, theta, d, single, pars[k], s, nullptr, at_base, psi_scratch,
                out + k * n_outputs);
   }
   apply(l, theta, d, single, -1, s.fast_stem_curve);
@@ -946,8 +988,15 @@ inline std::vector<Result> batch(Leaf& l, const double* theta,
 // ⚠️ THE QUOTIENT IS NOT TAKEN HERE, and neither is the refusal that goes with
 // it. `dresidual` and `residual_slope` come back separately because dividing
 // them is a property of the implicit function theorem rather than of leaves, and
-// because at a pin it is the same division on the bound's condition -- which is
-// why the pinned case needs no second route through anything below.
+// because at a pin it is the same division on the bound's condition.
+//
+// ⚠️ AN INPUT THAT MOVES THE BOUND A CONSTRAINED POINT SITS ON GETS ITS ROWS BY
+// FOLLOWING IT, and they come back in the same two fields. p* sits one step-in
+// fraction from the bound, so a step that moves the bound carries p* out of the
+// perturbed feasible interval and there is no held evaluation to take: the whole
+// solve is differenced instead, the arms land on the moved point, and what the
+// rows carry is the TOTAL. `dresidual` is zero for such an input, so the
+// consumer's one assembly returns that total unchanged and nothing subtracts.
 
 using OperatingPointKind = Leaf::OperatingPointKind;
 
@@ -971,16 +1020,21 @@ struct Rows {
   // state returns: that reads as stationary, and the curvature taken off the same
   // sentinel confirms it.
   OperatingPointKind kind = OperatingPointKind::Unsolved;
-  // Set where the kind is one that has no rows to give.
+  // Set where the kind is one that has no rows to give, and where an input's own
+  // row was refused. It names the input in the second case.
   std::string message;
 
   double point = util::na_value;
   // R_p at an interior point, the bound's own slope at a pin, NA where no
   // condition defines the point.
   double residual_slope = util::na_value;
-  std::vector<double> dresidual;  // n_input: grad of the condition that defines p*
+  // n_input: grad of the condition that defines p*, and zero for an input whose
+  // rows followed the point rather than being taken at a held one.
+  std::vector<double> dresidual;
   std::vector<double> dy_dp;      // n_output
-  std::vector<double> held;     // n_output * n_input, output-major
+  // n_output * n_input, output-major: the row at a held point, or the total where
+  // that input's rows followed the point. NA where the input's row was refused.
+  std::vector<double> held;
   std::vector<Zero> zero;         // n_output * n_input, output-major
   double amplification = util::na_value;
 };
@@ -1103,20 +1157,21 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
   out.zero.assign(r.n_output * r.n_input, Zero::none);
 
   const BasePoint b = base_point(l, theta, d, single, s);
-  out.kind = b.kind;
+  out.kind = b.branch.kind;
   out.point = b.psi_star;
 
   Leaf::WhichBound bound = Leaf::WhichBound::Wet;
-  const bool pinned = pinned_bound(b.kind, bound);
-  const bool interior = b.kind == OperatingPointKind::Interior;
-  // Hydraulic shutdown holds the stem at psi_crit and moves no water, so nothing
-  // defines a collar to differentiate and the held rows are the whole answer.
+  const bool pinned = pinned_bound(b.branch.kind, bound);
+  const bool interior = b.branch.kind == OperatingPointKind::Interior;
+  const bool shut = b.branch.kind == OperatingPointKind::HydraulicShutdown;
+  // Hydraulic shutdown holds the stem at psi_crit and moves no water, so no
+  // condition defines a collar to differentiate and every row below is a total.
   // Every other kind either never solved or could not choose, shade death
   // included: it seats both potentials at the wet bound, where the objective's
   // sensitivity to the collar is the cost's slope and not the `nu` a pin reads.
-  if (!interior && !pinned && b.kind != OperatingPointKind::HydraulicShutdown) {
+  if (!interior && !pinned && !shut) {
     out.message = std::string("no rows at an operating point that is ") +
-                  Leaf::operating_point_kind_name(b.kind);
+                  Leaf::operating_point_kind_name(b.branch.kind);
     apply(l, theta, d, single, -1, s.fast_stem_curve);
     return out;
   }
@@ -1154,27 +1209,60 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
   double direct[n_outputs];
   for (std::size_t i = 0; i < r.n_input; ++i) {
     const int p = r.input[i];
-    double dR = 0.0;
-    held_row(l, theta, d, single, p, b.psi_star, s, "leaf_rows()", at_base,
-               psi_scratch, direct, dR);
-    if (interior) {
-      out.dresidual[i] = dR;
-    } else if (pinned) {
-      const double dpoint =
-          bound_moves_by_re_solving(p, single)
-              ? differenced_bound(l, theta, d, single, p, bound, s, at_base,
-                                  psi_scratch)
-              : bound_dpoint(condition, p, n_layers);
-      // `bound_row` has already divided by the bound's slope; what comes back
-      // from here is the condition's own gradient, so that undoing it is the
-      // consumer's one division rather than a second convention.
-      out.dresidual[i] = -dpoint * out.residual_slope;
+    // Does this input move the point? Where a bound is what defines it, the
+    // bound's own row says so; a shut collar sits at a critical potential with no
+    // condition to read, so nothing there can be shown to leave the point where
+    // it is.
+    double dpoint = 0.0;
+    if (pinned) {
+      dpoint = bound_moves_by_re_solving(p, single)
+                   ? differenced_bound(l, theta, d, single, p, bound, s, at_base,
+                                       psi_scratch)
+                   : bound_dpoint(condition, p, n_layers);
+    }
+    const bool follows = shut || (pinned && dpoint != 0.0);
+    if (follows) {
+      // ⚠️ THE ROWS THIS WRITES ARE TOTALS, AND `dresidual` IS ZERO BECAUSE OF
+      // IT. Both arms re-solve and land on the moved point, so the movement is
+      // already inside every row; a live entry here would have the consumer's
+      // assembly count it a second time. The held evaluation is not available to
+      // take instead -- p* sits one step-in fraction from the bound, so a step
+      // that moves the bound carries p* out of the perturbed feasible interval.
+      if (!solved_row(l, theta, d, single, p, s, &b.branch, at_base, psi_scratch,
+                      direct)) {
+        // This input only. The row would be a difference across a change of
+        // branch, which is a difference of two functions.
+        for (std::size_t j = 0; j < r.n_output; ++j) {
+          out.held[j * r.n_input + i] = util::na_value;
+        }
+        out.message += out.message.empty() ? "" : "; ";
+        out.message += "no row for `" + par_name(p, n_layers) +
+                       "`: no step within two decades keeps both arms on the " +
+                       Leaf::operating_point_kind_name(b.branch.kind) + " branch";
+        continue;
+      }
+      if (pinned) {
+        out.dresidual[i] = 0.0;
+      }
+    } else {
+      double dR = 0.0;
+      held_row(l, theta, d, single, p, b.psi_star, s, "leaf_rows()", at_base,
+                 psi_scratch, direct, dR);
+      if (interior) {
+        out.dresidual[i] = dR;
+      } else {
+        // `bound_row` has already divided by the bound's slope; what comes back
+        // from here is the condition's own gradient, so that undoing it is the
+        // consumer's one division rather than a second convention.
+        out.dresidual[i] = -dpoint * out.residual_slope;
+      }
     }
     for (std::size_t j = 0; j < r.n_output; ++j) {
       const std::size_t at = j * r.n_input + i;
       // The point's own held row is zero by construction: `held_row` has
-      // just asserted both perturbed evaluations sat at exactly p*.
-      out.held[at] = int(j) == point ? 0.0 : direct[r.output[j]];
+      // just asserted both perturbed evaluations sat at exactly p*. Where the
+      // arms followed the point instead, its row is the movement they measured.
+      out.held[at] = (int(j) == point && !follows) ? 0.0 : direct[r.output[j]];
       out.zero[at] = zero_kind(out.held[at], p, interior);
     }
   }
@@ -1394,7 +1482,8 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
     // which is exactly why `gradient_fd` has no special case either.
     double solved[n_outputs];
     for (std::size_t k = 0; k < npars; ++k) {
-      solved_row(l, theta, d, single, pars[k], s, at_base, psi_scratch, solved);
+      solved_row(l, theta, d, single, pars[k], s, nullptr, at_base, psi_scratch,
+                 solved);
       double row = 0.0;
       for (int j = 0; j < n_outputs; ++j) {
         row += rounded(v[j] * solved[j]);
