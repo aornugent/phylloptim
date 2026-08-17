@@ -29,3 +29,5 @@ CMakeFiles/
 
 # Doxygen output (generated; see Doxyfile)
 docs/
+tests/cpp/probe_*
+!tests/cpp/probe_*.cpp

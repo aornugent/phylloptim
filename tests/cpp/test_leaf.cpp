@@ -3286,6 +3286,56 @@ void test_environment_par_names() {
   ok(threw, "index " + std::to_string(bad) + " throws");
 }
 
+// A leaf too shaded to cover its own respiration seats both potentials at the
+// collar where uptake is zero and pays respiration plus a hydraulic cost there.
+// So its profit reads the soil only through that bound moving underneath it, and
+// the rows -- which come from differencing the whole solve -- must agree with
+// that composition, which shares no code with them.
+void test_shade_death_soil_rows() {
+  namespace grad = phylloptim::gradient;
+  namespace pl = phylloptim;
+  grad::Settings s;
+  const int L = 3;
+  grad::Drivers d = env::drivers(1.0, 10.0, 1.0, L, L);
+  pl::Leaf l = env::fresh();
+
+  std::vector<int> input;
+  for (int j = 0; j < L; ++j) {
+    input.push_back(grad::par_psi_soil_first + j);
+  }
+  std::vector<int> out{grad::out_profit};
+  std::vector<grad::Role> role{grad::Role::Objective};
+  grad::RowRequest req{out.data(), role.data(), out.size(), input.data(),
+                       input.size()};
+  const grad::Rows r = grad::rows_at(l, env::kTheta, d, req, s);
+  ok(r.kind == pl::Leaf::OperatingPointKind::ShadeDeath,
+     "the shaded fixture reaches shade death");
+  if (r.kind != pl::Leaf::OperatingPointKind::ShadeDeath) {
+    return;
+  }
+  ok(std::isfinite(r.residual_slope) && std::isfinite(r.held[0]),
+     "and it answers rather than refusing");
+
+  // The rows come back at the base state, but this call re-supplies base without
+  // re-solving it, so the bound has to be read from a solve of its own.
+  l.find_root_collar_psi();
+  const pl::Leaf::BoundRow b = l.bound_row(pl::Leaf::WhichBound::Wet);
+  const pl::Leaf::HydraulicCostRow c = l.hydraulic_cost_row(b.bound);
+  ok(b.finite && c.finite, "both halves of the composition are finite");
+  double worst = 0.0;
+  for (int j = 0; j < L; ++j) {
+    const double got = r.held[std::size_t(j)];
+    const double want = -c.d_dpsi_stem * b.d_dpsi_soil[std::size_t(j)];
+    worst = std::max(worst, std::abs(got - want) /
+                                std::max(std::abs(want), 1e-300));
+  }
+  char worst_text[32];
+  std::snprintf(worst_text, sizeof(worst_text), "%.2e", worst);
+  ok(worst < 1e-6,
+     std::string("the differenced soil rows are the composed ones, ") +
+         worst_text);
+}
+
 // Root carbon is an ordinary input on the multi-layer path and has no row on
 // either of the two states where the network cannot represent a move in it.
 //
@@ -4442,6 +4492,7 @@ int main() {
   test_out_of_domain_under_rescale();
   test_environment_par_names();
   test_root_carbon_rows();
+  test_shade_death_soil_rows();
   test_environment_rows_match_a_differenced_solve();
   test_environment_water_rows_are_rank_one();
   test_environment_rows_are_zero_below_the_rooted_layers();

@@ -477,6 +477,11 @@ inline std::string status_name(Status s) {
 
 struct Settings {
   double step = 1e-6;
+  // ⚠️ THE COLLAR'S STEP IS SEPARATE AND MUST STAY SMALL. A pinned point sits one
+  // step-in fraction from its bound, so a collar step that crosses a narrow
+  // bracket is what detects it; raising this to an input step large enough to
+  // move total uptake above the solve's own floor would stop it detecting one.
+  double collar = 1e-6;
   double stationarity_tol = 1e-8;
   Method method = Method::Auto;
   bool fast_stem_curve = true;
@@ -766,7 +771,7 @@ struct BasePoint {
 
 // The step in the collar potential, floored at 1 MPa for `step_for`'s reason.
 inline double collar_step(double psi_star, const Settings& s) {
-  return std::max(std::abs(psi_star), 1.0) * s.step;
+  return std::max(std::abs(psi_star), 1.0) * s.collar;
 }
 
 inline BasePoint base_point(Leaf& l, const double* theta, const Drivers& d,
@@ -842,9 +847,16 @@ inline bool collar_channel(Leaf& l, double psi_star, const Settings& s,
 //
 // `at_base` carries the invariant above: it comes in true only where the leaf is
 // at base parameters, and goes out false.
-inline void held_row(Leaf& l, const double* theta, const Drivers& d,
+// False where no step keeps both arms inside the perturbed feasible interval;
+// `direct` and `dresidual` are not written then.
+//
+// ⚠️ `decades` is how many times the step may shrink first, and the R
+// implementation this file is checked against passes NONE: it stops at the first
+// infeasible arm, so a C++ route that shrinks would answer states R does not and
+// the two would stop being one function checked against another.
+inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
                        bool single, int par, double psi_star, const Settings& s,
-                       const std::string& caller, bool& at_base,
+                       int decades, bool& at_base,
                        Scratch& scratch, OutputValues& direct,
                        double& dresidual) {
   if (takes_shortcut(par, s) && !at_base) {
@@ -857,30 +869,58 @@ inline void held_row(Leaf& l, const double* theta, const Drivers& d,
   double up_resid = 0.0;
   double dn_resid = 0.0;
   const double base = par_value(theta, d, single, par);
-  const double h = step_for(par, base, s.step, n_soil_layers(d, single));
-  for (int side = 0; side < 2; ++side) {
-    // Up first, then down: R evaluates `up <- side(1)` before `dn <- side(-1)`
-    // and both mutate the leaf.
-    set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
-            s.fast_stem_curve, scratch);
-    OutputValues& dst = side == 0 ? up : dn;
-    // Evaluate first, then read dprofit at the same fixed collar -- R's order,
-    // and `evaluate_root_collar_psi` is what seats the state `dprofit` reads.
-    if (!outputs_at(l, psi_star, dst)) {
-      util::stop(caller + ": perturbing `" +
-                 par_name(par, n_soil_layers(d, single)) +
-                 "` moved the feasible collar interval past psi*, so the "
-                 "operating point could not be evaluated there. This point is "
-                 "on an active-set boundary; lower `stationarity_tol` or "
-                 "difference the solve directly.");
+  double h = step_for(par, base, s.step, n_soil_layers(d, single));
+  for (int decade = 0;; ++decade) {
+    bool feasible = true;
+    for (int side = 0; side < 2; ++side) {
+      // Up first, then down: R evaluates `up <- side(1)` before `dn <- side(-1)`
+      // and both mutate the leaf.
+      set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
+              s.fast_stem_curve, scratch);
+      OutputValues& dst = side == 0 ? up : dn;
+      // Evaluate first, then read dprofit at the same fixed collar -- R's order,
+      // and `evaluate_root_collar_psi` is what seats the state `dprofit` reads.
+      // Both arms are taken before either is tested, so which one moved the
+      // interval does not change the order the leaf is moved in.
+      const bool here = outputs_at(l, psi_star, dst);
+      feasible = feasible && here;
+      double& resid = side == 0 ? up_resid : dn_resid;
+      resid = l.dprofit_droot_collar_psi(psi_star);
     }
-    double& resid = side == 0 ? up_resid : dn_resid;
-    resid = l.dprofit_droot_collar_psi(psi_star);
+    if (feasible) {
+      // M = d2profit/dpsi dtheta, with psi held FIXED at psi*.
+      dresidual = (up_resid - dn_resid) / (2.0 * h);
+      for (int j = 0; j < direct.size(); ++j) {
+        direct[j] = (up[j] - dn[j]) / (2.0 * h);
+      }
+      return true;
+    }
+    // A step that carries the held collar out of the perturbed feasible interval
+    // is the state a pin sits in, where the interval closes around the point. The
+    // shrink is `solved_row`'s and stops at the same floor for the same reason.
+    if (decade == decades) {
+      return false;
+    }
+    h *= 0.1;
   }
-  // M = d2profit/dpsi dtheta, with psi held FIXED at psi*.
-  dresidual = (up_resid - dn_resid) / (2.0 * h);
-  for (int j = 0; j < direct.size(); ++j) {
-    direct[j] = (up[j] - dn[j]) / (2.0 * h);
+}
+
+// For the two entry points that answer a whole gradient rather than one column
+// of one: a row they cannot take is the call's answer and not an input's. No
+// shrinking, and the message is the R implementation's word for word.
+inline void held_row_or_stop(Leaf& l, const double* theta, const Drivers& d,
+                             bool single, int par, double psi_star,
+                             const Settings& s, const std::string& caller,
+                             bool& at_base, Scratch& scratch,
+                             OutputValues& direct, double& dresidual) {
+  if (!held_row(l, theta, d, single, par, psi_star, s, 0, at_base, scratch,
+                direct, dresidual)) {
+    util::stop(caller + ": perturbing `" +
+               par_name(par, n_soil_layers(d, single)) +
+               "` moved the feasible collar interval past psi*, so the "
+               "operating point could not be evaluated there. This point is "
+               "on an active-set boundary; lower `stationarity_tol` or "
+               "difference the solve directly.");
   }
 }
 
@@ -948,8 +988,8 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
   bool at_base = true;
   for (std::size_t k = 0; k < npars; ++k) {
     double M = 0.0;
-    held_row(l, theta, d, single, pars[k], psi_star, s, "leaf_gradient()",
-               at_base, scratch, direct, M);
+    held_row_or_stop(l, theta, d, single, pars[k], psi_star, s,
+                     "leaf_gradient()", at_base, scratch, direct, M);
     const double dpsi_dtheta = -(M / H);
     for (int j = 0; j < n_outputs; ++j) {
       out[k * n_outputs + j] = direct[j] + rounded(dY_dpsi[j] * dpsi_dtheta);
@@ -1210,9 +1250,15 @@ struct Rows {
   // row was refused. It names the input in the second case.
   std::string message;
 
+  // ⚠️ READ THE OUTPUT VALUES FROM HERE, NEVER OFF THE LEAF AFTERWARDS. This
+  // call re-supplies the base state on its way out but does not re-solve it, so
+  // the leaf's own members still hold the last perturbed evaluation.
+  OutputValues value;
+
   double point = util::na_value;
-  // R_p at an interior point, the bound's own slope at a pin, NA where no
-  // condition defines the point.
+  // R_p at an interior point, the bound's own slope at a pin, and 1 where nothing
+  // defines the point -- a unit slope beside a gradient of zeros IS a point that
+  // does not move, so a consumer's assembly needs no branch for it.
   double residual_slope = util::na_value;
   // n_input: grad of the condition that defines p*, and zero for an input whose
   // rows followed the point rather than being taken at a held one.
@@ -1279,6 +1325,31 @@ inline double bound_dpoint(const Leaf::BoundRow& b, int par, int n_layers) {
 inline bool bound_moves_by_re_solving(int par, bool single) {
   return par == par_stem_c || par == par_root_c ||
          (single && par == par_resistance);
+}
+
+// Inputs whose row is exactly zero where the leaf has stopped moving water.
+// Gross assimilation is identically zero there, so profit is respiration plus a
+// hydraulic cost and the traits reaching only assimilation reach nothing;
+// neither seated potential is the root's own critical one; and neither radiation
+// nor the maximum conductance appears in what is left.
+//
+// ⚠️ DECLARED RATHER THAN DIFFERENCED, and not to save the evaluations. A step in
+// any of these moves the assimilation maximum, which is the quantity DECIDING
+// this branch, so a difference refuses at a boundary the row does not depend on.
+inline bool shut_row_is_zero(int par) {
+  switch (par) {
+  case par_vcmax_25:
+  case par_jmax_25:
+  case par_a:
+  case par_curv_fact_elec_trans:
+  case par_curv_fact_colim:
+  case par_root_psi_crit:
+  case par_PPFD:
+  case par_kmax:
+    return true;
+  default:
+    return false;
+  }
 }
 
 // The bound's movement in one of those, by re-solving it at a perturbed state.
@@ -1370,16 +1441,18 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
   const BasePoint b = base_point(l, theta, d, single, s);
   out.kind = b.branch.kind;
   out.point = b.psi_star;
+  out.value = b.value;
 
   Leaf::WhichBound bound = Leaf::WhichBound::Wet;
   const bool pinned = pinned_bound(b.branch.kind, bound);
   const bool interior = b.branch.kind == OperatingPointKind::Interior;
-  const bool shut = b.branch.kind == OperatingPointKind::HydraulicShutdown;
-  // Hydraulic shutdown holds the stem at psi_crit and moves no water, so no
-  // condition defines a collar to differentiate and every row below is a total.
-  // Every other kind either never solved or could not choose, shade death
-  // included: it seats both potentials at the wet bound, where the objective's
-  // sensitivity to the collar is the cost's slope and not the `nu` a pin reads.
+  // The two kinds that have stopped moving water. They seat the collar
+  // differently -- one holds the stem at its critical potential, the other sits
+  // where uptake is zero -- but no condition defines either, and every row below
+  // is a difference of the solve itself, so one derivation serves both.
+  const bool shut = b.branch.kind == OperatingPointKind::HydraulicShutdown ||
+                    b.branch.kind == OperatingPointKind::ShadeDeath;
+  // What is left never solved or could not choose.
   if (!interior && !pinned && !shut) {
     out.message = std::string("no rows at an operating point that is ") +
                   Leaf::operating_point_kind_name(b.branch.kind);
@@ -1398,6 +1471,11 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     out.residual_slope = condition.residual_slope;
   } else if (interior) {
     out.residual_slope = b.H;
+  } else {
+    // A unit slope beside the gradient of zeros written below: that pair IS a
+    // point that does not move, exactly, and it is what lets a consumer divide
+    // and multiply unconditionally.
+    out.residual_slope = 1.0;
   }
 
   OutputValues dY_dpsi(n_uptake);
@@ -1406,12 +1484,21 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     if (int(j) == point) {
       out.dy_dp[j] = 1.0;
     } else if (int(j) == objective) {
-      // Zero at an interior optimum by the envelope theorem; at a pin the point
-      // is the bound rather than a maximum, and this is the constraint's shadow
-      // price.
-      out.dy_dp[j] = interior ? 0.0 : pinned ? b.resid : util::na_value;
+      // At a pin the point is the bound rather than a maximum, and this is the
+      // constraint's shadow price. Zero at an interior optimum by the envelope
+      // theorem, and zero again where nothing defines the point, there because
+      // the point does not move at all.
+      out.dy_dp[j] = pinned ? b.resid : 0.0;
     } else if (have_channel) {
       out.dy_dp[j] = dY_dpsi[r.output[j]];
+    } else if (!interior) {
+      // The point carries no route to any input here: at a pin the condition's
+      // gradient is zero for every one of them, and where nothing defines the
+      // point there is no gradient at all. So this channel multiplies a point
+      // that does not move, and zero is exact rather than a stand-in. An
+      // interior point is the one kind whose gradient is live, and there a
+      // missing channel leaves the row genuinely incomplete.
+      out.dy_dp[j] = 0.0;
     }
   }
 
@@ -1433,6 +1520,15 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
       out.message += "no row for `" + par_name(p, n_layers) +
                      "`: that layer holds no root carbon, so the architecture "
                      "model gave the network no slot for it";
+      continue;
+    }
+    if (shut && shut_row_is_zero(p)) {
+      out.dresidual[i] = 0.0;
+      for (std::size_t j = 0; j < r.n_output; ++j) {
+        const std::size_t at = j * r.n_input + i;
+        out.held[at] = 0.0;
+        out.zero[at] = Zero::structural;
+      }
       continue;
     }
     // Does this input move the point? Where a bound is what defines it, the
@@ -1467,13 +1563,22 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
                        Leaf::operating_point_kind_name(b.branch.kind) + " branch";
         continue;
       }
-      if (pinned) {
-        out.dresidual[i] = 0.0;
-      }
+      out.dresidual[i] = 0.0;
     } else {
       double dR = 0.0;
-      held_row(l, theta, d, single, p, b.psi_star, s, "leaf_rows()", at_base,
-                 scratch, direct, dR);
+      if (!held_row(l, theta, d, single, p, b.psi_star, s, 2, at_base, scratch,
+                    direct, dR)) {
+        // This input only, and for the same reason a following one can fail:
+        // the step carries the held collar out of the perturbed interval.
+        for (std::size_t j = 0; j < r.n_output; ++j) {
+          out.held[j * r.n_input + i] = util::na_value;
+        }
+        out.message += out.message.empty() ? "" : "; ";
+        out.message += "no row for `" + par_name(p, n_layers) +
+                       "`: no step within two decades holds the collar inside "
+                       "the perturbed feasible interval";
+        continue;
+      }
       if (interior) {
         out.dresidual[i] = dR;
       } else {
@@ -1689,8 +1794,8 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
     OutputValues direct;
     for (std::size_t k = 0; k < npars; ++k) {
       double M = 0.0;
-      held_row(l, theta, d, single, pars[k], psi_star, s,
-                 "leaf_gradient_transpose()", at_base, scratch, direct, M);
+      held_row_or_stop(l, theta, d, single, pars[k], psi_star, s,
+                       "leaf_gradient_transpose()", at_base, scratch, direct, M);
       // v . dY/dtheta|_psi. `collar` is skipped rather than summed: its direct
       // term is zero by construction, `outputs_at` having just asserted that
       // both sides sit at exactly psi*.

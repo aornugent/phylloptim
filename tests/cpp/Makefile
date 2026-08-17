@@ -84,6 +84,12 @@ bench_solve: bench_solve.cpp $(HEADERS)
 bench_gradient: bench_gradient.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
 
+# One-off measurement programs. Not built or run by anything; `make probe_x`
+# builds probe_x.cpp with the suite's own flags so a probe measures the same code
+# the tests do.
+probe_%: probe_%.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+
 # Regenerate the golden file. Only ever run this deliberately: it overwrites the
 # recorded behaviour, so a refactor that changed results would be rubber-stamped.
 golden: test_golden
