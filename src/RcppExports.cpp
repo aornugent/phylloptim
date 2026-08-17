@@ -70,6 +70,17 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// Leaf__zero_flux_operating_point
+bool Leaf__zero_flux_operating_point(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__zero_flux_operating_point(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__zero_flux_operating_point(obj_));
+    return rcpp_result_gen;
+END_RCPP
+}
 // Leaf__initialize_integrator
 void Leaf__initialize_integrator(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, int integration_rule, double integration_tol);
 RcppExport SEXP _phylloptim_Leaf__initialize_integrator(SEXP obj_SEXP, SEXP integration_ruleSEXP, SEXP integration_tolSEXP) {
@@ -2382,6 +2393,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_phylloptim_Leaf__ctor", (DL_FUNC) &_phylloptim_Leaf__ctor, 17},
     {"_phylloptim_Leaf__operating_point_values", (DL_FUNC) &_phylloptim_Leaf__operating_point_values, 1},
     {"_phylloptim_Leaf__operating_point_kind_name", (DL_FUNC) &_phylloptim_Leaf__operating_point_kind_name, 1},
+    {"_phylloptim_Leaf__zero_flux_operating_point", (DL_FUNC) &_phylloptim_Leaf__zero_flux_operating_point, 1},
     {"_phylloptim_Leaf__initialize_integrator", (DL_FUNC) &_phylloptim_Leaf__initialize_integrator, 3},
     {"_phylloptim_Leaf__set_physiology", (DL_FUNC) &_phylloptim_Leaf__set_physiology, 11},
     {"_phylloptim_Leaf__perturb_stem_b", (DL_FUNC) &_phylloptim_Leaf__perturb_stem_b, 2},

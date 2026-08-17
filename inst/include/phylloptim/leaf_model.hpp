@@ -1475,6 +1475,23 @@ public:
     return operating_point_kind_name(operating_point_kind_);
   }
 
+  // True where the solve ended with the stomata shut. No flux, no gross
+  // assimilation, and a profit that is respiration plus the hydraulic cost
+  // alone -- so nothing about such a point is an argmax, and a consumer that
+  // takes an envelope step at one is answering about a maximisation that did
+  // not happen.
+  //
+  // ⚠️ THE TWO ARE NOT THE SAME POINT. HydraulicShutdown holds the stem at
+  // psi_crit and moves no water at all, so every environment row there is
+  // exactly zero. ShadeDeath seats BOTH potentials at the collar of zero
+  // uptake -- which is the wet bound -- so its profit reads the soil through
+  // that bound, and the per-layer consumptions are not zero either: they sum
+  // to zero.
+  bool zero_flux_operating_point() const {
+    return operating_point_kind_ == OperatingPointKind::HydraulicShutdown ||
+           operating_point_kind_ == OperatingPointKind::ShadeDeath;
+  }
+
 private:
   // Written by every path out of the collar solve, and reset to Unsolved at the
   // top of prepare_collar_solve. Hazard 8 in the developer guide is why: `Leaf`

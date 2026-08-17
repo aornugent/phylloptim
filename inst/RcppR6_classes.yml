@@ -287,6 +287,10 @@ Leaf:
     # close the collar sits to a bound.
     operating_point_kind_name:
       return_type: "std::string"
+    # True where the solve ended with the stomata shut -- no flux, no gross
+    # assimilation. Two kinds answer to it and they carry different rows.
+    zero_flux_operating_point:
+      return_type: bool
     initialize_integrator:
       return_type: void
       args: [integration_rule: int, integration_tol: double]

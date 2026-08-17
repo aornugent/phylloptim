@@ -17,6 +17,10 @@ Leaf__operating_point_kind_name <- function(obj_) {
     .Call('_phylloptim_Leaf__operating_point_kind_name', PACKAGE = 'phylloptim', obj_)
 }
 
+Leaf__zero_flux_operating_point <- function(obj_) {
+    .Call('_phylloptim_Leaf__zero_flux_operating_point', PACKAGE = 'phylloptim', obj_)
+}
+
 Leaf__initialize_integrator <- function(obj_, integration_rule, integration_tol) {
     invisible(.Call('_phylloptim_Leaf__initialize_integrator', PACKAGE = 'phylloptim', obj_, integration_rule, integration_tol))
 }
