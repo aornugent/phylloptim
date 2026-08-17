@@ -137,7 +137,7 @@ SEXP gradient_batch_prepare(Rcpp::List root_network, Rcpp::List psi_soil,
 // [[Rcpp::export]]
 void gradient_batch_check(SEXP drivers) { checked(drivers); }
 
-// The hot path. `theta` is n x 15 (or 1 x 15, shared), `pars` is ZERO-BASED
+// The hot path. `theta` is n x 16 (or 1 x 16, shared), `pars` is ZERO-BASED
 // positions into `gradient_par_names()`, and the supply path is read off the
 // leaf rather than passed, so the caller cannot name one path while handing over
 // a leaf built on the other.

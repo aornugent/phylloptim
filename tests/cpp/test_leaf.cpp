@@ -2680,17 +2680,22 @@ void test_perturb_stem_b_matches_a_rebuild() {
 // the differenced fallback. The transpose has to satisfy the identity on both
 // routes, and it also has to report the same status the forward path does at every
 // one of them. Then six more on the single-potential supply path, which is where
-// the fifteenth parameter -- `resistance` -- exists at all.
+// the sixteenth parameter -- `resistance` -- exists at all.
 void test_gradient_transpose_matches_the_forward_jacobian() {
   printf("the gradient transpose satisfies <v, Ju> == <J^T v, u>\n");
   namespace g = phylloptim::gradient;
 
   // The trait vector used everywhere else in this suite, then
   // leaf_specific_conductance_max and the single path's series resistance.
-  double theta[g::n_pars] = {96.0,     2.680147, 3.898245, 5.870283, 2.680147,
-                             3.898245, 5.870283, 1.5,      157.44,   0.30,
-                             0.7,      0.99,     7.5,      1.0 * 0.000157 / 5.0,
-                             1.0e4};
+  // Sized from the initialiser and checked, because too few initialisers is
+  // legal and zero-fills the rest: this list was one short of n_pars, which
+  // shifted R_d_25 onto kmax and left resistance at zero.
+  double theta[] = {96.0,     2.680147, 3.898245, 5.870283,
+                    2.680147, 3.898245, 5.870283, 1.5,
+                    157.44,   0.30,     0.7,      0.99,
+                    7.5,      kRd25,    1.0 * 0.000157 / 5.0,
+                    1.0e4};
+  static_assert(sizeof(theta) / sizeof(theta[0]) == g::n_pars);
   int pars[g::n_pars];
   for (int i = 0; i < g::n_pars; ++i) {
     pars[i] = i;
@@ -3097,10 +3102,13 @@ namespace grad = phylloptim::gradient;
 
 // The suite's trait defaults, in `set_traits`' argument order, then the two
 // non-trait parameters. `resistance` is never perturbed here: these are
-// multi-layer points.
-const double kTheta15[grad::n_pars] = {
-    96.0, 2.680147, 3.898245, 5.870283, 2.680147, 3.898245, 5.870283, 1.5,
-    157.44, 0.30, 0.7, 0.99, 7.5, 1.0 * 0.000157 / 5.0, 1e3};
+// multi-layer points. Sized from the initialiser and checked, because too few
+// initialisers is legal and zero-fills the rest.
+const double kTheta[] = {96.0,   2.680147, 3.898245, 5.870283, 2.680147,
+                         3.898245, 5.870283, 1.5,    157.44,   0.30,
+                         0.7,    0.99,     7.5,      kRd25,
+                         1.0 * 0.000157 / 5.0, 1e3};
+static_assert(sizeof(kTheta) / sizeof(kTheta[0]) == grad::n_pars);
 
 // `rooted` layers of root carbon spread over `layers` soil layers, drying with
 // depth -- the golden grid's soil, so a point named here is a point that grid
@@ -3176,7 +3184,7 @@ void test_environment_par_names() {
   grad::Result r;
   bool threw = false;
   try {
-    grad::at(l, env::kTheta15, d, false, &bad, 1, s, r);
+    grad::at(l, env::kTheta, d, false, &bad, 1, s, r);
   } catch (const std::runtime_error &) {
     threw = true;
   }
@@ -3204,7 +3212,7 @@ void test_environment_rows_match_a_differenced_solve() {
       const std::vector<int> pars = env::all_env_pars(L);
       grad::Settings s;
       grad::Result ift;
-      grad::at(l, env::kTheta15, d, false, pars.data(), pars.size(), s, ift);
+      grad::at(l, env::kTheta, d, false, pars.data(), pars.size(), s, ift);
       const std::string tag =
           std::to_string(L) + " layers, psi_soil=" + std::to_string(psi_soil);
       ok(ift.status == grad::Status::Interior, "interior point, " + tag);
@@ -3213,7 +3221,7 @@ void test_environment_rows_match_a_differenced_solve() {
       grad::Settings sf = s;
       sf.method = grad::Method::Fd;
       grad::Result fd;
-      grad::at(l, env::kTheta15, d, false, pars.data(), pars.size(), sf, fd);
+      grad::at(l, env::kTheta, d, false, pars.data(), pars.size(), sf, fd);
 
       for (int j = 0; j < grad::n_outputs; ++j) {
         double scale = 0.0;
@@ -3243,10 +3251,10 @@ void test_environment_rows_match_a_differenced_solve() {
     const std::vector<int> pars{grad::par_PPFD, grad::par_psi_soil_first};
     grad::Settings s;
     grad::Result ift, fd;
-    grad::at(l, env::kTheta15, d, true, pars.data(), pars.size(), s, ift);
+    grad::at(l, env::kTheta, d, true, pars.data(), pars.size(), s, ift);
     grad::Settings sf = s;
     sf.method = grad::Method::Fd;
-    grad::at(l, env::kTheta15, d, true, pars.data(), pars.size(), sf, fd);
+    grad::at(l, env::kTheta, d, true, pars.data(), pars.size(), sf, fd);
     ok(ift.status == grad::Status::Interior, "interior, single path");
     for (int j = 0; j < grad::n_outputs; ++j) {
       const double scale =
@@ -3279,7 +3287,7 @@ void test_environment_water_rows_are_rank_one() {
     for (double psi_soil : {1.0, 3.0}) {
       phylloptim::Leaf l = env::fresh();
       grad::Drivers d = env::drivers(psi_soil, 900.0, 2.0, L, L);
-      grad::apply(l, env::kTheta15, d, false, -1, true);
+      grad::apply(l, env::kTheta, d, false, -1, true);
       l.find_root_collar_psi();
       const double psi_star = l.opt_root_psi_;
       const double lambda_multi = l.marginal_cost_water_multilayer();
@@ -3298,7 +3306,7 @@ void test_environment_water_rows_are_rank_one() {
 
         // dE_up/dpsi_soil_j at the FIXED collar. Uptake is an ordinary smooth
         // function of the soil state, so a difference here is well conditioned.
-        grad::apply(l, env::kTheta15, d, false, -1, true);
+        grad::apply(l, env::kTheta, d, false, -1, true);
         l.find_root_collar_psi();
         l.E_from_Soil_to_Root_Collar(psi_star, up);
         const double e_up = l.E_up_;
@@ -3312,10 +3320,10 @@ void test_environment_water_rows_are_rank_one() {
         grad::Drivers du = d, dd = d;
         du.psi_soil = up;
         dd.psi_soil = dn;
-        grad::apply(l, env::kTheta15, du, false, -1, true);
+        grad::apply(l, env::kTheta, du, false, -1, true);
         l.find_root_collar_psi();
         const double p_up = l.profit_;
-        grad::apply(l, env::kTheta15, dd, false, -1, true);
+        grad::apply(l, env::kTheta, dd, false, -1, true);
         l.find_root_collar_psi();
         const double p_dn = l.profit_;
         const double dP = (p_up - p_dn) / (2.0 * h);
@@ -3333,7 +3341,7 @@ void test_environment_water_rows_are_rank_one() {
       // And the bare multilayer lambda is not it, by a wide margin.
       ok(lambda_multi / first > 1.1,
          "the bare multilayer lambda overstates the price, " + tag);
-      grad::apply(l, env::kTheta15, d, false, -1, true);
+      grad::apply(l, env::kTheta, d, false, -1, true);
     }
   }
 }
@@ -3359,7 +3367,7 @@ void test_environment_rows_are_zero_below_the_rooted_layers() {
     s.method = route == 0 ? grad::Method::Ift : grad::Method::Fd;
     const std::string tag = route == 0 ? "ift" : "fd";
     grad::Result r;
-    grad::at(l, env::kTheta15, d, false, pars.data(), pars.size(), s, r);
+    grad::at(l, env::kTheta, d, false, pars.data(), pars.size(), s, r);
     for (int j = 0; j < grad::n_outputs; ++j) {
       // Rooted layers move the leaf...
       ok(std::abs(r.grad[1 * grad::n_outputs + j]) > 0.0 ||

@@ -118,7 +118,7 @@ inline const std::vector<std::string>& par_names() {
 // THE ENVIRONMENT ROWS ARE NOT IN `theta`, and that is the design decision. Their
 // values already have exactly one home -- the observation's `Drivers` -- and
 // copying them into `theta` would give one solve two soil states free to
-// disagree. So `theta` stays fifteen wide, R's fifteen-column contract and
+// disagree. So `theta` stays sixteen wide, R's sixteen-column contract and
 // `gradient_par_names()` are untouched, and an environment row is addressed by an
 // index PAST the end of `theta` whose value is read from the drivers instead
 // (`par_value` below). Nothing else about the two routes changes: `psi_soil` and
@@ -287,7 +287,7 @@ inline int n_soil_layers(const Drivers& d, bool single) {
   return single ? 1 : static_cast<int>(d.psi_soil.size());
 }
 
-// The value a parameter currently holds: in `theta` for the fifteen, in the
+// The value a parameter currently holds: in `theta` for the sixteen, in the
 // observation's drivers for the environment rows. See the environment block above
 // for why those two are different places rather than one.
 inline double par_value(const double* theta, const Drivers& d, int par) {
@@ -421,7 +421,7 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
 }
 
 // Put parameter `par` at `value` and everything else at base. One function so
-// that both routes below address the fifteen and the environment rows the same
+// that both routes below address the sixteen and the environment rows the same
 // way, and so that the water and light channels are written where they can be
 // read side by side.
 //
@@ -462,7 +462,7 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
 //   agrees to 6.3e-05 relative, while the bare multilayer lambda overstates the
 //   price by a factor of 1.20 to 2.37.
 //
-//   ⚠️ LAYERS BELOW THE DEEPEST ROOTED ONE GET EXACTLY ZERO UPTAKE, so their four
+//   ⚠️ LAYERS BELOW THE DEEPEST ROOTED ONE GET EXACTLY ZERO UPTAKE, so their
 //   rows are exactly 0.0 on both routes. That zero is CORRECT and is asserted
 //   (`environment rows: an unrooted layer's rows are exactly zero`). It is called
 //   out because in this codebase an exact zero is otherwise the signature of a
@@ -651,7 +651,7 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
   // ⚠️ CHECKED HERE, because with the environment rows the valid range depends on
   // the OBSERVATION rather than on this header: a five-layer row and a one-layer
   // row in the same batch do not have the same number of parameters. An index
-  // past the end used to be impossible (R validates against the fixed fifteen);
+  // past the end used to be impossible (R validates against the fixed sixteen);
   // now it is an out-of-bounds read of `psi_soil`, so it is a per-row error.
   const int n_layers = n_soil_layers(d, single);
   for (std::size_t k = 0; k < npars; ++k) {
@@ -888,7 +888,7 @@ inline std::vector<Result> batch(Leaf& l, const double* theta,
 // 1.41e-14, five orders below the solve's ~1e-09 floor, at a tolerance of 1e-12.
 
 // The index of the OBJECTIVE among the reported outputs, or -1 where it is not
-// reported at all -- which is the case here, `n_outputs` being four.
+// reported at all. Profit is reported here, so it is that index.
 //
 // ⚠️ THE OBJECTIVE'S PSI-CHANNEL MUST BE EXCLUDED FROM `s`. At an interior
 // optimum dprofit/dpsi = 0 by the envelope theorem, so profit's psi-channel
@@ -924,7 +924,7 @@ inline double psi_channel(int j, const double* dY_dpsi) {
 }
 
 struct TransposeResult {
-  // The four outputs the transpose is taken at, and the operating-point
+  // The outputs the transpose is taken at, and the operating-point
   // diagnostics, all of them `at()`'s own -- see `transpose_at`.
   double value[n_outputs];
   // One entry per requested parameter: v . dY/d(pars[k]).
@@ -1085,7 +1085,7 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
 //
 // `transpose_at` above is a transpose in its STRUCTURE -- one `s`, one `m`, the
 // rank-one channel collapsed once rather than per parameter -- but every column
-// is still two perturbed evaluations. That is the right trade for the fifteen
+// is still two perturbed evaluations. That is the right trade for the fourteen
 // traits, which have no closed form. It is the wrong one for the environment,
 // which now has.
 //
