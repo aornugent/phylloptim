@@ -1325,6 +1325,52 @@ void test_root_vulnerability_is_bounded_past_its_grid() {
   near(r.root_vuln_integral_at(1000.0), G_inf, 1e-12,
        "G saturates at its closed form (b/c)*Gamma(1/c)");
 
+  // And both clamps are COUNTED where they hold, which is the only way a consumer
+  // learns that a row it differenced came back with no response in it. This is the
+  // non-vacuity proof for that tally: a stand cannot reach these potentials -- a
+  // layer has to be rooted to be evaluated and the plant has to be alive, so the
+  // wettest rooted layer stays wetter than psi_crit while this would need a deeper
+  // one past 7.31 MPa -- so a counter read on a stand is zero whether it is wired
+  // up or not, and only a direct call can tell the two apart.
+  r.clamps.clear();
+  ok(r.clamps.at(phylloptim::CLAMP_ROOT_VULN_INTEGRAL_CAP) == 0,
+     "the integral cap's counter starts clear");
+  ok(r.clamps.at(phylloptim::CLAMP_ROOT_VULN_ARGUMENT) == 0,
+     "the argument clamp's counter starts clear");
+
+  // Inside the grid neither holds, so neither counts.
+  static_cast<void>(r.root_vuln_integral_at(4.0));
+  static_cast<void>(r.root_vuln_at(4.0));
+  ok(r.clamps.at(phylloptim::CLAMP_ROOT_VULN_INTEGRAL_CAP) == 0,
+     "the integral cap does not count inside the grid");
+  ok(r.clamps.at(phylloptim::CLAMP_ROOT_VULN_ARGUMENT) == 0,
+     "the argument clamp does not count inside the grid");
+
+  // Past it both hold, and each counts once per read.
+  static_cast<void>(r.root_vuln_integral_at(1000.0));
+  static_cast<void>(r.root_vuln_integral_at(1000.0));
+  static_cast<void>(r.root_vuln_at(1000.0));
+  ok(r.clamps.at(phylloptim::CLAMP_ROOT_VULN_INTEGRAL_CAP) == 2,
+     "the integral cap counts once per read that it holds on");
+  ok(r.clamps.at(phylloptim::CLAMP_ROOT_VULN_ARGUMENT) == 1,
+     "the argument clamp counts a read past the last knot");
+  // The wet end of the argument clamp counts too, and is unreachable in plant
+  // because a signed potential is rejected at the boundary.
+  static_cast<void>(r.root_vuln_at(-1.0));
+  ok(r.clamps.at(phylloptim::CLAMP_ROOT_VULN_ARGUMENT) == 2,
+     "the argument clamp counts a read below zero");
+
+  // Shared storage, so a copy reports into the same tally: a consumer holding this
+  // model by value and copying it per unit -- which plant does per cohort -- would
+  // otherwise take every count down with the copy.
+  phylloptim::MultiLayerRoots copy = r;
+  static_cast<void>(copy.root_vuln_integral_at(1000.0));
+  ok(r.clamps.at(phylloptim::CLAMP_ROOT_VULN_INTEGRAL_CAP) == 3,
+     "a copy counts into the tally the original reads");
+  r.clamps.clear();
+  ok(copy.clamps.at(phylloptim::CLAMP_ROOT_VULN_INTEGRAL_CAP) == 0,
+     "and clearing through either clears both");
+
   // dG/dpsi has to agree with that: zero where the value is pinned, f_r where
   // it is not. duptake_dpsi differentiates the integral through this.
   ok(r.root_vuln_integral_deriv_at(1000.0) == 0.0,

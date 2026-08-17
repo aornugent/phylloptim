@@ -1088,6 +1088,36 @@ public:
   // converge to a point where dprofit is genuinely non-zero.
   double leaf_temp_from_E(double E, double* dT_dE = nullptr) const;
 
+  // How often each clamp in this model held. Sites are in clamp_sites.hpp, and
+  // every one of them pairs its clamp with a matching derivative -- so this is a
+  // measure of DISTANCE from a defect rather than of one.
+  //
+  // It exists because two of the sites bind within a few hundredths of a soil
+  // moisture unit of the wilt point, and because a consumer DIFFERENCING through a
+  // clamp gets a finite number with no thermal or hydraulic response in it and
+  // nothing else to notice by: the derivative kill that keeps the analytic rows
+  // honest is invisible to a difference.
+  clamp_counter clamps;
+
+  // This leaf's own sites plus the supply model's, which are one list. Summed on
+  // read rather than shared on construction, so rebuilding the root network cannot
+  // silently detach the tally.
+  std::vector<std::size_t> clamp_counts() const {
+    std::vector<std::size_t> out = *clamps.counts;
+    const std::vector<std::size_t>& supply = *roots_.clamps.counts;
+    for (std::size_t i = 0; i < out.size() && i < supply.size(); ++i) {
+      out[i] += supply[i];
+    }
+    return out;
+  }
+  std::size_t clamp_count(int site) const {
+    return clamps.at(site) + roots_.clamps.at(site);
+  }
+  void clear_clamp_counts() const {
+    clamps.clear();
+    roots_.clamps.clear();
+  }
+
   // transpiration functions
 
   // proportion of conductivity in xylem at a given water potential (return: unitless)
@@ -2646,6 +2676,12 @@ inline Leaf::FixedCollarEval Leaf::profit_at_fixed_collar(double collar) {
 
 inline double Leaf::profit_at_collar_psi(double target_opt_root_psi,
                                   double bound_a, double bound_b){
+    if (target_opt_root_psi < bound_a || target_opt_root_psi > bound_b) {
+      // Counted, because a caller differencing this function across the bound gets
+      // the feasibility jump rather than a derivative. The unclamped form for that
+      // purpose is profit_at_fixed_collar, which refuses instead.
+      clamps.note(CLAMP_COLLAR_POTENTIAL);
+    }
     const double opt_root_psi =
         std::min(std::max(target_opt_root_psi, bound_a), bound_b);
 
@@ -3303,6 +3339,14 @@ inline double Leaf::leaf_temp_from_E(double E, double* dT_dE) const {
   // Clamp to a physical range so an extreme (non-equilibrium) E cannot drive the
   // Arrhenius block non-finite; see leaf_temp_min/max in the header.
   const double clamped = std::min(std::max(Tleaf, leaf_temp_min), leaf_temp_max);
+  if (clamped != Tleaf) {
+    // Counted, because the kill below keeps the ANALYTIC rows consistent and can
+    // do nothing for a consumer differencing this function: two arms both on the
+    // clamp return the same temperature, so a difference across them reports no
+    // thermal response at all and reports it as a finite number. The count is what
+    // lets that consumer notice.
+    clamps.note(CLAMP_LEAF_TEMPERATURE);
+  }
   if (dT_dE != nullptr) {
     // Inside the clamp the balance is linear in E, so the slope is a constant
     // and negative: more transpiration, more latent heat, cooler leaf. ON the

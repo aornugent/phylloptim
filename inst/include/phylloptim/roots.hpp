@@ -2,6 +2,7 @@
 #ifndef PHYLLOPTIM_ROOTS_HPP_
 #define PHYLLOPTIM_ROOTS_HPP_
 
+#include <phylloptim/clamp_sites.hpp>
 #include <phylloptim/constants.hpp>
 #include <phylloptim/util.hpp>
 #include <phylloptim/vulnerability.hpp>
@@ -224,6 +225,10 @@ public:
   double root_vuln_last_knot_ = util::na_value;
   double root_vuln_integral_limit_ = util::na_value;
 
+  // How often each clamp held. Shared storage, so a consumer copying this object
+  // per unit still reads what the copy counted.
+  clamp_counter clamps;
+
   // --- soil geometry -------------------------------------------------------
   // The four scalars carry the same unset sentinels clear() assigns, so a bare
   // MultiLayerRoots is never indeterminate. Leaf reaches them only after
@@ -366,6 +371,9 @@ public:
   // psi is NaN, where the reversed forms return the bound. The uptake call site's
   // !isfinite(f_ri) guard is what reads that NaN.
   double root_vuln_at(double psi) const {
+    if (psi > root_vuln_last_knot_ || psi < 0.0) {
+      clamps.note(CLAMP_ROOT_VULN_ARGUMENT);
+    }
     return root_vuln_from_psi.eval(
         std::max(std::min(psi, root_vuln_last_knot_), 0.0));
   }
@@ -384,8 +392,11 @@ public:
   // flux tends to integral/r_R_H_min <= G(inf)/r_R_H_min as the span grows, which
   // is the whole area under the conductivity curve and is the right limit.
   double root_vuln_integral_at(double psi) const {
-    return std::min(root_vuln_integral_from_psi.eval(psi),
-                    root_vuln_integral_limit_);
+    const double raw = root_vuln_integral_from_psi.eval(psi);
+    if (raw > root_vuln_integral_limit_) {
+      clamps.note(CLAMP_ROOT_VULN_INTEGRAL_CAP);
+    }
+    return std::min(raw, root_vuln_integral_limit_);
   }
 
   // dG/dpsi, consistent with root_vuln_integral_at: zero wherever that returns
