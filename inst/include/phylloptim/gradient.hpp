@@ -774,12 +774,17 @@ inline double collar_step(double psi_star, const Settings& s) {
   return std::max(std::abs(psi_star), 1.0) * s.collar;
 }
 
+// ⚠️ `n_uptake` sizes the value buffer, and the outputs must be read HERE. The
+// uptake block is variable-length, so a default-sized buffer silently records
+// none of it -- and the three curvature reads below mutate the leaf, so there is
+// no later moment when re-reading would give the values at this point.
 inline BasePoint base_point(Leaf& l, const double* theta, const Drivers& d,
-                            bool single, const Settings& s) {
+                            bool single, const Settings& s, int n_uptake) {
   apply(l, theta, d, single, -1, s.fast_stem_curve);
   l.find_root_collar_psi();
 
   BasePoint b;
+  b.value = OutputValues(n_uptake);
   b.branch = branch_here(l);
   b.psi_star = l.opt_root_psi_;
   outputs(l, b.value);
@@ -1072,7 +1077,7 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
   out.reset(npars);
   check_pars(pars, npars, n_soil_layers(d, single), single, "leaf_gradient()");
 
-  const BasePoint b = base_point(l, theta, d, single, s);
+  const BasePoint b = base_point(l, theta, d, single, s, 0);
   const double psi_star = b.psi_star;
   const double resid = b.resid;
   const double H = b.H;
@@ -1438,7 +1443,7 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
   out.held.assign(r.n_output * r.n_input, util::na_value);
   out.zero.assign(r.n_output * r.n_input, Zero::none);
 
-  const BasePoint b = base_point(l, theta, d, single, s);
+  const BasePoint b = base_point(l, theta, d, single, s, n_uptake);
   out.kind = b.branch.kind;
   out.point = b.psi_star;
   out.value = b.value;

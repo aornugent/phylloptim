@@ -3286,6 +3286,46 @@ void test_environment_par_names() {
   ok(threw, "index " + std::to_string(bad) + " throws");
 }
 
+// The values come back with the rows, sized for the request.
+//
+// ⚠️ Both halves of that have bitten. A buffer sized for the fixed outputs alone
+// carries NONE of the variable-length uptake block, and reads past its end; and
+// reading the values off the leaf afterwards gives the last perturbed
+// evaluation, because this call re-supplies the base state without re-solving.
+void test_rows_carry_their_own_values() {
+  namespace grad = phylloptim::gradient;
+  grad::Settings s;
+  const int L = 3;
+  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, L, L);
+
+  std::vector<int> out_index{grad::out_profit};
+  std::vector<grad::Role> roles{grad::Role::Objective};
+  for (int i = 0; i < L; ++i) {
+    out_index.push_back(grad::out_uptake_first + i);
+    roles.push_back(grad::Role::Ordinary);
+  }
+  std::vector<int> pars{grad::par_psi_soil_first};
+  grad::RowRequest req{out_index.data(), roles.data(), out_index.size(),
+                       pars.data(), pars.size()};
+  phylloptim::Leaf l = env::fresh();
+  const grad::Rows rows = grad::rows_at(l, env::kTheta, d, req, s);
+
+  // The same state, solved once and read directly.
+  phylloptim::Leaf ref = env::fresh();
+  grad::apply(ref, env::kTheta, d, false, -1, s.fast_stem_curve);
+  ref.find_root_collar_psi();
+
+  ok(rows.value.n_uptake() == L, "the value buffer is sized for the request");
+  ok(phylloptim::util::identical(rows.value[grad::out_profit], ref.profit_),
+     "profit comes back with its rows");
+  bool uptake_ok = rows.value.n_uptake() == L;
+  for (int i = 0; i < L && uptake_ok; ++i) {
+    uptake_ok = phylloptim::util::identical(rows.value[grad::out_uptake_first + i],
+                                ref.soil_consumption_[std::size_t(i)]);
+  }
+  ok(uptake_ok, "and so does every layer's uptake");
+}
+
 // A leaf too shaded to cover its own respiration seats both potentials at the
 // collar where uptake is zero and pays respiration plus a hydraulic cost there.
 // So its profit reads the soil only through that bound moving underneath it, and
@@ -4492,6 +4532,7 @@ int main() {
   test_out_of_domain_under_rescale();
   test_environment_par_names();
   test_root_carbon_rows();
+  test_rows_carry_their_own_values();
   test_shade_death_soil_rows();
   test_environment_rows_match_a_differenced_solve();
   test_environment_water_rows_are_rank_one();
