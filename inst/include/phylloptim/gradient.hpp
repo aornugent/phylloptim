@@ -137,9 +137,16 @@ inline const std::vector<std::string>& par_names() {
 inline constexpr int par_PPFD = n_pars;
 inline constexpr int par_psi_soil_first = n_pars + 1;
 
+// One root-carbon row per layer, after the soil block: a consumer's input vector
+// carries two entries per layer, so the arity is n_pars + 1 + 2L. With two
+// variable-length blocks an index past `PPFD` names one input only at a fixed L.
+inline constexpr int par_root_carbon_first(int n_layers) {
+  return par_psi_soil_first + n_layers;
+}
+
 // Total rows for a given layer count, and the full row names in index order.
 inline constexpr int n_pars_total(int n_layers) {
-  return par_psi_soil_first + n_layers;
+  return par_root_carbon_first(n_layers) + n_layers;
 }
 
 inline std::vector<std::string> par_names(int n_layers) {
@@ -148,6 +155,9 @@ inline std::vector<std::string> par_names(int n_layers) {
   out.emplace_back("PPFD");
   for (int i = 0; i < n_layers; ++i) {
     out.push_back("psi_soil_" + std::to_string(i + 1));
+  }
+  for (int i = 0; i < n_layers; ++i) {
+    out.push_back("root_carbon_" + std::to_string(i + 1));
   }
   return out;
 }
@@ -163,6 +173,10 @@ inline std::string par_name(int par, int n_layers) {
   const int layer = par - par_psi_soil_first;
   if (layer >= 0 && layer < n_layers) {
     return "psi_soil_" + std::to_string(layer + 1);
+  }
+  const int carbon = par - par_root_carbon_first(n_layers);
+  if (carbon >= 0 && carbon < n_layers) {
+    return "root_carbon_" + std::to_string(carbon + 1);
   }
   return "parameter " + std::to_string(par);
 }
@@ -298,6 +312,36 @@ inline double par_value(const double* theta, const Drivers& d, int par) {
     return d.PPFD;
   }
   return d.psi_soil[std::size_t(par - par_psi_soil_first)];
+}
+
+// Every requested index names an input this observation has and this package can
+// move.
+//
+// ⚠️ CHECKED PER CALL, because with the environment rows the valid range depends
+// on the OBSERVATION rather than on this header: a five-layer row and a one-layer
+// row in the same batch do not have the same number of parameters. An index past
+// the end used to be impossible (R validates against the fixed sixteen); now it
+// is an out-of-bounds read of `psi_soil`, so it is a per-row error.
+//
+// ⚠️ ROOT CARBON HAS NO ROW ON EITHER ROUTE. It is in the enumeration because a
+// consumer's input vector carries it, but `set_physiology` is handed a
+// `RootNetwork` that is already built, so nothing here can move the carbon it was
+// built from. Refused by name rather than left to read past `psi_soil`.
+inline void check_pars(const int* pars, std::size_t npars, int n_layers,
+                       const std::string& caller) {
+  for (std::size_t k = 0; k < npars; ++k) {
+    if (pars[k] < 0 || pars[k] >= n_pars_total(n_layers)) {
+      util::stop(caller + ": parameter index " + std::to_string(pars[k]) +
+                 " is out of range; this observation has " +
+                 std::to_string(n_layers) + " soil layer(s), so there are " +
+                 std::to_string(n_pars_total(n_layers)) + " parameters.");
+    }
+    if (pars[k] >= par_root_carbon_first(n_layers)) {
+      util::stop(caller + ": `" + par_name(pars[k], n_layers) +
+                 "` has no row here. The root network arrives already built, so "
+                 "nothing in this package can move the carbon behind it.");
+    }
+  }
 }
 
 enum class Method { Auto, Ift, Fd };
@@ -517,6 +561,167 @@ inline bool takes_shortcut(int par, const Settings& s) {
   return s.fast_stem_curve && par == par_stem_b;
 }
 
+// --- what every route shares --------------------------------------------------
+//
+// The base point, the collar channel, and one input's two perturbed evaluations.
+// Both entry points below and `rows_at` stand on these, so a change to the
+// algebra reaches all of them or none.
+
+// The solve, the five outputs, the marginal profit at the collar the solve
+// returned, and the curvature of profit there.
+struct BasePoint {
+  double psi_star = util::na_value;
+  double value[n_outputs];
+  double resid = util::na_value;
+  double H = util::na_value;
+  // ⚠️ Read the moment the solve ends, because the first evaluation at a held
+  // collar overwrites it: `evaluate_root_collar_psi` tags the point Prescribed.
+  Leaf::OperatingPointKind kind = Leaf::OperatingPointKind::Unsolved;
+};
+
+// The step in the collar potential, floored at 1 MPa for `step_for`'s reason.
+inline double collar_step(double psi_star, const Settings& s) {
+  return std::max(std::abs(psi_star), 1.0) * s.step;
+}
+
+inline BasePoint base_point(Leaf& l, const double* theta, const Drivers& d,
+                            bool single, const Settings& s) {
+  apply(l, theta, d, single, -1, s.fast_stem_curve);
+  l.find_root_collar_psi();
+
+  BasePoint b;
+  b.kind = l.operating_point_kind();
+  b.psi_star = l.opt_root_psi_;
+  outputs(l, b.value);
+
+  const double h_psi = collar_step(b.psi_star, s);
+  b.resid = l.dprofit_droot_collar_psi(b.psi_star);
+  // Named halves: `f(a) - f(b)` has unspecified operand order in C++ and
+  // left-to-right order in R, and `dprofit_droot_collar_psi` mutates the leaf.
+  const double d_hi = l.dprofit_droot_collar_psi(b.psi_star + h_psi);
+  const double d_lo = l.dprofit_droot_collar_psi(b.psi_star - h_psi);
+  // dprofit returns a bare, exact 0.0 SENTINEL rather than a derivative where
+  // the collar is shut down or the ci solve is infeasible, and the `feasible`
+  // out-parameter that would distinguish it is not carried through the R
+  // binding. So test for it EXACTLY, the same argument `outputs_at` makes with
+  // `util::identical` for the clamp: an unclamped evaluation reaches 0.0 only at
+  // a genuine stationary point, so an exact zero on one arm of the difference is
+  // the sentinel. Left in, it does not make H small, it makes H wrong -- |H| out
+  // by a median factor of 8.4e04 over the 288-point grid.
+  //
+  // One bad arm: difference the good arm against `resid` at psi* instead. That
+  // is a real one-sided second derivative of profit, it is continuous across the
+  // feasibility boundary where the centred one jumps, and it leaves the reported
+  // classification unchanged everywhere. Both arms bad: there is no curvature to
+  // report and the 0.0 below is the shut-down signature.
+  const bool hi_sentinel = util::identical(d_hi, 0.0);
+  const bool lo_sentinel = util::identical(d_lo, 0.0);
+  b.H = (hi_sentinel && lo_sentinel) ? 0.0
+        : hi_sentinel                ? (b.resid - d_lo) / h_psi
+        : lo_sentinel                ? (d_hi - b.resid) / h_psi
+                                     : (d_hi - d_lo) / (2.0 * h_psi);
+  return b;
+}
+
+// dY/dpsi at fixed traits, and a SECOND, INDEPENDENT detector of a pinned
+// optimum. At a pinned point psi* sits one step-in fraction (1e-06 of the
+// bracket width) from its bound, so a step of `step * psi` crosses it whenever
+// the bracket is narrower than psi -- which every pinned row in this package's
+// grid is. Measured, that catches all 42 pinned rows and all 48 shut-down ones
+// on its own.
+//
+// It is NOT a substitute for the stationarity test: it fires only when the
+// bracket is narrow, so a pinned optimum on a wide bracket would pass it. False
+// where the difference cannot be centred on psi*.
+inline bool collar_channel(Leaf& l, double psi_star, const Settings& s,
+                           double* dY_dpsi) {
+  const double h_psi = collar_step(psi_star, s);
+  double hi[n_outputs];
+  double lo[n_outputs];
+  // Both, unconditionally, before the test -- R computes `hi` and `lo` on
+  // consecutive lines and only then checks either, and each call moves the leaf.
+  const bool hi_ok = outputs_at(l, psi_star + h_psi, hi);
+  const bool lo_ok = outputs_at(l, psi_star - h_psi, lo);
+  if (!hi_ok || !lo_ok) {
+    return false;
+  }
+  for (int j = 0; j < n_outputs; ++j) {
+    dY_dpsi[j] = (hi[j] - lo[j]) / (2.0 * h_psi);
+  }
+  return true;
+}
+
+// One input's two perturbed evaluations at a FROZEN collar: the five outputs'
+// direct rows, and dR/du -- the collar derivative of marginal profit. Neither
+// evaluation re-solves the model.
+//
+// `at_base` carries the invariant above: it comes in true only where the leaf is
+// at base parameters, and goes out false.
+inline void held_row(Leaf& l, const double* theta, const Drivers& d,
+                       bool single, int par, double psi_star, const Settings& s,
+                       const std::string& caller, bool& at_base,
+                       std::vector<double>& psi_scratch, double* direct,
+                       double& dresidual) {
+  if (takes_shortcut(par, s) && !at_base) {
+    apply(l, theta, d, single, -1, s.fast_stem_curve);
+  }
+  at_base = false;
+  double th[n_pars];
+  double up[1 + n_outputs];
+  double dn[1 + n_outputs];
+  const double base = par_value(theta, d, par);
+  const double h = step_for(par, base, s.step);
+  for (int side = 0; side < 2; ++side) {
+    // Up first, then down: R evaluates `up <- side(1)` before `dn <- side(-1)`
+    // and both mutate the leaf.
+    set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
+            s.fast_stem_curve, psi_scratch);
+    double* dst = side == 0 ? up : dn;
+    // Evaluate first, then read dprofit at the same fixed collar -- R's order,
+    // and `evaluate_root_collar_psi` is what seats the state `dprofit` reads.
+    if (!outputs_at(l, psi_star, dst + 1)) {
+      util::stop(caller + ": perturbing `" +
+                 par_name(par, n_soil_layers(d, single)) +
+                 "` moved the feasible collar interval past psi*, so the "
+                 "operating point could not be evaluated there. This point is "
+                 "on an active-set boundary; lower `stationarity_tol` or "
+                 "difference the solve directly.");
+    }
+    dst[0] = l.dprofit_droot_collar_psi(psi_star);
+  }
+  // M = d2profit/dpsi dtheta, with psi held FIXED at psi*.
+  dresidual = (up[0] - dn[0]) / (2.0 * h);
+  for (int j = 0; j < n_outputs; ++j) {
+    direct[j] = (up[1 + j] - dn[1 + j]) / (2.0 * h);
+  }
+}
+
+// One input's central difference of the WHOLE solve. Correct at a pinned optimum
+// because it differences the CONSTRAINED answer, which is exactly what the
+// composite cannot do.
+inline void solved_row(Leaf& l, const double* theta, const Drivers& d,
+                       bool single, int par, const Settings& s, bool& at_base,
+                       std::vector<double>& psi_scratch, double* row) {
+  if (takes_shortcut(par, s) && !at_base) {
+    apply(l, theta, d, single, -1, s.fast_stem_curve);
+  }
+  at_base = false;
+  double th[n_pars];
+  double up[n_outputs];
+  double dn[n_outputs];
+  const double base = par_value(theta, d, par);
+  const double h = step_for(par, base, s.step);
+  for (int side = 0; side < 2; ++side) {
+    set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
+            s.fast_stem_curve, psi_scratch);
+    l.find_root_collar_psi();
+    outputs(l, side == 0 ? up : dn);
+  }
+  for (int j = 0; j < n_outputs; ++j) {
+    row[j] = (up[j] - dn[j]) / (2.0 * h);
+  }
+}
+
 // The implicit-function composite. Two perturbed evaluations per parameter,
 // neither of which re-solves the model: `dprofit` at the UNPERTURBED psi* gives
 // the mixed partial, and the outputs at that same psi* give the direct term.
@@ -524,42 +729,15 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
                          bool single, const int* pars, std::size_t npars,
                          double psi_star, double H, const double* dY_dpsi,
                          const Settings& s, double* out) {
-  double th[n_pars];
-  double up[1 + n_outputs];
-  double dn[1 + n_outputs];
   std::vector<double> psi_scratch;
+  double direct[n_outputs];
   bool at_base = true;
   for (std::size_t k = 0; k < npars; ++k) {
-    const int p = pars[k];
-    if (takes_shortcut(p, s) && !at_base) {
-      apply(l, theta, d, single, -1, s.fast_stem_curve);
-    }
-    at_base = false;
-    const double base = par_value(theta, d, p);
-    const double h = step_for(p, base, s.step);
-    for (int side = 0; side < 2; ++side) {
-      // Up first, then down: R evaluates `up <- side(1)` before `dn <- side(-1)`
-      // and both mutate the leaf.
-      set_one(l, th, theta, d, single, p, side == 0 ? base + h : base - h,
-              s.fast_stem_curve, psi_scratch);
-      double* dst = side == 0 ? up : dn;
-      // Evaluate first, then read dprofit at the same fixed collar -- R's order,
-      // and `evaluate_root_collar_psi` is what seats the state `dprofit` reads.
-      if (!outputs_at(l, psi_star, dst + 1)) {
-        util::stop("leaf_gradient(): perturbing `" +
-                   par_name(p, n_soil_layers(d, single)) +
-                   "` moved the feasible collar interval past psi*, so the "
-                   "operating point could not be evaluated there. This point is "
-                   "on an active-set boundary; lower `stationarity_tol` or "
-                   "difference the solve directly.");
-      }
-      dst[0] = l.dprofit_droot_collar_psi(psi_star);
-    }
-    // M = d2profit/dpsi dtheta, with psi held FIXED at psi*.
-    const double dpsi_dtheta = -((up[0] - dn[0]) / (2.0 * h)) / H;
-    double direct[n_outputs];
+    double M = 0.0;
+    held_row(l, theta, d, single, pars[k], psi_star, s, "leaf_gradient()",
+               at_base, psi_scratch, direct, M);
+    const double dpsi_dtheta = -(M / H);
     for (int j = 0; j < n_outputs; ++j) {
-      direct[j] = (up[1 + j] - dn[1 + j]) / (2.0 * h);
       out[k * n_outputs + j] = direct[j] + rounded(dY_dpsi[j] * dpsi_dtheta);
     }
     // TWO OF THE FIVE ARE NOT THAT COMPOSITE, AND THE TWO ARGUMENTS ARE
@@ -612,28 +790,11 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
 inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
                         bool single, const int* pars, std::size_t npars,
                         const Settings& s, double* out) {
-  double th[n_pars];
-  double up[n_outputs];
-  double dn[n_outputs];
   std::vector<double> psi_scratch;
   bool at_base = true;
   for (std::size_t k = 0; k < npars; ++k) {
-    const int p = pars[k];
-    if (takes_shortcut(p, s) && !at_base) {
-      apply(l, theta, d, single, -1, s.fast_stem_curve);
-    }
-    at_base = false;
-    const double base = par_value(theta, d, p);
-    const double h = step_for(p, base, s.step);
-    for (int side = 0; side < 2; ++side) {
-      set_one(l, th, theta, d, single, p, side == 0 ? base + h : base - h,
-              s.fast_stem_curve, psi_scratch);
-      l.find_root_collar_psi();
-      outputs(l, side == 0 ? up : dn);
-    }
-    for (int j = 0; j < n_outputs; ++j) {
-      out[k * n_outputs + j] = (up[j] - dn[j]) / (2.0 * h);
-    }
+    solved_row(l, theta, d, single, pars[k], s, at_base, psi_scratch,
+               out + k * n_outputs);
   }
   apply(l, theta, d, single, -1, s.fast_stem_curve);
 }
@@ -647,27 +808,15 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
                const int* pars, std::size_t npars, const Settings& s,
                Result& out) {
   out.reset(npars);
+  check_pars(pars, npars, n_soil_layers(d, single), "leaf_gradient()");
 
-  // ⚠️ CHECKED HERE, because with the environment rows the valid range depends on
-  // the OBSERVATION rather than on this header: a five-layer row and a one-layer
-  // row in the same batch do not have the same number of parameters. An index
-  // past the end used to be impossible (R validates against the fixed sixteen);
-  // now it is an out-of-bounds read of `psi_soil`, so it is a per-row error.
-  const int n_layers = n_soil_layers(d, single);
-  for (std::size_t k = 0; k < npars; ++k) {
-    if (pars[k] < 0 || pars[k] >= n_pars_total(n_layers)) {
-      util::stop("leaf_gradient(): parameter index " + std::to_string(pars[k]) +
-                 " is out of range; this observation has " +
-                 std::to_string(n_layers) + " soil layer(s), so there are " +
-                 std::to_string(n_pars_total(n_layers)) + " parameters.");
-    }
+  const BasePoint b = base_point(l, theta, d, single, s);
+  const double psi_star = b.psi_star;
+  const double resid = b.resid;
+  const double H = b.H;
+  for (int j = 0; j < n_outputs; ++j) {
+    out.value[j] = b.value[j];
   }
-
-  apply(l, theta, d, single, -1, s.fast_stem_curve);
-  l.find_root_collar_psi();
-
-  const double psi_star = l.opt_root_psi_;
-  outputs(l, out.value);
 
   // Is the composite's premise true HERE? Stationarity is what the whole
   // derivation rests on and it fails at a pinned optimum, where psi* is a bound,
@@ -683,33 +832,7 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
   // which was the unguarded central difference below inflating |H| at pinned
   // points and so shrinking |resid / H|; the tolerance was right, the reason
   // given for it was not.
-  const double h_psi = std::max(std::abs(psi_star), 1.0) * s.step;
-  const double resid = l.dprofit_droot_collar_psi(psi_star);
-  // Named halves: `f(a) - f(b)` has unspecified operand order in C++ and
-  // left-to-right order in R, and `dprofit_droot_collar_psi` mutates the leaf.
-  const double d_hi = l.dprofit_droot_collar_psi(psi_star + h_psi);
-  const double d_lo = l.dprofit_droot_collar_psi(psi_star - h_psi);
-  // dprofit returns a bare, exact 0.0 SENTINEL rather than a derivative where
-  // the collar is shut down or the ci solve is infeasible, and the `feasible`
-  // out-parameter that would distinguish it is not carried through the R
-  // binding. So test for it EXACTLY, the same argument `outputs_at` makes with
-  // `util::identical` for the clamp: an unclamped evaluation reaches 0.0 only at
-  // a genuine stationary point, so an exact zero on one arm of the difference is
-  // the sentinel. Left in, it does not make H small, it makes H wrong -- |H| out
-  // by a median factor of 8.4e04 over the 288-point grid.
   //
-  // One bad arm: difference the good arm against `resid` at psi* instead. That
-  // is a real one-sided second derivative of profit, it is continuous across the
-  // feasibility boundary where the centred one jumps, and it leaves `status`
-  // unchanged everywhere. Both arms bad: there is no curvature to report and the
-  // 0.0 below is the shut-down signature the next comment describes.
-  const bool hi_sentinel = util::identical(d_hi, 0.0);
-  const bool lo_sentinel = util::identical(d_lo, 0.0);
-  const double H =
-      (hi_sentinel && lo_sentinel) ? 0.0
-      : hi_sentinel                ? (resid - d_lo) / h_psi
-      : lo_sentinel                ? (d_hi - resid) / h_psi
-                                   : (d_hi - d_lo) / (2.0 * h_psi);
   // H == 0 with resid == 0 is the shut-down signature: dprofit returns a
   // sentinel zero there rather than a derivative, so the ratio would be 0/0.
   // H > 0 would not be a maximum. Both mean the composite has nothing to stand
@@ -736,37 +859,15 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
   // Written straight into the result rather than into a local, so that the
   // transpose can read the same numbers instead of measuring them again.
   double* const dY_dpsi = out.dY_dpsi;
-  if (use_ift) {
-    // dY/dpsi at fixed traits, and a SECOND, INDEPENDENT detector of a pinned
-    // optimum. At a pinned point psi* sits one step-in fraction (1e-06 of the
-    // bracket width) from its bound, so a step of `step * psi` crosses it
-    // whenever the bracket is narrower than psi -- which every pinned row in
-    // this package's grid is. Measured, that catches all 42 pinned rows and all
-    // 48 shut-down ones on its own.
-    //
-    // It is NOT a substitute for the stationarity test: it fires only when the
-    // bracket is narrow, so a pinned optimum on a wide bracket would pass it.
-    double hi[n_outputs];
-    double lo[n_outputs];
-    // Both, unconditionally, before the test -- R computes `hi` and `lo` on
-    // consecutive lines and only then checks either, and each call moves the
-    // leaf.
-    const bool hi_ok = outputs_at(l, psi_star + h_psi, hi);
-    const bool lo_ok = outputs_at(l, psi_star - h_psi, lo);
-    if (!hi_ok || !lo_ok) {
-      if (s.method == Method::Ift) {
-        util::stop("leaf_gradient(): method = \"ift\" was asked for at a point "
-                   "whose feasible collar interval is narrower than one step, "
-                   "so dY/dpsi cannot be centred on psi*. Use "
-                   "method = \"auto\".");
-      }
-      use_ift = false;
-      out.status = Status::Pinned;
-    } else {
-      for (int j = 0; j < n_outputs; ++j) {
-        dY_dpsi[j] = (hi[j] - lo[j]) / (2.0 * h_psi);
-      }
+  if (use_ift && !collar_channel(l, psi_star, s, dY_dpsi)) {
+    if (s.method == Method::Ift) {
+      util::stop("leaf_gradient(): method = \"ift\" was asked for at a point "
+                 "whose feasible collar interval is narrower than one step, "
+                 "so dY/dpsi cannot be centred on psi*. Use "
+                 "method = \"auto\".");
     }
+    use_ift = false;
+    out.status = Status::Pinned;
   }
 
   out.used_ift = use_ift;
@@ -828,6 +929,263 @@ inline std::vector<Result> batch(Leaf& l, const double* theta,
       } catch (const std::exception&) {  // NOLINT: nothing better to do here
       }
     }
+  }
+  return out;
+}
+
+// --- one observation, in parts -------------------------------------------------
+//
+// `at` above returns TOTAL rows: it forms the quotient and the composite itself,
+// so a consumer recording them has `n_output * n_input` terms to tape. This
+// returns the same algebra unassembled -- the held partials, whichever
+// condition defines the operating point together with that condition's own
+// slope, and each output's sensitivity to the point -- so the point is ONE node
+// and the tape holds `n_output + n_input`. At 5 outputs and 26 inputs that is 32
+// terms against 130.
+//
+// ⚠️ THE QUOTIENT IS NOT TAKEN HERE, and neither is the refusal that goes with
+// it. `dresidual` and `residual_slope` come back separately because dividing
+// them is a property of the implicit function theorem rather than of leaves, and
+// because at a pin it is the same division on the bound's condition -- which is
+// why the pinned case needs no second route through anything below.
+
+using OperatingPointKind = Leaf::OperatingPointKind;
+
+// How the operating point reaches an output. At most one Objective and at most
+// one Point; a request declaring two of either is refused.
+enum class Role { Objective, Point, Ordinary };
+
+// Why an entry is zero, where it is. A bare zero cannot say, and an exact zero is
+// the signature of a missing row more often than of true insensitivity.
+enum class Zero { none, slack, structural };
+
+struct RowRequest {
+  const int* output;  const Role* role;  std::size_t n_output;
+  const int* input;   std::size_t n_input;
+};
+
+struct Rows {
+  // ⚠️ THE BRANCH THE SOLVE TOOK, never a reading of the numbers. `Status` above
+  // derives its own classification from the curvature's sign and the residual's
+  // size, which cannot separate a stationary point from the hard 0.0 the no-flow
+  // state returns: that reads as stationary, and the curvature taken off the same
+  // sentinel confirms it.
+  OperatingPointKind kind = OperatingPointKind::Unsolved;
+  // Set where the kind is one that has no rows to give.
+  std::string message;
+
+  double point = util::na_value;
+  // R_p at an interior point, the bound's own slope at a pin, NA where no
+  // condition defines the point.
+  double residual_slope = util::na_value;
+  std::vector<double> dresidual;  // n_input: grad of the condition that defines p*
+  std::vector<double> dy_dp;      // n_output
+  std::vector<double> held;     // n_output * n_input, output-major
+  std::vector<Zero> zero;         // n_output * n_input, output-major
+  double amplification = util::na_value;
+};
+
+// Which bound a pinned point is sitting on. The dry end is a min of two limits
+// that are DIFFERENT FUNCTIONS of the inputs, so this is a three-way question
+// rather than "pinned or not".
+inline bool pinned_bound(OperatingPointKind kind, Leaf::WhichBound& bound) {
+  switch (kind) {
+  case OperatingPointKind::PinnedWet:
+    bound = Leaf::WhichBound::Wet;
+    return true;
+  case OperatingPointKind::PinnedDryRootCrit:
+    bound = Leaf::WhichBound::DryRootCrit;
+    return true;
+  case OperatingPointKind::PinnedDryRootPsiCrit:
+    bound = Leaf::WhichBound::DryRootPsiCrit;
+    return true;
+  default:
+    return false;
+  }
+}
+
+// The bound's movement in one input, as `bound_row` reports it -- already divided
+// by the bound's slope. Zero for an input neither residual reads: no bound reads
+// radiation or any photosynthetic trait, and the wet bound is total uptake, so
+// the stem does not enter it.
+inline double bound_dpoint(const Leaf::BoundRow& b, int par, int n_layers) {
+  switch (par) {
+  case par_psi_crit:      return b.d_dpsi_crit;
+  case par_root_psi_crit: return b.d_droot_psi_crit;
+  case par_stem_b:        return b.d_dstem_b;
+  case par_root_b:        return b.d_droot_b;
+  case par_kmax:          return b.d_dkappa;
+  default:                break;
+  }
+  const int layer = par - par_psi_soil_first;
+  if (layer >= 0 && layer < n_layers) {
+    return b.d_dpsi_soil[std::size_t(layer)];
+  }
+  return 0.0;
+}
+
+// The inputs a bound moves with and `bound_row` carries no entry for: the two
+// curve traits that RESHAPE a vulnerability grid rather than scaling it, and the
+// single path's series resistance.
+inline bool bound_moves_by_re_solving(int par, bool single) {
+  return par == par_stem_c || par == par_root_c ||
+         (single && par == par_resistance);
+}
+
+// The bound's movement in one of those, by re-solving it at a perturbed state.
+// The forward model rebuilds the grid when a curve trait moves, so the motion is
+// the model and a row taken on a held grid differentiates a different function.
+inline double differenced_bound(Leaf& l, const double* theta, const Drivers& d,
+                                bool single, int par, Leaf::WhichBound bound,
+                                const Settings& s, bool& at_base,
+                                std::vector<double>& psi_scratch) {
+  at_base = false;
+  double th[n_pars];
+  const double base = par_value(theta, d, par);
+  const double h = step_for(par, base, s.step);
+  set_one(l, th, theta, d, single, par, base + h, s.fast_stem_curve, psi_scratch);
+  const double up = l.bound_row(bound).bound;
+  set_one(l, th, theta, d, single, par, base - h, s.fast_stem_curve, psi_scratch);
+  const double dn = l.bound_row(bound).bound;
+  return (up - dn) / (2.0 * h);
+}
+
+// An exact zero, classified where it is written. The root's own critical
+// potential is read by nothing but the dry bound, so at an interior optimum its
+// zero is complementary slackness; the stem's psi_crit is not the same case,
+// since the flux integrates the stem curve up to it. Every other exact zero here
+// is an input the branch taken reads through nothing.
+inline Zero zero_kind(double entry, int par, bool interior) {
+  if (entry != 0.0) {
+    return Zero::none;
+  }
+  if (interior && par == par_root_psi_crit) {
+    return Zero::slack;
+  }
+  return Zero::structural;
+}
+
+inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
+                    const RowRequest& r, const Settings& s) {
+  // Which supply path is in force is the leaf's own state, so it is read here
+  // rather than passed: an argument beside it could disagree with it.
+  const bool single = l.supply_kind_ == Leaf::SupplyKind::SinglePotential;
+  const int n_layers = n_soil_layers(d, single);
+  check_pars(r.input, r.n_input, n_layers, "leaf_rows()");
+
+  int objective = -1;
+  int point = -1;
+  for (std::size_t j = 0; j < r.n_output; ++j) {
+    if (r.output[j] < 0 || r.output[j] >= n_outputs) {
+      util::stop("leaf_rows(): output index " + std::to_string(r.output[j]) +
+                 " is out of range; there are " + std::to_string(n_outputs) +
+                 " outputs.");
+    }
+    if (r.role[j] == Role::Objective) {
+      if (objective >= 0) {
+        util::stop("leaf_rows(): two outputs are declared Objective, and the "
+                   "operating point maximises one.");
+      }
+      objective = int(j);
+    } else if (r.role[j] == Role::Point) {
+      if (point >= 0) {
+        util::stop("leaf_rows(): two outputs are declared Point, and the "
+                   "operating point is one number.");
+      }
+      point = int(j);
+    }
+  }
+
+  Rows out;
+  out.dresidual.assign(r.n_input, util::na_value);
+  out.dy_dp.assign(r.n_output, util::na_value);
+  out.held.assign(r.n_output * r.n_input, util::na_value);
+  out.zero.assign(r.n_output * r.n_input, Zero::none);
+
+  const BasePoint b = base_point(l, theta, d, single, s);
+  out.kind = b.kind;
+  out.point = b.psi_star;
+
+  Leaf::WhichBound bound = Leaf::WhichBound::Wet;
+  const bool pinned = pinned_bound(b.kind, bound);
+  const bool interior = b.kind == OperatingPointKind::Interior;
+  // Hydraulic shutdown holds the stem at psi_crit and moves no water, so nothing
+  // defines a collar to differentiate and the held rows are the whole answer.
+  // Every other kind either never solved or could not choose, shade death
+  // included: it seats both potentials at the wet bound, where the objective's
+  // sensitivity to the collar is the cost's slope and not the `nu` a pin reads.
+  if (!interior && !pinned && b.kind != OperatingPointKind::HydraulicShutdown) {
+    out.message = std::string("no rows at an operating point that is ") +
+                  Leaf::operating_point_kind_name(b.kind);
+    apply(l, theta, d, single, -1, s.fast_stem_curve);
+    return out;
+  }
+
+  Leaf::BoundRow condition;
+  if (pinned) {
+    condition = l.bound_row(bound);
+    if (!condition.finite) {
+      out.message = "the bound this point is pinned to has no derivative here";
+      apply(l, theta, d, single, -1, s.fast_stem_curve);
+      return out;
+    }
+    out.residual_slope = condition.residual_slope;
+  } else if (interior) {
+    out.residual_slope = b.H;
+  }
+
+  double dY_dpsi[n_outputs];
+  const bool have_channel = collar_channel(l, b.psi_star, s, dY_dpsi);
+  for (std::size_t j = 0; j < r.n_output; ++j) {
+    if (int(j) == point) {
+      out.dy_dp[j] = 1.0;
+    } else if (int(j) == objective) {
+      // Zero at an interior optimum by the envelope theorem; at a pin the point
+      // is the bound rather than a maximum, and this is the constraint's shadow
+      // price.
+      out.dy_dp[j] = interior ? 0.0 : pinned ? b.resid : util::na_value;
+    } else if (have_channel) {
+      out.dy_dp[j] = dY_dpsi[r.output[j]];
+    }
+  }
+
+  bool at_base = true;
+  std::vector<double> psi_scratch;
+  double direct[n_outputs];
+  for (std::size_t i = 0; i < r.n_input; ++i) {
+    const int p = r.input[i];
+    double dR = 0.0;
+    held_row(l, theta, d, single, p, b.psi_star, s, "leaf_rows()", at_base,
+               psi_scratch, direct, dR);
+    if (interior) {
+      out.dresidual[i] = dR;
+    } else if (pinned) {
+      const double dpoint =
+          bound_moves_by_re_solving(p, single)
+              ? differenced_bound(l, theta, d, single, p, bound, s, at_base,
+                                  psi_scratch)
+              : bound_dpoint(condition, p, n_layers);
+      // `bound_row` has already divided by the bound's slope; what comes back
+      // from here is the condition's own gradient, so that undoing it is the
+      // consumer's one division rather than a second convention.
+      out.dresidual[i] = -dpoint * out.residual_slope;
+    }
+    for (std::size_t j = 0; j < r.n_output; ++j) {
+      const std::size_t at = j * r.n_input + i;
+      // The point's own held row is zero by construction: `held_row` has
+      // just asserted both perturbed evaluations sat at exactly p*.
+      out.held[at] = int(j) == point ? 0.0 : direct[r.output[j]];
+      out.zero[at] = zero_kind(out.held[at], p, interior);
+    }
+  }
+  apply(l, theta, d, single, -1, s.fast_stem_curve);
+
+  if (std::isfinite(out.residual_slope)) {
+    double worst = 0.0;
+    for (const double g : out.dresidual) {
+      worst = std::max(worst, std::abs(g / out.residual_slope));
+    }
+    out.amplification = worst;
   }
   return out;
 }
@@ -979,6 +1337,7 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
                          const double* v, const Settings& s,
                          TransposeResult& out) {
   out.reset(npars);
+  check_pars(pars, npars, n_soil_layers(d, single), "leaf_gradient_transpose()");
 
   Result point;
   at(l, theta, d, single, nullptr, 0, s, point);
@@ -996,7 +1355,7 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
   // leaf itself is back at base parameters and unsolved by now.
   const double psi_star = out.value[out_collar];
 
-  double th[n_pars];
+  std::vector<double> psi_scratch;
   bool at_base = true;
 
   if (out.used_ift) {
@@ -1012,33 +1371,11 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
     out.psi_adjoint = s_psi;
     const double m = -s_psi / point.H;
 
-    double up[1 + n_outputs];
-    double dn[1 + n_outputs];
+    double direct[n_outputs];
     for (std::size_t k = 0; k < npars; ++k) {
-      // The base-point invariant and the shortcut restore are `gradient_ift`'s,
-      // for `gradient_ift`'s reasons -- see `takes_shortcut`.
-      const int p = pars[k];
-      if (takes_shortcut(p, s) && !at_base) {
-        apply(l, theta, d, single, -1, s.fast_stem_curve);
-      }
-      at_base = false;
-      const double h = step_for(p, theta[p], s.step);
-      for (int side = 0; side < 2; ++side) {
-        std::copy(theta, theta + n_pars, th);
-        th[p] = side == 0 ? theta[p] + h : theta[p] - h;
-        apply(l, th, d, single, p, s.fast_stem_curve);
-        double* dst = side == 0 ? up : dn;
-        if (!outputs_at(l, psi_star, dst + 1)) {
-          util::stop("leaf_gradient_transpose(): perturbing `" +
-                     par_names()[std::size_t(p)] +
-                     "` moved the feasible collar interval past psi*, so the "
-                     "operating point could not be evaluated there. This point "
-                     "is on an active-set boundary; lower `stationarity_tol` or "
-                     "difference the solve directly.");
-        }
-        dst[0] = l.dprofit_droot_collar_psi(psi_star);
-      }
-      const double M = (up[0] - dn[0]) / (2.0 * h);
+      double M = 0.0;
+      held_row(l, theta, d, single, pars[k], psi_star, s,
+                 "leaf_gradient_transpose()", at_base, psi_scratch, direct, M);
       // v . dY/dtheta|_psi. `collar` is skipped rather than summed: its direct
       // term is zero by construction, `outputs_at` having just asserted that
       // both sides sit at exactly psi*.
@@ -1047,7 +1384,7 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
         if (j == out_collar) {
           continue;
         }
-        row += rounded(v[j] * ((up[1 + j] - dn[1 + j]) / (2.0 * h)));
+        row += rounded(v[j] * direct[j]);
       }
       out.adjoint[k] = row + rounded(m * M);
     }
@@ -1055,25 +1392,12 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
     // The fallback, transposed: difference the solve and contract. No output is
     // exceptional here, `collar` included, because nothing is being composed --
     // which is exactly why `gradient_fd` has no special case either.
-    double up[n_outputs];
-    double dn[n_outputs];
+    double solved[n_outputs];
     for (std::size_t k = 0; k < npars; ++k) {
-      const int p = pars[k];
-      if (takes_shortcut(p, s) && !at_base) {
-        apply(l, theta, d, single, -1, s.fast_stem_curve);
-      }
-      at_base = false;
-      const double h = step_for(p, theta[p], s.step);
-      for (int side = 0; side < 2; ++side) {
-        std::copy(theta, theta + n_pars, th);
-        th[p] = side == 0 ? theta[p] + h : theta[p] - h;
-        apply(l, th, d, single, p, s.fast_stem_curve);
-        l.find_root_collar_psi();
-        outputs(l, side == 0 ? up : dn);
-      }
+      solved_row(l, theta, d, single, pars[k], s, at_base, psi_scratch, solved);
       double row = 0.0;
       for (int j = 0; j < n_outputs; ++j) {
-        row += rounded(v[j] * ((up[j] - dn[j]) / (2.0 * h)));
+        row += rounded(v[j] * solved[j]);
       }
       out.adjoint[k] = row;
     }
@@ -1171,17 +1495,8 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
 
   using Kind = Leaf::OperatingPointKind;
   const Kind kind = l.operating_point_kind();
-  // Which bound the point is sitting on, if it is sitting on one. The two dry
-  // arms are different functions of the inputs, so this is a three-way question
-  // rather than "pinned or not".
   Leaf::WhichBound bound = Leaf::WhichBound::Wet;
-  bool pinned = true;
-  switch (kind) {
-  case Kind::PinnedWet:            bound = Leaf::WhichBound::Wet; break;
-  case Kind::PinnedDryRootCrit:    bound = Leaf::WhichBound::DryRootCrit; break;
-  case Kind::PinnedDryRootPsiCrit: bound = Leaf::WhichBound::DryRootPsiCrit; break;
-  default:                         pinned = false; break;
-  }
+  const bool pinned = pinned_bound(kind, bound);
 
   if (kind != Kind::Interior && !pinned) {
     out.message =
@@ -1208,7 +1523,7 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
     // ⚠️ AND THE FIRST TERM IS NOT THE INTERIOR ROW. `marginal_price_water` is
     // λ·kmax·f(p)/S, which is what dProfit/dE_up REDUCES TO once dProfit/dp is
     // zero -- the stationarity condition is inside it. Where dProfit/dp is `nu`
-    // instead, the frozen-collar price is that value plus nu/S, S being the
+    // instead, the held-collar price is that value plus nu/S, S being the
     // soil-to-collar conductance the price is already built on. Dropping the
     // correction leaves both terms finite and the row wrong by 15% at a dry pin;
     // at a WET pin it cancels the second term exactly and reads 8% out.
@@ -1228,7 +1543,7 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
     }
     // dmarginal_profit_duptake_slope builds dProfit/dE_up from the cost and
     // assimilation kernels directly, with no stationarity anywhere in it, so it
-    // is the frozen-collar price wherever the point sits. marginal_price_water
+    // is the held-collar price wherever the point sits. marginal_price_water
     // agrees with it at an interior optimum and only there.
     //
     // The interior branch keeps the price it had: the two are the same number by
@@ -1236,7 +1551,7 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
     // that already answers must not move.
     price = l.dmarginal_profit_duptake_slope();
     if (!std::isfinite(price)) {
-      out.message = "the frozen-collar price of water is undefined at this pin";
+      out.message = "the held-collar price of water is undefined at this pin";
       return;
     }
     for (std::size_t j = 0; j < soil.size(); ++j) {
