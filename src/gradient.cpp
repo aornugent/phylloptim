@@ -168,6 +168,10 @@ Rcpp::List gradient_batch_run(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_,
 
   phylloptim::gradient::Settings settings;
   settings.step = step;
+  // One step for both channels, because the R implementation this route is
+  // checked against has one. A consumer wanting the collar's step apart from the
+  // inputs' sets it in C++, where the two are separate fields.
+  settings.collar = step;
   settings.stationarity_tol = stationarity_tol;
   settings.fast_stem_curve = fast_stem_curve;
   if (method == "auto") {
