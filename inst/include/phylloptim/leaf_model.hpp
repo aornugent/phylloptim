@@ -787,7 +787,7 @@ public:
   // WHICH bound decides the residual, and they are different functions:
   //   Wet             R0(x) = E_up(x, psi)                    -- no stem terms
   //   DryRootCrit     R(x)  = E_up(x, psi) - kappa*[G(psi_crit) - G(x)]
-  //   DryRootPsiCrit  the bound IS a registered constant       -- the row is -1
+  //   DryRootPsiCrit  the bound IS a registered constant       -- the row is +1
   //
   // ⚠️ NO stem_c OR root_c ENTRY, deliberately. Both reshape their vulnerability
   // curve rather than scaling it, so unlike stem_b and root_b they have no
@@ -2549,8 +2549,18 @@ inline Leaf::BoundRow Leaf::bound_row(WhichBound which) {
   if (which == WhichBound::DryRootPsiCrit) {
     // The bound is a registered constant, so it moves with nothing except
     // itself. Exact, and the cheapest row here.
+    //
+    // ⚠️ THIS ARM RETURNS BEFORE THE SHARED CONVERSION at the end of the
+    // function, so the value stored here must ALREADY be the quotient
+    // -(dR/du)/(dR/dx) that every other field only becomes down there. The
+    // residual is R(x) = x - root_psi_crit, so the raw partial is -1 and the
+    // slope is 1, and the row is -(-1)/1 = +1. It read -1 -- the raw partial,
+    // never divided or negated -- for as long as nothing differenced it, which
+    // is the sign of this row backwards for every consumer. A future arm added
+    // above the conversion block has to do its own division here too, or return
+    // through it.
     row.bound = supply_psi_crit();
-    row.d_droot_psi_crit = -1.0;
+    row.d_droot_psi_crit = 1.0;
     row.residual_slope = 1.0;
     row.finite = true;
     return row;

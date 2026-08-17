@@ -1522,6 +1522,92 @@ void test_root_psi_crit_clamp_binds() {
   }
 }
 
+// bound_row(DryRootPsiCrit), differenced. THE EXPECTED VALUE IS +1: at this pin the
+// operating point sits exactly at the registered constant, so dp*/d(root_psi_crit)
+// is one. The arm returned -1 -- the raw residual partial of R(x) = x -
+// root_psi_crit, undivided by the slope -- because it returns sixty lines before the
+// block where every other field is converted into -(dR/du)/(dR/dx), and nothing
+// differenced it. The two fall-through arms have had a differenced referee since they
+// were written; this one had none, which is the whole reason the sign survived.
+//
+// Reaching the arm takes deliberate setup, exactly as test_root_psi_crit_clamp_binds
+// found: at this package's defaults psi_crit == root_psi_crit, so the window where
+// the root's own limit wins the min in prepare_collar_solve is EMPTY and no fixture
+// built on the defaults can land here. That test opens the window by pushing the
+// stem's psi_crit drier; this one opens the same window from the other side, by
+// making the ROOT more vulnerable (root_psi_crit well inside psi_crit), because the
+// stem's spline domain ends at ~6.82 MPa and there is no room to push psi_crit far
+// enough for a dry PIN as well as a wide window. A pin also needs profit still
+// climbing at the dry end, which is why each fixture pairs its root_psi_crit with a
+// soil close underneath it.
+void test_bound_row_root_psi_crit_is_a_unit_row() {
+  printf("the root-psi-crit bound's row against a differenced solve\n");
+  Drivers d;
+  const auto solve = [&](double psi_soil, double root_psi_crit) {
+    phylloptim::Leaf l;
+    l.roots_.root_psi_crit = root_psi_crit;
+    l.setup_transpiration(100);
+    l.setup_root_vulnerability(100);
+    std::vector<double> ps{psi_soil}, depth{1.0}, root{1.0 / d.area_leaf};
+    l.set_physiology(fixture::root_network(root, depth), d.PPFD, ps, depth,
+                     d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
+                     d.atm_o2_kpa, d.atm_kpa);
+    l.find_root_collar_psi();
+    return l;
+  };
+
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  double worst = 0.0;
+  std::string worst_where;
+  // (psi_soil, root_psi_crit) pairs, all measured to pin on this arm.
+  const std::vector<std::pair<double, double>> fixtures{
+      {1.00, 2.0}, {1.75, 2.0}, {2.50, 3.0}, {3.25, 3.5}, {3.75, 4.0}};
+  for (const auto &f : fixtures) {
+    const double psi_soil = f.first, rpc = f.second;
+    const std::string tag = "psi_soil=" + std::to_string(psi_soil) +
+                            ", root_psi_crit=" + std::to_string(rpc);
+    phylloptim::Leaf l = solve(psi_soil, rpc);
+    // Asserted, not assumed: if a future change moves this fixture off the arm the
+    // test stops exercising it, and a silent stop is how the defect got here.
+    ok(l.operating_point_kind() == Kind::PinnedDryRootPsiCrit,
+       "the fixture pins on the root's own critical potential, " + tag);
+    ok(l.dry_bound_arm() == phylloptim::Leaf::DryBoundArm::RootPsiCrit,
+       "and the dry bound is the root's arm, not the continuity root, " + tag);
+
+    const phylloptim::Leaf::BoundRow r =
+        l.bound_row(phylloptim::Leaf::WhichBound::DryRootPsiCrit);
+    ok(r.finite, "the row is finite, " + tag);
+    near(r.bound, rpc, 1e-12, "the bound IS root_psi_crit, " + tag);
+
+    // Central difference of the SOLVED operating point in root_psi_crit, at a
+    // relative step. Both perturbed solves have to stay on the arm too, or the
+    // difference is across a kink and refereeing nothing.
+    for (double rel : {1e-4, 1e-6}) {
+      const double h = rel * rpc;
+      phylloptim::Leaf up = solve(psi_soil, rpc + h);
+      phylloptim::Leaf dn = solve(psi_soil, rpc - h);
+      ok(up.operating_point_kind() == Kind::PinnedDryRootPsiCrit &&
+             dn.operating_point_kind() == Kind::PinnedDryRootPsiCrit,
+         "both perturbed solves stay on the arm, " + tag);
+      const double fd = (up.opt_root_psi_ - dn.opt_root_psi_) / (2.0 * h);
+      near(r.d_droot_psi_crit, fd, 1e-8,
+           "d(collar)/d(root_psi_crit) against a central difference, " + tag);
+      const double err = std::abs(r.d_droot_psi_crit - fd);
+      if (err > worst) {
+        worst = err;
+        worst_where = tag;
+      }
+    }
+    // And the value itself, since it is exact by inspection once the conversion is
+    // done: a row that agreed with the difference but came back -1 would mean the
+    // difference had been broken the same way.
+    near(r.d_droot_psi_crit, 1.0, 1e-12,
+         "and it is +1, the point sitting at the constant, " + tag);
+  }
+  printf("  worst |row - central difference|: %.2e (%s)\n", worst,
+         worst_where.c_str());
+}
+
 void test_lambda_equals_dA_dE_single_layer() {
   printf("marginal cost of water: analytic lambda vs dA/dE (stem free)\n");
   Drivers d;
@@ -3761,6 +3847,7 @@ int main() {
   test_marginal_price_water();
   test_root_vulnerability_is_bounded_past_its_grid();
   test_root_psi_crit_clamp_binds();
+  test_bound_row_root_psi_crit_is_a_unit_row();
   test_signed_potentials_are_rejected();
   test_lambda_equals_dA_dE_single_layer();
   test_multilayer_lambda_identity();

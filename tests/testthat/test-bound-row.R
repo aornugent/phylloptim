@@ -89,9 +89,14 @@ test_that("the root's own critical potential is an exact unit row", {
   # This arm's bound is a registered constant, so it moves with nothing but
   # itself. No solve, no differencing -- the row is exact by inspection, and it
   # is the cheapest of the three.
+  #
+  # It is +1, not -1. The row is the BOUND's derivative, -(dR/du)/(dR/dx), and
+  # the residual here is R(x) = x - root_psi_crit: raw partial -1, slope 1, so
+  # the row is +1. This line asserted -1 -- the undivided partial -- until the
+  # C++ suite differenced the arm (test_bound_row_root_psi_crit_is_a_unit_row).
   r <- bound_row_of(mild_gradient, 2L)
   expect_equal(r[[1]], 1)
-  expect_equal(r[[6]], -1)     # d/d(root_psi_crit)
+  expect_equal(r[[6]], 1)      # d/d(root_psi_crit)
   expect_equal(r[[3]], 1)      # residual slope
   expect_equal(r[[4]], 0)
   expect_equal(r[[5]], 0)
