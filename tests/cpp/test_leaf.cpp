@@ -3481,6 +3481,84 @@ void test_environment_rows_are_zero_below_the_rooted_layers() {
   }
 }
 
+// The output enumeration, which is the whole of the arity decision on this side:
+// five fixed outputs that R reads by position, then one uptake row per layer. The
+// accepted request here is the consumer's own -- profit and the uptake block, no
+// collar -- and the refused one asks for a layer this observation does not have.
+void test_uptake_outputs_are_enumerated() {
+  printf("uptake outputs: names, arity and refusal\n");
+  namespace grad = phylloptim::gradient;
+  ok(grad::out_uptake_first == grad::n_outputs,
+     "the uptake block sits immediately after the five");
+  ok(grad::output_names().size() == std::size_t(grad::n_outputs),
+     "and the five R reads by position are still five");
+  for (int L : {1, 3, 5}) {
+    const std::vector<std::string> nms = grad::output_names(L);
+    const std::string tag = std::to_string(L) + " layers";
+    ok(int(nms.size()) == grad::n_outputs_total(L), "output count, " + tag);
+    ok(std::equal(grad::output_names().begin(), grad::output_names().end(),
+                  nms.begin()),
+       "the fixed five are unchanged, " + tag);
+    ok(nms[std::size_t(grad::out_uptake_first)] == "uptake_1",
+       "the uptake block is one-based, " + tag);
+    ok(nms.back() == "uptake_" + std::to_string(L),
+       "and runs to the last layer, " + tag);
+    ok(grad::output_name(grad::out_uptake_first + L - 1, L) ==
+           "uptake_" + std::to_string(L),
+       "output_name agrees with output_names, " + tag);
+  }
+
+  phylloptim::Leaf l = env::fresh();
+  const grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
+  const grad::Settings s;
+  const std::vector<int> inputs{grad::par_vcmax_25, grad::par_psi_soil_first};
+  auto rows_for = [&](int layers, std::string &message) -> grad::Rows {
+    std::vector<int> out_index{grad::out_profit};
+    std::vector<grad::Role> roles{grad::Role::Objective};
+    for (int i = 0; i < layers; ++i) {
+      out_index.push_back(grad::out_uptake_first + i);
+      roles.push_back(grad::Role::Ordinary);
+    }
+    grad::RowRequest req;
+    req.output = out_index.data();
+    req.role = roles.data();
+    req.n_output = out_index.size();
+    req.input = inputs.data();
+    req.n_input = inputs.size();
+    grad::Rows rows;
+    try {
+      rows = grad::rows_at(l, env::kTheta, d, req, s);
+    } catch (const std::runtime_error &e) {
+      message = e.what();
+    }
+    return rows;
+  };
+
+  std::string message;
+  const std::size_t requested = 1 + 3;  // profit, then one uptake per layer
+  const grad::Rows rows = rows_for(3, message);
+  ok(message.empty(), "the consumer's request -- profit and the uptake block, no "
+                      "collar -- answers: " + message);
+  ok(rows.kind == grad::OperatingPointKind::Interior, "at an interior optimum");
+  ok(rows.held.size() == requested * inputs.size(),
+     "one row per requested output per input");
+  ok(rows.dy_dp[0] == 0.0, "the objective's channel is the envelope's zero");
+  bool uptake_moves = false;
+  for (std::size_t j = 1; j < requested; ++j) {
+    uptake_moves = uptake_moves || rows.held[j * inputs.size() + 1] != 0.0;
+  }
+  ok(uptake_moves, "and a soil layer moves the uptake it is asked about");
+
+  // A layer count that does not match the drivers, refused by the name of the
+  // uptake it would have been -- the way an input index past this observation's
+  // arity is refused by its own name.
+  message.clear();
+  rows_for(4, message);
+  ok(message.find("uptake_4") != std::string::npos &&
+         message.find("uptake_3") != std::string::npos,
+     "a fourth layer's uptake is refused by name: " + message);
+}
+
 // The rows in parts, assembled by the consumer's own formula, against the totals
 // `at` returns for the same request:
 //
@@ -3510,16 +3588,21 @@ void test_rows_in_parts_assemble_to_the_totals() {
   namespace grad = phylloptim::gradient;
   using Kind = grad::OperatingPointKind;
 
-  // Every output, with the two roles the mathematics fixes rather than supplies:
-  // the collar IS the operating point, and profit is what it maximises.
-  int out_index[grad::n_outputs];
-  grad::Role roles[grad::n_outputs];
-  for (int j = 0; j < grad::n_outputs; ++j) {
-    out_index[j] = j;
-    roles[j] = j == grad::out_collar   ? grad::Role::Point
-               : j == grad::out_profit ? grad::Role::Objective
-                                       : grad::Role::Ordinary;
-  }
+  // Every output this observation has, with the two roles the mathematics fixes
+  // rather than supplies: the collar IS the operating point, and profit is what it
+  // maximises. The uptake block follows the five and every layer of it is
+  // Ordinary.
+  auto request_outputs = [](int n_layers, std::vector<int> &out_index,
+                            std::vector<grad::Role> &roles) -> void {
+    out_index.clear();
+    roles.clear();
+    for (int j = 0; j < grad::n_outputs_total(n_layers); ++j) {
+      out_index.push_back(j);
+      roles.push_back(j == grad::out_collar   ? grad::Role::Point
+                      : j == grad::out_profit ? grad::Role::Objective
+                                              : grad::Role::Ordinary);
+    }
+  };
 
   // The consumer's assembly, and its one branch: whether this input reaches the
   // point at all. `dresidual` is exactly zero both for an input the condition
@@ -3550,10 +3633,57 @@ void test_rows_in_parts_assemble_to_the_totals() {
   int interior = 0, pinned = 0, shut = 0, other = 0;
   int pin_without_slope = 0, role_violation = 0, slack_violation = 0;
   int off_branch = 0, not_a_number = 0;
+  // The uptake columns, which `at` does not report and which are refereed against
+  // a re-solve instead. Split by family for the reason the five are: the parts
+  // hold the point where the model puts it, and a differenced solve does not.
+  double worst_uptake = 0.0, worst_uptake_followed = 0.0;
+  double worst_uptake_held = 0.0;
+  std::string worst_uptake_where, worst_uptake_followed_where;
+  std::string worst_uptake_held_where;
+  int uptake_compared = 0, uptake_off_branch = 0, uptake_columns = 0;
+  int interior_uptake_nonzero = 0, pinned_uptake_nonzero = 0;
+  int pinned_followed_uptake = 0, pinned_followed_uptake_nonzero = 0;
+  int shut_uptake_entries = 0, shut_uptake_nonzero = 0, shut_profit_nonzero = 0;
 
   phylloptim::Leaf multilayer;
   phylloptim::Leaf single_potential;
   single_potential.set_supply_single();
+
+  // dE_i/du by re-solving the leaf and reading the consumption profile it writes:
+  // the referee for the uptake rows, sharing with them only the setters. False
+  // where an arm left the base point's branch, which makes the difference one of
+  // two functions rather than of one.
+  auto differenced_uptake = [&](phylloptim::Leaf &l, const grad::Drivers &d,
+                                bool single, int par, const grad::Branch &stay,
+                                std::vector<double> &out) -> bool {
+    double th[grad::n_pars];
+    std::vector<double> scratch;
+    std::vector<double> arm[2];
+    const double base = grad::par_value(env::kTheta, d, par);
+    const double h = grad::step_for(par, base, settings.step);
+    bool on_branch = true;
+    for (int side = 0; side < 2; ++side) {
+      // Base first, then one step: `stem_b`'s setter rescales the stem curve and
+      // is sound only from base, so the second arm would otherwise be taken two
+      // steps out.
+      grad::apply(l, env::kTheta, d, single, -1, settings.fast_stem_curve);
+      grad::set_one(l, th, env::kTheta, d, single, par,
+                    side == 0 ? base + h : base - h,
+                    settings.fast_stem_curve, scratch);
+      l.find_root_collar_psi();
+      on_branch = on_branch && grad::branch_here(l) == stay;
+      arm[side] = l.soil_consumption_;
+    }
+    grad::apply(l, env::kTheta, d, single, -1, settings.fast_stem_curve);
+    if (!on_branch) {
+      return false;
+    }
+    out.assign(arm[0].size(), 0.0);
+    for (std::size_t i = 0; i < out.size(); ++i) {
+      out[i] = (arm[0][i] - arm[1][i]) / (2.0 * h);
+    }
+    return true;
+  };
 
   auto check = [&](const grad::Drivers &d, bool single,
                    const std::vector<int> &pars, const std::string &where) {
@@ -3563,10 +3693,14 @@ void test_rows_in_parts_assemble_to_the_totals() {
     grad::Result fwd;
     grad::at(l, env::kTheta, d, single, pars.data(), n, settings, fwd);
 
+    const int n_layers = grad::n_soil_layers(d, single);
+    std::vector<int> out_index;
+    std::vector<grad::Role> roles;
+    request_outputs(n_layers, out_index, roles);
     grad::RowRequest req;
-    req.output = out_index;
-    req.role = roles;
-    req.n_output = grad::n_outputs;
+    req.output = out_index.data();
+    req.role = roles.data();
+    req.n_output = out_index.size();
     req.input = pars.data();
     req.n_input = n;
     grad::Rows rows;
@@ -3650,14 +3784,15 @@ void test_rows_in_parts_assemble_to_the_totals() {
     std::vector<bool> follows(n, true);
     std::vector<double> scratch;
     double th[grad::n_pars];
-    grad::Branch base_branch;
+    // Taken at every kind, not only the constrained ones: the uptake reference
+    // below refuses an arm that leaves this branch.
+    grad::apply(l, env::kTheta, d, single, -1, settings.fast_stem_curve);
+    l.find_root_collar_psi();
+    const grad::Branch base_branch = grad::branch_here(l);
+    if (!(base_branch.kind == rows.kind)) {
+      ++off_branch;
+    }
     if (!composite) {
-      grad::apply(l, env::kTheta, d, single, -1, settings.fast_stem_curve);
-      l.find_root_collar_psi();
-      base_branch = grad::branch_here(l);
-      if (!(base_branch.kind == rows.kind)) {
-        ++off_branch;
-      }
       if (is_pinned) {
         const phylloptim::Leaf::BoundRow cond = l.bound_row(bound);
         bool at_base = true;
@@ -3692,6 +3827,27 @@ void test_rows_in_parts_assemble_to_the_totals() {
       grad::apply(l, env::kTheta, d, single, -1, settings.fast_stem_curve);
     }
 
+    // The uptake reference, one column per input, taken for the whole point
+    // before anything is compared: the scale a row is judged against is the
+    // largest entry in the same output row, which is not known input by input.
+    std::vector<std::vector<double> > want_uptake(n);
+    std::vector<bool> have_uptake(n, false);
+    std::vector<double> uptake_scale(std::size_t(n_layers), 0.0);
+    for (std::size_t k = 0; k < n; ++k) {
+      have_uptake[k] =
+          differenced_uptake(l, d, single, pars[k], base_branch, want_uptake[k]);
+      if (!have_uptake[k]) {
+        ++uptake_off_branch;
+        continue;
+      }
+      ++uptake_columns;
+      for (int layer = 0; layer < n_layers; ++layer) {
+        uptake_scale[std::size_t(layer)] =
+            std::max(uptake_scale[std::size_t(layer)],
+                     std::abs(want_uptake[k][std::size_t(layer)]));
+      }
+    }
+
     for (std::size_t k = 0; k < n; ++k) {
       if (!composite) {
         ++(follows[k] ? followed_rows : held_rows);
@@ -3723,6 +3879,10 @@ void test_rows_in_parts_assemble_to_the_totals() {
           ++not_a_number;
           continue;
         }
+        if (j == grad::out_profit && rows.kind == Kind::HydraulicShutdown &&
+            got != 0.0) {
+          ++shut_profit_nonzero;
+        }
         const double err =
             std::abs(got - want) / std::max(std::abs(want), 1e-30);
         double &into = composite      ? worst
@@ -3736,6 +3896,53 @@ void test_rows_in_parts_assemble_to_the_totals() {
           (composite ? worst_where
            : follows[k] ? worst_followed_where
                         : worst_held_where) = what;
+        }
+      }
+
+      // The uptake columns, which `at` does not report: the reference is a
+      // re-solve of the leaf, and the parts have to assemble to it the way they do
+      // to `at`'s five.
+      if (!have_uptake[k]) {
+        continue;
+      }
+      for (int layer = 0; layer < n_layers; ++layer) {
+        const int j = grad::out_uptake_first + layer;
+        const double got = assemble(rows, n, k, j);
+        const double want = want_uptake[k][std::size_t(layer)];
+        // Both sides, because a ratio taken against a not-a-number compares false
+        // and would be read as agreement.
+        if (!std::isfinite(got) || !std::isfinite(want)) {
+          ++not_a_number;
+          continue;
+        }
+        ++uptake_compared;
+        if (got != 0.0) {
+          ++(is_interior      ? interior_uptake_nonzero
+             : is_pinned      ? pinned_uptake_nonzero
+                              : shut_uptake_nonzero);
+        }
+        if (is_pinned && follows[k]) {
+          ++pinned_followed_uptake;
+          if (got != 0.0) {
+            ++pinned_followed_uptake_nonzero;
+          }
+        }
+        if (rows.kind == Kind::HydraulicShutdown) {
+          ++shut_uptake_entries;
+        }
+        const double err = std::abs(got - want) /
+                           std::max(uptake_scale[std::size_t(layer)], 1e-30);
+        double &into = composite      ? worst_uptake
+                       : follows[k]   ? worst_uptake_followed
+                                      : worst_uptake_held;
+        if (err > into) {
+          into = err;
+          const std::string what =
+              " at " + grad::par_name(pars[k], n_layers) + "/" +
+              grad::output_name(j, n_layers) + where;
+          (composite ? worst_uptake_where
+           : follows[k] ? worst_uptake_followed_where
+                        : worst_uptake_held_where) = what;
         }
       }
     }
@@ -3807,10 +4014,13 @@ void test_rows_in_parts_assemble_to_the_totals() {
   double worst_bound = 0.0;
   {
     const std::vector<int> pars{grad::par_psi_soil_first};
+    std::vector<int> out_index;
+    std::vector<grad::Role> roles;
+    request_outputs(5, out_index, roles);
     grad::RowRequest req;
-    req.output = out_index;
-    req.role = roles;
-    req.n_output = grad::n_outputs;
+    req.output = out_index.data();
+    req.role = roles.data();
+    req.n_output = out_index.size();
     req.input = pars.data();
     req.n_input = pars.size();
     for (double p : psi_soils) {
@@ -3863,6 +4073,22 @@ void test_rows_in_parts_assemble_to_the_totals() {
   printf("  %d wet pins: worst point row against a differenced find_root_psi "
          "%.3g\n",
          wet_pins, worst_bound);
+  printf("  %d uptake rows over %d columns (%d off-branch), against a re-solved "
+         "leaf\n",
+         uptake_compared, uptake_columns, uptake_off_branch);
+  printf("  worst uptake row / the column's own scale = %.3g%s\n", worst_uptake,
+         worst_uptake_where.c_str());
+  printf("  a row that followed the point:       %.3g%s\n",
+         worst_uptake_followed, worst_uptake_followed_where.c_str());
+  printf("  a row taken at a held point:         %.3g%s\n", worst_uptake_held,
+         worst_uptake_held_where.c_str());
+  printf("  non-zero uptake rows: %d interior, %d pinned (%d of %d that follow "
+         "the bound), %d of %d shut\n",
+         interior_uptake_nonzero, pinned_uptake_nonzero,
+         pinned_followed_uptake_nonzero, pinned_followed_uptake,
+         shut_uptake_nonzero, shut_uptake_entries);
+  printf("  and %d non-zero profit rows at the shut points those came from\n",
+         shut_profit_nonzero);
   ok(multilayer_points == 288, "the whole golden grid was covered");
   ok(first_pass - multilayer_points == 6, "and the single-potential path too");
   ok(pinned > 0 && shut > 0, "the pinned and the shut branches were reached");
@@ -3896,6 +4122,33 @@ void test_rows_in_parts_assemble_to_the_totals() {
   // is asserted and the ratio it produces is left as a measurement.
   ok(worst_collar_move <= 1e-8,
      "and a held row differs from it only as far as the solve's own collar moves");
+
+  // The uptake outputs. Their reference is a re-solved leaf rather than `at`,
+  // which reports the five, so the band is the differencing one: 4.0e-04 here
+  // against the 6.4e-04 the water rows already sit at, and for the same reason --
+  // both move the argmax, and the composite's dY/dp and its curvature are
+  // themselves differences taken at a flat maximum.
+  ok(uptake_compared > 10000 && uptake_off_branch == 0,
+     "every input's uptake column was refereed against a re-solve");
+  ok(worst_uptake <= 2e-3,
+     "an uptake row assembles to a differenced re-solve at an interior point");
+  ok(worst_uptake_followed == 0.0,
+     "and at a constrained point a followed uptake row IS that difference");
+  ok(interior_uptake_nonzero > 0, "interior uptake rows are not zero");
+  // ⚠️ THE FAILURE THIS EXISTS TO PREVENT. An output that is not reported has no
+  // route to any input, so at a pin -- where the condition's gradient is zero for
+  // every input and each reported output carries a total instead -- its rows come
+  // back exactly zero. So a pin is where the total has to be seen.
+  ok(pinned_followed_uptake > 0 && pinned_followed_uptake_nonzero > 0,
+     "at a pin an uptake row that follows the bound carries a total");
+  // At a hydraulic shutdown the total IS zero, and that is the model rather than a
+  // missing route: the stem is held at the critical potential and the leaf takes up
+  // no water at any perturbation the branch survives. The differenced re-solve
+  // agrees to the bit (`worst_uptake_followed`), and profit at the same points is
+  // non-zero, which is what says the route ran.
+  ok(shut_uptake_entries > 0 && shut_uptake_nonzero == 0 &&
+         shut_profit_nonzero > 0,
+     "a shut collar takes up no water, and says so beside a non-zero profit row");
 }
 
 // The two ends of the shrinking, which the grid above cannot reach: on it every
@@ -4092,6 +4345,7 @@ int main() {
   test_environment_rows_match_a_differenced_solve();
   test_environment_water_rows_are_rank_one();
   test_environment_rows_are_zero_below_the_rooted_layers();
+  test_uptake_outputs_are_enumerated();
   test_rows_in_parts_assemble_to_the_totals();
   test_rows_shrink_the_step_to_stay_on_one_branch();
   benchmark();

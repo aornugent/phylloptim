@@ -208,16 +208,98 @@ inline const std::vector<std::string>& output_names() {
   return names;
 }
 
+// --- the per-layer uptake outputs ---------------------------------------------
+//
+// The five above are a calibration's, and R reads gradient columns by position,
+// so they stay fixed: `output_names()` and `gradient_output_names()` report those
+// five whatever the layer configuration is, and `at`, `batch` and `transpose_at`
+// report those five. A stand adjoint reads a different list -- of the five it
+// wants profit, and it wants the water each soil layer gave up -- so the uptake
+// entries are APPENDED, one per layer, and `rows_at` is the one route that can
+// request them.
+//
+// ⚠️ AN OUTPUT THAT IS NOT REPORTED HAS NO ROUTE TO ANY INPUT. At a pin the
+// condition's gradient is zero for every input and each reported output carries a
+// total instead, so an unreported one comes back exactly zero at every pinned and
+// shut point -- and zero and absent are the same number on a consumer's tape.
+// That is why uptake is an enumeration entry rather than a second call.
+//
+// Uptake is ORDINARY: it is set as a side effect at the operating point, so it
+// consumes the collar rather than being it, and it composes the way A and gc do.
+// Fixed first, variable second, for the reason the soil rows follow `PPFD` on the
+// input side: an index means the same output across observations with different
+// layer counts.
+inline constexpr int out_uptake_first = n_outputs;
+
+inline constexpr int n_outputs_total(int n_layers) {
+  return out_uptake_first + n_layers;
+}
+
+inline std::vector<std::string> output_names(int n_layers) {
+  std::vector<std::string> out = output_names();
+  out.reserve(std::size_t(n_outputs_total(n_layers)));
+  for (int i = 0; i < n_layers; ++i) {
+    out.push_back("uptake_" + std::to_string(i + 1));
+  }
+  return out;
+}
+
+// One name, for a diagnostic message. Does not build the whole vector.
+inline std::string output_name(int out, int n_layers) {
+  if (out >= 0 && out < n_outputs) {
+    return output_names()[std::size_t(out)];
+  }
+  const int layer = out - out_uptake_first;
+  if (layer >= 0 && layer < n_layers) {
+    return "uptake_" + std::to_string(layer + 1);
+  }
+  return "output " + std::to_string(out);
+}
+
+// One evaluation's outputs: the five, then one uptake per layer where the caller
+// asked for them. A fixed-five caller leaves `uptake` empty, which allocates
+// nothing.
+struct OutputValues {
+  double fixed[n_outputs];
+  std::vector<double> uptake;
+
+  OutputValues() = default;
+  explicit OutputValues(int n_uptake) : uptake(std::size_t(n_uptake)) {}
+
+  int n_uptake() const { return int(uptake.size()); }
+  int size() const { return n_outputs + n_uptake(); }
+  double& operator[](int j) {
+    return j < n_outputs ? fixed[j] : uptake[std::size_t(j - out_uptake_first)];
+  }
+  double operator[](int j) const {
+    return j < n_outputs ? fixed[j] : uptake[std::size_t(j - out_uptake_first)];
+  }
+};
+
 // Read straight off the members rather than through `operating_point_values()`,
 // which is what R has to use. Bit-identical: that reader copies these same five
 // fields into positions 3, 5, 0, 1 and 6 of its twelve, and the three columns it
 // computes rather than copies (uptake, lambda, g1_eff) are not among them.
-inline void outputs(const Leaf& l, double* y) {
+//
+// The uptake entries are the leaf's own per-layer consumption at the collar this
+// evaluation seated -- `find_psi_stem_from_psi_root` writes it on its way past --
+// and not a second computation of it.
+inline void outputs(const Leaf& l, OutputValues& y) {
   y[0] = l.assim_colimited_;
   y[1] = l.stom_cond_CO2_;
   y[2] = l.opt_psi_stem_;
   y[3] = l.opt_root_psi_;
   y[4] = l.profit_;
+  // A shorter buffer than the request means the drivers' potentials and their
+  // depths disagree in length; reading past it would report the layer above.
+  if (y.n_uptake() > int(l.soil_consumption_.size())) {
+    util::stop("uptake was asked for " + std::to_string(y.n_uptake()) +
+               " layers, and this leaf's soil profile has " +
+               std::to_string(l.soil_consumption_.size()) + ".");
+  }
+  for (int i = 0; i < y.n_uptake(); ++i) {
+    y[out_uptake_first + i] = l.soil_consumption_[std::size_t(i)];
+  }
 }
 
 // The outputs with the collar held at `psi` rather than optimised. False when
@@ -230,7 +312,7 @@ inline void outputs(const Leaf& l, double* y) {
 // -- the same class of error as differentiating at a pinned optimum, and just as
 // plausible-looking. The clamp is a min/max, so an unclamped target comes back
 // bit-identical and a tolerance would only blur the detector.
-inline bool outputs_at(Leaf& l, double psi, double* y) {
+inline bool outputs_at(Leaf& l, double psi, OutputValues& y) {
   l.evaluate_root_collar_psi(psi);
   if (!util::identical(l.opt_root_psi_, psi)) {
     return false;
@@ -382,7 +464,7 @@ struct Result {
   // same reason those two are -- it is what the composite stands on -- and NA
   // unless `used_ift`, because the fallback never forms it. `transpose_at` below
   // is its first consumer.
-  double dY_dpsi[n_outputs];
+  OutputValues dY_dpsi;
   std::string message;
 
   void reset(std::size_t npars) {
@@ -586,7 +668,7 @@ inline Branch branch_here(const Leaf& l) {
 // returned, and the curvature of profit there.
 struct BasePoint {
   double psi_star = util::na_value;
-  double value[n_outputs];
+  OutputValues value;
   double resid = util::na_value;
   double H = util::na_value;
   // ⚠️ Read the moment the solve ends, because the first evaluation at a held
@@ -649,10 +731,10 @@ inline BasePoint base_point(Leaf& l, const double* theta, const Drivers& d,
 // bracket is narrow, so a pinned optimum on a wide bracket would pass it. False
 // where the difference cannot be centred on psi*.
 inline bool collar_channel(Leaf& l, double psi_star, const Settings& s,
-                           double* dY_dpsi) {
+                           OutputValues& dY_dpsi) {
   const double h_psi = collar_step(psi_star, s);
-  double hi[n_outputs];
-  double lo[n_outputs];
+  OutputValues hi(dY_dpsi.n_uptake());
+  OutputValues lo(dY_dpsi.n_uptake());
   // Both, unconditionally, before the test -- R computes `hi` and `lo` on
   // consecutive lines and only then checks either, and each call moves the leaf.
   const bool hi_ok = outputs_at(l, psi_star + h_psi, hi);
@@ -660,30 +742,32 @@ inline bool collar_channel(Leaf& l, double psi_star, const Settings& s,
   if (!hi_ok || !lo_ok) {
     return false;
   }
-  for (int j = 0; j < n_outputs; ++j) {
+  for (int j = 0; j < dY_dpsi.size(); ++j) {
     dY_dpsi[j] = (hi[j] - lo[j]) / (2.0 * h_psi);
   }
   return true;
 }
 
-// One input's two perturbed evaluations at a FROZEN collar: the five outputs'
+// One input's two perturbed evaluations at a HELD collar: the requested outputs'
 // direct rows, and dR/du -- the collar derivative of marginal profit. Neither
-// evaluation re-solves the model.
+// evaluation re-solves the model. How many outputs is `direct`'s own length.
 //
 // `at_base` carries the invariant above: it comes in true only where the leaf is
 // at base parameters, and goes out false.
 inline void held_row(Leaf& l, const double* theta, const Drivers& d,
                        bool single, int par, double psi_star, const Settings& s,
                        const std::string& caller, bool& at_base,
-                       std::vector<double>& psi_scratch, double* direct,
+                       std::vector<double>& psi_scratch, OutputValues& direct,
                        double& dresidual) {
   if (takes_shortcut(par, s) && !at_base) {
     apply(l, theta, d, single, -1, s.fast_stem_curve);
   }
   at_base = false;
   double th[n_pars];
-  double up[1 + n_outputs];
-  double dn[1 + n_outputs];
+  OutputValues up(direct.n_uptake());
+  OutputValues dn(direct.n_uptake());
+  double up_resid = 0.0;
+  double dn_resid = 0.0;
   const double base = par_value(theta, d, par);
   const double h = step_for(par, base, s.step);
   for (int side = 0; side < 2; ++side) {
@@ -691,10 +775,10 @@ inline void held_row(Leaf& l, const double* theta, const Drivers& d,
     // and both mutate the leaf.
     set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
             s.fast_stem_curve, psi_scratch);
-    double* dst = side == 0 ? up : dn;
+    OutputValues& dst = side == 0 ? up : dn;
     // Evaluate first, then read dprofit at the same fixed collar -- R's order,
     // and `evaluate_root_collar_psi` is what seats the state `dprofit` reads.
-    if (!outputs_at(l, psi_star, dst + 1)) {
+    if (!outputs_at(l, psi_star, dst)) {
       util::stop(caller + ": perturbing `" +
                  par_name(par, n_soil_layers(d, single)) +
                  "` moved the feasible collar interval past psi*, so the "
@@ -702,12 +786,13 @@ inline void held_row(Leaf& l, const double* theta, const Drivers& d,
                  "on an active-set boundary; lower `stationarity_tol` or "
                  "difference the solve directly.");
     }
-    dst[0] = l.dprofit_droot_collar_psi(psi_star);
+    double& resid = side == 0 ? up_resid : dn_resid;
+    resid = l.dprofit_droot_collar_psi(psi_star);
   }
   // M = d2profit/dpsi dtheta, with psi held FIXED at psi*.
-  dresidual = (up[0] - dn[0]) / (2.0 * h);
-  for (int j = 0; j < n_outputs; ++j) {
-    direct[j] = (up[1 + j] - dn[1 + j]) / (2.0 * h);
+  dresidual = (up_resid - dn_resid) / (2.0 * h);
+  for (int j = 0; j < direct.size(); ++j) {
+    direct[j] = (up[j] - dn[j]) / (2.0 * h);
   }
 }
 
@@ -728,14 +813,14 @@ inline void held_row(Leaf& l, const double* theta, const Drivers& d,
 inline bool solved_row(Leaf& l, const double* theta, const Drivers& d,
                        bool single, int par, const Settings& s,
                        const Branch* stay, bool& at_base,
-                       std::vector<double>& psi_scratch, double* row) {
+                       std::vector<double>& psi_scratch, OutputValues& row) {
   if (takes_shortcut(par, s) && !at_base) {
     apply(l, theta, d, single, -1, s.fast_stem_curve);
   }
   at_base = false;
   double th[n_pars];
-  double up[n_outputs];
-  double dn[n_outputs];
+  OutputValues up(row.n_uptake());
+  OutputValues dn(row.n_uptake());
   const double base = par_value(theta, d, par);
   double h = step_for(par, base, s.step);
   for (int decade = 0;; ++decade) {
@@ -750,7 +835,7 @@ inline bool solved_row(Leaf& l, const double* theta, const Drivers& d,
       outputs(l, side == 0 ? up : dn);
     }
     if (on_branch) {
-      for (int j = 0; j < n_outputs; ++j) {
+      for (int j = 0; j < row.size(); ++j) {
         row[j] = (up[j] - dn[j]) / (2.0 * h);
       }
       return true;
@@ -767,10 +852,11 @@ inline bool solved_row(Leaf& l, const double* theta, const Drivers& d,
 // the mixed partial, and the outputs at that same psi* give the direct term.
 inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
                          bool single, const int* pars, std::size_t npars,
-                         double psi_star, double H, const double* dY_dpsi,
-                         const Settings& s, double* out) {
+                         double psi_star, double H,
+                         const OutputValues& dY_dpsi, const Settings& s,
+                         double* out) {
   std::vector<double> psi_scratch;
-  double direct[n_outputs];
+  OutputValues direct;
   bool at_base = true;
   for (std::size_t k = 0; k < npars; ++k) {
     double M = 0.0;
@@ -831,12 +917,18 @@ inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
                         bool single, const int* pars, std::size_t npars,
                         const Settings& s, double* out) {
   std::vector<double> psi_scratch;
+  OutputValues row;
   bool at_base = true;
   for (std::size_t k = 0; k < npars; ++k) {
     // No branch to hold: this route differences whatever the two arms land on and
     // reports the base point's own kind beside the answer, so it cannot refuse.
-    solved_row(l, theta, d, single, pars[k], s, nullptr, at_base, psi_scratch,
-               out + k * n_outputs);
+    // The copy is what leaves a refused row NA rather than partly written.
+    if (solved_row(l, theta, d, single, pars[k], s, nullptr, at_base,
+                   psi_scratch, row)) {
+      for (int j = 0; j < n_outputs; ++j) {
+        out[k * n_outputs + j] = row[j];
+      }
+    }
   }
   apply(l, theta, d, single, -1, s.fast_stem_curve);
 }
@@ -900,7 +992,7 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
 
   // Written straight into the result rather than into a local, so that the
   // transpose can read the same numbers instead of measuring them again.
-  double* const dY_dpsi = out.dY_dpsi;
+  OutputValues& dY_dpsi = out.dY_dpsi;
   if (use_ift && !collar_channel(l, psi_star, s, dY_dpsi)) {
     if (s.method == Method::Ift) {
       util::stop("leaf_gradient(): method = \"ift\" was asked for at a point "
@@ -997,6 +1089,12 @@ inline std::vector<Result> batch(Leaf& l, const double* theta,
 // solve is differenced instead, the arms land on the moved point, and what the
 // rows carry is the TOTAL. `dresidual` is zero for such an input, so the
 // consumer's one assembly returns that total unchanged and nothing subtracts.
+//
+// THIS IS THE ONE ROUTE THAT CAN BE ASKED FOR PER-LAYER UPTAKE. `output` indexes
+// the enumeration above, so an index at or past `out_uptake_first` names a layer's
+// consumption, and an index past the last layer this observation has is refused by
+// name. The five stay reportable, and the consumer this exists for asks for
+// profit and the uptake block.
 
 using OperatingPointKind = Leaf::OperatingPointKind;
 
@@ -1129,11 +1227,27 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
 
   int objective = -1;
   int point = -1;
+  // One uptake entry per layer, or none: a single evaluation writes the whole
+  // consumption profile, so a request naming any layer carries all of them.
+  int n_uptake = 0;
   for (std::size_t j = 0; j < r.n_output; ++j) {
-    if (r.output[j] < 0 || r.output[j] >= n_outputs) {
-      util::stop("leaf_rows(): output index " + std::to_string(r.output[j]) +
-                 " is out of range; there are " + std::to_string(n_outputs) +
-                 " outputs.");
+    if (r.output[j] < 0 || r.output[j] >= n_outputs_total(n_layers)) {
+      // Named where it can be, because an index past the end of the uptake block
+      // is a layer count that does not match the drivers rather than a typo.
+      const std::string what =
+          r.output[j] >= out_uptake_first
+              ? "`uptake_" + std::to_string(r.output[j] - out_uptake_first + 1) +
+                    "`"
+              : "output index " + std::to_string(r.output[j]);
+      util::stop("leaf_rows(): " + what +
+                 " is not an output here; this observation has " +
+                 std::to_string(n_layers) + " soil layer(s), so there are " +
+                 std::to_string(n_outputs_total(n_layers)) +
+                 " outputs, the last of them `" +
+                 output_name(n_outputs_total(n_layers) - 1, n_layers) + "`.");
+    }
+    if (r.output[j] >= out_uptake_first) {
+      n_uptake = n_layers;
     }
     if (r.role[j] == Role::Objective) {
       if (objective >= 0) {
@@ -1189,7 +1303,7 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     out.residual_slope = b.H;
   }
 
-  double dY_dpsi[n_outputs];
+  OutputValues dY_dpsi(n_uptake);
   const bool have_channel = collar_channel(l, b.psi_star, s, dY_dpsi);
   for (std::size_t j = 0; j < r.n_output; ++j) {
     if (int(j) == point) {
@@ -1206,7 +1320,7 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
 
   bool at_base = true;
   std::vector<double> psi_scratch;
-  double direct[n_outputs];
+  OutputValues direct(n_uptake);
   for (std::size_t i = 0; i < r.n_input; ++i) {
     const int p = r.input[i];
     // Does this input move the point? Where a bound is what defines it, the
@@ -1359,7 +1473,7 @@ inline constexpr int out_objective = out_profit;
 //     eps * psi / h_psi, i.e. ~1e-10 relative -- small, and still two orders
 //     above the residual this transpose is required to leave.
 //   * the objective's psi-channel is zero by the envelope theorem, above.
-inline double psi_channel(int j, const double* dY_dpsi) {
+inline double psi_channel(int j, const OutputValues& dY_dpsi) {
   if (j == out_collar) {
     return 1.0;
   }
@@ -1459,7 +1573,7 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
     out.psi_adjoint = s_psi;
     const double m = -s_psi / point.H;
 
-    double direct[n_outputs];
+    OutputValues direct;
     for (std::size_t k = 0; k < npars; ++k) {
       double M = 0.0;
       held_row(l, theta, d, single, pars[k], psi_star, s,
@@ -1480,7 +1594,7 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
     // The fallback, transposed: difference the solve and contract. No output is
     // exceptional here, `collar` included, because nothing is being composed --
     // which is exactly why `gradient_fd` has no special case either.
-    double solved[n_outputs];
+    OutputValues solved;
     for (std::size_t k = 0; k < npars; ++k) {
       solved_row(l, theta, d, single, pars[k], s, nullptr, at_base, psi_scratch,
                  solved);
