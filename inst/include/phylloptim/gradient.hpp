@@ -351,9 +351,16 @@ inline double rounded(double x) {
 // model is visibly nonlinear. Those two get a plain relative step. For
 // `resistance` (~1e3 and up) the two rules coincide; it is listed for the reason
 // rather than for the arithmetic.
-inline double step_for(int par, double value, double step) {
-  const double floor =
-      (par == par_kmax || par == par_resistance) ? 0.0 : 1.0;
+//
+// ⚠️ Root carbon is the third, and there the floor is not merely wrong but
+// unsafe: a layer holding less carbon than the floor would be stepped past zero,
+// where the architecture model refuses a negative mass and the layer leaves the
+// network on one arm only.
+inline double step_for(int par, double value, double step, int n_layers) {
+  const double floor = (par == par_kmax || par == par_resistance ||
+                        par >= par_root_carbon_first(n_layers))
+                           ? 0.0
+                           : 1.0;
   return std::max(std::abs(value), floor) * step;
 }
 
@@ -383,17 +390,40 @@ inline int n_soil_layers(const Drivers& d, bool single) {
   return single ? 1 : static_cast<int>(d.psi_soil.size());
 }
 
+// A layer's root carbon, recovered from the network that was built out of it, or
+// NA where that layer has none.
+//
+// The network holds the carbon split three ways rather than the carbon, and the
+// vertical third is the half to read it back from -- the same inversion
+// `duptake_droot_carbon` performs to answer its own analytic rows. NA rather than
+// zero for an unrooted layer, and the distinction is the whole point: the network
+// is sized to the deepest rooted layer, so a layer below that one has no carbon
+// to move AND no slot to move it in. A zero there would say the outputs are
+// insensitive to carbon that could be put there, which is the opposite of true.
+inline double root_carbon_of(const Drivers& d, int layer) {
+  const std::vector<double>& c = d.root_network.c_r_V;
+  return layer >= 0 && layer < int(c.size()) && c[std::size_t(layer)] > 0.0
+             ? 3.0 * c[std::size_t(layer)]
+             : util::na_value;
+}
+
 // The value a parameter currently holds: in `theta` for the sixteen, in the
 // observation's drivers for the environment rows. See the environment block above
 // for why those two are different places rather than one.
-inline double par_value(const double* theta, const Drivers& d, int par) {
+inline double par_value(const double* theta, const Drivers& d, bool single,
+                        int par) {
   if (par < n_pars) {
     return theta[par];
   }
   if (par == par_PPFD) {
     return d.PPFD;
   }
-  return d.psi_soil[std::size_t(par - par_psi_soil_first)];
+  const int layer = par - par_psi_soil_first;
+  const int n_layers = n_soil_layers(d, single);
+  if (layer < n_layers) {
+    return d.psi_soil[std::size_t(layer)];
+  }
+  return root_carbon_of(d, layer - n_layers);
 }
 
 // Every requested index names an input this observation has and this package can
@@ -405,12 +435,15 @@ inline double par_value(const double* theta, const Drivers& d, int par) {
 // the end used to be impossible (R validates against the fixed sixteen); now it
 // is an out-of-bounds read of `psi_soil`, so it is a per-row error.
 //
-// ⚠️ ROOT CARBON HAS NO ROW ON EITHER ROUTE. It is in the enumeration because a
-// consumer's input vector carries it, but `set_physiology` is handed a
-// `RootNetwork` that is already built, so nothing here can move the carbon it was
-// built from. Refused by name rather than left to read past `psi_soil`.
+// ⚠️ THE SINGLE-POTENTIAL PATH HAS NO ROOT CARBON, and a silent zero there would
+// be the worst available answer. That path builds its own one-element network out
+// of `resistance` and never reads the observation's, so a carbon perturbation
+// would change nothing the solve consumes and every carbon row would come back
+// exactly zero -- indistinguishable from true insensitivity. Refused by name.
+// A layer the multi-layer network has no roots in is a per-input refusal instead,
+// raised where the rows are assembled.
 inline void check_pars(const int* pars, std::size_t npars, int n_layers,
-                       const std::string& caller) {
+                       bool single, const std::string& caller) {
   for (std::size_t k = 0; k < npars; ++k) {
     if (pars[k] < 0 || pars[k] >= n_pars_total(n_layers)) {
       util::stop(caller + ": parameter index " + std::to_string(pars[k]) +
@@ -418,10 +451,10 @@ inline void check_pars(const int* pars, std::size_t npars, int n_layers,
                  std::to_string(n_layers) + " soil layer(s), so there are " +
                  std::to_string(n_pars_total(n_layers)) + " parameters.");
     }
-    if (pars[k] >= par_root_carbon_first(n_layers)) {
+    if (single && pars[k] >= par_root_carbon_first(n_layers)) {
       util::stop(caller + ": `" + par_name(pars[k], n_layers) +
-                 "` has no row here. The root network arrives already built, so "
-                 "nothing in this package can move the carbon behind it.");
+                 "` has no row on the single-potential path, which takes one "
+                 "series resistance and no root architecture.");
     }
   }
 }
@@ -493,13 +526,14 @@ struct Result {
 //
 // `only` names the single parameter that has moved, or -1 for "all of them".
 //
-// `PPFD` and `psi_soil` are passed rather than read off `d`, so that an
-// environment perturbation is applied by handing over a different environment
+// `PPFD`, `psi_soil` and the network are passed rather than read off `d`, so that
+// an environment perturbation is applied by handing over a different environment
 // rather than by editing the observation's drivers in place. Every other caller
 // takes the two-argument overload below and gets `d`'s own values.
 inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
                   int only, bool fast_stem_curve, double PPFD,
-                  const std::vector<double>& psi_soil) {
+                  const std::vector<double>& psi_soil,
+                  const RootNetwork& root_network) {
   // THE FAST PATH FOR stem_b, which is the whole of PLAN 11f. The stem
   // cumulative-vulnerability integral is homogeneous of degree 1 in stem_b, so
   // the spline for a perturbed stem_b is the existing one with its argument
@@ -533,7 +567,7 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
     l.set_physiology(net, PPFD, psi_soil, d.soil_depth, theta[par_kmax],
                      d.atm_vpd, d.ca, d.leaf_temp, d.atm_o2_kpa, d.atm_kpa);
   } else {
-    l.set_physiology(d.root_network, PPFD, psi_soil, d.soil_depth,
+    l.set_physiology(root_network, PPFD, psi_soil, d.soil_depth,
                      theta[par_kmax], d.atm_vpd, d.ca, d.leaf_temp,
                      d.atm_o2_kpa, d.atm_kpa);
   }
@@ -543,8 +577,46 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
 // environment rows is differentiated in.
 inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
                   int only, bool fast_stem_curve) {
-  apply(l, theta, d, single, only, fast_stem_curve, d.PPFD, d.psi_soil);
+  apply(l, theta, d, single, only, fast_stem_curve, d.PPFD, d.psi_soil,
+        d.root_network);
 }
+
+// The network layer `layer`'s carbon would have built, at `value`.
+//
+// Exact, and it needs neither of the architecture model's two constants nor the
+// layer thickness: both resistances the solve reads are proportional to 1/carbon,
+// so each one's own constant is recoverable from the network's stored halves and
+// re-dividing at the moved carbon reproduces the expression the architecture model
+// itself evaluates. That is the same proportionality `duptake_droot_carbon`
+// differentiates through, so a differenced carbon row and the analytic bound row
+// describe one model rather than two.
+//
+// The cumulative sum is rebuilt rather than adjusted, in the builder's own
+// accumulation order. A zero-carbon layer contributes an exact zero to it either
+// way, so a profile with an interior gap is unaffected.
+inline void perturb_root_carbon(const RootNetwork& base, int layer, double value,
+                                RootNetwork& out) {
+  out = base;
+  const std::size_t k = std::size_t(layer);
+  const double horizontal = base.r_R_H_min[k] * base.c_r_H[k];
+  const double vertical = base.r_R_V[k] * base.c_r_V[k];
+  out.c_r_V[k] = value / 3.0;
+  out.c_r_H[k] = value * 2.0 / 3.0;
+  out.r_R_H_min[k] = horizontal / out.c_r_H[k];
+  out.r_R_V[k] = vertical / out.c_r_V[k];
+  double sum = 0.0;
+  for (std::size_t i = 0; i < out.r_R_V.size(); ++i) {
+    sum += out.r_R_V[i];
+    out.r_R_V_sum[i] = sum;
+  }
+}
+
+// The buffers a gradient's perturbations reuse, owned by the caller so that a
+// copy allocates once per gradient rather than once per perturbation.
+struct Scratch {
+  std::vector<double> psi_soil;
+  RootNetwork root_network;
+};
 
 // Put parameter `par` at `value` and everything else at base. One function so
 // that both routes below address the sixteen and the environment rows the same
@@ -595,11 +667,16 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
 //   missing accumulator -- and equally so that a genuinely missing row is not
 //   read as this.
 //
-// `psi_scratch` is the caller's buffer rather than a local so that the copy
-// allocates once per gradient instead of once per perturbation.
+//   ROOT CARBON is the third channel and it reaches the solve the way the soil
+//   does -- only through uptake -- but it moves the conductance rather than the
+//   driving potential, so it is applied by handing over a network built at the
+//   moved carbon. A layer with none has no row: see `root_carbon_of`.
+//
+// The scratch buffers are the caller's rather than locals so that the copies
+// allocate once per gradient instead of once per perturbation.
 inline void set_one(Leaf& l, double* th, const double* theta, const Drivers& d,
                     bool single, int par, double value, bool fast_stem_curve,
-                    std::vector<double>& psi_scratch) {
+                    Scratch& scratch) {
   std::copy(theta, theta + n_pars, th);
   if (par < n_pars) {
     th[par] = value;
@@ -607,12 +684,23 @@ inline void set_one(Leaf& l, double* th, const double* theta, const Drivers& d,
     return;
   }
   if (par == par_PPFD) {
-    apply(l, th, d, single, par, fast_stem_curve, value, d.psi_soil);
+    apply(l, th, d, single, par, fast_stem_curve, value, d.psi_soil,
+          d.root_network);
     return;
   }
-  psi_scratch = d.psi_soil;
-  psi_scratch[std::size_t(par - par_psi_soil_first)] = value;
-  apply(l, th, d, single, par, fast_stem_curve, d.PPFD, psi_scratch);
+  const int layer = par - par_psi_soil_first;
+  const int n_layers = n_soil_layers(d, single);
+  if (layer < n_layers) {
+    scratch.psi_soil = d.psi_soil;
+    scratch.psi_soil[std::size_t(layer)] = value;
+    apply(l, th, d, single, par, fast_stem_curve, d.PPFD, scratch.psi_soil,
+          d.root_network);
+    return;
+  }
+  perturb_root_carbon(d.root_network, layer - n_layers, value,
+                      scratch.root_network);
+  apply(l, th, d, single, par, fast_stem_curve, d.PPFD, d.psi_soil,
+        scratch.root_network);
 }
 
 // --- the two routes ----------------------------------------------------------
@@ -757,7 +845,7 @@ inline bool collar_channel(Leaf& l, double psi_star, const Settings& s,
 inline void held_row(Leaf& l, const double* theta, const Drivers& d,
                        bool single, int par, double psi_star, const Settings& s,
                        const std::string& caller, bool& at_base,
-                       std::vector<double>& psi_scratch, OutputValues& direct,
+                       Scratch& scratch, OutputValues& direct,
                        double& dresidual) {
   if (takes_shortcut(par, s) && !at_base) {
     apply(l, theta, d, single, -1, s.fast_stem_curve);
@@ -768,13 +856,13 @@ inline void held_row(Leaf& l, const double* theta, const Drivers& d,
   OutputValues dn(direct.n_uptake());
   double up_resid = 0.0;
   double dn_resid = 0.0;
-  const double base = par_value(theta, d, par);
-  const double h = step_for(par, base, s.step);
+  const double base = par_value(theta, d, single, par);
+  const double h = step_for(par, base, s.step, n_soil_layers(d, single));
   for (int side = 0; side < 2; ++side) {
     // Up first, then down: R evaluates `up <- side(1)` before `dn <- side(-1)`
     // and both mutate the leaf.
     set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
-            s.fast_stem_curve, psi_scratch);
+            s.fast_stem_curve, scratch);
     OutputValues& dst = side == 0 ? up : dn;
     // Evaluate first, then read dprofit at the same fixed collar -- R's order,
     // and `evaluate_root_collar_psi` is what seats the state `dprofit` reads.
@@ -813,7 +901,7 @@ inline void held_row(Leaf& l, const double* theta, const Drivers& d,
 inline bool solved_row(Leaf& l, const double* theta, const Drivers& d,
                        bool single, int par, const Settings& s,
                        const Branch* stay, bool& at_base,
-                       std::vector<double>& psi_scratch, OutputValues& row) {
+                       Scratch& scratch, OutputValues& row) {
   if (takes_shortcut(par, s) && !at_base) {
     apply(l, theta, d, single, -1, s.fast_stem_curve);
   }
@@ -821,13 +909,13 @@ inline bool solved_row(Leaf& l, const double* theta, const Drivers& d,
   double th[n_pars];
   OutputValues up(row.n_uptake());
   OutputValues dn(row.n_uptake());
-  const double base = par_value(theta, d, par);
-  double h = step_for(par, base, s.step);
+  const double base = par_value(theta, d, single, par);
+  double h = step_for(par, base, s.step, n_soil_layers(d, single));
   for (int decade = 0;; ++decade) {
     bool on_branch = true;
     for (int side = 0; side < 2; ++side) {
       set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
-              s.fast_stem_curve, psi_scratch);
+              s.fast_stem_curve, scratch);
       l.find_root_collar_psi();
       // Both arms are taken before either is tested, so which one crossed does
       // not change the order the leaf is moved in.
@@ -855,13 +943,13 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
                          double psi_star, double H,
                          const OutputValues& dY_dpsi, const Settings& s,
                          double* out) {
-  std::vector<double> psi_scratch;
+  Scratch scratch;
   OutputValues direct;
   bool at_base = true;
   for (std::size_t k = 0; k < npars; ++k) {
     double M = 0.0;
     held_row(l, theta, d, single, pars[k], psi_star, s, "leaf_gradient()",
-               at_base, psi_scratch, direct, M);
+               at_base, scratch, direct, M);
     const double dpsi_dtheta = -(M / H);
     for (int j = 0; j < n_outputs; ++j) {
       out[k * n_outputs + j] = direct[j] + rounded(dY_dpsi[j] * dpsi_dtheta);
@@ -916,7 +1004,7 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
 inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
                         bool single, const int* pars, std::size_t npars,
                         const Settings& s, double* out) {
-  std::vector<double> psi_scratch;
+  Scratch scratch;
   OutputValues row;
   bool at_base = true;
   for (std::size_t k = 0; k < npars; ++k) {
@@ -924,7 +1012,7 @@ inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
     // reports the base point's own kind beside the answer, so it cannot refuse.
     // The copy is what leaves a refused row NA rather than partly written.
     if (solved_row(l, theta, d, single, pars[k], s, nullptr, at_base,
-                   psi_scratch, row)) {
+                   scratch, row)) {
       for (int j = 0; j < n_outputs; ++j) {
         out[k * n_outputs + j] = row[j];
       }
@@ -942,7 +1030,7 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
                const int* pars, std::size_t npars, const Settings& s,
                Result& out) {
   out.reset(npars);
-  check_pars(pars, npars, n_soil_layers(d, single), "leaf_gradient()");
+  check_pars(pars, npars, n_soil_layers(d, single), single, "leaf_gradient()");
 
   const BasePoint b = base_point(l, theta, d, single, s);
   const double psi_star = b.psi_star;
@@ -1173,6 +1261,15 @@ inline double bound_dpoint(const Leaf::BoundRow& b, int par, int n_layers) {
   if (layer >= 0 && layer < n_layers) {
     return b.d_dpsi_soil[std::size_t(layer)];
   }
+  // ⚠️ Root carbon MUST be here. Both bounds are conditions on total uptake, and
+  // carbon moves every layer's conductance, so a carbon entry falling through to
+  // the zero below would report that the input leaves the point where it is --
+  // which `zero_kind` then labels a structural zero, from a row `bound_row` had
+  // already filled.
+  const int carbon = layer - n_layers;
+  if (carbon >= 0 && carbon < int(b.d_droot_carbon.size())) {
+    return b.d_droot_carbon[std::size_t(carbon)];
+  }
   return 0.0;
 }
 
@@ -1190,14 +1287,14 @@ inline bool bound_moves_by_re_solving(int par, bool single) {
 inline double differenced_bound(Leaf& l, const double* theta, const Drivers& d,
                                 bool single, int par, Leaf::WhichBound bound,
                                 const Settings& s, bool& at_base,
-                                std::vector<double>& psi_scratch) {
+                                Scratch& scratch) {
   at_base = false;
   double th[n_pars];
-  const double base = par_value(theta, d, par);
-  const double h = step_for(par, base, s.step);
-  set_one(l, th, theta, d, single, par, base + h, s.fast_stem_curve, psi_scratch);
+  const double base = par_value(theta, d, single, par);
+  const double h = step_for(par, base, s.step, n_soil_layers(d, single));
+  set_one(l, th, theta, d, single, par, base + h, s.fast_stem_curve, scratch);
   const double up = l.bound_row(bound).bound;
-  set_one(l, th, theta, d, single, par, base - h, s.fast_stem_curve, psi_scratch);
+  set_one(l, th, theta, d, single, par, base - h, s.fast_stem_curve, scratch);
   const double dn = l.bound_row(bound).bound;
   return (up - dn) / (2.0 * h);
 }
@@ -1223,7 +1320,7 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
   // rather than passed: an argument beside it could disagree with it.
   const bool single = l.supply_kind_ == Leaf::SupplyKind::SinglePotential;
   const int n_layers = n_soil_layers(d, single);
-  check_pars(r.input, r.n_input, n_layers, "leaf_rows()");
+  check_pars(r.input, r.n_input, n_layers, single, "leaf_rows()");
 
   int objective = -1;
   int point = -1;
@@ -1319,10 +1416,25 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
   }
 
   bool at_base = true;
-  std::vector<double> psi_scratch;
+  Scratch scratch;
   OutputValues direct(n_uptake);
   for (std::size_t i = 0; i < r.n_input; ++i) {
     const int p = r.input[i];
+    // A layer the network holds no roots in has no carbon to move and no slot to
+    // move it in, so this input has no row here rather than a zero one. `held`
+    // goes NA and `dresidual` stays NA, which is what separates it from a layer
+    // whose rows are genuinely zero.
+    const int carbon_layer = p - par_root_carbon_first(n_layers);
+    if (carbon_layer >= 0 && !std::isfinite(root_carbon_of(d, carbon_layer))) {
+      for (std::size_t j = 0; j < r.n_output; ++j) {
+        out.held[j * r.n_input + i] = util::na_value;
+      }
+      out.message += out.message.empty() ? "" : "; ";
+      out.message += "no row for `" + par_name(p, n_layers) +
+                     "`: that layer holds no root carbon, so the architecture "
+                     "model gave the network no slot for it";
+      continue;
+    }
     // Does this input move the point? Where a bound is what defines it, the
     // bound's own row says so; a shut collar sits at a critical potential with no
     // condition to read, so nothing there can be shown to leave the point where
@@ -1331,7 +1443,7 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     if (pinned) {
       dpoint = bound_moves_by_re_solving(p, single)
                    ? differenced_bound(l, theta, d, single, p, bound, s, at_base,
-                                       psi_scratch)
+                                       scratch)
                    : bound_dpoint(condition, p, n_layers);
     }
     const bool follows = shut || (pinned && dpoint != 0.0);
@@ -1342,7 +1454,7 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
       // assembly count it a second time. The held evaluation is not available to
       // take instead -- p* sits one step-in fraction from the bound, so a step
       // that moves the bound carries p* out of the perturbed feasible interval.
-      if (!solved_row(l, theta, d, single, p, s, &b.branch, at_base, psi_scratch,
+      if (!solved_row(l, theta, d, single, p, s, &b.branch, at_base, scratch,
                       direct)) {
         // This input only. The row would be a difference across a change of
         // branch, which is a difference of two functions.
@@ -1361,7 +1473,7 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     } else {
       double dR = 0.0;
       held_row(l, theta, d, single, p, b.psi_star, s, "leaf_rows()", at_base,
-                 psi_scratch, direct, dR);
+                 scratch, direct, dR);
       if (interior) {
         out.dresidual[i] = dR;
       } else {
@@ -1539,7 +1651,8 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
                          const double* v, const Settings& s,
                          TransposeResult& out) {
   out.reset(npars);
-  check_pars(pars, npars, n_soil_layers(d, single), "leaf_gradient_transpose()");
+  check_pars(pars, npars, n_soil_layers(d, single), single,
+             "leaf_gradient_transpose()");
 
   Result point;
   at(l, theta, d, single, nullptr, 0, s, point);
@@ -1557,7 +1670,7 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
   // leaf itself is back at base parameters and unsolved by now.
   const double psi_star = out.value[out_collar];
 
-  std::vector<double> psi_scratch;
+  Scratch scratch;
   bool at_base = true;
 
   if (out.used_ift) {
@@ -1577,7 +1690,7 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
     for (std::size_t k = 0; k < npars; ++k) {
       double M = 0.0;
       held_row(l, theta, d, single, pars[k], psi_star, s,
-                 "leaf_gradient_transpose()", at_base, psi_scratch, direct, M);
+                 "leaf_gradient_transpose()", at_base, scratch, direct, M);
       // v . dY/dtheta|_psi. `collar` is skipped rather than summed: its direct
       // term is zero by construction, `outputs_at` having just asserted that
       // both sides sit at exactly psi*.
@@ -1596,7 +1709,7 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
     // which is exactly why `gradient_fd` has no special case either.
     OutputValues solved;
     for (std::size_t k = 0; k < npars; ++k) {
-      solved_row(l, theta, d, single, pars[k], s, nullptr, at_base, psi_scratch,
+      solved_row(l, theta, d, single, pars[k], s, nullptr, at_base, scratch,
                  solved);
       double row = 0.0;
       for (int j = 0; j < n_outputs; ++j) {

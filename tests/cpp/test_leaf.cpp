@@ -3269,22 +3269,121 @@ void test_environment_par_names() {
     ok(grad::par_name(grad::par_root_carbon_first(L), L) == "root_carbon_1",
        "par_name names a root-carbon row, " + tag);
   }
-  // A row past this observation's arity is a per-row error, not an out-of-bounds
-  // read of psi_soil -- and so is a root-carbon row, which is in the enumeration
-  // because a consumer's vector carries it and cannot be moved from here.
+  // A row past this observation's arity is a per-row error rather than an
+  // out-of-bounds read of psi_soil. A root-carbon row is INSIDE the arity and is
+  // answered; what it takes is in test_root_carbon_rows below.
   phylloptim::Leaf l = env::fresh();
   grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
   grad::Settings s;
   grad::Result r;
-  for (int bad : {grad::n_pars_total(3), grad::par_root_carbon_first(3)}) {
-    bool threw = false;
-    try {
-      grad::at(l, env::kTheta, d, false, &bad, 1, s, r);
-    } catch (const std::runtime_error &) {
-      threw = true;
-    }
-    ok(threw, "index " + std::to_string(bad) + " throws");
+  int bad = grad::n_pars_total(3);
+  bool threw = false;
+  try {
+    grad::at(l, env::kTheta, d, false, &bad, 1, s, r);
+  } catch (const std::runtime_error &) {
+    threw = true;
   }
+  ok(threw, "index " + std::to_string(bad) + " throws");
+}
+
+// Root carbon is an ordinary input on the multi-layer path and has no row on
+// either of the two states where the network cannot represent a move in it.
+//
+// The perturbation is exact without the architecture model's constants, because
+// both resistances the solve reads are proportional to 1/carbon -- the same
+// proportionality `duptake_droot_carbon` differentiates through for the bound.
+// So the differenced row and the analytic bound row describe one model, and the
+// third check below is what would catch them coming apart.
+void test_root_carbon_rows() {
+  namespace grad = phylloptim::gradient;
+  grad::Settings s;
+  grad::Result r;
+  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
+
+  phylloptim::Leaf l = env::fresh();
+  int rc = grad::par_root_carbon_first(3);
+  bool threw = false;
+  try {
+    grad::at(l, env::kTheta, d, false, &rc, 1, s, r);
+  } catch (const std::runtime_error &) {
+    threw = true;
+  }
+  ok(!threw, "a rooted layer's root carbon answers");
+  ok(!threw && std::isfinite(r.grad[std::size_t(grad::out_profit)]),
+     "and its profit row is finite");
+  ok(!threw && r.grad[std::size_t(grad::out_profit)] != 0.0,
+     "and it is not the zero an unapplied perturbation would give");
+
+  // One series resistance and no root architecture, so a carbon perturbation
+  // would change nothing this path reads and every row would come back exactly
+  // zero. Refused by name instead.
+  phylloptim::Leaf sp = env::fresh();
+  sp.set_supply_single();
+  int rc_single = grad::par_root_carbon_first(1);
+  threw = false;
+  try {
+    grad::at(sp, env::kTheta, d, true, &rc_single, 1, s, r);
+  } catch (const std::runtime_error &) {
+    threw = true;
+  }
+  ok(threw, "root carbon is refused on the single-potential path");
+
+  // A layer with no roots: the architecture model sizes the network to the
+  // deepest rooted layer, so there is no slot to move and no row to give.
+  grad::Drivers shallow = env::drivers(2.0, 900.0, 2.0, 3, 2);
+  std::vector<int> pars{grad::par_root_carbon_first(3) + 2};
+  std::vector<int> out_index{grad::out_profit};
+  std::vector<grad::Role> roles{grad::Role::Objective};
+  grad::RowRequest req;
+  req.output = out_index.data();
+  req.role = roles.data();
+  req.n_output = out_index.size();
+  req.input = pars.data();
+  req.n_input = pars.size();
+  phylloptim::Leaf shallow_leaf = env::fresh();
+  const grad::Rows rows =
+      grad::rows_at(shallow_leaf, env::kTheta, shallow, req, s);
+  ok(!std::isfinite(rows.held[0]),
+     "an unrooted layer's carbon row is NA rather than zero");
+  ok(!std::isfinite(rows.dresidual[0]),
+     "and its condition gradient is NA too");
+  ok(rows.message.find("root_carbon_3") != std::string::npos,
+     "and the refusal names the layer");
+
+  // THE REFEREE FOR THE PERTURBATION ITSELF: against the architecture model run
+  // again from moved carbon, which is the thing being stood in for. It shares no
+  // code with `perturb_root_carbon` -- it goes through the two constants and the
+  // layer thickness, none of which the in-place edit ever sees.
+  //
+  // Measured bit-identical on all 45 values, but the tolerance stays a rounding:
+  // recovering each resistance's constant by multiplying is exact for these
+  // numbers rather than by construction.
+  const std::vector<double> depth{1.0, 2.0, 3.0};
+  std::vector<double> carbon(3, 1.0 / 3.0 / 0.05);
+  const phylloptim::RootNetwork base = fixture::root_network(carbon, depth);
+  auto rel = [](double got, double want) -> double {
+    const double scale = std::max(std::abs(want), 1e-300);
+    return std::abs(got - want) / scale;
+  };
+  double worst = 0.0;
+  for (int k = 0; k < 3; ++k) {
+    const double moved = carbon[std::size_t(k)] * 1.001;
+    std::vector<double> rebuilt_carbon = carbon;
+    rebuilt_carbon[std::size_t(k)] = moved;
+    const phylloptim::RootNetwork want =
+        fixture::root_network(rebuilt_carbon, depth);
+    phylloptim::RootNetwork got;
+    grad::perturb_root_carbon(base, k, moved, got);
+    for (std::size_t i = 0; i < want.r_R_H_min.size(); ++i) {
+      worst = std::max(worst, rel(got.r_R_H_min[i], want.r_R_H_min[i]));
+      worst = std::max(worst, rel(got.r_R_V[i], want.r_R_V[i]));
+      worst = std::max(worst, rel(got.r_R_V_sum[i], want.r_R_V_sum[i]));
+      worst = std::max(worst, rel(got.c_r_V[i], want.c_r_V[i]));
+      worst = std::max(worst, rel(got.c_r_H[i], want.c_r_H[i]));
+    }
+  }
+  ok(worst < 1e-15, "the in-place carbon perturbation reproduces a rebuild, " +
+                        std::to_string(worst));
 }
 
 // The strongest available reference: `psi_soil` and `PPFD` are already
@@ -3657,10 +3756,10 @@ void test_rows_in_parts_assemble_to_the_totals() {
                                 bool single, int par, const grad::Branch &stay,
                                 std::vector<double> &out) -> bool {
     double th[grad::n_pars];
-    std::vector<double> scratch;
+    grad::Scratch scratch;
     std::vector<double> arm[2];
-    const double base = grad::par_value(env::kTheta, d, par);
-    const double h = grad::step_for(par, base, settings.step);
+    const double base = grad::par_value(env::kTheta, d, single, par);
+    const double h = grad::step_for(par, base, settings.step, grad::n_soil_layers(d, single));
     bool on_branch = true;
     for (int side = 0; side < 2; ++side) {
       // Base first, then one step: `stem_b`'s setter rescales the stem curve and
@@ -3782,7 +3881,7 @@ void test_rows_in_parts_assemble_to_the_totals() {
     // than read off what `rows_at` returned, and every input at a shut collar
     // because no condition defines one there.
     std::vector<bool> follows(n, true);
-    std::vector<double> scratch;
+    grad::Scratch scratch;
     double th[grad::n_pars];
     // Taken at every kind, not only the constrained ones: the uptake reference
     // below refuses an arm that leaves this branch.
@@ -3811,8 +3910,8 @@ void test_rows_in_parts_assemble_to_the_totals() {
       // -- another kind, or the other limit winning the dry bound -- is a
       // difference of two functions and `rows_at` is what has to hold it.
       for (std::size_t k = 0; k < n; ++k) {
-        const double base = grad::par_value(env::kTheta, d, pars[k]);
-        const double h = grad::step_for(pars[k], base, settings.step);
+        const double base = grad::par_value(env::kTheta, d, single, pars[k]);
+        const double h = grad::step_for(pars[k], base, settings.step, grad::n_soil_layers(d, single));
         grad::apply(l, env::kTheta, d, single, -1, settings.fast_stem_curve);
         for (int side = 0; side < 2; ++side) {
           grad::set_one(l, th, env::kTheta, d, single, pars[k],
@@ -3860,11 +3959,11 @@ void test_rows_in_parts_assemble_to_the_totals() {
       // bound and the other differences the solve: how far the collar the solve
       // lands on moves over the whole step.
       if (is_pinned && !follows[k]) {
-        const double base = grad::par_value(env::kTheta, d, pars[k]);
+        const double base = grad::par_value(env::kTheta, d, single, pars[k]);
         const double moved =
             std::abs(fwd.grad[k * grad::n_outputs +
                               std::size_t(grad::out_collar)]) *
-            grad::step_for(pars[k], base, settings.step);
+            grad::step_for(pars[k], base, settings.step, grad::n_soil_layers(d, single));
         if (moved > worst_collar_move) {
           worst_collar_move = moved;
           worst_collar_move_where =
@@ -4215,7 +4314,7 @@ void test_rows_shrink_the_step_to_stay_on_one_branch() {
                        double h) -> bool {
     bool stays = true;
     double th[grad::n_pars];
-    std::vector<double> scratch;
+    grad::Scratch scratch;
     for (int side = 0; side < 2; ++side) {
       grad::set_one(l, th, env::kTheta, d, false, pars[0],
                     d.psi_soil[0] + (side == 0 ? h : -h), true, scratch);
@@ -4233,7 +4332,7 @@ void test_rows_shrink_the_step_to_stay_on_one_branch() {
   {
     grad::Drivers d = env::drivers(dry + 2e-6, 900.0, 2.0, 1, 1);
     const grad::Branch base = branch_at(d.psi_soil[0]);
-    const double h = grad::step_for(pars[0], d.psi_soil[0], settings.step);
+    const double h = grad::step_for(pars[0], d.psi_soil[0], settings.step, grad::n_soil_layers(d, false));
     ok(base.kind == grad::OperatingPointKind::PinnedDryRootCrit,
        "the point is pinned to the dry bound");
     ok(!arms_stay(d, base, h), "the requested step takes an arm off that branch");
@@ -4249,7 +4348,7 @@ void test_rows_shrink_the_step_to_stay_on_one_branch() {
   {
     grad::Drivers d = env::drivers(dry, 900.0, 2.0, 1, 1);
     const grad::Branch base = branch_at(d.psi_soil[0]);
-    const double h = grad::step_for(pars[0], d.psi_soil[0], settings.step);
+    const double h = grad::step_for(pars[0], d.psi_soil[0], settings.step, grad::n_soil_layers(d, false));
     ok(!arms_stay(d, base, 0.01 * h),
        "two decades below the step still takes an arm off the branch");
     const grad::Rows rows = grad::rows_at(l, env::kTheta, d, req, settings);
@@ -4342,6 +4441,7 @@ int main() {
   test_out_of_domain_names_the_spline();
   test_out_of_domain_under_rescale();
   test_environment_par_names();
+  test_root_carbon_rows();
   test_environment_rows_match_a_differenced_solve();
   test_environment_water_rows_are_rank_one();
   test_environment_rows_are_zero_below_the_rooted_layers();
