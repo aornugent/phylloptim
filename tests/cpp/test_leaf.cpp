@@ -4433,23 +4433,29 @@ void test_rows_shrink_the_step_to_stay_on_one_branch() {
        "so the row comes back and nothing is refused");
   }
 
-  // Two decades is the floor. On the boundary itself no step reaches across it,
-  // and the row is refused by name rather than taken across the branch.
+  // On the boundary itself NO step keeps a re-solved arm on the branch -- not at
+  // the requested one, and not two decades below it. This used to be where the
+  // row was refused by name, and it is now where the arms stop being re-solved:
+  // placed on the bound the point is pinned to, they are on the branch by
+  // construction and the step no longer decides.
   {
     grad::Drivers d = env::drivers(dry, 900.0, 2.0, 1, 1);
     const grad::Branch base = branch_at(d.psi_soil[0]);
     const double h = grad::step_for(pars[0], d.psi_soil[0], settings.step, grad::n_soil_layers(d, false));
     ok(!arms_stay(d, base, 0.01 * h),
-       "two decades below the step still takes an arm off the branch");
+       "two decades below the step still takes a re-solved arm off the branch");
     const grad::Rows rows = grad::rows_at(l, env::kTheta, d, req, settings);
     ok(rows.kind == base.kind, "the point is still the pinned one");
-    bool all_na = true;
+    bool all_answered = true;
     for (int j = 0; j < grad::n_outputs; ++j) {
-      all_na = all_na && !std::isfinite(rows.held[std::size_t(j)]);
+      all_answered =
+          all_answered && std::isfinite(rows.held[std::size_t(j)]);
     }
-    ok(all_na, "the refused input's whole column is NA");
-    ok(rows.message.find("psi_soil_1") != std::string::npos,
-       "and the refusal names the input: " + rows.message);
+    ok(all_answered, "and the whole column answers rather than being refused");
+    ok(rows.message.empty(),
+       "with nothing refused by name: " + rows.message);
+    // The row is a total, so the point contributes nothing a second time.
+    ok(rows.dresidual[0] == 0.0, "and the condition's gradient stays zero");
   }
 }
 

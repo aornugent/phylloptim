@@ -976,6 +976,13 @@ inline void held_row_or_stop(Leaf& l, const double* theta, const Drivers& d,
   }
 }
 
+// Where a pinned point's arms are placed: the bound that defines it, and the
+// step-in the solve left between that bound and the collar.
+struct FollowBound {
+  Leaf::WhichBound which;
+  double step_in;
+};
+
 // One input's central difference of the WHOLE solve. Correct at a pinned optimum
 // because it differences the CONSTRAINED answer, which is exactly what the
 // composite cannot do.
@@ -992,8 +999,8 @@ inline void held_row_or_stop(Leaf& l, const double* theta, const Drivers& d,
 // then.
 inline bool solved_row(Leaf& l, const double* theta, const Drivers& d,
                        bool single, int par, const Settings& s,
-                       const Branch* stay, bool& at_base,
-                       Scratch& scratch, OutputValues& row) {
+                       const Branch* stay, const FollowBound* follow,
+                       bool& at_base, Scratch& scratch, OutputValues& row) {
   if (takes_shortcut(par, s) && !at_base) {
     apply(l, theta, d, single, -1, s.fast_stem_curve);
   }
@@ -1003,6 +1010,11 @@ inline bool solved_row(Leaf& l, const double* theta, const Drivers& d,
   OutputValues dn(row.n_uptake());
   const double base = par_value(theta, d, single, par);
   double h = step_for(par, base, s.step, n_soil_layers(d, single));
+  auto difference = [&]() -> void {
+    for (int j = 0; j < row.size(); ++j) {
+      row[j] = (up[j] - dn[j]) / (2.0 * h);
+    }
+  };
   for (int decade = 0;; ++decade) {
     bool on_branch = true;
     for (int side = 0; side < 2; ++side) {
@@ -1015,10 +1027,41 @@ inline bool solved_row(Leaf& l, const double* theta, const Drivers& d,
       outputs(l, side == 0 ? up : dn);
     }
     if (on_branch) {
-      for (int j = 0; j < row.size(); ++j) {
-        row[j] = (up[j] - dn[j]) / (2.0 * h);
-      }
+      difference();
       return true;
+    }
+    // THE ARMS LEFT THE BRANCH. Where a bound is what defines the point, place
+    // them on it rather than letting each solve choose: a pinned point IS its
+    // bound, one step-in from it, so an arm at the PERTURBED bound plus that
+    // same step-in is on the branch by construction. A drying stand refuses
+    // `stem_c`, `psi_crit` and its soil rows without this.
+    //
+    // Tried only after the re-solve, and that ordering is not cosmetic: where
+    // both arms stay on the branch the two placements are not the same row, and
+    // the re-solved one is what every other entry point reports.
+    //
+    // ⚠️ The step-in is load-bearing. At the wet bound total uptake is exactly
+    // zero, so an arm at the bare bound is degenerate: one measured 268.561 for
+    // a derivative of -0.0814.
+    if (follow != nullptr) {
+      bool placed = true;
+      for (int side = 0; side < 2; ++side) {
+        set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
+                s.fast_stem_curve, scratch);
+        // ⚠️ The solve runs for its SUPPLY STATE and not for its answer: setting
+        // traits leaves that stale, and the bound then reads as the wettest
+        // layer. The collar it lands on is what is discarded here.
+        l.find_root_collar_psi();
+        const Leaf::BoundRow moved = l.bound_row(follow->which);
+        const bool here =
+            moved.finite &&
+            outputs_at(l, moved.bound + follow->step_in, side == 0 ? up : dn);
+        placed = placed && here;
+      }
+      if (placed) {
+        difference();
+        return true;
+      }
     }
     if (decade == 2) {
       return false;
@@ -1103,7 +1146,7 @@ inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
     // No branch to hold: this route differences whatever the two arms land on and
     // reports the base point's own kind beside the answer, so it cannot refuse.
     // The copy is what leaves a refused row NA rather than partly written.
-    if (solved_row(l, theta, d, single, pars[k], s, nullptr, at_base,
+    if (solved_row(l, theta, d, single, pars[k], s, nullptr, nullptr, at_base,
                    scratch, row)) {
       for (int j = 0; j < n_outputs; ++j) {
         out[k * n_outputs + j] = row[j];
@@ -1512,9 +1555,14 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     return out;
   }
 
+  // Where a pinned point sits relative to the bound that defines it, measured
+  // once at the base state and reused by every arm below so they are all placed
+  // the same way.
+  FollowBound follow{bound, 0.0};
   Leaf::BoundRow condition;
   if (pinned) {
     condition = l.bound_row(bound);
+    follow.step_in = b.psi_star - condition.bound;
     if (!condition.finite) {
       out.message = "the bound this point is pinned to has no derivative here";
       apply(l, theta, d, single, -1, s.fast_stem_curve);
@@ -1602,7 +1650,8 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
       // assembly count it a second time. The held evaluation is not available to
       // take instead -- p* sits one step-in fraction from the bound, so a step
       // that moves the bound carries p* out of the perturbed feasible interval.
-      if (!solved_row(l, theta, d, single, p, s, &b.branch, at_base, scratch,
+      if (!solved_row(l, theta, d, single, p, s, &b.branch,
+                      pinned ? &follow : nullptr, at_base, scratch,
                       direct)) {
         // This input only. The row would be a difference across a change of
         // branch, which is a difference of two functions.
@@ -1866,7 +1915,8 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
     // which is exactly why `gradient_fd` has no special case either.
     OutputValues solved;
     for (std::size_t k = 0; k < npars; ++k) {
-      solved_row(l, theta, d, single, pars[k], s, nullptr, at_base, scratch,
+      solved_row(l, theta, d, single, pars[k], s, nullptr, nullptr, at_base,
+                 scratch,
                  solved);
       double row = 0.0;
       for (int j = 0; j < n_outputs; ++j) {
