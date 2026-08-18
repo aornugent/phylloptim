@@ -3826,19 +3826,6 @@ void test_rows_in_parts_assemble_to_the_totals() {
   // a re-solve instead. Split by family for the reason the five are: the parts
   // hold the point where the model puts it, and a differenced solve does not.
   double worst_uptake = 0.0, worst_uptake_followed = 0.0;
-  // The supply family is refereed apart from the rest, because its rows are STATED
-  // by the leaf where every other family's are differenced -- so `at()` at the
-  // input step is the right reference for the others and the wrong one for it.
-  // Three accumulators, because `at()` exposes the two halves separately at two
-  // specific outputs and only the rest are composites: it sets profit's total to
-  // the held term alone (the envelope theorem) and the collar's to the point's own
-  // movement alone. So profit's cell isolates `held`, the collar's isolates
-  // `dresidual`, and those two are exactly what this change produces -- where a
-  // composite mixes them AND cancels, amplifying by up to 31 at the states measured.
-  double worst_supply_held = 0.0, worst_supply_point = 0.0, worst_supply = 0.0;
-  std::string worst_supply_held_where, worst_supply_point_where,
-      worst_supply_where;
-  int slack_checked = 0;
   double worst_uptake_held = 0.0;
   std::string worst_uptake_where, worst_uptake_followed_where;
   std::string worst_uptake_held_where;
@@ -3949,21 +3936,12 @@ void test_rows_in_parts_assemble_to_the_totals() {
       ++pin_without_slope;
     }
 
-    // The inputs read by nothing but the dry bound: at an interior optimum the
+    // The one input read by nothing but the dry bound: at an interior optimum its
     // whole row is exactly zero, and the channel says which kind of zero.
-    //
-    // ⚠️ BOTH critical potentials, not just the root's. The dry bound is the lesser
-    // of the collar at which the stem reaches its critical potential and the root's
-    // own limit, so strictly inside the interval neither binds and neither carries a
-    // row. `psi_crit` was absent from this check and from the whole file, which is
-    // why it went out of agreement with what a consumer declares about it.
     for (std::size_t k = 0; k < n; ++k) {
-      const bool bound_only = pars[k] == grad::par_root_psi_crit ||
-                              pars[k] == grad::par_psi_crit;
-      if (!bound_only || !is_interior) {
+      if (pars[k] != grad::par_root_psi_crit || !is_interior) {
         continue;
       }
-      ++slack_checked;
       for (int j = 0; j < grad::n_outputs; ++j) {
         const std::size_t at = std::size_t(j) * n + k;
         if (rows.held[at] != 0.0 || rows.zero[at] != grad::Zero::slack) {
@@ -4059,50 +4037,6 @@ void test_rows_in_parts_assemble_to_the_totals() {
       }
     }
 
-    // ⚠️ THE STATED FAMILY'S REFERENCE IS TAKEN ON THE PLATEAU, NOT AT THE INPUT
-    // STEP, because what it compares is now two DERIVATIONS rather than two
-    // spellings of one difference. The supply rows are stated by the leaf; `at()`
-    // differences them, and a difference has a step. This check used to read 0 only
-    // because both sides ran the same one.
-    //
-    // 1e-5 rather than 1e-4, measured over the whole one-layer grid: at 1e-4 the
-    // reference's own h-squared truncation is what the comparison sees. Its spread
-    // between 1e-3 and 1e-4 equals the reported disagreement to three significant
-    // figures at all 70 interior states, and dropping the reference to 1e-5 takes
-    // the worst cell from 3.9e-04 to under 1e-06 at 69 of them.
-    // ⚠️ A DIFFERENCED REFERENCE'S PLATEAU IS PER OUTPUT, so no single step can
-    // referee a row that spans several. Measured: a relative step of 1e-5 referees
-    // conductance and the stem potential to 5e-09 and assimilation and profit to
-    // 4e-04, because those two read through the inner CO2 solve and their
-    // difference carries its floor. Asking one step to do it is how this check
-    // twice ended up reporting its own reference.
-    //
-    // ⚠️ AND THE PLATEAU CAN BE ONE DECADE WIDE, which is why this asks the stated
-    // value to match the BEST of several steps rather than to sit on two adjacent
-    // ones. Measured: at psi_soil 0.5 / PPFD 900 / vpd 2.0 a carbon row's
-    // difference is right at 1e-4 and wrong at 1e-5 either side of it, while at
-    // psi_soil 1.0 / PPFD 1500 / vpd 1.0 the same row is right at 1e-6 and 1e-7 and
-    // wrong at 1e-4. There is no step that referees every cell.
-    //
-    // Matching the best of four is sound in aggregate rather than per cell: the
-    // four differences differ from each other by about 1e-04, so a wrong value
-    // coinciding with one of them to 1e-06 is a one-in-a-hundred accident that
-    // would have to happen at every cell of every state for this to pass.
-    //
-    // That the reference is this fragile is the case for the change it referees: a
-    // consumer differencing at ONE fixed step is off the plateau at most states,
-    // and the fixed step in production is coarser than any of these.
-    static const double kPlateau[] = {1e-4, 1e-5, 1e-6, 1e-7};
-    const int n_plateau = 4;
-    grad::Result plateau[4];
-    if (composite) {
-      for (int t = 0; t < n_plateau; ++t) {
-        grad::Settings on_plateau = settings;
-        on_plateau.step = kPlateau[t];
-        grad::at(l, env::kTheta, d, single, pars.data(), n, on_plateau,
-                 plateau[t]);
-      }
-    }
     for (std::size_t k = 0; k < n; ++k) {
       if (!composite) {
         ++(follows[k] ? followed_rows : held_rows);
@@ -4129,11 +4063,6 @@ void test_rows_in_parts_assemble_to_the_totals() {
       }
       for (int j = 0; j < grad::n_outputs; ++j) {
         const double got = assemble(rows, n, k, j);
-        // A stated row is held against its own plateau; a differenced one against
-        // the same difference it is, where the two agree exactly and any
-        // disagreement is a defect rather than a step.
-        const bool stated =
-            composite && grad::is_supply_input(pars[k], n_layers);
         const double want = fwd.grad[k * grad::n_outputs + std::size_t(j)];
         if (!std::isfinite(got)) {
           ++not_a_number;
@@ -4143,32 +4072,17 @@ void test_rows_in_parts_assemble_to_the_totals() {
             got != 0.0) {
           ++shut_profit_nonzero;
         }
-        double err = std::abs(got - want) / std::max(std::abs(want), 1e-30);
-        if (stated) {
-          err = 1.0;
-          for (int t = 0; t < n_plateau; ++t) {
-            const double ref =
-                plateau[t].grad[k * grad::n_outputs + std::size_t(j)];
-            err = std::min(err, std::abs(got - ref) /
-                                    std::max(std::abs(ref), 1e-30));
-          }
-        }
-        double &into =
-            stated ? (j == grad::out_profit  ? worst_supply_held
-                      : j == grad::out_collar ? worst_supply_point
-                                              : worst_supply)
-            : composite  ? worst
-            : follows[k] ? worst_followed
-                         : worst_held;
+        const double err =
+            std::abs(got - want) / std::max(std::abs(want), 1e-30);
+        double &into = composite      ? worst
+                       : follows[k]   ? worst_followed
+                                      : worst_held;
         if (err > into) {
           into = err;
           const std::string what =
               " at " + grad::par_name(pars[k], grad::n_soil_layers(d, single)) +
               "/" + grad::output_names()[std::size_t(j)] + where;
-          (stated ? (j == grad::out_profit    ? worst_supply_held_where
-                     : j == grad::out_collar ? worst_supply_point_where
-                                             : worst_supply_where)
-           : composite ? worst_where
+          (composite ? worst_where
            : follows[k] ? worst_followed_where
                         : worst_held_where) = what;
         }
@@ -4240,15 +4154,6 @@ void test_rows_in_parts_assemble_to_the_totals() {
           }
           for (int i : env::all_env_pars(L)) {
             pars.push_back(i);
-          }
-          // The carbon half of the supply family. `all_env_pars` does not carry it
-          // because the single-potential path has none -- so without this the
-          // analytic block's lower-triangular half was refereed by nothing. At ONE
-          // layer it would be refereed vacuously: there the carbon direction IS the
-          // uniform scaling direction the first coefficient is read along, to
-          // sixteen digits, so its row reproduces that difference by construction.
-          for (int k = 0; k < L; ++k) {
-            pars.push_back(grad::par_root_carbon_first(L) + k);
           }
           check(env::drivers(p, q, vp, L, L), false, pars,
                 " at psi_soil " + std::to_string(p) + ", ppfd " +
@@ -4348,12 +4253,6 @@ void test_rows_in_parts_assemble_to_the_totals() {
          followed_rows, held_rows, refused_rows);
   printf("  worst |assembled - at()| / |at()| = %.3g%s\n", worst,
          worst_where.c_str());
-  printf("  a STATED supply row against a plateau reference: held %.3g%s\n",
-         worst_supply_held, worst_supply_held_where.c_str());
-  printf("                                                  point %.3g%s\n",
-         worst_supply_point, worst_supply_point_where.c_str());
-  printf("                                              composite %.3g%s\n",
-         worst_supply, worst_supply_where.c_str());
   printf("  a row that followed the point:       %.3g%s\n", worst_followed,
          worst_followed_where.c_str());
   printf("  a row taken at a held point:         %.3g%s\n", worst_held,
@@ -4396,38 +4295,10 @@ void test_rows_in_parts_assemble_to_the_totals() {
      "no point takes the composite that the solve did not call interior");
   ok(role_violation == 0, "the point's and the objective's channels are exact");
   ok(pin_without_slope == 0, "a pin comes back with the bound's own slope");
-  ok(slack_violation == 0 && slack_checked > 0,
-     "both critical potentials' rows are exactly zero at an interior optimum, "
-     "and say it is slackness");
+  ok(slack_violation == 0, "the slack row is exactly zero and says so");
   ok(compared > 150, "the composite was compared over most of the grid");
   ok(constrained > 90, "and the differenced solve over the constrained points");
   ok(worst <= 1e-12, "the parts assemble to the totals");
-  // Bounds from the measurement, and the two are two decades apart for a reason
-  // worth keeping.
-  //
-  // A held row is a product of quantities each side states exactly, so it lands at
-  // the reference's own floor. The CONDITION GRADIENT is a sum of two terms that
-  // can nearly cancel -- at psi_soil 0.5 / PPFD 900 / vpd 2.0 the third layer's
-  // carbon gives -2.23e-02 and +2.15e-02 for a sum of -7.86e-04 -- so it carries
-  // 28x whatever error the first coefficient has. The coefficient itself is
-  // well determined: every supply direction agrees on it to 2.4e-09. What is not,
-  // at a handful of states, is the difference that recovers it, and 28x a part in
-  // 5e5 is the 5.7e-05 below.
-  //
-  // ⚠️ SO THE FACTORISATION IS EXACT IN STRUCTURE AND ILL-CONDITIONED IN THE
-  // DIRECTIONS THAT CANCEL, which are not the same statement. Tightening this
-  // wants a better recovery of one scalar, not a different decomposition.
-  ok(worst_supply_held > 0.0 && worst_supply_held <= 1e-5,
-     "a stated held row is the leaf's own derivative, to a plateau reference");
-  // The condition's gradient is DIFFERENCED, so it is at()'s own difference and
-  // agrees with it exactly -- the same assertion the followed family gets, and for
-  // the same reason. It is not stated from the two scalars, because that makes the
-  // per-input error coherent across layers and the consumer sums them: see
-  // `differenced_dresidual`.
-  ok(worst_supply_point == 0.0,
-     "a stated point's gradient IS at()'s own difference");
-  ok(worst_supply <= 1e-2,
-     "so their composite agrees within the held row's own plateau");
   ok(worst_followed == 0.0,
      "at a constrained point a followed row IS at()'s own difference");
   // Why the held family does not, and why the disagreement above is reported

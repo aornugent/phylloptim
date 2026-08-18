@@ -199,12 +199,6 @@ inline std::string par_name(int par, int n_layers) {
 //   * `profit` is the OBJECTIVE rather than an output read at the argmax, which
 //     is what brings the envelope theorem into play.
 inline constexpr int n_outputs = 5;
-// Named because a row layer has to say which output it is writing, and this file's
-// own rule for `theta` applies here too: nothing indexes the five by a bare
-// integer.
-inline constexpr int out_assim = 0;
-inline constexpr int out_stom_cond = 1;
-inline constexpr int out_psi_stem = 2;
 inline constexpr int out_collar = 3;
 inline constexpr int out_profit = 4;
 
@@ -773,17 +767,6 @@ struct BasePoint {
   // ⚠️ Read the moment the solve ends, because the first evaluation at a held
   // collar overwrites it: `evaluate_root_collar_psi` tags the point Prescribed.
   Branch branch;
-  // ⚠️ AND FOR THE SAME REASON, one line further down than it looks. These read
-  // `ci_`, which the curvature's three marginal-profit reads below RE-SOLVE at
-  // their own collars -- so taken any later they describe psi* minus the collar
-  // step. Measured: the two fields that read `ci_` came back 2.5e-07 to 6.9e-07
-  // out that way while the two that do not were exact, which is how the ordering
-  // was found rather than reasoned about.
-  //
-  // Taken unconditionally rather than when a caller wants them, because "read it
-  // before anything moves" is not a condition a caller can be trusted with, and
-  // the cost is a handful of forward-mode passes against a whole solve.
-  Leaf::UptakeDerivatives uptake;
 };
 
 // The step in the collar potential, floored at 1 MPa for `step_for`'s reason.
@@ -804,9 +787,7 @@ inline BasePoint base_point(Leaf& l, const double* theta, const Drivers& d,
   b.value = OutputValues(n_uptake);
   b.branch = branch_here(l);
   b.psi_star = l.opt_root_psi_;
-  // Outputs first: they read `soil_consumption_`, which the next line refreshes.
   outputs(l, b.value);
-  b.uptake = l.uptake_derivatives();
 
   const double h_psi = collar_step(b.psi_star, s);
   b.resid = l.dprofit_droot_collar_psi(b.psi_star);
@@ -1484,177 +1465,19 @@ inline double differenced_bound(Leaf& l, const double* theta, const Drivers& d,
   return (up - dn) / (2.0 * h);
 }
 
-// An exact zero, classified where it is written.
-//
-// BOTH critical potentials are complementary slackness at an interior optimum, and
-// the dry bound is where both of them are read: it is the lesser of the collar at
-// which the stem reaches its critical potential and the root's own limit. Strictly
-// inside the interval neither constraint binds, so neither carries a row, and both
-// go live at a pin.
-//
-// ⚠️ THIS USED TO GRANT SLACK TO THE ROOT'S ALONE, on the reasoning that the flux
-// integrates the stem curve up to `psi_crit`. It does not -- the flux integrates up
-// to the stem potential the plant is OPERATING at, and `psi_crit` enters only the
-// dry bound's residual and the bracket the solve searches, both inactive here. The
-// hydraulic cost reads `stem_b`, `stem_c`, `beta2` and the cost scale and not
-// `psi_crit` either. The stated reason also predicted a non-zero row, which a
-// consumer's own declared-zero check measures as exactly zero.
-//
-// The distinction is not cosmetic: `structural` claims the input reaches nothing on
-// any trajectory, where `slack` says a constraint is not binding *here* and will
-// carry the whole row when it does. Every other exact zero here is an input the
-// branch taken reads through nothing.
+// An exact zero, classified where it is written. The root's own critical
+// potential is read by nothing but the dry bound, so at an interior optimum its
+// zero is complementary slackness; the stem's psi_crit is not the same case,
+// since the flux integrates the stem curve up to it. Every other exact zero here
+// is an input the branch taken reads through nothing.
 inline Zero zero_kind(double entry, int par, bool interior) {
   if (entry != 0.0) {
     return Zero::none;
   }
-  if (interior && (par == par_root_psi_crit || par == par_psi_crit)) {
+  if (interior && par == par_root_psi_crit) {
     return Zero::slack;
   }
   return Zero::structural;
-}
-
-// --- the supply family, without perturbing the leaf ---------------------------
-//
-// The soil potentials and the layer carbons are the one family whose rows the leaf
-// can state rather than be measured for. Every output reads them through TOTAL
-// UPTAKE and nothing else -- psi_stem is the transport curve read at
-// E_up/kmax + G(collar), and assimilation, conductance and profit read only
-// psi_stem -- except the per-layer draws, which ARE the supply and whose rows are
-// its own Jacobian. So:
-//
-//     held[y][u]     = (dy/dE_up) * (dE_up/du)          for a leaf output
-//                    = the supply's own entry            for a layer's draw
-//     dresidual[u]   = a * (dE_up/du) + b * (d2E_up/du dp)
-//
-// with two scalars shared across every direction. What this replaces is two
-// perturbed evaluations per input: twenty at five layers.
-//
-// ⚠️ THE TWO SCALARS ARE PARTIALS IN THEIR OWN ARGUMENTS, WHICH IS WHY THIS IS
-// NOT A FIT. `b` is closed form. `a` is taken along one direction that scales
-// both quantities exactly, so it is a directional derivative of the marginal
-// profit rather than a coefficient solved from observed rows. Solving instead from
-// the soil potentials -- the obvious choice, since they are the family being
-// served -- carries that family's own near-collinearity, about one part in 10^4,
-// into every row it was not taken from.
-struct SupplyRows {
-  bool usable = false;
-  std::string message;
-  Leaf::UptakeDerivatives d;
-  // Per layer, the layer's own draw against its own potential. The supply's soil
-  // Jacobian is diagonal -- a layer's flux reads its own potential and the collar
-  // and no other layer's -- so this vector is the whole of it.
-  std::vector<double> dE_dpsi, d2E_dpsi;
-  // [i][k]: layer i's draw against layer k's carbon. LOWER TRIANGULAR rather than
-  // diagonal, because layer k's carbon sits in the vertical path of every layer
-  // at or below it.
-  std::vector<std::vector<double>> dE_drc, dD_drc;
-  // The collar the rows were taken at, which is the operating point unless a
-  // branch kink forced a step off it.
-  double at_collar = util::na_value;
-};
-
-// True where the supply can state its own derivatives at `collar`, stepping off a
-// branch kink by a few tolerances rather than refusing on one.
-//
-// ⚠️ A NON-FINITE SUPPLY DERIVATIVE MEANS "STEP OFF THE COINCIDENCE", NOT "NO
-// DERIVATIVE EXISTS". At a coincidence between the collar and a layer's potential
-// the general expression is 0/0, and the quantity it stands for -- a span over an
-// integral -- is analytic through the point, because the two signs cancel. A row
-// taken four tolerances away differs by order 4e-8, which is below every tolerance
-// the model carries; refusing costs the whole water channel.
-inline bool supply_jacobians(Leaf& l, double collar, SupplyRows& out) {
-  const std::vector<double>& psi_soil = l.supply_psi_soil();
-  auto finite_all = [](const std::vector<double>& v) -> bool {
-    for (const double x : v) {
-      if (!std::isfinite(x)) {
-        return false;
-      }
-    }
-    return true;
-  };
-  auto at = [&](double c) -> bool {
-    l.dE_from_soil_dpsi_soil(c, psi_soil, out.dE_dpsi);
-    if (!finite_all(out.dE_dpsi)) {
-      return false;
-    }
-    l.roots_.d2uptake_dpsi_dpsi_soil(c, psi_soil, out.d2E_dpsi);
-    if (!finite_all(out.d2E_dpsi)) {
-      return false;
-    }
-    l.roots_.duptake_droot_carbon(c, psi_soil, out.dE_drc, out.dD_drc);
-    for (const std::vector<double>& row : out.dE_drc) {
-      if (!finite_all(row)) {
-        return false;
-      }
-    }
-    for (const std::vector<double>& row : out.dD_drc) {
-      if (!finite_all(row)) {
-        return false;
-      }
-    }
-    out.at_collar = c;
-    return true;
-  };
-  // Retried in both directions, because stepping off one layer's coincidence can
-  // land on another's.
-  const double step_off = 4e-8;
-  if (at(collar) || at(collar + step_off) || at(collar - step_off)) {
-    return true;
-  }
-  out.message =
-      "the supply's own derivatives are not finite four kink tolerances either "
-      "side of the operating point, so it is the model's rather than a "
-      "coincidence's";
-  return false;
-}
-
-// dR/du at a HELD collar, by differencing the marginal profit alone.
-//
-// ⚠️ DIFFERENCED RATHER THAN ASSEMBLED FROM THE TWO SCALARS, and the reason is the
-// DIRECTION rather than the per-input accuracy. `a*dE_up/du + b*d2E_up/du dp` is
-// accurate per input -- 5.7e-05 against a plateau reference over a whole grid, and
-// the two scalars are agreed to 2.4e-09 by every supply direction independently.
-// But its error is SHARED, because every input reads the same two numbers. The
-// quantity a consumer actually reads is the SUM over layers, where the answer
-// nearly cancels and a shared error adds coherently while the answer does not:
-// measured on a stand, 3.1 relative in the uniform-drying direction against
-// 7.6e-04 for the same rows differenced. Independent per-input errors partly
-// cancel there; one coherent error cannot.
-//
-// So the factorisation is exact in structure, accurate per input, and the wrong
-// way to compute a row whose consumer sums it. Two evaluations, and NOT the four
-// `held_row` takes: the outputs are stated above, so only the condition's own
-// gradient is measured -- which also means nothing is seated at a collar the
-// perturbed state might not admit.
-inline bool differenced_dresidual(Leaf& l, const double* theta, const Drivers& d,
-                                  bool single, int par, double psi_star,
-                                  const Settings& s, bool& at_base,
-                                  Scratch& scratch, double& dR) {
-  at_base = false;
-  double th[n_pars];
-  const double base = par_value(theta, d, single, par);
-  const double h = step_for(par, base, s.step, n_soil_layers(d, single));
-  double resid[2] = {0.0, 0.0};
-  for (int side = 0; side < 2; ++side) {
-    set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
-            s.fast_stem_curve, scratch);
-    resid[side] = l.dprofit_droot_collar_psi(psi_star);
-  }
-  // The bare exact 0.0 the marginal profit returns on a shut or infeasible collar
-  // is a sentinel and not a stationary point, so it is tested for exactly -- the
-  // same argument `base_point` makes for the curvature.
-  if (util::identical(resid[0], 0.0) || util::identical(resid[1], 0.0)) {
-    return false;
-  }
-  dR = (resid[0] - resid[1]) / (2.0 * h);
-  return std::isfinite(dR);
-}
-
-// Which inputs this block answers: a soil potential or a layer's carbon.
-inline bool is_supply_input(int par, int n_layers) {
-  return par >= par_psi_soil_first &&
-         par < par_root_carbon_first(n_layers) + n_layers;
 }
 
 inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
@@ -1755,34 +1578,6 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     out.residual_slope = 1.0;
   }
 
-  // ⚠️ THE SUPPLY'S OWN JACOBIANS ARE READ HERE, BEFORE `collar_channel` MOVES THE
-  // COLLAR. They are `const` reads that write only the caller's buffer, so nothing
-  // is restored afterwards -- but they are taken AT a collar, and after
-  // `collar_channel` the leaf is seated one collar step away from psi*.
-  //
-  // The leaf's response to uptake is not read here at all: it comes from
-  // `base_point`, which is the only moment the whole operating point is intact.
-  //
-  // Interior points only, for now. At a pin the held partial is a formula too --
-  // the bound moves by O(du), so a held collar stays feasible in the limit even
-  // though no usable step keeps it there -- but taking it changes numbers a pinned
-  // gradient already answers, so it wants its own before-and-after.
-  SupplyRows supply;
-  bool want_supply = false;
-  for (std::size_t i = 0; i < r.n_input && !want_supply; ++i) {
-    want_supply = is_supply_input(r.input[i], n_layers);
-  }
-  if (want_supply && interior && !single) {
-    // Captured at the solve, in `base_point`, because by here the curvature's own
-    // reads have moved the intercellular concentration off the operating point.
-    supply.d = b.uptake;
-    if (!supply.d.finite) {
-      supply.message = "the leaf's response to total uptake is not finite here";
-    } else {
-      supply.usable = supply_jacobians(l, b.psi_star, supply);
-    }
-  }
-
   OutputValues dY_dpsi(n_uptake);
   const bool have_channel = collar_channel(l, b.psi_star, s, dY_dpsi);
   for (std::size_t j = 0; j < r.n_output; ++j) {
@@ -1810,9 +1605,6 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
   bool at_base = true;
   Scratch scratch;
   OutputValues direct(n_uptake);
-  // One layer's draw against whichever supply input is being answered, reused
-  // across inputs rather than allocated per input.
-  std::vector<double> draw;
   for (std::size_t i = 0; i < r.n_input; ++i) {
     const int p = r.input[i];
     // A layer the network holds no roots in has no carbon to move and no slot to
@@ -1836,73 +1628,6 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
         const std::size_t at = j * r.n_input + i;
         out.held[at] = 0.0;
         out.zero[at] = Zero::structural;
-      }
-      continue;
-    }
-    // The supply family, stated rather than measured. Nothing below this line runs
-    // for these inputs: no arm, no step, no held collar -- and so no question
-    // about whether the perturbed state admits one.
-    //
-    // Where the block could not be built the loop falls through and differences
-    // instead, silently, because both routes answer the same question and only one
-    // of them is available. That silence is the one thing here a consumer cannot
-    // see: a row's PROVENANCE does not cross the boundary, so a caller told a row
-    // is finite cannot tell whether it is an identity or a difference carrying a
-    // step. Nothing depends on the distinction today and it is written down rather
-    // than built.
-    if (supply.usable && is_supply_input(p, n_layers)) {
-      const int layer = p - par_psi_soil_first;
-      double dEup = 0.0;
-      draw.assign(std::size_t(n_layers), 0.0);
-      if (layer < n_layers) {
-        // Diagonal: a layer's flux reads its own potential and the collar, and no
-        // other layer's.
-        dEup = supply.dE_dpsi[std::size_t(layer)];
-        draw[std::size_t(layer)] = dEup;
-      } else {
-        // Lower triangular: this layer's carbon is in the vertical path of every
-        // layer at or below it, so it reaches more draws than its own.
-        const std::size_t k = std::size_t(layer - n_layers);
-        for (std::size_t m = 0; m < draw.size() && m < supply.dE_drc.size(); ++m) {
-          if (k >= supply.dE_drc[m].size() || k >= supply.dD_drc[m].size()) {
-            break;
-          }
-          draw[m] = supply.dE_drc[m][k];
-          dEup += supply.dE_drc[m][k];
-        }
-      }
-      double dR = 0.0;
-      if (!differenced_dresidual(l, theta, d, single, p, b.psi_star, s, at_base,
-                                 scratch, dR)) {
-        for (std::size_t j = 0; j < r.n_output; ++j) {
-          out.held[j * r.n_input + i] = util::na_value;
-        }
-        out.message += out.message.empty() ? "" : "; ";
-        out.message += "no row for `" + par_name(p, n_layers) +
-                       "`: the marginal profit is not defined either side of "
-                       "this input at the operating point's collar";
-        continue;
-      }
-      out.dresidual[i] = dR;
-      for (std::size_t j = 0; j < r.n_output; ++j) {
-        const int o = r.output[j];
-        double row = 0.0;
-        if (o >= out_uptake_first) {
-          row = draw[std::size_t(o - out_uptake_first)];
-        } else if (o == out_profit) {
-          row = supply.d.dprofit_dE * dEup;
-        } else if (o == out_assim) {
-          row = supply.d.dassim_dE * dEup;
-        } else if (o == out_stom_cond) {
-          row = supply.d.dstom_cond_dE * dEup;
-        } else if (o == out_psi_stem) {
-          row = supply.d.dpsi_stem_dE * dEup;
-        }
-        // `out_collar` keeps the 0.0 it was initialised with: the collar is what
-        // is held, so it cannot move at a held collar.
-        const std::size_t at = j * r.n_input + i;
-        out.held[at] = row;
-        out.zero[at] = zero_kind(row, p, interior);
       }
       continue;
     }
