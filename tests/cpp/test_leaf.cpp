@@ -4148,23 +4148,47 @@ void test_carbon_trait_rows_match_a_differenced_solve() {
     grad::Drivers d = env::drivers(f.psi_soil, f.ppfd, f.vpd, L, L);
     d.leaf_temp = f.leaf_temp;
 
+    // ⚠️ THE DIFFERENCE IS TAKEN FROM `held_row` AND NOT FROM `rows_at`. The
+    // dispatcher now prefers these same closed forms for these same inputs, so a
+    // comparison through it would compare each row with itself and pass whatever
+    // the rows became. `held_row` is the differencing, which is the reference.
     std::vector<int> out_index{grad::out_profit};
     for (int i = 0; i < L; ++i) {
       out_index.push_back(grad::out_uptake_first + i);
     }
     std::vector<int> input(pars, pars + n_par);
-    grad::RowRequest req{out_index.data(), out_index.size(), input.data(),
-                         input.size()};
-    pl::Leaf l = env::fresh();
-    const grad::Rows rows = grad::rows_at(l, env::kTheta, d, req, s);
+    const grad::RowRequest req{out_index.data(), out_index.size(),
+                               input.data(), input.size()};
 
-    // The readers want the base state solved, and `rows_at` leaves it supplied
-    // but not solved.
-    pl::Leaf ref = env::fresh();
-    grad::apply(ref, env::kTheta, d, false, -1, s.fast_stem_curve);
-    ref.find_root_collar_psi();
-    const pl::Leaf::PhotoTraitRows photo = ref.photo_trait_rows();
-    const pl::Leaf::CostTraitRows cost = ref.cost_trait_rows();
+    pl::Leaf l = env::fresh();
+    const grad::BasePoint b = grad::base_point(l, env::kTheta, d, false, s, L);
+
+    const bool interior =
+        b.branch.kind == pl::Leaf::OperatingPointKind::Interior;
+    // Where the leaf has stopped moving water the frozen-collar derivation is
+    // not the route: gross assimilation is identically zero there, so what these
+    // readers divide by is too. The row layer declares those rows instead, and
+    // that it does not reach for the readers is what is checked.
+    const bool shut =
+        b.branch.kind == pl::Leaf::OperatingPointKind::HydraulicShutdown ||
+        b.branch.kind == pl::Leaf::OperatingPointKind::ShadeDeath;
+    const std::string tag =
+        std::string(f.what) + " (" +
+        pl::Leaf::operating_point_kind_name(b.branch.kind) + ")";
+    if (shut) {
+      ok(!grad::carbon_rows_apply(l, req, shut),
+         "the row layer does not read a closed form at " + tag);
+      printf("  %-22s not this reader's branch\n", tag.c_str());
+      continue;
+    }
+
+    // Taken before any perturbation, and at the point itself: `base_point`
+    // closes by differencing the marginal profit across p*, so it leaves the
+    // collar one step below it, and a row read there is wrong by that step.
+    grad::OutputValues seated(L);
+    ok(grad::outputs_at(l, b.psi_star, seated), "the point is evaluable, " + tag);
+    const pl::Leaf::PhotoTraitRows photo = l.photo_trait_rows();
+    const pl::Leaf::CostTraitRows cost = l.cost_trait_rows();
 
     const double held[] = {photo.dprofit_dvcmax_25,
                            photo.dprofit_djmax_25,
@@ -4183,36 +4207,19 @@ void test_carbon_trait_rows_match_a_differenced_solve() {
                                 cost.dmarginal_dbeta2,
                                 cost.dmarginal_dcost_scale};
 
-    const bool interior =
-        rows.kind == pl::Leaf::OperatingPointKind::Interior;
-    // Where the leaf has stopped moving water the frozen-collar derivation is
-    // not the route: gross assimilation is identically zero, so the residual
-    // these readers divide by is too and they answer NaN, while the row layer
-    // DECLARES the five assimilation-only traits zero there rather than taking
-    // any derivative. Their own comment says the rows are zero on that branch,
-    // and the code does not do it -- so the branch is checked here to keep that
-    // disagreement from being discovered by wiring them into it.
-    const bool shut =
-        rows.kind == pl::Leaf::OperatingPointKind::HydraulicShutdown ||
-        rows.kind == pl::Leaf::OperatingPointKind::ShadeDeath;
-    const std::string tag =
-        std::string(f.what) + " (" +
-        pl::Leaf::operating_point_kind_name(rows.kind) + ")";
-
-    if (shut) {
-      ok(!std::isfinite(photo.dprofit_dvcmax_25),
-         "the closed-form reader does not answer at " + tag);
-      ok(rows.held[0] == 0.0,
-         "and the row layer declares the row zero there, " + tag);
-      printf("  %-22s not this reader's branch\n", tag.c_str());
-      continue;
-    }
-
     double worst_held = 0.0, worst_cond = 0.0, worst_uptake = 0.0;
+    bool at_base = true;
+    grad::Scratch scratch;
+    grad::OutputValues direct(L);
     for (std::size_t i = 0; i < n_par; ++i) {
       const std::string nm =
           std::string(grad::par_name(pars[i], L)) + ", " + tag;
-      const double got = rows.held[0 * n_par + i];
+      double dR = 0.0;
+      const bool differenced =
+          grad::held_row(l, env::kTheta, d, false, pars[i], b.psi_star, s, true,
+                         at_base, scratch, direct, dR);
+      const double got = differenced ? direct[grad::out_profit]
+                                     : pl::util::na_value;
       if (!std::isfinite(got) || !std::isfinite(held[i])) {
         ok(false, "both routes answer for " + nm);
         continue;
@@ -4224,21 +4231,18 @@ void test_carbon_trait_rows_match_a_differenced_solve() {
 
       // At a fixed collar a carbon-side trait moves no water, so every uptake
       // row is claimed exactly zero -- and the difference has to agree with
-      // that at its own floor rather than approximately.
+      // that exactly rather than at its own floor.
       for (int j = 0; j < L; ++j) {
-        const double up = rows.held[std::size_t(j + 1) * n_par + i];
-        if (std::isfinite(up)) {
-          worst_uptake = std::max(worst_uptake, std::abs(up) / scale_h);
-        }
+        worst_uptake = std::max(
+            worst_uptake,
+            std::abs(direct[grad::out_uptake_first + j]) / scale_h);
       }
 
-      if (interior && std::isfinite(rows.dresidual[i]) &&
-          std::isfinite(condition[i])) {
-        const double scale_c = std::max(1.0, std::abs(rows.dresidual[i]));
-        worst_cond = std::max(
-            worst_cond, std::abs(condition[i] - rows.dresidual[i]) / scale_c);
-        near(condition[i], rows.dresidual[i], 1e-3,
-             "condition row for " + nm);
+      if (interior && std::isfinite(dR) && std::isfinite(condition[i])) {
+        const double scale_c = std::max(1.0, std::abs(dR));
+        worst_cond =
+            std::max(worst_cond, std::abs(condition[i] - dR) / scale_c);
+        near(condition[i], dR, 1e-3, "condition row for " + nm);
       }
     }
     printf("  %-22s worst rel: profit %.3g, condition %.3g; uptake rows %.3g\n",

@@ -1390,6 +1390,94 @@ struct RowRequest {
   const int* input;   std::size_t n_input;
 };
 
+// --- the carbon-side traits' rows, read rather than differenced ----------------
+//
+// Eight of the fourteen traits reach profit at a frozen collar through
+// assimilation or through the hydraulic cost and through nothing else: the stem
+// potential, the stomatal conductance and the cost are all fixed, and the only
+// thing that responds is the intercellular concentration the residual places. So
+// each of their rows is one of the leaf's own closed forms, and their uptake rows
+// are exactly zero rather than nearly -- at a fixed collar a carbon-side trait
+// moves no water.
+inline bool carbon_side(int par) {
+  switch (par) {
+  case par_vcmax_25:
+  case par_jmax_25:
+  case par_a:
+  case par_curv_fact_elec_trans:
+  case par_curv_fact_colim:
+  case par_R_d_25:
+  case par_beta2:
+  case par_cost_scale_TF24:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// The two readers answer together or not at all, so they are carried together.
+struct CarbonRows {
+  Leaf::PhotoTraitRows photo{};
+  Leaf::CostTraitRows cost{};
+  bool usable = false;
+};
+
+// The profit row at the held collar.
+inline double carbon_profit(const CarbonRows& c, int par) {
+  switch (par) {
+  case par_vcmax_25:             return c.photo.dprofit_dvcmax_25;
+  case par_jmax_25:              return c.photo.dprofit_djmax_25;
+  case par_a:                    return c.photo.dprofit_da;
+  case par_curv_fact_elec_trans: return c.photo.dprofit_dcurv_elec;
+  case par_curv_fact_colim:      return c.photo.dprofit_dcurv_colim;
+  case par_R_d_25:               return c.photo.dprofit_dR_d_25;
+  case par_beta2:                return c.cost.dprofit_dbeta2;
+  default:                       return c.cost.dprofit_dcost_scale;
+  }
+}
+
+// The condition's own gradient, d2profit/dpsi dtheta with the collar held.
+inline double carbon_marginal(const CarbonRows& c, int par) {
+  switch (par) {
+  case par_vcmax_25:             return c.photo.dmarginal_dvcmax_25;
+  case par_jmax_25:              return c.photo.dmarginal_djmax_25;
+  case par_a:                    return c.photo.dmarginal_da;
+  case par_curv_fact_elec_trans: return c.photo.dmarginal_dcurv_elec;
+  case par_curv_fact_colim:      return c.photo.dmarginal_dcurv_colim;
+  case par_R_d_25:               return c.photo.dmarginal_dR_d_25;
+  case par_beta2:                return c.cost.dmarginal_dbeta2;
+  default:                       return c.cost.dmarginal_dcost_scale;
+  }
+}
+
+// Whether the closed forms describe this branch and this request. Each condition
+// is a property, not a reading of a returned number.
+//
+// A leaf that has stopped moving water is out because gross assimilation is what
+// these rows come off and it is identically zero there -- the readers divide by
+// it. The energy-balance gate is out because with it on the collar reaches
+// profit by two further routes through the leaf temperature, which the marginal
+// rows carry no analogue of. And assimilation and the stomatal conductance
+// respond to a carbon-side trait at a frozen collar while these readers do not
+// report them, so a request naming either is differenced.
+inline bool carbon_rows_apply(const Leaf& l, const RowRequest& r, bool shut) {
+  if (shut || l.use_energy_balance_) {
+    return false;
+  }
+  for (std::size_t j = 0; j < r.n_output; ++j) {
+    const int o = r.output[j];
+    if (o != out_collar && o != out_profit && o < out_uptake_first) {
+      return false;
+    }
+  }
+  for (std::size_t i = 0; i < r.n_input; ++i) {
+    if (carbon_side(r.input[i])) {
+      return true;
+    }
+  }
+  return false;
+}
+
 struct Rows {
   // ⚠️ THE BRANCH THE SOLVE TOOK, never a reading of the numbers. `Status` above
   // derives its own classification from the curvature's sign and the residual's
@@ -1577,6 +1665,25 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     return out;
   }
 
+  // The carbon-side traits' rows, taken once for the whole request rather than
+  // differenced one input at a time. Read HERE, before anything else touches the
+  // leaf, because they are reads of the point the solve just left.
+  // ⚠️ THE POINT IS SEATED AGAIN FIRST. `base_point` closes by differencing the
+  // marginal profit across p*, so it leaves the collar one step below it, and
+  // these rows are reads OF the point rather than of a neighbourhood -- taken
+  // where base_point left it they are wrong by that step, which measures 4.5e-06
+  // relative and looks like nothing. One evaluation, no solve; and a point that
+  // cannot be evaluated has no rows here.
+  CarbonRows carbon;
+  if (carbon_rows_apply(l, r, shut)) {
+    OutputValues seated(n_uptake);
+    if (outputs_at(l, b.psi_star, seated)) {
+      carbon.photo = l.photo_trait_rows();
+      carbon.cost = l.cost_trait_rows();
+      carbon.usable = true;
+    }
+  }
+
   // Where a pinned point sits relative to the bound that defines it, measured
   // once at the base state and reused by every arm below so they are all placed
   // the same way.
@@ -1679,8 +1786,17 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
       out.dresidual[i] = 0.0;
     } else {
       double dR = 0.0;
-      if (!held_row(l, theta, d, single, p, b.psi_star, s, true, at_base,
-                    scratch, direct, dR)) {
+      if (carbon.usable && carbon_side(p)) {
+        // No perturbation and no solve. Every uptake row is set to the zero the
+        // frozen collar makes it, rather than to a difference of two equal
+        // evaluations, so it cannot pick up that difference's floor.
+        for (int j = 0; j < direct.size(); ++j) {
+          direct[j] = 0.0;
+        }
+        direct[out_profit] = carbon_profit(carbon, p);
+        dR = carbon_marginal(carbon, p);
+      } else if (!held_row(l, theta, d, single, p, b.psi_star, s, true, at_base,
+                           scratch, direct, dR)) {
         // This input only, and for the same reason a following one can fail:
         // the step carries the held collar out of the perturbed interval.
         for (std::size_t j = 0; j < r.n_output; ++j) {

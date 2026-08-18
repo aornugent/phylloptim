@@ -76,7 +76,6 @@ struct KindStats {
   long n_points = 0;
   long n_threw = 0;               // whole-request rows_at threw
   long n_slope_finite = 0;
-  long n_amp_finite = 0;
   long n_point_finite = 0;
   std::map<std::string, long> messages;
 
@@ -170,7 +169,6 @@ void tabulate(const grad::Rows& rows, const std::vector<int>& inputs,
   KindStats& st = stats[rows.kind];
   ++st.n_points;
   st.n_slope_finite += !nf(rows.residual_slope);
-  st.n_amp_finite += !nf(rows.amplification);
   st.n_point_finite += !nf(rows.point);
   st.messages[rows.message.empty() ? "(none)" : rows.message] += 1;
 
@@ -258,9 +256,9 @@ void tabulate(const grad::Rows& rows, const std::vector<int>& inputs,
   // report the point as passive.
   static std::set<Kind> dumped;
   if (dumped.insert(rows.kind).second) {
-    printf("  EXAMPLE %s: slope=%g point=%g amp=%g\n",
+    printf("  EXAMPLE %s: slope=%g point=%g\n",
            phylloptim::Leaf::operating_point_kind_name(rows.kind),
-           rows.residual_slope, rows.point, rows.amplification);
+           rows.residual_slope, rows.point);
     printf("    dy_dp:");
     for (std::size_t j = 0; j < outputs.size(); ++j) {
       printf(" %s=%g", grad::output_name(outputs[j], n_layers).c_str(),
@@ -311,7 +309,6 @@ void one_point(double psi_soil, double ppfd, double vpd, int layers,
   }
   grad::RowRequest req;
   req.output = outputs.data();
-  req.role = roles.data();
   req.n_output = outputs.size();
   req.input = inputs.data();
   req.n_input = inputs.size();
@@ -375,8 +372,8 @@ void unrooted(double psi_soil, double ppfd, double vpd, int layers, int rooted,
                     : j == grad::out_profit ? grad::Role::Objective
                                             : grad::Role::Ordinary);
   }
-  grad::RowRequest req{outputs.data(), roles.data(), outputs.size(),
-                       inputs.data(), inputs.size()};
+  grad::RowRequest req{outputs.data(), outputs.size(), inputs.data(),
+                       inputs.size()};
   phylloptim::Leaf l = fresh();
   const grad::Settings s;
   const grad::Rows rows = grad::rows_at(l, kTheta, d, req, s);
@@ -408,10 +405,8 @@ void report_kind(Kind k, const KindStats& st) {
   printf("\n=== %s: %ld point(s)%s\n",
          phylloptim::Leaf::operating_point_kind_name(k), st.n_points,
          st.n_threw ? " (some threw)" : "");
-  printf("  residual_slope finite %ld/%ld   amplification finite %ld/%ld   "
-         "point finite %ld/%ld\n",
-         st.n_slope_finite, st.n_points, st.n_amp_finite, st.n_points,
-         st.n_point_finite, st.n_points);
+  printf("  residual_slope finite %ld/%ld   point finite %ld/%ld\n",
+         st.n_slope_finite, st.n_points, st.n_point_finite, st.n_points);
   printf("  held entries non-finite %ld/%ld\n", st.held_nonfinite,
          st.held_total);
   if (!st.held_na.empty()) {
