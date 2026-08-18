@@ -4217,14 +4217,20 @@ void test_the_condition_reaches_the_state_through_two_intermediates() {
     // nothing also reports: every direction has to have moved the condition.
     ok(moved == 2 * f.layers,
        "every state direction moved the condition, " + tag);
-    // ⚠️ THE BOUND IS THE INFERRED INVERSE SLOPE, NOT THIS IDENTITY. Every term
-    // here is a central difference good to about 1e-08, so the residual should
-    // close far tighter than it does. It closes to parts in ten thousand because
-    // the transport's collar response is built on the inverse curve's slope, and
-    // that slope is INFERRED from neighbouring knot values rather than supplied --
-    // which disagrees with the integrand's reciprocal by exactly that much.
-    // Supplying it should take this to parts in ten million, and this residual is
-    // the instrument for that change.
+    // ⚠️ WHAT BOUNDS THIS IS THE INTERPOLANT'S SECOND DERIVATIVE, and it is not a
+    // property of the differencing: the residual is flat to three digits over five
+    // decades of step, so it is systematic. Solving both coefficients from two
+    // state directions and predicting the rest puts the waist's rank-two structure
+    // at 1e-09 and dR/dV at 1e-10, so what carries the residual is dR/dsigma,
+    // which agrees with the solved value to 2e-05.
+    //
+    // Of that, the larger part is the transport curve being read as a C1
+    // interpolant: its second derivative is not the conductivity's own slope --
+    // they differ by 2.9e-05 here -- and recomputing dR/dsigma on the
+    // interpolant's takes the disagreement to 8.7e-06. Supplying the interpolant's
+    // slope fixed the FIRST derivative and left this one order untouched, which is
+    // the part of report 07 section 6 that said the second-derivative inventory
+    // would not close.
     ok(worst < 1e-3, "the two intermediates carry every state direction, " + tag +
                          " (worst " + std::to_string(worst) + " at " + worst_at +
                          ")");

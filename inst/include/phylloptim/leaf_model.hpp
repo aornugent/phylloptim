@@ -579,7 +579,7 @@ public:
   // two traits -- so a handful of entries holds all of them.
   struct StemCurveCache {
     double b = 0.0, c = 0.0, resolution = 0.0;
-    odelia::interpolator::Interpolator from_psi, to_psi;
+    odelia::interpolator::hermite_interpolator<double> from_psi, to_psi;
   };
   // Bounded: past the pairs a perturbation loop visits an entry is never read
   // again, so growing the store without limit would be a leak rather than a hit.
@@ -661,9 +661,10 @@ public:
   // "u = 7.5 beyond the upper end" is ambiguous in exactly the way that matters.
   // Nor can it name the caller -- the same spline is read from four places, and
   // localising plant#576 came down to which.
-  static double eval_stem_curve(const odelia::interpolator::Interpolator& spline,
-                                double u, double scale, const char* spline_name,
-                                const char* arg_name, const char* caller);
+  static double eval_stem_curve(
+      const odelia::interpolator::hermite_interpolator<double>& spline, double u,
+      double scale, const char* spline_name, const char* arg_name,
+      const char* caller);
 
   // Move stem_b WITHOUT rebuilding the stem vulnerability spline, by the
   // homogeneity identity above. stem_c is not accepted: it has no such identity.
@@ -3583,12 +3584,14 @@ inline void Leaf::setup_transpiration(double resolution) {
 // building costs nothing in production. Kept out of line from eval_stem_curve so
 // that function stays small enough to inline.
 [[noreturn]] inline void stem_curve_out_of_domain(
-    const odelia::interpolator::Interpolator& spline, double u, double v,
+    const odelia::interpolator::hermite_interpolator<double>& spline, double u,
+    double v,
     double scale, const char* spline_name, const char* arg_name,
     const char* caller);
 
-inline double Leaf::eval_stem_curve(const odelia::interpolator::Interpolator& spline,
-                                    double u, double scale,
+inline double Leaf::eval_stem_curve(
+    const odelia::interpolator::hermite_interpolator<double>& spline, double u,
+    double scale,
                                     const char* spline_name,
                                     const char* arg_name, const char* caller) {
   // scale == 1.0 is the production path (no stem_b rescale), and it must not pay
@@ -3611,8 +3614,8 @@ inline double Leaf::eval_stem_curve(const odelia::interpolator::Interpolator& sp
 }
 
 inline void stem_curve_out_of_domain(
-    const odelia::interpolator::Interpolator& spline, double u, double v,
-    double scale, const char* spline_name, const char* arg_name,
+    const odelia::interpolator::hermite_interpolator<double>& spline, double u,
+    double v, double scale, const char* spline_name, const char* arg_name,
     const char* caller) {
     const bool below = v < spline.min();
     const double lo = scale * spline.min();
