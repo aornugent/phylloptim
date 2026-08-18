@@ -4425,7 +4425,31 @@ void test_carbon_trait_rows_match_a_differenced_solve() {
     if (shut) {
       ok(!grad::carbon_rows_apply(l, req, shut),
          "the row layer does not read a closed form at " + tag);
-      printf("  %-22s not this reader's branch\n", tag.c_str());
+      // The one row a shut point declares that is not zero: profit there is minus
+      // respiration minus the hydraulic cost, so this is the derived respiration
+      // over its trait, negated. Checked against a difference of the solve, which
+      // is available here because this fixture sits well inside the branch -- it is
+      // the fixtures that sit near its edge where the difference refuses, and that
+      // is why the row is declared rather than measured.
+      double declared = 0.0;
+      ok(grad::shut_row(l, grad::par_R_d_25, declared),
+         "dark respiration's row is declared at " + tag);
+      double th[grad::n_pars];
+      grad::Scratch scratch;
+      const double base = grad::par_value(env::kTheta, d, false, grad::par_R_d_25);
+      const double hh = base * 1e-6;
+      grad::set_one(l, th, env::kTheta, d, false, grad::par_R_d_25, base + hh,
+                    s.fast_stem_curve, scratch);
+      l.find_root_collar_psi();
+      const double up = l.profit_;
+      grad::set_one(l, th, env::kTheta, d, false, grad::par_R_d_25, base - hh,
+                    s.fast_stem_curve, scratch);
+      l.find_root_collar_psi();
+      const double dn = l.profit_;
+      near(declared, (up - dn) / (2.0 * hh), 1e-6,
+           "and it agrees with a difference of the solve, " + tag);
+      printf("  %-22s not this reader's branch; R_d_25 row %.6g against %.6g\n",
+             tag.c_str(), declared, (up - dn) / (2.0 * hh));
       continue;
     }
 

@@ -1572,7 +1572,7 @@ inline bool bound_moves_by_re_solving(int par, bool single) {
 // ⚠️ DECLARED RATHER THAN DIFFERENCED, and not to save the evaluations. A step in
 // any of these moves the assimilation maximum, which is the quantity DECIDING
 // this branch, so a difference refuses at a boundary the row does not depend on.
-inline bool shut_row_is_zero(int par) {
+inline bool shut_row(const Leaf& l, int par, double& profit_row) {
   switch (par) {
   case par_vcmax_25:
   case par_jmax_25:
@@ -1582,10 +1582,39 @@ inline bool shut_row_is_zero(int par) {
   case par_root_psi_crit:
   case par_PPFD:
   case par_kmax:
+    profit_row = 0.0;
+    return true;
+  // Dark respiration is the one of them whose row is not zero, and it is exact:
+  // profit there is minus respiration minus the hydraulic cost at the seated
+  // potential, neither seat moves with respiration, and respiration is its trait
+  // times a factor of temperature alone -- so the row is the derived value over
+  // the trait, negated.
+  //
+  // ⚠️ IT WAS DIFFERENCED, AND THAT IS WHAT REFUSED. A step in it moves the
+  // assimilation maximum exactly as a step in the eight above does, so on a shaded
+  // stand no step within the shrink floor kept both arms on the branch and the
+  // whole water channel went with it.
+  case par_R_d_25:
+    profit_row = -l.R_d_ / l.R_d_25;
     return true;
   default:
     return false;
   }
+}
+
+// Which outputs a declared shut row can speak for. Profit is the objective, the
+// collar does not move with any of them, and no water moves at all; assimilation
+// and the stomatal conductance are NOT among them -- at a shut point assimilation
+// is minus respiration, so its row in that trait is not zero, and this says so by
+// refusing rather than by writing one.
+inline bool shut_row_covers(const RowRequest& r) {
+  for (std::size_t j = 0; j < r.n_output; ++j) {
+    const int o = r.output[j];
+    if (o != out_collar && o != out_profit && o < out_uptake_first) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // The bound's movement in one of those, by re-solving it at a perturbed state.
@@ -1728,6 +1757,7 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     out.dy_dp[j] = point_channel(role_of(r.output[j]), pinned, b.resid, measured);
   }
 
+  const bool shut_covered = shut_row_covers(r);
   bool at_base = true;
   Scratch scratch;
   OutputValues direct(n_uptake);
@@ -1748,10 +1778,12 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
                      "model gave the network no slot for it";
       continue;
     }
-    if (shut && shut_row_is_zero(p)) {
+    double shut_profit = 0.0;
+    if (shut && shut_covered && shut_row(l, p, shut_profit)) {
       out.dresidual[i] = 0.0;
       for (std::size_t j = 0; j < r.n_output; ++j) {
-        out.held[j * r.n_input + i] = 0.0;
+        out.held[j * r.n_input + i] =
+            role_of(r.output[j]) == Role::Objective ? shut_profit : 0.0;
       }
       continue;
     }
