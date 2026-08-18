@@ -1033,6 +1033,11 @@ public:
     double dprofit_dvcmax_25, dprofit_djmax_25, dprofit_dR_d_25;
     double dmarginal_da, dmarginal_dcurv_elec, dmarginal_dcurv_colim;
     double dmarginal_dvcmax_25, dmarginal_djmax_25, dmarginal_dR_d_25;
+    // Radiation is not a trait, and it belongs here anyway: it reaches
+    // assimilation through the electron transport and through nothing else, which
+    // is the family `a` and the transport curvature are in, so its rows come off
+    // the pass already taken in that direction for the cost of one more seed.
+    double dprofit_dPPFD, dmarginal_dPPFD;
   };
   PhotoTraitRows photo_trait_rows(double dpsistem_dp);
   // The energy-balance correction to the above, zero when the gate is off. Kept
@@ -3127,7 +3132,7 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows(double dpsistem_dp) {
   using AD = xad::fwd<double>::active_type;
   using AD2 = xad::fwd_fwd<double>::active_type;
   PhotoTraitRows out{0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   if (use_energy_balance_) {
     // With the gate on, psi reaches profit by two further routes through the
     // leaf temperature, and dprofit_at_collar_psi carries them as a term this
@@ -3135,7 +3140,7 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows(double dpsistem_dp) {
     // short by it. Refuse rather than return the interior-branch number, which
     // would be finite, plausible and missing a channel.
     const double n = util::na_value;
-    return PhotoTraitRows{n, n, n, n, n, n, n, n, n, n, n, n};
+    return PhotoTraitRows{n, n, n, n, n, n, n, n, n, n, n, n, n, n};
   }
 
   // Each temperature-derived scalar is its _25 trait times a factor of
@@ -3195,7 +3200,7 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows(double dpsistem_dp) {
     A_vc_ci = A.derivative().derivative();
   }
   // dJ/dtheta for the three that reach assimilation only through the transport.
-  double dJ_da = 0.0, dJ_dcurv = 0.0, dJ_djmax = 0.0;
+  double dJ_da = 0.0, dJ_dcurv = 0.0, dJ_djmax = 0.0, dJ_dPPFD = 0.0;
   {
     AD q = a;  xad::derivative(q) = 1.0;
     dJ_da = xad::derivative(electron_transport_kernel(
@@ -3206,6 +3211,9 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows(double dpsistem_dp) {
     AD m = jmax_;  xad::derivative(m) = 1.0;
     dJ_djmax = xad::derivative(electron_transport_kernel(
         AD(PPFD_), AD(a), AD(curv_fact_elec_trans), m));
+    AD p = PPFD_;  xad::derivative(p) = 1.0;
+    dJ_dPPFD = xad::derivative(electron_transport_kernel(
+        p, AD(a), AD(curv_fact_elec_trans), AD(jmax_)));
   }
 
   // The theta-free half of the marginal profit, formed as
@@ -3244,6 +3252,8 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows(double dpsistem_dp) {
   // Dark respiration is subtracted from the colimitation, so it shifts A by
   // exactly -1 per unit and leaves A' untouched. No pass needed.
   rows(-dR_d_dtrait, 0.0, out.dprofit_dR_d_25, out.dmarginal_dR_d_25);
+  rows(A_J * dJ_dPPFD, A_J_ci * dJ_dPPFD, out.dprofit_dPPFD,
+       out.dmarginal_dPPFD);
   return out;
 }
 

@@ -1409,6 +1409,10 @@ inline bool carbon_side(int par) {
   case par_R_d_25:
   case par_beta2:
   case par_cost_scale_TF24:
+  // Radiation is not a trait and takes the same route: it reaches assimilation
+  // through the electron transport and nothing else, so at a fixed collar it
+  // moves no water either.
+  case par_PPFD:
     return true;
   default:
     return false;
@@ -1431,6 +1435,7 @@ inline double carbon_profit(const CarbonRows& c, int par) {
   case par_curv_fact_elec_trans: return c.photo.dprofit_dcurv_elec;
   case par_curv_fact_colim:      return c.photo.dprofit_dcurv_colim;
   case par_R_d_25:               return c.photo.dprofit_dR_d_25;
+  case par_PPFD:                 return c.photo.dprofit_dPPFD;
   case par_beta2:                return c.cost.dprofit_dbeta2;
   default:                       return c.cost.dprofit_dcost_scale;
   }
@@ -1445,6 +1450,7 @@ inline double carbon_marginal(const CarbonRows& c, int par) {
   case par_curv_fact_elec_trans: return c.photo.dmarginal_dcurv_elec;
   case par_curv_fact_colim:      return c.photo.dmarginal_dcurv_colim;
   case par_R_d_25:               return c.photo.dmarginal_dR_d_25;
+  case par_PPFD:                 return c.photo.dmarginal_dPPFD;
   case par_beta2:                return c.cost.dmarginal_dbeta2;
   default:                       return c.cost.dmarginal_dcost_scale;
   }

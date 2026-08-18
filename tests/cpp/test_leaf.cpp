@@ -4386,7 +4386,8 @@ void test_carbon_trait_rows_match_a_differenced_solve() {
                       grad::par_curv_fact_colim,
                       grad::par_R_d_25,
                       grad::par_beta2,
-                      grad::par_cost_scale_TF24};
+                      grad::par_cost_scale_TF24,
+                      grad::par_PPFD};
   const std::size_t n_par = sizeof(pars) / sizeof(pars[0]);
 
   int compared = 0;
@@ -4469,7 +4470,8 @@ void test_carbon_trait_rows_match_a_differenced_solve() {
                            photo.dprofit_dcurv_colim,
                            photo.dprofit_dR_d_25,
                            cost.dprofit_dbeta2,
-                           cost.dprofit_dcost_scale};
+                           cost.dprofit_dcost_scale,
+                           photo.dprofit_dPPFD};
     const double condition[] = {photo.dmarginal_dvcmax_25,
                                 photo.dmarginal_djmax_25,
                                 photo.dmarginal_da,
@@ -4477,7 +4479,8 @@ void test_carbon_trait_rows_match_a_differenced_solve() {
                                 photo.dmarginal_dcurv_colim,
                                 photo.dmarginal_dR_d_25,
                                 cost.dmarginal_dbeta2,
-                                cost.dmarginal_dcost_scale};
+                                cost.dmarginal_dcost_scale,
+                                photo.dmarginal_dPPFD};
 
     double worst_held = 0.0, worst_cond = 0.0, worst_uptake = 0.0;
     bool at_base = true;
@@ -4517,6 +4520,16 @@ void test_carbon_trait_rows_match_a_differenced_solve() {
         near(condition[i], dR, 1e-3, "condition row for " + nm);
       }
     }
+    // Radiation's held row exists twice over, and the second one shares no
+    // algebra with this family: `dprofit_dPPFD` closes the concentration's
+    // root-find directly rather than going through the transport family's pass.
+    // Two implementations agreeing is worth more than either agreeing with a
+    // difference.
+    // They agree to 4e-09 rather than to the last bit, which is what two
+    // formulations of one derivative cost each other through a root-find at
+    // double precision -- and both agree with the difference at 2e-09.
+    near(photo.dprofit_dPPFD, l.dprofit_dPPFD(), 1e-8,
+         "radiation's row matches the leaf's own second route, " + tag);
     printf("  %-22s worst rel: profit %.3g, condition %.3g; uptake rows %.3g\n",
            tag.c_str(), worst_held, worst_cond, worst_uptake);
   }
