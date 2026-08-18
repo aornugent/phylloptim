@@ -256,6 +256,41 @@ inline std::string output_name(int out, int n_layers) {
   return "output " + std::to_string(out);
 }
 
+// How the operating point reaches an output. A PROPERTY OF THE OUTPUT, which is
+// why `role_of` below is a function of the index and not a field of the request:
+// which output IS the objective is fixed by the enumeration, and a caller free to
+// say otherwise is a caller free to disagree with it.
+enum class Role { Objective, Point, Ordinary };
+
+// The collar IS the operating point; profit is what it maximises; everything else
+// reads the point without being it. Read here and nowhere else -- `out_collar` and
+// `out_profit` are ordinary indices at every other site.
+inline Role role_of(int output) {
+  return output == out_collar   ? Role::Point
+       : output == out_profit   ? Role::Objective
+                                : Role::Ordinary;
+}
+
+// dy/dp, from what the output is and what defines the point. That pairing is the
+// whole sensitivity theory and this is the one place either axis is read.
+//
+// ⚠️ THE OBJECTIVE'S ZERO IS NOT A PROPERTY OF BEING THE OBJECTIVE. It is the
+// interior stationarity condition, so it holds where that condition does; at a
+// bound the same output's channel is the constraint's shadow price. An interface
+// that let a consumer infer the zero from the output's identity is correct at an
+// interior optimum and silently wrong at exactly the states a pin exists for.
+//
+// The point's own two channels are genuine identities: one, because it IS the
+// point, and a held partial cannot move what it holds. Neither reads the kind.
+inline double point_channel(Role role, bool pinned, double marginal_at_bound,
+                            double measured) {
+  switch (role) {
+  case Role::Point:     return 1.0;
+  case Role::Objective: return pinned ? marginal_at_bound : 0.0;
+  default:              return measured;
+  }
+}
+
 // One evaluation's outputs: the five, then one uptake per layer where the caller
 // asked for them. A fixed-five caller leaves `uptake` empty, which allocates
 // nothing.
@@ -302,19 +337,26 @@ inline void outputs(const Leaf& l, OutputValues& y) {
   }
 }
 
-// The outputs with the collar held at `psi` rather than optimised. False when
-// the clamp moved the target, because then this is not the evaluation that was
-// asked for.
+// The outputs with the collar held at `psi` rather than optimised. False where the
+// state does not admit that collar -- and REFUSED there rather than evaluated.
 //
-// ⚠️ EXACT EQUALITY IS THE RIGHT TEST AND THE ONLY ONE THAT WORKS.
-// `evaluate_root_collar_psi` CLAMPS its target into the feasible interval, so a
-// clamped evaluation is silently a one-sided difference over a shorter interval
-// -- the same class of error as differentiating at a pinned optimum, and just as
-// plausible-looking. The clamp is a min/max, so an unclamped target comes back
-// bit-identical and a tolerance would only blur the detector.
+// ⚠️ ASKING BEFORE EVALUATING IS THE REQUIREMENT, NOT AN ECONOMY. The clamping
+// entry point moves the target to the nearest end of the feasible interval and
+// answers there, which is silently a one-sided difference over a shorter interval;
+// below the wet bound it answers from the model's zero-flux substitution, one dark
+// respiration away and of the same type. So a check applied AFTER evaluating has
+// to separate two branches by their output alone. `profit_at_fixed_collar`
+// establishes feasibility first and does not evaluate when the answer is no.
+//
+// Where the collar IS admissible this is the same arithmetic at the same collar:
+// the clamp is a min/max, so `clamped == psi` is exactly
+// `bound_a <= psi <= bound_b`, and both routes then run the same expressions.
+// What it removes is the evaluation that used to happen anyway on the way to being
+// rejected -- and with it one case the comparison could not see, where a perturbed
+// state shuts down at the collar the base point was pinned to and its shut-down
+// outputs come back indistinguishable from a held evaluation.
 inline bool outputs_at(Leaf& l, double psi, OutputValues& y) {
-  l.evaluate_root_collar_psi(psi);
-  if (!util::identical(l.opt_root_psi_, psi)) {
+  if (!l.profit_at_fixed_collar(psi).feasible) {
     return false;
   }
   outputs(l, y);
@@ -769,6 +811,13 @@ struct BasePoint {
   Branch branch;
 };
 
+// How far a row that may recover shrinks its step before giving up. Two decades
+// and no more: the largest step that is still local is the best-conditioned one,
+// and below that floor a step stops moving the solve above its own noise, so the
+// difference measures rounding rather than the model. Both routes that shrink read
+// it here, so neither can drift to a different floor.
+inline constexpr int shrink_decades = 2;
+
 // The step in the collar potential, floored at 1 MPa for `step_for`'s reason.
 inline double collar_step(double psi_star, const Settings& s) {
   return std::max(std::abs(psi_star), 1.0) * s.collar;
@@ -855,14 +904,15 @@ inline bool collar_channel(Leaf& l, double psi_star, const Settings& s,
 // False where no step keeps both arms inside the perturbed feasible interval;
 // `direct` and `dresidual` are not written then.
 //
-// ⚠️ `decades` is how many times the step may shrink, and it also gates the
-// one-sided arm. The R implementation this file is checked against passes NONE:
-// it stops at the first infeasible arm, so a C++ route that recovered from one
-// would answer states R does not and the two would stop being one function
-// checked against another.
+// ⚠️ `may_recover` is ONE fact with two consequences, which is why it is a
+// permission and not a count. The reference implementation this file is checked
+// against stops at the first infeasible arm, so a route that recovered from one
+// would answer states the reference does not and the two would stop being one
+// function checked against another. A route answering for itself takes both
+// recoveries -- the one-sided arm first, then the shrink.
 inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
                        bool single, int par, double psi_star, const Settings& s,
-                       int decades, bool& at_base,
+                       bool may_recover, bool& at_base,
                        Scratch& scratch, OutputValues& direct,
                        double& dresidual) {
   if (takes_shortcut(par, s) && !at_base) {
@@ -874,6 +924,8 @@ inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
   OutputValues dn(direct.n_uptake());
   double up_resid = 0.0;
   double dn_resid = 0.0;
+  bool up_real = false;
+  bool dn_real = false;
   const double base = par_value(theta, d, single, par);
   double h = step_for(par, base, s.step, n_soil_layers(d, single));
   // One evaluation of each output at the held collar with nothing moved, for the
@@ -881,6 +933,7 @@ inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
   // every point takes and it does not need this.
   OutputValues here_out(direct.n_uptake());
   double here_resid = 0.0;
+  bool here_resid_real = false;
   bool have_here = false;
   auto at_base_here = [&]() -> bool {
     if (have_here) {
@@ -890,7 +943,7 @@ inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
     if (!outputs_at(l, psi_star, here_out)) {
       return false;
     }
-    here_resid = l.dprofit_droot_collar_psi(psi_star);
+    here_resid = l.dprofit_droot_collar_psi(psi_star, &here_resid_real);
     have_here = true;
     return true;
   };
@@ -910,11 +963,25 @@ inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
       const bool ok = outputs_at(l, psi_star, dst);
       (side == 0 ? up_ok : dn_ok) = ok;
       double& resid = side == 0 ? up_resid : dn_resid;
-      resid = l.dprofit_droot_collar_psi(psi_star);
+      // ⚠️ THE `feasible` OUT-PARAMETER IS WHAT SEPARATES A DERIVATIVE FROM A
+      // SENTINEL. `dprofit` returns a bare, exact 0.0 in the no-flow or
+      // infeasible state, and differencing it produces a plausible finite number
+      // that is not a mixed partial -- the same mechanism `base_point` guards the
+      // curvature against, where leaving it in put |H| out by a median factor of
+      // 8.4e04. It reaches here and not the base point because a pinned collar
+      // sits one step-in from where uptake is exactly zero.
+      //
+      // The OUTPUTS' rows survive it: they come from the evaluation, not from
+      // dprofit. So a sentinel costs `dresidual` alone, and the consumer that
+      // reads a non-finite one already knows to keep the objective's row and drop
+      // the rest -- which is the envelope theorem, not a degradation.
+      resid = l.dprofit_droot_collar_psi(psi_star, side == 0 ? &up_real
+                                                            : &dn_real);
     }
     if (up_ok && dn_ok) {
       // M = d2profit/dpsi dtheta, with psi held FIXED at psi*.
-      dresidual = (up_resid - dn_resid) / (2.0 * h);
+      dresidual = (up_real && dn_real) ? (up_resid - dn_resid) / (2.0 * h)
+                                       : util::na_value;
       for (int j = 0; j < direct.size(); ++j) {
         direct[j] = (up[j] - dn[j]) / (2.0 * h);
       }
@@ -929,7 +996,7 @@ inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
     //
     // Shrinking is LAST because the reads carry the solve's own floor: dividing
     // them by a step two decades smaller costs more than this truncation.
-    if ((up_ok != dn_ok) && decades > 0 && at_base_here()) {
+    if ((up_ok != dn_ok) && may_recover && at_base_here()) {
       const int sign = up_ok ? 1 : -1;
       OutputValues& near = up_ok ? up : dn;
       const double near_resid = up_ok ? up_resid : dn_resid;
@@ -937,10 +1004,15 @@ inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
       set_one(l, th, theta, d, single, par, base + sign * 2.0 * h,
               s.fast_stem_curve, scratch);
       if (outputs_at(l, psi_star, far)) {
-        const double far_resid = l.dprofit_droot_collar_psi(psi_star);
+        bool far_real = false;
+        const double far_resid =
+            l.dprofit_droot_collar_psi(psi_star, &far_real);
+        const bool near_real = up_ok ? up_real : dn_real;
         const double scale = sign / (2.0 * h);
-        dresidual =
-            scale * (-3.0 * here_resid + 4.0 * near_resid - far_resid);
+        dresidual = (here_resid_real && near_real && far_real)
+                        ? scale *
+                              (-3.0 * here_resid + 4.0 * near_resid - far_resid)
+                        : util::na_value;
         for (int j = 0; j < direct.size(); ++j) {
           direct[j] = scale * (-3.0 * here_out[j] + 4.0 * near[j] - far[j]);
         }
@@ -950,7 +1022,7 @@ inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
     // A step that carries the held collar out of the perturbed feasible interval
     // is the state a pin sits in, where the interval closes around the point. The
     // shrink is `solved_row`'s and stops at the same floor for the same reason.
-    if (decade == decades) {
+    if (!may_recover || decade == shrink_decades) {
       return false;
     }
     h *= 0.1;
@@ -965,7 +1037,7 @@ inline void held_row_or_stop(Leaf& l, const double* theta, const Drivers& d,
                              const Settings& s, const std::string& caller,
                              bool& at_base, Scratch& scratch,
                              OutputValues& direct, double& dresidual) {
-  if (!held_row(l, theta, d, single, par, psi_star, s, 0, at_base, scratch,
+  if (!held_row(l, theta, d, single, par, psi_star, s, false, at_base, scratch,
                 direct, dresidual)) {
     util::stop(caller + ": perturbing `" +
                par_name(par, n_soil_layers(d, single)) +
@@ -990,10 +1062,7 @@ struct FollowBound {
 // `stay` is the branch both arms have to land on, or null for a caller that
 // differences whatever they land on. Where it is given, the step shrinks by a
 // decade at a time looking for two arms that agree with it, and the row is refused
-// rather than taken across a change of branch. Two decades and no more: the
-// largest step that is still local is the best-conditioned one, and below that
-// floor a step stops moving the solve above its own noise, so the difference
-// measures rounding rather than the model.
+// rather than taken across a change of branch, down to `shrink_decades`.
 //
 // False only where `stay` was given and no step reached it; `row` is not written
 // then.
@@ -1063,7 +1132,7 @@ inline bool solved_row(Leaf& l, const double* theta, const Drivers& d,
         return true;
       }
     }
-    if (decade == 2) {
+    if (decade == shrink_decades) {
       return false;
     }
     h *= 0.1;
@@ -1086,43 +1155,38 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
     held_row_or_stop(l, theta, d, single, pars[k], psi_star, s,
                      "leaf_gradient()", at_base, scratch, direct, M);
     const double dpsi_dtheta = -(M / H);
-    for (int j = 0; j < n_outputs; ++j) {
-      out[k * n_outputs + j] = direct[j] + rounded(dY_dpsi[j] * dpsi_dtheta);
-    }
-    // TWO OF THE FIVE ARE NOT THAT COMPOSITE, AND THE TWO ARGUMENTS ARE
-    // DIFFERENT. Both overwrite the generic line rather than skipping it, which
-    // is R's shape too: `.gradient_ift` computes `g` for all five and then
-    // assigns these two.
+    // Each output once, by what it is to the point. `role_of` is where those two
+    // facts live; what belongs here is why they are BRANCHES rather than a
+    // channel multiplied in.
     //
-    // `collar` is not an output of the evaluation -- it IS psi*, held fixed, so
-    // its DIRECT term is zero by construction and the composite reduces to
-    // dpsi*/dtheta. Set explicitly rather than left as the difference of two
-    // identical numbers.
-    out[k * n_outputs + out_collar] = dpsi_dtheta;
-    // `profit` is the objective rather than an output read at the argmax, so for
-    // it the OTHER factor of the second term is the one that vanishes:
-    //
-    //   dprofit*/dtheta = (dprofit/dpsi)(dpsi*/dtheta) + dprofit/dtheta|_psi
-    //
-    // and dprofit/dpsi = 0 at an interior optimum. That is the envelope theorem,
-    // and its premise is exactly the stationarity `at()` has already tested. So
-    // the direct term IS the answer: no M, no H, no dpsi*/dtheta.
-    //
-    // ⚠️ AND THE ARITHMETIC NEEDS THIS LINE EVEN SO, which is a second reason and
-    // not a restatement of the first. `dY_dpsi[out_profit]` is a central
+    // ⚠️ THE OBJECTIVE'S ZERO MUST NOT BE MULTIPLIED, and this is a second reason
+    // beyond the envelope theorem itself. `dY_dpsi[out_profit]` is a central
     // difference of a FLAT maximum: ~1e-09 of cancellation in profit over a
     // ~1e-06 step in psi. Measured at psi_soil = 2.0 the exact dprofit at psi* is
-    // 8.7e-11, while that difference reads -1.8e-04 -- so leaving the generic
-    // line to stand would move this column by up to 6.6e-05 relative. That is
-    // five orders above the solve's ~1e-09 floor and entirely plausible-looking.
+    // 8.7e-11, while that difference reads -1.8e-04 -- so composing it in would
+    // move this column by up to 6.6e-05 relative, five orders above the solve's
+    // ~1e-09 floor and entirely plausible-looking.
     //
-    // ⚠️ THIS ROUTE ONLY. At a pinned optimum dprofit/dpsi is NOT zero, the
-    // envelope theorem does not hold, and the profit row has to come from
-    // differencing the solve -- which is what `gradient_fd` already does for
-    // every output, with no special case at all. `at()`'s `status` chooses
-    // between the two functions and is the only place that decision is made, so
-    // there is no way for this line to reach the fallback.
-    out[k * n_outputs + out_profit] = direct[out_profit];
+    // ⚠️ THIS ROUTE RUNS AT AN INTERIOR OPTIMUM ONLY, which is what makes the
+    // objective's zero true here. At a pin the same output's channel is the
+    // constraint's shadow price, and the row comes from differencing the solve --
+    // which `gradient_fd` does for every output with no special case at all.
+    // `at()`'s `status` is the one place that choice is made.
+    for (int j = 0; j < n_outputs; ++j) {
+      double& into = out[k * n_outputs + j];
+      switch (role_of(j)) {
+      case Role::Point:
+        // It IS psi*, held fixed, so its direct term is zero by construction and
+        // the composite reduces to dpsi*/dtheta.
+        into = dpsi_dtheta;
+        break;
+      case Role::Objective:
+        into = direct[j];
+        break;
+      default:
+        into = direct[j] + rounded(dY_dpsi[j] * dpsi_dtheta);
+      }
+    }
   }
   apply(l, theta, d, single, -1, s.fast_stem_curve);
 }
@@ -1321,16 +1385,8 @@ inline std::vector<Result> batch(Leaf& l, const double* theta,
 
 using OperatingPointKind = Leaf::OperatingPointKind;
 
-// How the operating point reaches an output. At most one Objective and at most
-// one Point; a request declaring two of either is refused.
-enum class Role { Objective, Point, Ordinary };
-
-// Why an entry is zero, where it is. A bare zero cannot say, and an exact zero is
-// the signature of a missing row more often than of true insensitivity.
-enum class Zero { none, slack, structural };
-
 struct RowRequest {
-  const int* output;  const Role* role;  std::size_t n_output;
+  const int* output;  std::size_t n_output;
   const int* input;   std::size_t n_input;
 };
 
@@ -1362,8 +1418,6 @@ struct Rows {
   // n_output * n_input, output-major: the row at a held point, or the total where
   // that input's rows followed the point. NA where the input's row was refused.
   std::vector<double> held;
-  std::vector<Zero> zero;         // n_output * n_input, output-major
-  double amplification = util::na_value;
 };
 
 // Which bound a pinned point is sitting on. The dry end is a min of two limits
@@ -1405,8 +1459,7 @@ inline double bound_dpoint(const Leaf::BoundRow& b, int par, int n_layers) {
   // ⚠️ Root carbon MUST be here. Both bounds are conditions on total uptake, and
   // carbon moves every layer's conductance, so a carbon entry falling through to
   // the zero below would report that the input leaves the point where it is --
-  // which `zero_kind` then labels a structural zero, from a row `bound_row` had
-  // already filled.
+  // from a row `bound_row` had already filled.
   const int carbon = layer - n_layers;
   if (carbon >= 0 && carbon < int(b.d_droot_carbon.size())) {
     return b.d_droot_carbon[std::size_t(carbon)];
@@ -1465,21 +1518,6 @@ inline double differenced_bound(Leaf& l, const double* theta, const Drivers& d,
   return (up - dn) / (2.0 * h);
 }
 
-// An exact zero, classified where it is written. The root's own critical
-// potential is read by nothing but the dry bound, so at an interior optimum its
-// zero is complementary slackness; the stem's psi_crit is not the same case,
-// since the flux integrates the stem curve up to it. Every other exact zero here
-// is an input the branch taken reads through nothing.
-inline Zero zero_kind(double entry, int par, bool interior) {
-  if (entry != 0.0) {
-    return Zero::none;
-  }
-  if (interior && par == par_root_psi_crit) {
-    return Zero::slack;
-  }
-  return Zero::structural;
-}
-
 inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
                     const RowRequest& r, const Settings& s) {
   // Which supply path is in force is the leaf's own state, so it is read here
@@ -1488,8 +1526,6 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
   const int n_layers = n_soil_layers(d, single);
   check_pars(r.input, r.n_input, n_layers, single, "leaf_rows()");
 
-  int objective = -1;
-  int point = -1;
   // One uptake entry per layer, or none: a single evaluation writes the whole
   // consumption profile, so a request naming any layer carries all of them.
   int n_uptake = 0;
@@ -1512,26 +1548,12 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     if (r.output[j] >= out_uptake_first) {
       n_uptake = n_layers;
     }
-    if (r.role[j] == Role::Objective) {
-      if (objective >= 0) {
-        util::stop("leaf_rows(): two outputs are declared Objective, and the "
-                   "operating point maximises one.");
-      }
-      objective = int(j);
-    } else if (r.role[j] == Role::Point) {
-      if (point >= 0) {
-        util::stop("leaf_rows(): two outputs are declared Point, and the "
-                   "operating point is one number.");
-      }
-      point = int(j);
-    }
   }
 
   Rows out;
   out.dresidual.assign(r.n_input, util::na_value);
   out.dy_dp.assign(r.n_output, util::na_value);
   out.held.assign(r.n_output * r.n_input, util::na_value);
-  out.zero.assign(r.n_output * r.n_input, Zero::none);
 
   const BasePoint b = base_point(l, theta, d, single, s, n_uptake);
   out.kind = b.branch.kind;
@@ -1581,25 +1603,17 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
   OutputValues dY_dpsi(n_uptake);
   const bool have_channel = collar_channel(l, b.psi_star, s, dY_dpsi);
   for (std::size_t j = 0; j < r.n_output; ++j) {
-    if (int(j) == point) {
-      out.dy_dp[j] = 1.0;
-    } else if (int(j) == objective) {
-      // At a pin the point is the bound rather than a maximum, and this is the
-      // constraint's shadow price. Zero at an interior optimum by the envelope
-      // theorem, and zero again where nothing defines the point, there because
-      // the point does not move at all.
-      out.dy_dp[j] = pinned ? b.resid : 0.0;
-    } else if (have_channel) {
-      out.dy_dp[j] = dY_dpsi[r.output[j]];
-    } else if (!interior) {
-      // The point carries no route to any input here: at a pin the condition's
-      // gradient is zero for every one of them, and where nothing defines the
-      // point there is no gradient at all. So this channel multiplies a point
-      // that does not move, and zero is exact rather than a stand-in. An
-      // interior point is the one kind whose gradient is live, and there a
-      // missing channel leaves the row genuinely incomplete.
-      out.dy_dp[j] = 0.0;
-    }
+    // What an output that merely READS the point gets, and the only one of
+    // `point_channel`'s arguments this function has to decide. Where the
+    // difference could not be centred on the point: zero is exact at a pin and
+    // where nothing defines the point, because there the condition's gradient is
+    // zero for every input and this channel multiplies a point that does not
+    // move. An interior point is the one kind whose gradient is live, and there a
+    // missing channel leaves the row genuinely incomplete.
+    const double measured = have_channel ? dY_dpsi[r.output[j]]
+                            : interior   ? util::na_value
+                                         : 0.0;
+    out.dy_dp[j] = point_channel(role_of(r.output[j]), pinned, b.resid, measured);
   }
 
   bool at_base = true;
@@ -1625,9 +1639,7 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     if (shut && shut_row_is_zero(p)) {
       out.dresidual[i] = 0.0;
       for (std::size_t j = 0; j < r.n_output; ++j) {
-        const std::size_t at = j * r.n_input + i;
-        out.held[at] = 0.0;
-        out.zero[at] = Zero::structural;
+        out.held[j * r.n_input + i] = 0.0;
       }
       continue;
     }
@@ -1660,15 +1672,15 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
         }
         out.message += out.message.empty() ? "" : "; ";
         out.message += "no row for `" + par_name(p, n_layers) +
-                       "`: no step within two decades keeps both arms on the " +
+                       "`: no step within the shrink floor keeps both arms on the " +
                        Leaf::operating_point_kind_name(b.branch.kind) + " branch";
         continue;
       }
       out.dresidual[i] = 0.0;
     } else {
       double dR = 0.0;
-      if (!held_row(l, theta, d, single, p, b.psi_star, s, 2, at_base, scratch,
-                    direct, dR)) {
+      if (!held_row(l, theta, d, single, p, b.psi_star, s, true, at_base,
+                    scratch, direct, dR)) {
         // This input only, and for the same reason a following one can fail:
         // the step carries the held collar out of the perturbed interval.
         for (std::size_t j = 0; j < r.n_output; ++j) {
@@ -1676,7 +1688,7 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
         }
         out.message += out.message.empty() ? "" : "; ";
         out.message += "no row for `" + par_name(p, n_layers) +
-                       "`: no step within two decades holds the collar inside "
+                       "`: no step within the shrink floor holds the collar inside "
                        "the perturbed feasible interval";
         continue;
       }
@@ -1690,251 +1702,23 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
       }
     }
     for (std::size_t j = 0; j < r.n_output; ++j) {
-      const std::size_t at = j * r.n_input + i;
-      // The point's own held row is zero by construction: `held_row` has
-      // just asserted both perturbed evaluations sat at exactly p*. Where the
-      // arms followed the point instead, its row is the movement they measured.
-      out.held[at] = (int(j) == point && !follows) ? 0.0 : direct[r.output[j]];
-      out.zero[at] = zero_kind(out.held[at], p, interior);
+      // The point's own held row is zero by construction: `held_row` has just
+      // asserted both perturbed evaluations sat at exactly p*. Where the arms
+      // followed the point instead, its row is the movement they measured.
+      const bool held_is_zero = role_of(r.output[j]) == Role::Point && !follows;
+      out.held[j * r.n_input + i] =
+          held_is_zero ? 0.0 : direct[r.output[j]];
     }
   }
   apply(l, theta, d, single, -1, s.fast_stem_curve);
-
-  if (std::isfinite(out.residual_slope)) {
-    double worst = 0.0;
-    for (const double g : out.dresidual) {
-      worst = std::max(worst, std::abs(g / out.residual_slope));
-    }
-    out.amplification = worst;
-  }
   return out;
-}
-
-// --- the transpose ------------------------------------------------------------
-//
-// WHAT IT IS FOR. Everything above runs FORWARD: one perturbation per parameter,
-// so the cost is however many parameters you ask about, which is why
-// `leaf_gradient()` warns that asking for all fourteen is the most expensive
-// thing you can do. That is the right direction for a leaf, where the parameter
-// count is small. It is the wrong direction for a STAND. A forest model wants
-// the sensitivity of a few whole-stand summaries -- total leaf area, basal area,
-// biomass -- to EVERY trait at once, over a trajectory carrying thousands of
-// individuals. Done forwards that is one full model run per trait; done
-// backwards it is one run and one sweep whatever the trait count is.
-//
-// A backward sweep cannot use a forward derivative. When it reaches an
-// individual it is holding the sensitivity of the final answer to that
-// individual's OUTPUTS, and what it needs is the sensitivity to that
-// individual's INPUTS. That is the transpose of what everything above computes,
-// and this is it: one output adjoint in, one input adjoint out.
-//
-// THE CONTRACTION, which is all this is. The forward composite is
-//
-//   dY/dtheta  =  dY/dtheta|_psi  +  (dY/dpsi) * (-M/H)
-//
-// so for an output adjoint v the transpose is two scalars and one scaled row:
-//
-//   s    = v . (dY/dpsi)                a scalar
-//   m    = -s / H                       a scalar
-//   row  = v . (dY/dtheta|_psi)  +  m * M
-//
-// THE MATRIX (dY/dpsi)(dpsi*/dtheta) IS NEVER FORMED. It is rank one, because
-// the collar potential is a single number, and in this direction it collapses to
-// s and m. That is the whole economy and it is why the transpose is cheap: the
-// combination drops from npars * n_outputs multiply-adds to npars + n_outputs,
-// and nothing npars * n_outputs is ever allocated.
-//
-// ⚠️ WHAT IS *NOT* CHEAPER, AND SAYING SO HERE SAVES A DISAPPOINTMENT. There is
-// no tape and no reverse mode through the model. The per-parameter quantities M
-// and dY/dtheta|_psi are the same two perturbed evaluations `gradient_ift` takes,
-// so AT THE LEAF the transpose costs what the forward gradient over the same
-// parameters costs. Measured interleaved at one interior point: 1.00x over
-// fourteen parameters, 1.00x over the nine that rebuild no spline, and a marginal
-// cost per parameter within 0.4% of the forward path's. The saving is at the
-// STAND, where this is the primitive one adjoint sweep calls per individual and
-// the forward alternative is a whole trajectory per trait.
-//
-// THE IDENTITY THAT CHECKS IT, and it is exact:
-//
-//   <v, J u>  ==  <J^T v, u>
-//
-// for any output adjoint v and any input direction u. Both sides multiply the
-// same numbers and sum them in a different order, so they agree to
-// reassociation and to nothing looser --
-// `test_gradient_transpose_matches_the_forward_jacobian` in tests/cpp requires
-// that over the whole golden grid and over randomised v and u. Measured worst
-// 1.41e-14, five orders below the solve's ~1e-09 floor, at a tolerance of 1e-12.
-
-// The index of the OBJECTIVE among the reported outputs, or -1 where it is not
-// reported at all. Profit is reported here, so it is that index.
-//
-// ⚠️ THE OBJECTIVE'S PSI-CHANNEL MUST BE EXCLUDED FROM `s`. At an interior
-// optimum dprofit/dpsi = 0 by the envelope theorem, so profit's psi-channel
-// contributes nothing and adding a measured central difference of it would
-// double-count -- and that difference is not small noise either, being a
-// difference of a FLAT maximum. #8 appends `profit` as a fifth output and gives
-// it exactly that special case in the forward composite. The dot-product
-// identity is what makes that one line rather than a hazard: it compares the
-// transpose against the forward path column by column, so a forward path that
-// special-cases profit and a transpose that does not fails immediately -- which
-// is what it did when the two were first merged with this constant still unset.
-inline constexpr int out_objective = out_profit;
-
-// dY_j/dpsi as the TRANSPOSE must weight it, which is not always the measured
-// central difference. Two outputs are exceptions, for two different reasons, and
-// both are exceptions in `gradient_ift` too -- a transpose that disagreed with
-// the forward path about either would be the transpose of a different operator.
-//
-//   * `collar` IS psi, so its psi-channel is exactly 1 and its direct term
-//     exactly 0; `gradient_ift` writes dpsi*/dtheta into that row rather than
-//     composing it. Using the measured difference instead is wrong by about
-//     eps * psi / h_psi, i.e. ~1e-10 relative -- small, and still two orders
-//     above the residual this transpose is required to leave.
-//   * the objective's psi-channel is zero by the envelope theorem, above.
-inline double psi_channel(int j, const OutputValues& dY_dpsi) {
-  if (j == out_collar) {
-    return 1.0;
-  }
-  if (j == out_objective) {
-    return 0.0;
-  }
-  return dY_dpsi[j];
-}
-
-struct TransposeResult {
-  // The outputs the transpose is taken at, and the operating-point
-  // diagnostics, all of them `at()`'s own -- see `transpose_at`.
-  double value[n_outputs];
-  // One entry per requested parameter: v . dY/d(pars[k]).
-  std::vector<double> adjoint;
-  Status status = Status::Error;
-  bool used_ift = false;
-  double H = util::na_value;
-  double stationarity = util::na_value;
-  // `s` above: the sensitivity of the weighted output to the collar potential,
-  // and the one number the rank-one term collapses to. NA off the composite.
-  double psi_adjoint = util::na_value;
-  std::string message;
-
-  // Cleared BEFORE anything can throw, for `Result::reset`'s reason: this is a
-  // caller's struct and may be a reused one, so a call that stops partway must
-  // not leave the previous point's numbers sitting in it looking current.
-  void reset(std::size_t npars) {
-    for (int j = 0; j < n_outputs; ++j) {
-      value[j] = util::na_value;
-    }
-    adjoint.assign(npars, util::na_value);
-    status = Status::Error;
-    used_ift = false;
-    H = util::na_value;
-    stationarity = util::na_value;
-    psi_adjoint = util::na_value;
-    message.clear();
-  }
-};
-
-// The transposed gradient at one operating point.
-//
-// ⚠️ THE OPERATING-POINT CLASSIFICATION IS `at()`'s, NOT A SECOND COPY OF IT, and
-// that is why this starts by calling `at()` with no parameters. The composite is
-// valid only where stationarity holds; at a pinned optimum the collar follows a
-// bound and -M/H is not its derivative. Rather than repeat that test -- and with
-// it the curvature, the sentinel handling and the narrow-bracket detector -- this
-// runs the forward entry point with `npars == 0`, which does the solve, the
-// classification and dY/dpsi and then loops over nothing. So `status`,
-// `used_ift`, `H` and `stationarity` are the same numbers the forward path would
-// report at this point BY CONSTRUCTION, this route refuses wherever that one
-// refuses (`at()` throws and the throw propagates), and a change to the
-// classification cannot reach one route without reaching the other.
-//
-// The fallback is transposed too. Where `at()` declines the composite it
-// differences the whole solve, and the transpose of that is the same contraction
-// against a plainer Jacobian -- no s, no m, no H. So the identity below holds at
-// pinned and shut-down points as well, which is most of what makes it worth
-// having.
-inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
-                         bool single, const int* pars, std::size_t npars,
-                         const double* v, const Settings& s,
-                         TransposeResult& out) {
-  out.reset(npars);
-  check_pars(pars, npars, n_soil_layers(d, single), single,
-             "leaf_gradient_transpose()");
-
-  Result point;
-  at(l, theta, d, single, nullptr, 0, s, point);
-
-  for (int j = 0; j < n_outputs; ++j) {
-    out.value[j] = point.value[j];
-  }
-  out.status = point.status;
-  out.used_ift = point.used_ift;
-  out.H = point.H;
-  out.stationarity = point.stationarity;
-
-  // psi* as `at()` recorded it. `outputs()` copies `opt_root_psi_` into the
-  // collar slot, so this is that member and not a re-derivation of it -- the
-  // leaf itself is back at base parameters and unsolved by now.
-  const double psi_star = out.value[out_collar];
-
-  Scratch scratch;
-  bool at_base = true;
-
-  if (out.used_ift) {
-    // s, the first of the two scalars. `rounded()` here and below is not for
-    // agreement with R -- there is no R implementation of this to agree with --
-    // but so that no compiler contracts a multiply-add and the identity's
-    // residual is the same number under gcc and clang. It costs a store per
-    // term against a model evaluation per parameter.
-    double s_psi = 0.0;
-    for (int j = 0; j < n_outputs; ++j) {
-      s_psi += rounded(v[j] * psi_channel(j, point.dY_dpsi));
-    }
-    out.psi_adjoint = s_psi;
-    const double m = -s_psi / point.H;
-
-    OutputValues direct;
-    for (std::size_t k = 0; k < npars; ++k) {
-      double M = 0.0;
-      held_row_or_stop(l, theta, d, single, pars[k], psi_star, s,
-                       "leaf_gradient_transpose()", at_base, scratch, direct, M);
-      // v . dY/dtheta|_psi. `collar` is skipped rather than summed: its direct
-      // term is zero by construction, `outputs_at` having just asserted that
-      // both sides sit at exactly psi*.
-      double row = 0.0;
-      for (int j = 0; j < n_outputs; ++j) {
-        if (j == out_collar) {
-          continue;
-        }
-        row += rounded(v[j] * direct[j]);
-      }
-      out.adjoint[k] = row + rounded(m * M);
-    }
-  } else {
-    // The fallback, transposed: difference the solve and contract. No output is
-    // exceptional here, `collar` included, because nothing is being composed --
-    // which is exactly why `gradient_fd` has no special case either.
-    OutputValues solved;
-    for (std::size_t k = 0; k < npars; ++k) {
-      solved_row(l, theta, d, single, pars[k], s, nullptr, nullptr, at_base,
-                 scratch,
-                 solved);
-      double row = 0.0;
-      for (int j = 0; j < n_outputs; ++j) {
-        row += rounded(v[j] * solved[j]);
-      }
-      out.adjoint[k] = row;
-    }
-  }
-  apply(l, theta, d, single, -1, s.fast_stem_curve);
 }
 
 // --- the environment rows, contracted -----------------------------------------
 //
-// `transpose_at` above is a transpose in its STRUCTURE -- one `s`, one `m`, the
-// rank-one channel collapsed once rather than per parameter -- but every column
-// is still two perturbed evaluations. That is the right trade for the fourteen
-// traits, which have no closed form. It is the wrong one for the environment,
-// which now has.
+// Every row above is two perturbed evaluations. That is the right trade for the
+// fourteen traits, which have no closed form. It is the wrong one for the
+// environment, which now has.
 //
 // So this is the other half: given the adjoint carried on profit, the rows for
 // the light and for each soil layer, analytically. A stand sweep calls it once
@@ -1948,8 +1732,8 @@ inline void transpose_at(Leaf& l, const double* theta, const Drivers& d,
 // them as one loop over "environment parameters" would force one of the two into
 // the other's shape.
 //
-// Profit only. The other four outputs' environment rows are still `transpose_at`'s
-// to difference; this contracts the one output a census functional reads.
+// Profit only. The other four outputs' environment rows are still `rows_at`'s to
+// difference; this contracts the one output a census functional reads.
 struct ProfitEnvDerivatives {
   // Named for what they are rather than for their place in a matrix: a reader
   // should not have to know which way round "row" and "column" run here.
