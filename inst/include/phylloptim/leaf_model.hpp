@@ -250,6 +250,25 @@ public:
   // from GSS_tol_abs however similar the two look: a caller loosening a search
   // must not thereby widen the set of points it declines to optimise.
   double collar_interval_min_width;
+  // Knots in each vulnerability curve. 100 is what every fixture and the golden
+  // grid are built at, so it is a re-blessing to change, and the three places that
+  // set it -- this default, the constructor, and set_traits' rebuild -- have to
+  // move together or a leaf rebuilds onto a different curve than it was built on.
+  //
+  // ⚠️ AT 100 THE CURVE'S SECOND DERIVATIVE IS 27% WRONG, and nothing on the
+  // forward path notices because the solve reads the value and the slope only. The
+  // value is right to 1e-07 and the slope to 6e-07 -- both fall as h^4 and h^3 --
+  // but the second derivative of a C1 cubic is a step function, and it is what
+  // `condition_slope` and any curve-trait row need. Measured against knot count:
+  //
+  //   res   dR/dsigma   dsigma/dc   build us   solve us
+  //   100     2.1e-05     6.7e-05       41.5       6.45
+  //   400     2.7e-06     8.1e-07      150.3       6.64
+  //  1600     1.9e-07     9.0e-09      522.6       7.14
+  //
+  // So refining is the lever and the solve does not pay for it -- a read is O(1) on
+  // a uniform grid, and 16x the knots costs 11% of a solve. What it costs is the
+  // build, once per strategy on a forward run.
   double vulnerability_curve_ncontrol;
   double ci_abs_tol;
   double ci_niter;

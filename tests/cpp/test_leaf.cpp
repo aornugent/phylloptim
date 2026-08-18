@@ -4169,6 +4169,7 @@ void test_the_condition_reaches_the_state_through_two_intermediates() {
     double worst = 0.0;
     int moved = 0;
     std::string worst_at;
+    std::vector<double> got_dR, got_dsigma, got_dV;
     for (int which = 0; which < 2 * f.layers; ++which) {
       const int layer = which % f.layers;
       const bool carbon = which >= f.layers;
@@ -4197,6 +4198,9 @@ void test_the_condition_reaches_the_state_through_two_intermediates() {
       const double dsigma = (std::get<1>(up) - std::get<1>(dn)) / (2.0 * h);
       const double dV = (std::get<2>(up) - std::get<2>(dn)) / (2.0 * h);
 
+      got_dR.push_back(dR);
+      got_dsigma.push_back(dsigma);
+      got_dV.push_back(dV);
       const double predicted = dR_dV * dV + dR_dsigma * dsigma;
       const double scale = std::max(std::abs(dR), 1e-12);
       const double residual = std::abs(predicted - dR) / scale;
@@ -4234,8 +4238,28 @@ void test_the_condition_reaches_the_state_through_two_intermediates() {
     ok(worst < 1e-3, "the two intermediates carry every state direction, " + tag +
                          " (worst " + std::to_string(worst) + " at " + worst_at +
                          ")");
-    printf("  %-22s dR/dsigma %12.5g   worst residual %9.3g at %s\n", tag.c_str(),
-           dR_dsigma, worst, worst_at.c_str());
+    // The object itself, rather than the identity it satisfies: solve both
+    // coefficients from one soil direction and one root-carbon direction -- two
+    // families, so the pair is determined -- and hold the closed forms against
+    // them. This is what says dR/dsigma is right and not merely consistent.
+    const int i = 0, j = f.layers;
+    const double det =
+        got_dsigma[i] * got_dV[j] - got_dsigma[j] * got_dV[i];
+    const double solved_dsigma =
+        (got_dR[i] * got_dV[j] - got_dR[j] * got_dV[i]) / det;
+    const double solved_dV =
+        (got_dsigma[i] * got_dR[j] - got_dsigma[j] * got_dR[i]) / det;
+    // dR/dV is exact; dR/dsigma is held to what the curve's second derivative
+    // allows at this knot count, which is 2e-05 -- see
+    // `vulnerability_curve_ncontrol` for the measurement against resolution.
+    near(dR_dV, solved_dV, 1e-8, "dR/dV against the solved pair, " + tag);
+    near(dR_dsigma, solved_dsigma, 1e-4,
+         "dR/dsigma against the solved pair, " + tag);
+    printf("  %-22s dR/dsigma %12.5g (solved %12.5g, rel %8.3g)   worst "
+           "residual %9.3g at %s\n",
+           tag.c_str(), dR_dsigma, solved_dsigma,
+           std::abs(dR_dsigma - solved_dsigma) / std::abs(solved_dsigma), worst,
+           worst_at.c_str());
   }
 }
 
