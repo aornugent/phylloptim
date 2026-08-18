@@ -4300,6 +4300,58 @@ void test_the_condition_is_the_stem_potential_and_its_collar_response() {
   }
 }
 
+// Whether the closed-form trait derivative of the cumulative integral is the row
+// of the model AS EVALUATED, or of a different function.
+//
+// The question is not rhetorical and the corpus answers it both ways. The grid's
+// upper end is b*log(100)^(1/c), so it moves when c moves and `set_traits`
+// rebuilds -- which is the argument for differencing the rebuild, since then the
+// grid's motion is inside the row. Against that, the series is exact and needs no
+// rebuild at all, and the interpolant now carries the closed-form slope, so the
+// curve it reads and the curve the series differentiates are the same curve.
+//
+// So: difference the spline read across a REBUILD, which is what the model does,
+// and hold the series' own dG/dc against it.
+void test_the_curves_trait_derivative_is_the_models_own() {
+  printf("the closed-form dG/dc against a rebuilt difference of the spline\n");
+  namespace grad = phylloptim::gradient;
+  namespace pl = phylloptim;
+  grad::Settings s;
+  const int L = 3;
+  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, L, L);
+  pl::Leaf l = env::fresh();
+  grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+  const double b = l.stem_b, c = l.stem_c;
+
+  double worst_dc = 0.0, worst_value = 0.0;
+  for (double psi : {0.5, 1.0, 2.0, 3.0, 4.0}) {
+    const pl::VulnerabilityIntegralDerivatives dd =
+        pl::cumulative_vulnerability_integral_derivatives_at(psi, b, c);
+    const double value = l.stem_curve_integral(psi);
+    worst_value = std::max(worst_value,
+                           std::abs(dd.value - value) / std::abs(value));
+
+    double th[grad::n_pars];
+    grad::Scratch scratch;
+    const double h = c * 1e-5;
+    grad::set_one(l, th, env::kTheta, d, false, grad::par_stem_c, c + h,
+                  s.fast_stem_curve, scratch);
+    const double up = l.stem_curve_integral(psi);
+    grad::set_one(l, th, env::kTheta, d, false, grad::par_stem_c, c - h,
+                  s.fast_stem_curve, scratch);
+    const double dn = l.stem_curve_integral(psi);
+    grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+    const double rebuilt = (up - dn) / (2.0 * h);
+    worst_dc = std::max(worst_dc, std::abs(dd.dc - rebuilt) /
+                                     std::max(std::abs(rebuilt), 1e-30));
+  }
+  // The wet end carries the worst of it, where the integral itself is smallest.
+  ok(worst_value < 1e-7, "the series' value matches the spline's");
+  ok(worst_dc < 1e-4, "and its dG/dc matches a rebuilt difference");
+  printf("  value to %.3g, dG/dc to %.3g over five positions\n", worst_value,
+         worst_dc);
+}
+
 // The transport's response to the collar, which the marginal-profit evaluation
 // forms and used to discard. The condition's gradient is written in it, so a
 // consumer that wants the condition in parts needs it reported.
@@ -4736,6 +4788,7 @@ int main() {
   test_environment_rows_are_zero_below_the_rooted_layers();
   test_uptake_outputs_are_enumerated();
   test_rows_in_parts_assemble_to_the_totals();
+  test_the_curves_trait_derivative_is_the_models_own();
   test_the_transport_reports_its_collar_response();
   test_the_condition_is_the_stem_potential_and_its_collar_response();
   test_the_condition_reaches_the_state_through_two_intermediates();
