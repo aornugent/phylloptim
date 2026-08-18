@@ -855,10 +855,11 @@ inline bool collar_channel(Leaf& l, double psi_star, const Settings& s,
 // False where no step keeps both arms inside the perturbed feasible interval;
 // `direct` and `dresidual` are not written then.
 //
-// ⚠️ `decades` is how many times the step may shrink first, and the R
-// implementation this file is checked against passes NONE: it stops at the first
-// infeasible arm, so a C++ route that shrinks would answer states R does not and
-// the two would stop being one function checked against another.
+// ⚠️ `decades` is how many times the step may shrink, and it also gates the
+// one-sided arm. The R implementation this file is checked against passes NONE:
+// it stops at the first infeasible arm, so a C++ route that recovered from one
+// would answer states R does not and the two would stop being one function
+// checked against another.
 inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
                        bool single, int par, double psi_star, const Settings& s,
                        int decades, bool& at_base,
@@ -875,8 +876,27 @@ inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
   double dn_resid = 0.0;
   const double base = par_value(theta, d, single, par);
   double h = step_for(par, base, s.step, n_soil_layers(d, single));
+  // One evaluation of each output at the held collar with nothing moved, for the
+  // one-sided arm below. Taken lazily, because the centred arm is what almost
+  // every point takes and it does not need this.
+  OutputValues here_out(direct.n_uptake());
+  double here_resid = 0.0;
+  bool have_here = false;
+  auto at_base_here = [&]() -> bool {
+    if (have_here) {
+      return true;
+    }
+    apply(l, theta, d, single, -1, s.fast_stem_curve);
+    if (!outputs_at(l, psi_star, here_out)) {
+      return false;
+    }
+    here_resid = l.dprofit_droot_collar_psi(psi_star);
+    have_here = true;
+    return true;
+  };
   for (int decade = 0;; ++decade) {
-    bool feasible = true;
+    bool up_ok = false;
+    bool dn_ok = false;
     for (int side = 0; side < 2; ++side) {
       // Up first, then down: R evaluates `up <- side(1)` before `dn <- side(-1)`
       // and both mutate the leaf.
@@ -887,18 +907,45 @@ inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
       // and `evaluate_root_collar_psi` is what seats the state `dprofit` reads.
       // Both arms are taken before either is tested, so which one moved the
       // interval does not change the order the leaf is moved in.
-      const bool here = outputs_at(l, psi_star, dst);
-      feasible = feasible && here;
+      const bool ok = outputs_at(l, psi_star, dst);
+      (side == 0 ? up_ok : dn_ok) = ok;
       double& resid = side == 0 ? up_resid : dn_resid;
       resid = l.dprofit_droot_collar_psi(psi_star);
     }
-    if (feasible) {
+    if (up_ok && dn_ok) {
       // M = d2profit/dpsi dtheta, with psi held FIXED at psi*.
       dresidual = (up_resid - dn_resid) / (2.0 * h);
       for (int j = 0; j < direct.size(); ++j) {
         direct[j] = (up[j] - dn[j]) / (2.0 * h);
       }
       return true;
+    }
+    // ONE ARM INSIDE: take it one-sided rather than shrinking, and take it to
+    // SECOND order. An interior point can sit within a step of a bound, and there
+    // the held collar is feasible on one side only -- so this is the arm that
+    // answers a drying stand, not an edge case. First order would be 150x worse
+    // and would carry a sign that follows which bound the point drifted toward
+    // rather than the input, so the same row would differ by side.
+    //
+    // Shrinking is LAST because the reads carry the solve's own floor: dividing
+    // them by a step two decades smaller costs more than this truncation.
+    if ((up_ok != dn_ok) && decades > 0 && at_base_here()) {
+      const int sign = up_ok ? 1 : -1;
+      OutputValues& near = up_ok ? up : dn;
+      const double near_resid = up_ok ? up_resid : dn_resid;
+      OutputValues far(direct.n_uptake());
+      set_one(l, th, theta, d, single, par, base + sign * 2.0 * h,
+              s.fast_stem_curve, scratch);
+      if (outputs_at(l, psi_star, far)) {
+        const double far_resid = l.dprofit_droot_collar_psi(psi_star);
+        const double scale = sign / (2.0 * h);
+        dresidual =
+            scale * (-3.0 * here_resid + 4.0 * near_resid - far_resid);
+        for (int j = 0; j < direct.size(); ++j) {
+          direct[j] = scale * (-3.0 * here_out[j] + 4.0 * near[j] - far[j]);
+        }
+        return true;
+      }
     }
     // A step that carries the held collar out of the perturbed feasible interval
     // is the state a pin sits in, where the interval closes around the point. The
