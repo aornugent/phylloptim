@@ -4226,10 +4226,11 @@ void test_carbon_trait_rows_match_a_differenced_solve() {
     // Taken before any perturbation, and at the point itself: `base_point`
     // closes by differencing the marginal profit across p*, so it leaves the
     // collar one step below it, and a row read there is wrong by that step.
-    grad::OutputValues seated(L);
-    ok(grad::outputs_at(l, b.psi_star, seated), "the point is evaluable, " + tag);
-    const pl::Leaf::PhotoTraitRows photo = l.photo_trait_rows();
-    const pl::Leaf::CostTraitRows cost = l.cost_trait_rows();
+    bool evaluable = false;
+    l.dprofit_droot_collar_psi(b.psi_star, &evaluable);
+    ok(evaluable, "the point is evaluable, " + tag);
+    const pl::Leaf::PhotoTraitRows photo = l.photo_trait_rows(l.dpsistem_dpsi_);
+    const pl::Leaf::CostTraitRows cost = l.cost_trait_rows(l.dpsistem_dpsi_);
 
     const double held[] = {photo.dprofit_dvcmax_25,
                            photo.dprofit_djmax_25,

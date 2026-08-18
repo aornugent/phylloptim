@@ -949,7 +949,14 @@ public:
     double dprofit_dbeta2, dprofit_dcost_scale;
     double dmarginal_dbeta2, dmarginal_dcost_scale;
   };
-  CostTraitRows cost_trait_rows();
+  // Takes dpsi_stem/dp rather than re-forming it: it is one quantity, the
+  // marginal-profit evaluation forms it, and three copies of the same arithmetic
+  // is three places for it to drift.
+  // ⚠️ NOT const, and the obstruction is a cache rather than the derivation:
+  // `transpiration` holds a one-entry memo and `hydraulic_cost_TF_kernel` is
+  // reached through it. Marking the memo mutable would buy the qualifier by
+  // making the mutation invisible, which is the wrong trade.
+  CostTraitRows cost_trait_rows(double dpsistem_dp);
 
   // The three photosynthesis traits, whose rows come off two second-order passes
   // rather than six re-solves.
@@ -993,7 +1000,7 @@ public:
     double dmarginal_da, dmarginal_dcurv_elec, dmarginal_dcurv_colim;
     double dmarginal_dvcmax_25, dmarginal_djmax_25, dmarginal_dR_d_25;
   };
-  PhotoTraitRows photo_trait_rows();
+  PhotoTraitRows photo_trait_rows(double dpsistem_dp);
   // The energy-balance correction to the above, zero when the gate is off. Kept
   // out of line so that adding it cannot change FMA contraction in the inlined
   // gate-off path; the derivation and the two sign checks are at the definition.
@@ -2940,7 +2947,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
                                             dpsistem_dpsi, dT_dE, Tleaf_here);
 }
 
-inline Leaf::CostTraitRows Leaf::cost_trait_rows() {
+inline Leaf::CostTraitRows Leaf::cost_trait_rows(double dpsistem_dp) {
   using AD = xad::fwd<double>::active_type;
   if (use_energy_balance_) {
     // photo_trait_rows' reason, and the same exposure: the marginal rows below
@@ -2958,26 +2965,6 @@ inline Leaf::CostTraitRows Leaf::cost_trait_rows() {
   AD ps_ad = psi_stem;  xad::derivative(ps_ad) = 1.0;
   const double C_prime = xad::derivative(hydraulic_cost_TF_kernel(ps_ad));
 
-  // dpsi_stem/dp, formed as dprofit_at_collar_psi forms it, including its
-  // fallback: near a branch kink the analytic conductance returns NaN and the
-  // transport is differenced instead.
-  const double dEup_dp = dE_from_soil_dpsi_collar(psi, supply_psi_soil());
-  double dpsistem_dp;
-  if (std::isfinite(dEup_dp)) {
-    E_from_Soil_to_Root_Collar(psi, supply_psi_soil());
-    const double E_x =
-        E_up_ / leaf_specific_conductance_max_ +
-        stem_curve_integral(psi, "Leaf::cost_trait_rows");
-    dpsistem_dp = stem_curve_integral_inverse_deriv(E_x) *
-                  (dEup_dp / leaf_specific_conductance_max_ +
-                   stem_curve_integral_deriv(psi));
-  } else {
-    const double h = 1e-6;
-    dpsistem_dp = (find_psi_stem_from_psi_root(psi + h, supply_psi_soil()) -
-                   find_psi_stem_from_psi_root(psi - h, supply_psi_soil())) /
-                  (2.0 * h);
-  }
-
   const double log_q = std::log(q);
   CostTraitRows out;
   out.dprofit_dbeta2 = -C * log_q;
@@ -2987,7 +2974,7 @@ inline Leaf::CostTraitRows Leaf::cost_trait_rows() {
   return out;
 }
 
-inline Leaf::PhotoTraitRows Leaf::photo_trait_rows() {
+inline Leaf::PhotoTraitRows Leaf::photo_trait_rows(double dpsistem_dp) {
   using AD = xad::fwd<double>::active_type;
   using AD2 = xad::fwd_fwd<double>::active_type;
   PhotoTraitRows out{0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -3081,21 +3068,6 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows() {
       gc_const * leaf_specific_conductance_max_ * stem_curve_integral_deriv(psi_stem);
   const double dgc_dpsi =
       gc_const * leaf_specific_conductance_max_ * (-stem_curve_integral_deriv(psi));
-  const double dEup_dp = dE_from_soil_dpsi_collar(psi, supply_psi_soil());
-  double dpsistem_dp;
-  if (std::isfinite(dEup_dp)) {
-    E_from_Soil_to_Root_Collar(psi, supply_psi_soil());
-    const double E_x = E_up_ / leaf_specific_conductance_max_ +
-                       stem_curve_integral(psi, "Leaf::photo_trait_rows");
-    dpsistem_dp = stem_curve_integral_inverse_deriv(E_x) *
-                  (dEup_dp / leaf_specific_conductance_max_ +
-                   stem_curve_integral_deriv(psi));
-  } else {
-    const double h = 1e-6;
-    dpsistem_dp = (find_psi_stem_from_psi_root(psi + h, supply_psi_soil()) -
-                   find_psi_stem_from_psi_root(psi - h, supply_psi_soil())) /
-                  (2.0 * h);
-  }
 
   const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
   const double g_ci = A_ci * umol_to_mol + gc * inv_atm;

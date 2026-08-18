@@ -1672,14 +1672,19 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
   // marginal profit across p*, so it leaves the collar one step below it, and
   // these rows are reads OF the point rather than of a neighbourhood -- taken
   // where base_point left it they are wrong by that step, which measures 4.5e-06
-  // relative and looks like nothing. One evaluation, no solve; and a point that
-  // cannot be evaluated has no rows here.
+  // relative and looks like nothing.
+  //
+  // The marginal profit is what seats it, because that is also what forms
+  // dpsi_stem/dp: one evaluation gives the state these rows are read at, the
+  // transport response they are written in, and whether the point can be
+  // evaluated at all.
   CarbonRows carbon;
   if (carbon_rows_apply(l, r, shut)) {
-    OutputValues seated(n_uptake);
-    if (outputs_at(l, b.psi_star, seated)) {
-      carbon.photo = l.photo_trait_rows();
-      carbon.cost = l.cost_trait_rows();
+    bool feasible = false;
+    l.dprofit_droot_collar_psi(b.psi_star, &feasible);
+    if (feasible) {
+      carbon.photo = l.photo_trait_rows(l.dpsistem_dpsi_);
+      carbon.cost = l.cost_trait_rows(l.dpsistem_dpsi_);
       carbon.usable = true;
     }
   }
