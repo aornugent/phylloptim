@@ -4094,6 +4094,159 @@ void test_rows_in_parts_assemble_to_the_totals() {
      "a shut collar takes up no water, and says so beside a non-zero profit row");
 }
 
+// The eight carbon-side traits have closed-form rows, and this is what says
+// whether they are right. At a frozen collar each reaches profit through
+// assimilation or through the hydraulic cost and through nothing else, so its
+// held row is one of `photo_trait_rows`' or `cost_trait_rows`' `dprofit_`
+// entries, and at an interior point -- where stationarity is the condition --
+// the condition's gradient is the matching `dmarginal_`.
+//
+// ⚠️ NEITHER READER HAS A CALLER ANYWHERE, tests included, so until this ran
+// nothing had compared them with the solve they claim to describe. The
+// differenced row is the reference: it is what the model does today.
+void test_carbon_trait_rows_match_a_differenced_solve() {
+  printf("the carbon traits' closed-form rows against the differenced solve\n");
+  namespace grad = phylloptim::gradient;
+  namespace pl = phylloptim;
+  grad::Settings s;
+
+  struct Fixture {
+    const char* what;
+    double psi_soil, ppfd, vpd, leaf_temp;
+    int layers;
+  };
+  const Fixture fixtures[] = {
+      {"wet", 2.0, 900.0, 2.0, 25.0, 3},
+      {"dim", 2.0, 300.0, 2.0, 25.0, 3},
+      {"dry", 4.5, 900.0, 2.0, 25.0, 3},
+      {"arid", 2.0, 900.0, 4.0, 25.0, 3},
+      {"hot", 2.0, 900.0, 2.0, 40.0, 3},
+      // One layer dried past where the optimum stops being interior, which the
+      // fixture below this one bisects at psi_soil 5.702755. The collar is
+      // pinned to the root's critical potential there: the held evaluation is
+      // still the frozen-collar one, so these rows must still agree, and the
+      // condition is the bound rather than stationarity -- not this reader's to
+      // supply, and not asked of it.
+      {"pinned", 5.72, 900.0, 2.0, 25.0, 1},
+      // Drier still, and the leaf has stopped moving water.
+      {"shut", 5.8, 900.0, 2.0, 25.0, 3},
+  };
+
+  const int pars[] = {grad::par_vcmax_25,
+                      grad::par_jmax_25,
+                      grad::par_a,
+                      grad::par_curv_fact_elec_trans,
+                      grad::par_curv_fact_colim,
+                      grad::par_R_d_25,
+                      grad::par_beta2,
+                      grad::par_cost_scale_TF24};
+  const std::size_t n_par = sizeof(pars) / sizeof(pars[0]);
+
+  int compared = 0;
+  for (const Fixture& f : fixtures) {
+    const int L = f.layers;
+    grad::Drivers d = env::drivers(f.psi_soil, f.ppfd, f.vpd, L, L);
+    d.leaf_temp = f.leaf_temp;
+
+    std::vector<int> out_index{grad::out_profit};
+    for (int i = 0; i < L; ++i) {
+      out_index.push_back(grad::out_uptake_first + i);
+    }
+    std::vector<int> input(pars, pars + n_par);
+    grad::RowRequest req{out_index.data(), out_index.size(), input.data(),
+                         input.size()};
+    pl::Leaf l = env::fresh();
+    const grad::Rows rows = grad::rows_at(l, env::kTheta, d, req, s);
+
+    // The readers want the base state solved, and `rows_at` leaves it supplied
+    // but not solved.
+    pl::Leaf ref = env::fresh();
+    grad::apply(ref, env::kTheta, d, false, -1, s.fast_stem_curve);
+    ref.find_root_collar_psi();
+    const pl::Leaf::PhotoTraitRows photo = ref.photo_trait_rows();
+    const pl::Leaf::CostTraitRows cost = ref.cost_trait_rows();
+
+    const double held[] = {photo.dprofit_dvcmax_25,
+                           photo.dprofit_djmax_25,
+                           photo.dprofit_da,
+                           photo.dprofit_dcurv_elec,
+                           photo.dprofit_dcurv_colim,
+                           photo.dprofit_dR_d_25,
+                           cost.dprofit_dbeta2,
+                           cost.dprofit_dcost_scale};
+    const double condition[] = {photo.dmarginal_dvcmax_25,
+                                photo.dmarginal_djmax_25,
+                                photo.dmarginal_da,
+                                photo.dmarginal_dcurv_elec,
+                                photo.dmarginal_dcurv_colim,
+                                photo.dmarginal_dR_d_25,
+                                cost.dmarginal_dbeta2,
+                                cost.dmarginal_dcost_scale};
+
+    const bool interior =
+        rows.kind == pl::Leaf::OperatingPointKind::Interior;
+    // Where the leaf has stopped moving water the frozen-collar derivation is
+    // not the route: gross assimilation is identically zero, so the residual
+    // these readers divide by is too and they answer NaN, while the row layer
+    // DECLARES the five assimilation-only traits zero there rather than taking
+    // any derivative. Their own comment says the rows are zero on that branch,
+    // and the code does not do it -- so the branch is checked here to keep that
+    // disagreement from being discovered by wiring them into it.
+    const bool shut =
+        rows.kind == pl::Leaf::OperatingPointKind::HydraulicShutdown ||
+        rows.kind == pl::Leaf::OperatingPointKind::ShadeDeath;
+    const std::string tag =
+        std::string(f.what) + " (" +
+        pl::Leaf::operating_point_kind_name(rows.kind) + ")";
+
+    if (shut) {
+      ok(!std::isfinite(photo.dprofit_dvcmax_25),
+         "the closed-form reader does not answer at " + tag);
+      ok(rows.held[0] == 0.0,
+         "and the row layer declares the row zero there, " + tag);
+      printf("  %-22s not this reader's branch\n", tag.c_str());
+      continue;
+    }
+
+    double worst_held = 0.0, worst_cond = 0.0, worst_uptake = 0.0;
+    for (std::size_t i = 0; i < n_par; ++i) {
+      const std::string nm =
+          std::string(grad::par_name(pars[i], L)) + ", " + tag;
+      const double got = rows.held[0 * n_par + i];
+      if (!std::isfinite(got) || !std::isfinite(held[i])) {
+        ok(false, "both routes answer for " + nm);
+        continue;
+      }
+      ++compared;
+      const double scale_h = std::max(1.0, std::abs(got));
+      worst_held = std::max(worst_held, std::abs(held[i] - got) / scale_h);
+      near(held[i], got, 1e-4, "profit row for " + nm);
+
+      // At a fixed collar a carbon-side trait moves no water, so every uptake
+      // row is claimed exactly zero -- and the difference has to agree with
+      // that at its own floor rather than approximately.
+      for (int j = 0; j < L; ++j) {
+        const double up = rows.held[std::size_t(j + 1) * n_par + i];
+        if (std::isfinite(up)) {
+          worst_uptake = std::max(worst_uptake, std::abs(up) / scale_h);
+        }
+      }
+
+      if (interior && std::isfinite(rows.dresidual[i]) &&
+          std::isfinite(condition[i])) {
+        const double scale_c = std::max(1.0, std::abs(rows.dresidual[i]));
+        worst_cond = std::max(
+            worst_cond, std::abs(condition[i] - rows.dresidual[i]) / scale_c);
+        near(condition[i], rows.dresidual[i], 1e-3,
+             "condition row for " + nm);
+      }
+    }
+    printf("  %-22s worst rel: profit %.3g, condition %.3g; uptake rows %.3g\n",
+           tag.c_str(), worst_held, worst_cond, worst_uptake);
+  }
+  ok(compared == int(n_par) * 6, "every trait was compared at every fixture");
+}
+
 // The two ends of the shrinking, which the grid above cannot reach: on it every
 // arm stays on the base point's branch at the requested step, and so does every
 // constrained point's at a step three orders coarser.
@@ -4293,6 +4446,7 @@ int main() {
   test_environment_rows_are_zero_below_the_rooted_layers();
   test_uptake_outputs_are_enumerated();
   test_rows_in_parts_assemble_to_the_totals();
+  test_carbon_trait_rows_match_a_differenced_solve();
   test_rows_shrink_the_step_to_stay_on_one_branch();
   benchmark();
 
