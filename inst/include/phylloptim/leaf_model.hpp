@@ -385,6 +385,11 @@ public:
   double count;
   double E_up_;
 
+  // dpsi_stem/dpsi at the collar the marginal profit was last evaluated at. The
+  // transport's whole response to the collar, formed there and previously
+  // discarded; the condition's gradient is written in it.
+  double dpsistem_dpsi_ = util::na_value;
+
   // --- Medlyn stomatal-conductance model (from develop #450) ------------------
   // Standalone, R-callable alternative to the root-collar profit optimisation
   // (solve_medlyn_ci_*); NOT used by the TF24 compute path, which optimises
@@ -2829,6 +2834,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
         (find_psi_stem_from_psi_root(psi + h, supply_psi_soil()) -
          find_psi_stem_from_psi_root(psi - h, supply_psi_soil())) / (2.0 * h);
   }
+  dpsistem_dpsi_ = dpsistem_dpsi;
 
 
   // ⚠️ E3: THE COMPENSATION-POINT BRANCH, where the implicit function theorem

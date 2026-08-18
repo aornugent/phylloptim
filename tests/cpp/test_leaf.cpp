@@ -4094,6 +4094,47 @@ void test_rows_in_parts_assemble_to_the_totals() {
      "a shut collar takes up no water, and says so beside a non-zero profit row");
 }
 
+// The transport's response to the collar, which the marginal-profit evaluation
+// forms and used to discard. The condition's gradient is written in it, so a
+// consumer that wants the condition in parts needs it reported.
+void test_the_transport_reports_its_collar_response() {
+  printf("the transport's collar response, against a difference of the transport\n");
+  namespace grad = phylloptim::gradient;
+  namespace pl = phylloptim;
+  grad::Settings s;
+
+  struct Fixture { const char* what; double psi_soil; int layers; };
+  const Fixture fixtures[] = {{"wet", 2.0, 3},
+                              {"dry", 4.5, 3},
+                              {"pinned", 5.72, 1}};
+
+  for (const Fixture& f : fixtures) {
+    grad::Drivers d = env::drivers(f.psi_soil, 900.0, 2.0, f.layers, f.layers);
+    pl::Leaf l = env::fresh();
+    grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+    l.find_root_collar_psi();
+    const std::string tag =
+        std::string(f.what) + " (" +
+        pl::Leaf::operating_point_kind_name(l.operating_point_kind()) + ")";
+    const double psi_star = l.opt_root_psi_;
+    l.dprofit_droot_collar_psi(psi_star);
+
+    // Against a difference of the transport itself, which shares no arithmetic
+    // with it: the reported value is the inverse curve's slope times the flux's,
+    // and this is a difference of the inverse solve.
+    const double h = 1e-6 * std::max(psi_star, 1.0);
+    const double up =
+        l.find_psi_stem_from_psi_root(psi_star + h, l.supply_psi_soil());
+    const double dn =
+        l.find_psi_stem_from_psi_root(psi_star - h, l.supply_psi_soil());
+    const double differenced = (up - dn) / (2.0 * h);
+    near(l.dpsistem_dpsi_, differenced, 1e-5,
+         "the reported dpsi_stem/dpsi, " + tag);
+    printf("  %-30s %.6f against %.6f\n", tag.c_str(), l.dpsistem_dpsi_,
+           differenced);
+  }
+}
+
 // The eight carbon-side traits have closed-form rows, and this is what says
 // whether they are right. At a frozen collar each reaches profit through
 // assimilation or through the hydraulic cost and through nothing else, so its
@@ -4450,6 +4491,7 @@ int main() {
   test_environment_rows_are_zero_below_the_rooted_layers();
   test_uptake_outputs_are_enumerated();
   test_rows_in_parts_assemble_to_the_totals();
+  test_the_transport_reports_its_collar_response();
   test_carbon_trait_rows_match_a_differenced_solve();
   test_rows_shrink_the_step_to_stay_on_one_branch();
   benchmark();
