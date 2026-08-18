@@ -390,6 +390,13 @@ public:
   // discarded; the condition's gradient is written in it.
   double dpsistem_dpsi_ = util::na_value;
 
+  // The marginal profit's two coefficients at that same collar: its response to
+  // the stem potential, and its response to the collar at a HELD stem potential.
+  // The condition is the first times dpsistem_dpsi_ plus the second, so a
+  // consumer differentiating the condition differentiates these.
+  double dprofit_dpsistem_ = util::na_value;
+  double dprofit_dpsi_held_stem_ = util::na_value;
+
   // --- Medlyn stomatal-conductance model (from develop #450) ------------------
   // Standalone, R-callable alternative to the root-collar profit optimisation
   // (solve_medlyn_ci_*); NOT used by the TF24 compute path, which optimises
@@ -2936,6 +2943,19 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
 
   const double dci_dpsi = dci_dpsistem * dpsistem_dpsi + dci_dpsi_expl;
   const double base = A_prime * dci_dpsi - C_prime * dpsistem_dpsi;
+  // The same expression read as a pair of coefficients, which is what a consumer
+  // wanting this condition's gradient needs:
+  //
+  //   base = (A' dci/dpsi_stem - C') V  +  A' (dci/dpsi at held stem)
+  //        =            dprofit_dpsistem_ * V  +  dprofit_dpsi_held_stem_
+  //
+  // The second is not a remainder. The collar moves the stomatal conductance
+  // directly as well as through the stem potential -- transpiration is the stem
+  // integral BETWEEN them -- so profit responds to the collar at a held stem
+  // potential, and a coordinate pair that reaches the condition only through the
+  // stem potential is short by exactly this.
+  dprofit_dpsistem_ = A_prime * dci_dpsistem - C_prime;
+  dprofit_dpsi_held_stem_ = A_prime * dci_dpsi_expl;
   // Gated at the CALL SITE, not just inside the callee: the block is out of line
   // (deliberately, so adding it cannot change FMA contraction in this inlined
   // body), and an out-of-line call costs even when it returns 0.0 immediately.

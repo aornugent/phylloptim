@@ -4094,6 +4094,67 @@ void test_rows_in_parts_assemble_to_the_totals() {
      "a shut collar takes up no water, and says so beside a non-zero profit row");
 }
 
+// Which pair of coordinates the condition is written in, settled by identity
+// rather than by fitting.
+//
+// The condition is the marginal profit. Read off its own composition it is
+//
+//   R = dprofit_dpsistem_ * dpsi_stem/dpsi  +  dprofit_dpsi_held_stem_
+//
+// so the two coordinates are the stem potential and the transport's response to
+// the collar. The obvious alternative -- total uptake and its collar slope --
+// reaches the condition ONLY through the stem potential, because uptake is what
+// sets it. It is therefore short by the second term, whose size is measured here.
+//
+// ⚠️ A RANK TEST CANNOT SEPARATE THE TWO. Both pairings are rank two and both
+// reproduce every out-of-sample state direction; what separates them is whether
+// the second term is there, so that is what this reads.
+void test_the_condition_is_the_stem_potential_and_its_collar_response() {
+  printf("the condition's two coordinates, and the size of the direct term\n");
+  namespace grad = phylloptim::gradient;
+  namespace pl = phylloptim;
+  grad::Settings s;
+
+  struct Fixture { const char* what; double psi_soil, ppfd, vpd; int layers; };
+  const Fixture fixtures[] = {{"wet", 2.0, 900.0, 2.0, 3},
+                              {"dim", 2.0, 300.0, 2.0, 3},
+                              {"dry", 4.5, 900.0, 2.0, 3},
+                              {"arid", 2.0, 900.0, 4.0, 3},
+                              {"pinned", 5.72, 900.0, 2.0, 1}};
+
+  for (const Fixture& f : fixtures) {
+    grad::Drivers d =
+        env::drivers(f.psi_soil, f.ppfd, f.vpd, f.layers, f.layers);
+    pl::Leaf l = env::fresh();
+    grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+    l.find_root_collar_psi();
+    const std::string tag =
+        std::string(f.what) + " (" +
+        pl::Leaf::operating_point_kind_name(l.operating_point_kind()) + ")";
+    const double psi_star = l.opt_root_psi_;
+    bool feasible = false;
+    const double R = l.dprofit_droot_collar_psi(psi_star, &feasible);
+    ok(feasible, "the point is evaluable, " + tag);
+    if (!feasible) {
+      continue;
+    }
+
+    const double through_stem = l.dprofit_dpsistem_ * l.dpsistem_dpsi_;
+    const double direct = l.dprofit_dpsi_held_stem_;
+    near(through_stem + direct, R, 1e-13,
+         "the condition is its two coordinates, " + tag);
+
+    // The whole of the discrimination: were this zero, a pairing reaching the
+    // condition only through the stem potential would be complete.
+    ok(direct != 0.0 && std::isfinite(direct),
+       "and the direct term is not zero, " + tag);
+    printf("  %-30s R %11.4g = stem %11.4g + direct %11.4g  (direct %.1f%%)\n",
+           tag.c_str(), R, through_stem, direct,
+           100.0 * std::abs(direct) /
+               std::max(std::abs(R), std::abs(through_stem)));
+  }
+}
+
 // The transport's response to the collar, which the marginal-profit evaluation
 // forms and used to discard. The condition's gradient is written in it, so a
 // consumer that wants the condition in parts needs it reported.
@@ -4493,6 +4554,7 @@ int main() {
   test_uptake_outputs_are_enumerated();
   test_rows_in_parts_assemble_to_the_totals();
   test_the_transport_reports_its_collar_response();
+  test_the_condition_is_the_stem_potential_and_its_collar_response();
   test_carbon_trait_rows_match_a_differenced_solve();
   test_rows_shrink_the_step_to_stay_on_one_branch();
   benchmark();
