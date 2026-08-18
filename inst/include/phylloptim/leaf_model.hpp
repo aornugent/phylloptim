@@ -250,25 +250,27 @@ public:
   // from GSS_tol_abs however similar the two look: a caller loosening a search
   // must not thereby widen the set of points it declines to optimise.
   double collar_interval_min_width;
-  // Knots in each vulnerability curve. 100 is what every fixture and the golden
-  // grid are built at, so it is a re-blessing to change, and the three places that
-  // set it -- this default, the constructor, and set_traits' rebuild -- have to
-  // move together or a leaf rebuilds onto a different curve than it was built on.
+  // Knots in each vulnerability curve, and the ONE place the count is chosen: both
+  // constructors and set_traits' rebuild read it, so a leaf cannot be built on one
+  // curve and rebuilt onto another. The default constructor used to hardcode 100
+  // beside this member, which is exactly how that happened.
   //
-  // ⚠️ AT 100 THE CURVE'S SECOND DERIVATIVE IS 27% WRONG, and nothing on the
-  // forward path notices because the solve reads the value and the slope only. The
-  // value is right to 1e-07 and the slope to 6e-07 -- both fall as h^4 and h^3 --
-  // but the second derivative of a C1 cubic is a step function, and it is what
-  // `condition_slope` and any curve-trait row need. Measured against knot count:
+  // ⚠️ IT IS 400 BECAUSE OF THE SECOND DERIVATIVE. At 100 the curve's was 27%
+  // wrong, and nothing on the forward path noticed, because the solve reads the
+  // value and the slope only -- the value is right to 1e-07 there and the slope to
+  // 6e-07, both falling as h^4 and h^3. But the second derivative of a C1 cubic is
+  // a step function, and it is what `condition_slope` and every curve-trait row
+  // need. Measured against knot count:
   //
   //   res   dR/dsigma   dsigma/dc   build us   solve us
   //   100     2.1e-05     6.7e-05       41.5       6.45
   //   400     2.7e-06     8.1e-07      150.3       6.64
   //  1600     1.9e-07     9.0e-09      522.6       7.14
   //
-  // So refining is the lever and the solve does not pay for it -- a read is O(1) on
-  // a uniform grid, and 16x the knots costs 11% of a solve. What it costs is the
-  // build, once per strategy on a forward run.
+  // The solve does not pay for it: a read is O(1) on a uniform grid, so sixteen
+  // times the knots costs 11% of a solve, and four times costs 3%. What it costs is
+  // the build, once per strategy on a forward run, and the reverse pass gets that
+  // back when a curve-trait row stops needing two rebuilds per perturbation.
   double vulnerability_curve_ncontrol;
   double ci_abs_tol;
   double ci_niter;
@@ -1667,7 +1669,7 @@ inline Leaf::Leaf()
     curv_fact_colim(0.99), //curvature factor for the colimited photosythnthesis equatiom
     GSS_tol_abs(1e-3),
     collar_interval_min_width(1e-3),
-    vulnerability_curve_ncontrol(100),
+    vulnerability_curve_ncontrol(400),
     ci_abs_tol(1e-3),
     ci_niter(1000),
     cost_scale_TF24(7.5) //cost parameter for TF24 profit model umol m^-2 s^-1
@@ -1676,8 +1678,8 @@ inline Leaf::Leaf()
       // resistance constants keep their defaults in MultiLayerRoots, which owns
       // them. Deliberately not restated here: a second copy of the root Weibull
       // pair is the exact shape of hazard 1 in the developer guide.
-      setup_transpiration(100); // arg: num control points for integration
-      setup_root_vulnerability(100);
+      setup_transpiration(vulnerability_curve_ncontrol);
+      setup_root_vulnerability(vulnerability_curve_ncontrol);
       setup_clean_leaf();
 }
 

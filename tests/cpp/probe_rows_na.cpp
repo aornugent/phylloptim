@@ -61,8 +61,6 @@ grad::Drivers drivers(double psi_soil, double ppfd, double vpd, int layers,
 
 phylloptim::Leaf fresh() {
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
   return l;
 }
 

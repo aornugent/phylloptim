@@ -47,6 +47,15 @@ void near(double got, double want, double tol, const std::string &what) {
   }
 }
 
+// The class's own knot count. A fixture that constructs through the full argument
+// list has to name one, and naming it again is how a leaf ends up on a different
+// curve from its neighbour -- which is what thirty bit-identity checks reported when
+// the default moved and these did not.
+double default_ncontrol() {
+  static const double n = phylloptim::Leaf().vulnerability_curve_ncontrol;
+  return n;
+}
+
 // Trait values from plant's test-leaf.r.
 struct Drivers {
   double theta = 0.000157; // Huber value, m2 sapwood m-2 leaf
@@ -68,8 +77,6 @@ const double kRd25 = 1.44;
 phylloptim::Leaf make_leaf(const Drivers &d, std::vector<double> psi_soil,
                      std::vector<double> soil_depth) {
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
   // root carbon per unit leaf area: the old absolute carbon divided by area_leaf
   std::vector<double> mass_root_prop(psi_soil.size(),
                                      1.0 / double(psi_soil.size()) / d.area_leaf);
@@ -382,8 +389,6 @@ void test_shutdown_writes_its_own_fluxes() {
   printf("shutdown writes its own fluxes (plant #578 fixed)\n");
   Drivers d;
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
   std::vector<double> mrp{1.0 / d.area_leaf}, depth{1.0};
   const auto solve = [&](double psi) {
     std::vector<double> ps{psi};
@@ -432,8 +437,6 @@ void test_shallow_roots_do_not_inherit_deep_uptake() {
   printf("shallow roots do not inherit the previous plant's deep uptake\n");
   Drivers d;
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
 
   const std::vector<double> psi_soil{1.0, 1.5, 2.0};
   const std::vector<double> depth{1.0, 2.0, 3.0};
@@ -463,8 +466,6 @@ void test_shallow_roots_do_not_inherit_deep_uptake() {
   // Order independence is the property that matters: plant reuses one Leaf for
   // every individual in a patch, so the seedling must not depend on its neighbour.
   phylloptim::Leaf fresh;
-  fresh.setup_transpiration(100);
-  fresh.setup_root_vulnerability(100);
   fresh.set_physiology(fixture::root_network({1.0 / d.area_leaf, 0.0, 0.0}, depth), d.PPFD, psi_soil, depth,
                        d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
                        d.atm_o2_kpa, d.atm_kpa);
@@ -484,8 +485,6 @@ void test_negative_assim_exit_writes_its_own_rates() {
   printf("the assim_max_ < 0 exit writes its own rates\n");
   Drivers d;
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
   const std::vector<double> psi_soil{1.0}, depth{1.0};
   const std::vector<double> root{1.0 / d.area_leaf};
   const auto solve = [&](double ppfd) {
@@ -512,8 +511,6 @@ void test_negative_assim_exit_writes_its_own_rates() {
        1e-14, "profit is consistent with assimilation and the hydraulic cost");
 
   phylloptim::Leaf fresh;
-  fresh.setup_transpiration(100);
-  fresh.setup_root_vulnerability(100);
   fresh.set_physiology(fixture::root_network(root, depth), 10.0, psi_soil, depth, d.K_s * d.theta / d.h,
                        d.atm_vpd, d.ca, d.leaf_temp, d.atm_o2_kpa, d.atm_kpa);
   fresh.find_root_collar_psi();
@@ -806,8 +803,6 @@ void test_operating_point_kind_is_written_by_every_path() {
   using Kind = phylloptim::Leaf::OperatingPointKind;
   Drivers d;
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
   ok(l.operating_point_kind() == Kind::Unsolved,
      "a fresh Leaf reports no operating point");
 
@@ -985,8 +980,6 @@ void test_collar_argmax_is_smooth_in_a_trait() {
   for (int i = 0; i < n; ++i) {
     phylloptim::Leaf l;
     l.vcmax_25 = base + i * step;
-    l.setup_transpiration(100);
-    l.setup_root_vulnerability(100);
     std::vector<double> ps{2.0}, depth{1.0}, root{1.0 / d.area_leaf};
     l.set_physiology(fixture::root_network(root, depth), d.PPFD, ps, depth, d.K_s * d.theta / d.h, d.atm_vpd,
                      d.ca, d.leaf_temp, d.atm_o2_kpa, d.atm_kpa);
@@ -1446,8 +1439,6 @@ void test_signed_potentials_are_rejected() {
   printf("signed potentials are rejected at the input boundary\n");
   Drivers d;
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
   bool threw = false;
   try {
     l.set_physiology(fixture::root_network({1.0 / d.area_leaf}, {1.0}), d.PPFD, {-2.0}, {1.0},
@@ -1496,8 +1487,6 @@ void test_root_psi_crit_clamp_binds() {
   const auto solve = [&](double psi_soil) {
     phylloptim::Leaf l;
     l.psi_crit = 5.91988;   // drier than root_psi_crit = 5.870283
-    l.setup_transpiration(100);
-    l.setup_root_vulnerability(100);
     std::vector<double> ps{psi_soil}, depth{1.0}, root{1.0 / d.area_leaf};
     l.set_physiology(fixture::root_network(root, depth), d.PPFD, ps, depth, d.K_s * d.theta / d.h, d.atm_vpd,
                      d.ca, d.leaf_temp, d.atm_o2_kpa, d.atm_kpa);
@@ -1567,8 +1556,6 @@ void test_bound_row_root_psi_crit_is_a_unit_row() {
   const auto solve = [&](double psi_soil, double root_psi_crit) {
     phylloptim::Leaf l;
     l.roots_.root_psi_crit = root_psi_crit;
-    l.setup_transpiration(100);
-    l.setup_root_vulnerability(100);
     std::vector<double> ps{psi_soil}, depth{1.0}, root{1.0 / d.area_leaf};
     l.set_physiology(fixture::root_network(root, depth), d.PPFD, ps, depth,
                      d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
@@ -1724,8 +1711,6 @@ phylloptim::Leaf make_pm_leaf(const Drivers &d, std::vector<double> psi_soil,
                         std::vector<double> soil_depth, bool gate,
                         double wind_speed = 2.0, double leaf_dim = 0.05) {
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
   l.use_energy_balance_ = gate;
   l.wind_speed_ = wind_speed;
   l.d_ = leaf_dim;
@@ -2143,7 +2128,7 @@ void test_closed_form() {
   // The beta2 = 1/c leaf, where xi is constant and nothing needs solving.
   phylloptim::Leaf exact_leaf(96.0, 2.680147, 3.898245, 5.870283, 2.680147, 3.898245,
                         5.870283, 1.0 / 2.680147, 157.44, 0.30, 0.7, 0.99, 1e-3,
-                        100, 1e-3, 1000, 7.5);
+                        default_ncontrol(), 1e-3, 1000, 7.5);
   ok(phylloptim::closed_form::beta2_is_exact(exact_leaf),
      "beta2_is_exact recognises beta2 = 1/stem_c");
   ok(!phylloptim::closed_form::beta2_is_exact(l), "and rejects the default beta2 = 1.5");
@@ -2205,8 +2190,6 @@ void test_leaf_on_single_potential() {
   Drivers d;
 
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
   l.set_supply_single();
 
   // ⚠️ THE SAME CALL AS THE MULTI-LAYER PATH, which is the point. The resistance
@@ -2236,8 +2219,6 @@ void test_leaf_on_single_potential() {
   // Drier soil must cost carbon here too -- the same contract the multi-layer
   // path is held to, which is what makes the two comparable at all.
   phylloptim::Leaf dry;
-  dry.setup_transpiration(100);
-  dry.setup_root_vulnerability(100);
   dry.set_supply_single();
   std::vector<double> psi_dry{3.0};
   dry.set_physiology(fixture::series_resistance(1.0e3), d.PPFD, psi_dry, depth,
@@ -2249,8 +2230,6 @@ void test_leaf_on_single_potential() {
   // A larger series resistance is a worse-supplied plant, so it must not do
   // better. This is the knob the multi-layer path spends root carbon to lower.
   phylloptim::Leaf tight;
-  tight.setup_transpiration(100);
-  tight.setup_root_vulnerability(100);
   tight.set_supply_single();
   tight.set_physiology(fixture::series_resistance(1.0e4), d.PPFD, psi_soil, depth,
                        d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
@@ -2770,7 +2749,8 @@ void test_set_traits_matches_a_fresh_leaf() {
 
     // Fresh: the traits go through the constructor.
     phylloptim::Leaf fresh(t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8], t[9],
-                     t[10], t[11], 1e-3, 100, 1e-3, 1000, t[12]);
+                     t[10], t[11], 1e-3, default_ncontrol(), 1e-3, 1000,
+                     t[12]);
     std::vector<double> mrp{1.0 / d.area_leaf}, psi_soil{2.0}, depth{1.0};
     fresh.set_physiology(fixture::root_network(mrp, depth), d.PPFD, psi_soil, depth, d.K_s * d.theta / d.h,
                          d.atm_vpd, d.ca, d.leaf_temp, d.atm_o2_kpa, d.atm_kpa);
@@ -2871,8 +2851,6 @@ void test_bad_input_throws() {
   printf("input validation\n");
   Drivers d;
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
   bool threw = false;
   try {
     std::vector<double> psi_soil{2.0}, depth{1.0, 2.0}, mrp{1.0 / d.area_leaf};
@@ -3025,8 +3003,6 @@ std::vector<int> all_env_pars(int layers) {
 
 phylloptim::Leaf fresh() {
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
   return l;
 }
 

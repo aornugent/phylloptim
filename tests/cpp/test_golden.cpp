@@ -72,8 +72,6 @@ const double kLeafTemps[] = {25.0, 40.0};
 Row solve(double psi_soil, double ppfd, double vpd, int layers,
           double leaf_temp) {
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
 
   // Spread the soil profile over `layers` equal 1 m layers, drying with depth so
   // that multi-layer runs are not just a repeated single layer, and split root

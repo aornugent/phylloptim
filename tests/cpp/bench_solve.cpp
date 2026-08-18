@@ -133,8 +133,6 @@ int main(int argc, char **argv) {
 
   std::vector<phylloptim::Leaf> leaves(pts.size());
   for (phylloptim::Leaf &l : leaves) {
-    l.setup_transpiration(100);
-    l.setup_root_vulnerability(100);
   }
 
   double checksum = 0.0;

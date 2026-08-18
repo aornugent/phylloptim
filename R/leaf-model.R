@@ -51,7 +51,7 @@
 
 .leaf_control_defaults <- list(
   GSS_tol_abs = 1e-3,
-  vulnerability_curve_ncontrol = 100,
+  vulnerability_curve_ncontrol = 400,
   ci_abs_tol = 1e-3,
   ci_niter = 1000,
   integration_rule = 21,
@@ -178,7 +178,7 @@ leaf_traits <- function(vcmax_25 = 96,
 ##' leaf_control(GSS_tol_abs = 1e-5)
 ##' @export
 leaf_control <- function(GSS_tol_abs = 1e-3,
-                         vulnerability_curve_ncontrol = 100,
+                         vulnerability_curve_ncontrol = 400,
                          ci_abs_tol = 1e-3,
                          ci_niter = 1000,
                          integration_rule = 21,
