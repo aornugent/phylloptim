@@ -397,6 +397,14 @@ public:
   double dprofit_dpsistem_ = util::na_value;
   double dprofit_dpsi_held_stem_ = util::na_value;
 
+  // The rest of the first-order picture there, kept because `condition_slope`
+  // would otherwise re-solve the concentration to recover it and because these
+  // are the quantities its second derivatives multiply.
+  double ci_at_collar_ = util::na_value;
+  double assim_slope_ = util::na_value;         // dA/dci
+  double dci_dpsistem_ = util::na_value;        // dci/dpsi_stem
+  double dci_dpsi_held_stem_ = util::na_value;  // dci/dpsi at a held stem
+
   // --- Medlyn stomatal-conductance model (from develop #450) ------------------
   // Standalone, R-callable alternative to the root-collar profit optimisation
   // (solve_medlyn_ci_*); NOT used by the TF24 compute path, which optimises
@@ -959,6 +967,22 @@ public:
   // Takes dpsi_stem/dp rather than re-forming it: it is one quantity, the
   // marginal-profit evaluation forms it, and three copies of the same arithmetic
   // is three places for it to drift.
+  // d(marginal profit)/dpsi_stem with the transport's collar response held: the
+  // one coefficient of the condition that no first-order quantity carries.
+  //
+  //   condition = dprofit_dpsistem_ * V + dprofit_dpsi_held_stem_
+  //   this      = d(dprofit_dpsistem_)/dpsi_stem * V
+  //                 + d(dprofit_dpsi_held_stem_)/dpsi_stem
+  //
+  // Both terms need a second derivative of each kernel and the concentration's
+  // own second derivatives, and the concentration's residual is algebraic, so its
+  // theorem applies twice. Nothing here reads a table, a fit or a step.
+  //
+  // False where the derivation does not describe the branch: with the energy
+  // balance on the collar reaches profit by two further routes, and where the
+  // concentration's residual has no slope there is nothing to divide by.
+  bool condition_slope(double& dcondition_dpsistem);
+
   // ⚠️ NOT const, and the obstruction is a cache rather than the derivation:
   // `transpiration` holds a one-entry memo and `hydraulic_cost_TF_kernel` is
   // reached through it. Marking the memo mutable would buy the qualifier by
@@ -2956,6 +2980,10 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   // stem potential is short by exactly this.
   dprofit_dpsistem_ = A_prime * dci_dpsistem - C_prime;
   dprofit_dpsi_held_stem_ = A_prime * dci_dpsi_expl;
+  ci_at_collar_ = ci;
+  assim_slope_ = A_prime;
+  dci_dpsistem_ = dci_dpsistem;
+  dci_dpsi_held_stem_ = dci_dpsi_expl;
   // Gated at the CALL SITE, not just inside the callee: the block is out of line
   // (deliberately, so adding it cannot change FMA contraction in this inlined
   // body), and an out-of-line call costs even when it returns 0.0 immediately.
@@ -2965,6 +2993,104 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   return base + dprofit_energy_balance_term(ci, gc, g_ci, inv_atm, gc_const,
                                             dgc_dpsistem, dgc_dpsi,
                                             dpsistem_dpsi, dT_dE, Tleaf_here);
+}
+
+// The condition's slope in the stem potential, at a held transport response.
+//
+// The concentration's residual is algebraic and given in closed form,
+//
+//   g(ci; sigma, p) = A(ci) m - gc(sigma, p) (ca - ci) v,
+//
+// so its theorem applies twice. Writing ci_s and ci_p for the first derivatives
+// the evaluation already recorded,
+//
+//   ci_ss = -(A'' m ci_s^2 + 2 gc_s v ci_s - gc_ss (ca - ci) v) / g_ci
+//   ci_sp = -(A'' m ci_s ci_p + gc_s v ci_p + gc_p v ci_s) / g_ci
+//
+// and the mixed term of the conductance is EXACTLY zero, because transpiration is
+// the vulnerability curve integrated BETWEEN the collar and the stem potential:
+// differentiating that in its upper limit leaves the integrand at the upper limit,
+// which the lower limit does not appear in. That is the one place this derivation
+// could have needed a second derivative of an integral and does not.
+//
+// Then, with G = A' ci_s - C' and H = A' ci_p,
+//
+//   dG/dsigma = A'' ci_s^2 + A' ci_ss - C''
+//   dH/dsigma = A'' ci_s ci_p + A' ci_sp
+//
+// Every second derivative above is a derivative of an INTEGRAND rather than of an
+// integral: A'' and C'' are one further seed of a kernel the evaluation already
+// seeds once, and gc_ss is the vulnerability curve's own slope.
+inline bool Leaf::condition_slope(double& dcondition_dpsistem) {
+  using AD = xad::fwd<double>::active_type;
+  using AD2 = xad::fwd_fwd<double>::active_type;
+  dcondition_dpsistem = util::na_value;
+  if (use_energy_balance_) {
+    return false;
+  }
+  const double ci = ci_at_collar_;
+  const double A_prime = assim_slope_;
+  const double ci_s = dci_dpsistem_;
+  const double ci_p = dci_dpsi_held_stem_;
+  const double V = dpsistem_dpsi_;
+  if (!util::is_finite(ci) || !util::is_finite(A_prime) ||
+      !util::is_finite(ci_s) || !util::is_finite(ci_p) || !util::is_finite(V)) {
+    return false;
+  }
+  const double psi_stem = opt_psi_stem_;
+  const double psi = opt_root_psi_;
+
+  // A'' and C'', from the kernels the evaluation seeds once each.
+  double A_cici;
+  {
+    AD2 x = ci;
+    x.value().derivative() = 1.0;
+    x.derivative().value() = 1.0;
+    A_cici = assim_colimited_kernel(x).derivative().derivative();
+  }
+  double C_pp;
+  {
+    AD2 x = psi_stem;
+    x.value().derivative() = 1.0;
+    x.derivative().value() = 1.0;
+    C_pp = hydraulic_cost_TF_kernel(x).derivative().derivative();
+  }
+
+  // The conductance's own derivatives. gc = gc_const * kappa * (the curve
+  // integrated from the collar to the stem potential), so its stem-potential
+  // derivatives are the curve and the curve's slope THERE.
+  const double gc_const =
+      atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
+  const double gc = gc_const * transpiration(psi_stem, psi);
+  const double gc_s =
+      gc_const * leaf_specific_conductance_max_ * stem_curve_integral_deriv(psi_stem);
+  const double gc_p =
+      gc_const * leaf_specific_conductance_max_ * (-stem_curve_integral_deriv(psi));
+  double f_prime;
+  {
+    AD x = psi_stem;
+    xad::derivative(x) = 1.0;
+    f_prime = xad::derivative(proportion_of_conductivity_kernel(x));
+  }
+  const double gc_ss = gc_const * leaf_specific_conductance_max_ * f_prime;
+
+  const double v = 1.0 / (atm_kpa_ * kPa_to_Pa);
+  const double m = umol_to_mol;
+  const double g_ci = A_prime * m + gc * v;
+  if (!util::is_finite(g_ci) || g_ci == 0.0) {
+    return false;
+  }
+
+  const double ci_ss =
+      -(A_cici * m * ci_s * ci_s + 2.0 * gc_s * v * ci_s - gc_ss * (ca_ - ci) * v) /
+      g_ci;
+  const double ci_sp =
+      -(A_cici * m * ci_s * ci_p + gc_s * v * ci_p + gc_p * v * ci_s) / g_ci;
+
+  const double dG = A_cici * ci_s * ci_s + A_prime * ci_ss - C_pp;
+  const double dH = A_cici * ci_s * ci_p + A_prime * ci_sp;
+  dcondition_dpsistem = dG * V + dH;
+  return util::is_finite(dcondition_dpsistem);
 }
 
 inline Leaf::CostTraitRows Leaf::cost_trait_rows(double dpsistem_dp) {

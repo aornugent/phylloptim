@@ -4094,6 +4094,124 @@ void test_rows_in_parts_assemble_to_the_totals() {
      "a shut collar takes up no water, and says so beside a non-zero profit row");
 }
 
+// The condition's slope in the stem potential, and the claim that the state
+// reaches the condition through two intermediates and no more.
+//
+// At a held collar the condition is a function of the state only through the stem
+// potential and the transport's response to the collar, so for any state
+// direction u
+//
+//   dR/du = dR/dV * dV/du  +  dR/dsigma * dsigma/du
+//
+// with dR/dV the coefficient the evaluation records and dR/dsigma the object under
+// test. Every term is measurable: the left side and the two state derivatives are
+// differences of the leaf at a held collar, and nothing here is a reference
+// gradient.
+//
+// ⚠️ THIS IS THE CHECK A RANK TEST CANNOT BE. A rank test asks whether two
+// coefficients suffice; this asks whether THESE two are the right ones, which is
+// what separates the pairing from the one that reaches the condition only through
+// the stem potential.
+void test_the_condition_reaches_the_state_through_two_intermediates() {
+  printf("the condition's slope, and the state reaching it through two\n");
+  namespace grad = phylloptim::gradient;
+  namespace pl = phylloptim;
+  grad::Settings s;
+
+  struct Fixture { const char* what; double psi_soil, ppfd, vpd; int layers; };
+  const Fixture fixtures[] = {{"wet", 2.0, 900.0, 2.0, 3},
+                              {"dim", 2.0, 300.0, 2.0, 3},
+                              {"dry", 4.5, 900.0, 2.0, 3},
+                              {"arid", 2.0, 900.0, 4.0, 3}};
+
+  for (const Fixture& f : fixtures) {
+    grad::Drivers d =
+        env::drivers(f.psi_soil, f.ppfd, f.vpd, f.layers, f.layers);
+    pl::Leaf l = env::fresh();
+    grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+    l.find_root_collar_psi();
+    const std::string tag =
+        std::string(f.what) + " (" +
+        pl::Leaf::operating_point_kind_name(l.operating_point_kind()) + ")";
+    const double psi_star = l.opt_root_psi_;
+    l.dprofit_droot_collar_psi(psi_star);
+    const double dR_dV = l.dprofit_dpsistem_;
+    double dR_dsigma = 0.0;
+    ok(l.condition_slope(dR_dsigma), "the condition's slope is answered, " + tag);
+    if (!std::isfinite(dR_dsigma)) {
+      continue;
+    }
+
+    // One state direction per soil layer, and one per layer of root carbon.
+    // Each is differenced with the COLLAR HELD, which is what makes the two
+    // intermediates the only route.
+    double worst = 0.0;
+    int moved = 0;
+    std::string worst_at;
+    for (int which = 0; which < 2 * f.layers; ++which) {
+      const int layer = which % f.layers;
+      const bool carbon = which >= f.layers;
+      const int par = carbon ? grad::par_root_carbon_first(f.layers) + layer
+                             : grad::par_psi_soil_first + layer;
+      const double base = grad::par_value(env::kTheta, d, false, par);
+      const double h = std::max(std::abs(base), 1.0) * 1e-6;
+
+      auto at = [&](double value) {
+        double th[grad::n_pars];
+        grad::Scratch scratch;
+        grad::set_one(l, th, env::kTheta, d, false, par, value,
+                      s.fast_stem_curve, scratch);
+        // The collar is HELD at the base point's, not re-solved.
+        const double R = l.dprofit_droot_collar_psi(psi_star);
+        // The stem potential at the HELD collar, computed rather than read: the
+        // evaluation keeps it as a local and `opt_psi_stem_` still holds the
+        // solve's, which a perturbation has just invalidated.
+        const double sigma =
+            l.find_psi_stem_from_psi_root(psi_star, l.supply_psi_soil());
+        return std::tuple<double, double, double>(R, sigma, l.dpsistem_dpsi_);
+      };
+      const auto up = at(base + h);
+      const auto dn = at(base - h);
+      const double dR = (std::get<0>(up) - std::get<0>(dn)) / (2.0 * h);
+      const double dsigma = (std::get<1>(up) - std::get<1>(dn)) / (2.0 * h);
+      const double dV = (std::get<2>(up) - std::get<2>(dn)) / (2.0 * h);
+
+      const double predicted = dR_dV * dV + dR_dsigma * dsigma;
+      const double scale = std::max(std::abs(dR), 1e-12);
+      const double residual = std::abs(predicted - dR) / scale;
+      if (std::isfinite(dR) && std::abs(dR) > 1e-9 && std::isfinite(dsigma) &&
+          std::isfinite(dV)) {
+        ++moved;
+      }
+      if (residual > worst || worst_at.empty()) {
+        worst = residual;
+        worst_at = grad::par_name(par, f.layers);
+      }
+      // Restore the base state for the next direction.
+      grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+      l.find_root_collar_psi();
+      l.dprofit_droot_collar_psi(psi_star);
+    }
+    // Non-vacuity, because a residual of zero is what a loop that measured
+    // nothing also reports: every direction has to have moved the condition.
+    ok(moved == 2 * f.layers,
+       "every state direction moved the condition, " + tag);
+    // ⚠️ THE BOUND IS THE INFERRED INVERSE SLOPE, NOT THIS IDENTITY. Every term
+    // here is a central difference good to about 1e-08, so the residual should
+    // close far tighter than it does. It closes to parts in ten thousand because
+    // the transport's collar response is built on the inverse curve's slope, and
+    // that slope is INFERRED from neighbouring knot values rather than supplied --
+    // which disagrees with the integrand's reciprocal by exactly that much.
+    // Supplying it should take this to parts in ten million, and this residual is
+    // the instrument for that change.
+    ok(worst < 1e-3, "the two intermediates carry every state direction, " + tag +
+                         " (worst " + std::to_string(worst) + " at " + worst_at +
+                         ")");
+    printf("  %-22s dR/dsigma %12.5g   worst residual %9.3g at %s\n", tag.c_str(),
+           dR_dsigma, worst, worst_at.c_str());
+  }
+}
+
 // Which pair of coordinates the condition is written in, settled by identity
 // rather than by fitting.
 //
@@ -4555,6 +4673,7 @@ int main() {
   test_rows_in_parts_assemble_to_the_totals();
   test_the_transport_reports_its_collar_response();
   test_the_condition_is_the_stem_potential_and_its_collar_response();
+  test_the_condition_reaches_the_state_through_two_intermediates();
   test_carbon_trait_rows_match_a_differenced_solve();
   test_rows_shrink_the_step_to_stay_on_one_branch();
   benchmark();
