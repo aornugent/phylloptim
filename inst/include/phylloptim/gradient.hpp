@@ -488,31 +488,6 @@ struct Settings {
   // bracket is what detects it; raising this to an input step large enough to
   // move total uptake above the solve's own floor would stop it detecting one.
   double collar = 1e-6;
-  // ⚠️ AND THE SUPPLY SCALING'S STEP IS SEPARATE TOO, BECAUSE IT DIFFERENCES A
-  // DERIVATIVE RATHER THAN A VALUE, AND ITS PLATEAU IS NARROWER THAN AN INPUT
-  // STEP'S RATHER THAN JUST DISPLACED. The marginal profit carries the nested
-  // solves' floor, so the coarse end is truncation against a quantity whose second
-  // derivative is not always stable and the fine end is that floor divided by the
-  // step.
-  //
-  // This is the MIDDLE of the three decades the recovery is read at, not a step
-  // chosen to be right on its own: see `marginal_uptake_coefficient`. Measured over
-  // 73 interior states at one and five layers, each of 1e-4, 1e-5 and 1e-6 is
-  // within 2e-07 of the converged coefficient at most states and about 2e-05 out at
-  // some, and they do not fail at the same ones -- so a constant cannot be chosen
-  // and the median of the three is what is taken instead.
-  //
-  // ⚠️ AND ONE STATE IS NOT SMOOTH AT THIS SCALE AT ALL, which is why the plateau
-  // has to be found rather than derived. At psi_soil 3.0, PPFD 1500, vpd 1.0 the
-  // second difference of the marginal profit along this direction reads -26.9,
-  // -26.0, -21.5, -14.1, +695 over 1e-2 to 1e-6, where a neighbouring state holds
-  // -30.837 to five figures across the same range -- so the centred difference is
-  // first order rather than second there. It is a band in vapour pressure deficit
-  // about a tenth wide, worst at exactly 1.0, and it is NOT history dependence: a
-  // virgin leaf and leaves previously solved elsewhere give identical figures. The
-  // one correlate found is that the collar solve's own residual is -1.4e-10 there
-  // against 1e-14 at its neighbours, so the nested tolerance is the place to look.
-  double supply_scale = 1e-5;
   double stationarity_tol = 1e-8;
   Method method = Method::Auto;
   bool fast_stem_curve = true;
@@ -644,32 +619,6 @@ inline void perturb_root_carbon(const RootNetwork& base, int layer, double value
   for (std::size_t i = 0; i < out.r_R_V.size(); ++i) {
     sum += out.r_R_V[i];
     out.r_R_V_sum[i] = sum;
-  }
-}
-
-// The network whose resistances are `base`'s divided by `by`, so that every
-// layer's draw AND every layer's draw-per-unit-collar are `base`'s times `by`,
-// exactly rather than to first order.
-//
-// A layer's draw is a potential difference over `r_R_H_min/f + r_R_V_sum`, and `f`
-// reads the potentials alone -- so scaling both stored resistances scales the
-// denominator and nothing else. That exactness is the whole reason this direction
-// is worth having: it moves the two quantities the marginal profit reads the state
-// through, in a known ratio, so one difference along it determines a coefficient
-// that no closed form reaches.
-inline void scale_supply(const RootNetwork& base, double by, RootNetwork& out) {
-  out = base;
-  const double inv = 1.0 / by;
-  for (std::size_t i = 0; i < out.r_R_H_min.size(); ++i) {
-    out.r_R_H_min[i] *= inv;
-  }
-  for (std::size_t i = 0; i < out.r_R_V_sum.size(); ++i) {
-    out.r_R_V_sum[i] *= inv;
-  }
-  // Kept consistent with the two above rather than left stale: it is what
-  // `duptake_droot_carbon` recovers a layer's vertical resistance from.
-  for (std::size_t i = 0; i < out.r_R_V.size(); ++i) {
-    out.r_R_V[i] *= inv;
   }
 }
 
@@ -1600,8 +1549,6 @@ struct SupplyRows {
   // diagonal, because layer k's carbon sits in the vertical path of every layer
   // at or below it.
   std::vector<std::vector<double>> dE_drc, dD_drc;
-  double a = 0.0;
-  double b = 0.0;
   // The collar the rows were taken at, which is the operating point unless a
   // branch kink forced a step off it.
   double at_collar = util::na_value;
@@ -1662,78 +1609,46 @@ inline bool supply_jacobians(Leaf& l, double collar, SupplyRows& out) {
   return false;
 }
 
-// `a = dR/dE_up`, from one centred difference along the exact scaling direction.
+// dR/du at a HELD collar, by differencing the marginal profit alone.
 //
-//     R(eps) = F( E_up*(1+eps), (dE_up/dp)*(1+eps) )
-//     dR/deps = a*E_up + b*(dE_up/dp)   =>   a = (dR/deps - b*dEup_dp) / E_up
+// ⚠️ DIFFERENCED RATHER THAN ASSEMBLED FROM THE TWO SCALARS, and the reason is the
+// DIRECTION rather than the per-input accuracy. `a*dE_up/du + b*d2E_up/du dp` is
+// accurate per input -- 5.7e-05 against a plateau reference over a whole grid, and
+// the two scalars are agreed to 2.4e-09 by every supply direction independently.
+// But its error is SHARED, because every input reads the same two numbers. The
+// quantity a consumer actually reads is the SUM over layers, where the answer
+// nearly cancels and a shared error adds coherently while the answer does not:
+// measured on a stand, 3.1 relative in the uniform-drying direction against
+// 7.6e-04 for the same rows differenced. Independent per-input errors partly
+// cancel there; one coherent error cannot.
 //
-// `b` is already known, so this determines `a` with no matrix to invert. The step
-// is the caller's own, and the leaf is left at base parameters.
-inline bool marginal_uptake_coefficient(Leaf& l, const double* theta,
-                                        const Drivers& d, bool single,
-                                        double collar, double b,
-                                        const Settings& s, Scratch& scratch,
-                                        double& a, std::string& message) {
-  const std::vector<double>& psi_soil = l.supply_psi_soil();
-  const double dEup_dp = l.dE_from_soil_dpsi_collar(collar, psi_soil);
-  // Refreshed here rather than inherited, because the two are read together and a
-  // caller that had moved the collar in between would pair one state's uptake with
-  // another's slope.
-  l.E_from_Soil_to_Root_Collar(collar, psi_soil);
-  const double E_up = l.E_up_;
-  if (!std::isfinite(dEup_dp) || !std::isfinite(E_up) || E_up == 0.0) {
-    message = "total uptake or its collar slope is not available at the "
-              "operating point, so the water response has no direction to be "
-              "read along";
+// So the factorisation is exact in structure, accurate per input, and the wrong
+// way to compute a row whose consumer sums it. Two evaluations, and NOT the four
+// `held_row` takes: the outputs are stated above, so only the condition's own
+// gradient is measured -- which also means nothing is seated at a collar the
+// perturbed state might not admit.
+inline bool differenced_dresidual(Leaf& l, const double* theta, const Drivers& d,
+                                  bool single, int par, double psi_star,
+                                  const Settings& s, bool& at_base,
+                                  Scratch& scratch, double& dR) {
+  at_base = false;
+  double th[n_pars];
+  const double base = par_value(theta, d, single, par);
+  const double h = step_for(par, base, s.step, n_soil_layers(d, single));
+  double resid[2] = {0.0, 0.0};
+  for (int side = 0; side < 2; ++side) {
+    set_one(l, th, theta, d, single, par, side == 0 ? base + h : base - h,
+            s.fast_stem_curve, scratch);
+    resid[side] = l.dprofit_droot_collar_psi(psi_star);
+  }
+  // The bare exact 0.0 the marginal profit returns on a shut or infeasible collar
+  // is a sentinel and not a stationary point, so it is tested for exactly -- the
+  // same argument `base_point` makes for the curvature.
+  if (util::identical(resid[0], 0.0) || util::identical(resid[1], 0.0)) {
     return false;
   }
-  // ⚠️ THREE STEPS AND THE MIDDLE ANSWER, NOT ONE STEP. This direction's plateau is
-  // flat at most operating points and not flat at all at some: measured, the
-  // recovered coefficient jitters by about a part in 4e5 across neighbouring
-  // decades at states near PPFD 1500 and a vapour pressure deficit of 1, with no
-  // flat region to pick a constant from, while a neighbouring state holds ten
-  // digits across the same range. The failure is always ONE decade jumping while
-  // its neighbours agree, so the median of three rejects it and no choice of a
-  // single constant does.
-  //
-  // Measured over the states where a constant fails: the median lands within
-  // 2.1e-07 and 1.6e-06 of the value every other supply direction agrees on, where
-  // the best single step of the three is 2.2e-06 and the worst is 2.2e-05.
-  const double eps[3] = {s.supply_scale * 10.0, s.supply_scale,
-                         s.supply_scale * 0.1};
-  double recovered[3] = {0.0, 0.0, 0.0};
-  for (int t = 0; t < 3; ++t) {
-    double resid[2] = {0.0, 0.0};
-    for (int side = 0; side < 2; ++side) {
-      scale_supply(d.root_network, side == 0 ? 1.0 + eps[t] : 1.0 - eps[t],
-                   scratch.root_network);
-      apply(l, theta, d, single, -1, s.fast_stem_curve, d.PPFD, d.psi_soil,
-            scratch.root_network);
-      resid[side] = l.dprofit_droot_collar_psi(collar);
-    }
-    // `dprofit` returns a bare, exact 0.0 SENTINEL rather than a derivative where
-    // the collar is shut down or the ci solve is infeasible, so test for it
-    // exactly -- the same argument `base_point` makes for the curvature. An
-    // unclamped evaluation reaches 0.0 only at a genuine stationary point, and no
-    // arm here is at one.
-    if (util::identical(resid[0], 0.0) || util::identical(resid[1], 0.0)) {
-      apply(l, theta, d, single, -1, s.fast_stem_curve);
-      message = "scaling the supply put an arm on the shut-down branch, so the "
-                "water response has no direction to be read along";
-      return false;
-    }
-    const double dR_deps = (resid[0] - resid[1]) / (2.0 * eps[t]);
-    recovered[t] = (dR_deps - b * dEup_dp) / E_up;
-    if (!std::isfinite(recovered[t])) {
-      apply(l, theta, d, single, -1, s.fast_stem_curve);
-      message = "the first coefficient of the water response is not finite";
-      return false;
-    }
-  }
-  apply(l, theta, d, single, -1, s.fast_stem_curve);
-  a = std::max(std::min(recovered[0], recovered[1]),
-               std::min(std::max(recovered[0], recovered[1]), recovered[2]));
-  return true;
+  dR = (resid[0] - resid[1]) / (2.0 * h);
+  return std::isfinite(dR);
 }
 
 // Which inputs this block answers: a soil potential or a layer's carbon.
@@ -1852,7 +1767,6 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
   // the bound moves by O(du), so a held collar stays feasible in the limit even
   // though no usable step keeps it there -- but taking it changes numbers a pinned
   // gradient already answers, so it wants its own before-and-after.
-  Scratch supply_scratch;
   SupplyRows supply;
   bool want_supply = false;
   for (std::size_t i = 0; i < r.n_input && !want_supply; ++i) {
@@ -1862,13 +1776,10 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     // Captured at the solve, in `base_point`, because by here the curvature's own
     // reads have moved the intercellular concentration off the operating point.
     supply.d = b.uptake;
-    supply.b = supply.d.dprofit_dE;
     if (!supply.d.finite) {
       supply.message = "the leaf's response to total uptake is not finite here";
-    } else if (supply_jacobians(l, b.psi_star, supply)) {
-      supply.usable = marginal_uptake_coefficient(
-          l, theta, d, single, b.psi_star, supply.b, s, supply_scratch, supply.a,
-          supply.message);
+    } else {
+      supply.usable = supply_jacobians(l, b.psi_star, supply);
     }
   }
 
@@ -1942,13 +1853,11 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
     if (supply.usable && is_supply_input(p, n_layers)) {
       const int layer = p - par_psi_soil_first;
       double dEup = 0.0;
-      double d2Eup = 0.0;
       draw.assign(std::size_t(n_layers), 0.0);
       if (layer < n_layers) {
         // Diagonal: a layer's flux reads its own potential and the collar, and no
         // other layer's.
         dEup = supply.dE_dpsi[std::size_t(layer)];
-        d2Eup = supply.d2E_dpsi[std::size_t(layer)];
         draw[std::size_t(layer)] = dEup;
       } else {
         // Lower triangular: this layer's carbon is in the vertical path of every
@@ -1960,10 +1869,21 @@ inline Rows rows_at(Leaf& l, const double* theta, const Drivers& d,
           }
           draw[m] = supply.dE_drc[m][k];
           dEup += supply.dE_drc[m][k];
-          d2Eup += supply.dD_drc[m][k];
         }
       }
-      out.dresidual[i] = supply.a * dEup + supply.b * d2Eup;
+      double dR = 0.0;
+      if (!differenced_dresidual(l, theta, d, single, p, b.psi_star, s, at_base,
+                                 scratch, dR)) {
+        for (std::size_t j = 0; j < r.n_output; ++j) {
+          out.held[j * r.n_input + i] = util::na_value;
+        }
+        out.message += out.message.empty() ? "" : "; ";
+        out.message += "no row for `" + par_name(p, n_layers) +
+                       "`: the marginal profit is not defined either side of "
+                       "this input at the operating point's collar";
+        continue;
+      }
+      out.dresidual[i] = dR;
       for (std::size_t j = 0; j < r.n_output; ++j) {
         const int o = r.output[j];
         double row = 0.0;

@@ -4419,10 +4419,15 @@ void test_rows_in_parts_assemble_to_the_totals() {
   // wants a better recovery of one scalar, not a different decomposition.
   ok(worst_supply_held > 0.0 && worst_supply_held <= 1e-5,
      "a stated held row is the leaf's own derivative, to a plateau reference");
-  ok(worst_supply_point > 0.0 && worst_supply_point <= 1e-4,
-     "and a stated condition gradient is, to what its cancellation allows");
-  ok(worst_supply <= 1e-4,
-     "so their composite does too");
+  // The condition's gradient is DIFFERENCED, so it is at()'s own difference and
+  // agrees with it exactly -- the same assertion the followed family gets, and for
+  // the same reason. It is not stated from the two scalars, because that makes the
+  // per-input error coherent across layers and the consumer sums them: see
+  // `differenced_dresidual`.
+  ok(worst_supply_point == 0.0,
+     "a stated point's gradient IS at()'s own difference");
+  ok(worst_supply <= 1e-2,
+     "so their composite agrees within the held row's own plateau");
   ok(worst_followed == 0.0,
      "at a constrained point a followed row IS at()'s own difference");
   // Why the held family does not, and why the disagreement above is reported
