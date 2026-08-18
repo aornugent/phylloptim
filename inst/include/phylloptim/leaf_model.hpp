@@ -986,6 +986,28 @@ public:
   // concentration's residual has no slope there is nothing to divide by.
   bool condition_slope(double& dcondition_dpsistem);
 
+  // The stem curve's STEEPNESS, whose row is the only one still taken by rebuilding
+  // the curve and differencing it.
+  //
+  // At a frozen collar the flux through the stem IS the uptake, by mass balance --
+  // G(sigma) = E_up/kappa + G(p) -- so moving the steepness moves sigma and leaves
+  // the flux where it is. Measured: over a step in it the conductance, the
+  // concentration and assimilation hold to 5e-10 and the uptake to exactly zero,
+  // while sigma and profit move. So route D is route C's shape after all: the whole
+  // held row is the hydraulic cost, which is the one thing downstream that reads
+  // sigma rather than the flux.
+  //
+  // The condition's row is not only the cost, because the concentration's response
+  // to sigma and the transport's response to the collar both read the curve.
+  //
+  // False with the energy-balance gate on, for the reason the other readers refuse
+  // there, and where the concentration's residual has no slope.
+  struct CurveTraitRows {
+    double dprofit_dstem_c = util::na_value;
+    double dmarginal_dstem_c = util::na_value;
+  };
+  bool curve_trait_rows(double dpsistem_dp, CurveTraitRows& out);
+
   // ⚠️ NOT const, and the obstruction is a cache rather than the derivation:
   // `transpiration` holds a one-entry memo and `hydraulic_cost_TF_kernel` is
   // reached through it. Marking the memo mutable would buy the qualifier by
@@ -3099,6 +3121,106 @@ inline bool Leaf::condition_slope(double& dcondition_dpsistem) {
   const double dH = A_cici * ci_s * ci_p + A_prime * ci_sp;
   dcondition_dpsistem = dG * V + dH;
   return util::is_finite(dcondition_dpsistem);
+}
+
+// The stem steepness' two rows (see the header for why the held one is the cost
+// alone). Everything below is a derivative of the conductivity or of the cost, both
+// of which are kernels templated on their own traits, plus the cumulative
+// integral's closed-form trait derivative.
+inline bool Leaf::curve_trait_rows(double dpsistem_dp, CurveTraitRows& out) {
+  using AD2 = xad::fwd_fwd<double>::active_type;
+  out = CurveTraitRows();
+  if (use_energy_balance_) {
+    return false;
+  }
+  const double p = opt_root_psi_;
+  const double sigma = opt_psi_stem_;
+  const double V = dpsistem_dp;
+  const double A_prime = assim_slope_;
+  const double ci = ci_at_collar_;
+  if (!util::is_finite(V) || !util::is_finite(A_prime) || !util::is_finite(ci)) {
+    return false;
+  }
+
+  // The conductivity and its derivatives at both ends, in position and in the
+  // steepness, from one seeded kernel per end.
+  auto curve_at = [&](double psi, double& f, double& f_psi, double& f_c,
+                      double& f_psi_c) {
+    AD2 x = psi;  x.value().derivative() = 1.0;
+    AD2 cc = stem_c; cc.derivative().value() = 1.0;
+    const AD2 r = proportion_of_conductivity_kernel(x, AD2(stem_b), cc);
+    f = r.value().value();
+    f_psi = r.value().derivative();
+    f_c = r.derivative().value();
+    f_psi_c = r.derivative().derivative();
+  };
+  double f_s, f_s_psi, f_s_c, f_s_psi_c;
+  double f_p, f_p_psi, f_p_c, f_p_psi_c;
+  curve_at(sigma, f_s, f_s_psi, f_s_c, f_s_psi_c);
+  curve_at(p, f_p, f_p_psi, f_p_c, f_p_psi_c);
+  if (!(f_s > 0.0)) {
+    return false;
+  }
+
+  // How sigma moves: G(sigma) - G(p) is pinned to the flux, so differentiating it
+  // at a frozen collar gives dsigma/dc directly.
+  const VulnerabilityIntegralDerivatives G_s =
+      cumulative_vulnerability_integral_derivatives_at(sigma, stem_b, stem_c);
+  const VulnerabilityIntegralDerivatives G_p =
+      cumulative_vulnerability_integral_derivatives_at(p, stem_b, stem_c);
+  const double dsigma_dc = (G_p.dc - G_s.dc) / f_s;
+
+  // The cost, its slope, and both of their steepness derivatives.
+  double C_psi, C_psipsi, C_c, C_psi_c;
+  {
+    AD2 x = sigma;  x.value().derivative() = 1.0;
+    AD2 cc = stem_c; cc.derivative().value() = 1.0;
+    const AD2 r = hydraulic_cost_TF_kernel(x, AD2(stem_b), cc, AD2(beta2),
+                                           AD2(cost_scale_TF24));
+    C_psi = r.value().derivative();
+    C_c = r.derivative().value();
+    C_psi_c = r.derivative().derivative();
+  }
+  {
+    AD2 x = sigma;
+    x.value().derivative() = 1.0;
+    x.derivative().value() = 1.0;
+    C_psipsi = hydraulic_cost_TF_kernel(x, AD2(stem_b), AD2(stem_c), AD2(beta2),
+                                        AD2(cost_scale_TF24))
+                   .derivative()
+                   .derivative();
+  }
+
+  // Profit is assimilation minus the cost and only the cost moves.
+  out.dprofit_dstem_c = -(C_psi * dsigma_dc + C_c);
+
+  // The condition is A' (ci_sigma V + ci_p) - C' V. The concentration itself does
+  // not move, so A' and A'' do not enter; what moves is each conductance slope, the
+  // transport's response to the collar, and the cost's slope.
+  const double gc_const =
+      atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
+  const double v = 1.0 / (atm_kpa_ * kPa_to_Pa);
+  const double gc = gc_const * transpiration(sigma, p);
+  const double g_ci = A_prime * umol_to_mol + gc * v;
+  if (!util::is_finite(g_ci) || g_ci == 0.0) {
+    return false;
+  }
+  const double kappa = leaf_specific_conductance_max_;
+  const double dgc_s_dc = gc_const * kappa * (f_s_c + f_s_psi * dsigma_dc);
+  const double dgc_p_dc = -gc_const * kappa * f_p_c;
+  const double share = (ca_ - ci) * v / g_ci;
+  const double dci_s_dc = dgc_s_dc * share;
+  const double dci_p_dc = dgc_p_dc * share;
+  // V = (dE_up/dp / kappa + f(p)) / f(sigma), and its numerator is V f(sigma), so
+  // the numerator's own steepness derivative is the only new piece.
+  const double dV_dc =
+      (f_p_c - V * (f_s_c + f_s_psi * dsigma_dc)) / f_s;
+  const double ci_s = dci_dpsistem_;
+  const double dC_psi_dc = C_psipsi * dsigma_dc + C_psi_c;
+  out.dmarginal_dstem_c = A_prime * (dci_s_dc * V + ci_s * dV_dc + dci_p_dc) -
+                          dC_psi_dc * V - C_psi * dV_dc;
+  return util::is_finite(out.dprofit_dstem_c) &&
+         util::is_finite(out.dmarginal_dstem_c);
 }
 
 inline Leaf::CostTraitRows Leaf::cost_trait_rows(double dpsistem_dp) {

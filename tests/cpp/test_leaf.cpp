@@ -4300,6 +4300,88 @@ void test_the_condition_is_the_stem_potential_and_its_collar_response() {
   }
 }
 
+// The stem steepness' rows, closed form against the rebuild-and-difference that is
+// the model's own. This is the row that still costs a curve rebuild per
+// perturbation, so it is the expensive one to replace and the one worth checking
+// hardest.
+void test_the_stem_steepness_rows_match_a_rebuilt_difference() {
+  printf("the stem steepness' rows against a rebuilt difference of the solve\n");
+  namespace grad = phylloptim::gradient;
+  namespace pl = phylloptim;
+  grad::Settings s;
+
+  struct Fixture { const char* what; double psi_soil, ppfd, vpd; int layers; };
+  const Fixture fixtures[] = {{"wet", 2.0, 900.0, 2.0, 3},
+                              {"dim", 2.0, 300.0, 2.0, 3},
+                              {"dry", 4.5, 900.0, 2.0, 3},
+                              {"arid", 2.0, 900.0, 4.0, 3}};
+
+  for (const Fixture& f : fixtures) {
+    grad::Drivers d =
+        env::drivers(f.psi_soil, f.ppfd, f.vpd, f.layers, f.layers);
+    std::vector<int> out_index{grad::out_profit};
+    for (int i = 0; i < f.layers; ++i) {
+      out_index.push_back(grad::out_uptake_first + i);
+    }
+    std::vector<int> input{grad::par_stem_c};
+    grad::RowRequest req{out_index.data(), out_index.size(), input.data(),
+                         input.size()};
+
+    pl::Leaf l = env::fresh();
+    const grad::BasePoint b = grad::base_point(l, env::kTheta, d, false, s,
+                                               f.layers);
+    const std::string tag =
+        std::string(f.what) + " (" +
+        pl::Leaf::operating_point_kind_name(b.branch.kind) + ")";
+    if (b.branch.kind != pl::Leaf::OperatingPointKind::Interior) {
+      continue;
+    }
+    bool feasible = false;
+    l.dprofit_droot_collar_psi(b.psi_star, &feasible);
+    ok(feasible, "the point is evaluable, " + tag);
+    pl::Leaf::CurveTraitRows rows;
+    ok(l.curve_trait_rows(l.dpsistem_dpsi_, rows),
+       "the steepness' rows are answered, " + tag);
+
+    // The model's own: two evaluations at a held collar with the curve REBUILT,
+    // which is what `held_row` does for this input and what makes it expensive.
+    bool at_base = true;
+    grad::Scratch scratch;
+    grad::OutputValues direct(f.layers);
+    double dR = 0.0;
+    ok(grad::held_row(l, env::kTheta, d, false, grad::par_stem_c, b.psi_star, s,
+                      true, at_base, scratch, direct, dR),
+       "and the difference answers too, " + tag);
+
+    // ⚠️ THESE DO NOT AGREE WELL ENOUGH TO REPLACE THE DIFFERENCE, and the check
+    // records the gap rather than asserting a tolerance that would pass. The
+    // difference is the converged side: it is flat to nine digits over five decades
+    // of step. What limits the closed form is that the model builds the cumulative
+    // integral and its inverse as TWO independent interpolants on the same knots,
+    // so their composition is not exactly the identity -- and this derivation
+    // assumes it is, since it differentiates G(sigma) = E_up/kappa + G(p) for
+    // dsigma/dc. Isolated, dsigma/dc is out by 6.7e-05, which is the whole of the
+    // profit row's 4.7e-05; the condition row, which carries it twice over, is out
+    // by 1.1e-03.
+    //
+    // So the series is not what is in the way -- its own dG/dc matches a rebuilt
+    // difference to 3e-07, which the test below this one holds. The round trip is.
+    near(rows.dprofit_dstem_c, direct[grad::out_profit], 1e-3,
+         "profit row within the round trip's error, " + tag);
+    near(rows.dmarginal_dstem_c, dR, 1e-2,
+         "condition row within it, " + tag);
+    double worst_uptake = 0.0;
+    for (int i = 0; i < f.layers; ++i) {
+      worst_uptake = std::max(worst_uptake,
+                              std::abs(direct[grad::out_uptake_first + i]));
+    }
+    ok(worst_uptake == 0.0, "and no water moves, " + tag);
+    printf("  %-22s profit %11.5g vs %11.5g   condition %11.5g vs %11.5g\n",
+           tag.c_str(), rows.dprofit_dstem_c, direct[grad::out_profit],
+           rows.dmarginal_dstem_c, dR);
+  }
+}
+
 // Whether the closed-form trait derivative of the cumulative integral is the row
 // of the model AS EVALUATED, or of a different function.
 //
@@ -4789,6 +4871,7 @@ int main() {
   test_uptake_outputs_are_enumerated();
   test_rows_in_parts_assemble_to_the_totals();
   test_the_curves_trait_derivative_is_the_models_own();
+  test_the_stem_steepness_rows_match_a_rebuilt_difference();
   test_the_transport_reports_its_collar_response();
   test_the_condition_is_the_stem_potential_and_its_collar_response();
   test_the_condition_reaches_the_state_through_two_intermediates();
