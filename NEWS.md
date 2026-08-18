@@ -10,7 +10,9 @@ by 3e-4 -- the fit's error, not the closed form's. `transpiration_from_psi` and 
 inverse are now `odelia::interpolator::hermite_interpolator`s built from the value
 **and** the closed-form slope at each knot, so the derivative a reader gets is that
 closed form: exact at the knots, and within 6.5e-7 of it everywhere between, against
-the 3e-4 it carried before. Requires `odelia (>= 0.4.0)`.
+the 3e-4 it carried before. Needs the interpolant, which this line has carried since
+`odelia 0.3.1`; upstream lands it as 0.4.0, and the two implementations of it have
+diverged and want reconciling when that merges.
 
 The collar solve root-finds on this slope, so its smoothness is load-bearing. The
 argmax over a trait sweep stays as smooth as it was -- 11 of 11 steps move the

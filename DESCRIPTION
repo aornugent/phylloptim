@@ -34,7 +34,7 @@ Depends:
 Imports:
     R6,
     Rcpp
-LinkingTo: Rcpp, BH, odelia (>= 0.4.0)
+LinkingTo: Rcpp, BH, odelia (>= 0.3.1)
 Suggests:
     dplyr,
     ggplot2,
@@ -44,7 +44,7 @@ Suggests:
     tidyr
 VignetteBuilder: knitr
 Remotes:
-    traitecoevo/odelia@v0.4.0
+    traitecoevo/odelia@v0.2.1
 Config/testthat/edition: 3
 URL: https://github.com/traitecoevo/phylloptim
 BugReports: https://github.com/traitecoevo/phylloptim/issues
