@@ -590,9 +590,14 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
   // ⚠️ Sound only because `only` names a SINGLE parameter, so everything else in
   // `theta` is still what the object was last set to. That is true here and
   // nowhere else, which is why the argument exists rather than the function
-  // guessing. `stem_c` is deliberately not here: it has no such identity, and
-  // reading the curve from its closed form instead differentiates a slightly
-  // different model and disagrees by 3e-4 (PLAN 11f).
+  // guessing.
+  //
+  // `stem_c` is not here because it has no such identity -- it reshapes the curve
+  // rather than scaling it, so it rebuilds. The reason once given beside that, that
+  // reading the curve from its closed form differentiates a slightly different
+  // model and disagrees by 3e-4, is measured and gone: the interpolant carries the
+  // closed-form slope now, and the closed-form trait derivative agrees with a
+  // difference across the rebuild to 3e-07.
   if (fast_stem_curve && only == par_stem_b) {
     l.perturb_stem_b(theta[par_stem_b]);
     return;
