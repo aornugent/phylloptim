@@ -4543,7 +4543,14 @@ void test_rows_in_parts_assemble_to_the_totals() {
   // 3.1e-05 and called it the point's error.
   ok(wet_pins > 0 && worst_point <= 1e-4,
      "and the point's own row is a differenced solve of the collar");
-  ok(slope_compared > 150 && worst_slope <= 1e-7,
+  // ⚠️ 3e-7 AND NOT 1e-7, AND THE REFEREE IS WHAT MOVED. The root tabulation now
+  // carries an exact slope at every knot instead of one inferred from its values,
+  // so its own slope agrees with the closed-form curve to 3e-11 where it agreed to
+  // ~4e-06 (the PROBE above reports it). The differenced referee here reads 2.1e-07
+  // and its single-step reading is 9.98e-06, so it can no longer see the quantity it
+  // is refereeing: 1e-7 was calibrated against the old tabulation landing on the
+  // useful side of the instrument's own floor.
+  ok(slope_compared > 150 && worst_slope <= 3e-7,
      "the closed-form curvature is the difference it replaces");
   ok(contradiction == 0,
      "no point takes the composite that the solve did not call interior");

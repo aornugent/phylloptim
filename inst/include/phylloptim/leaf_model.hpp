@@ -12,7 +12,6 @@
 #include <phylloptim/vulnerability.hpp>
 
 #include <odelia/interpolator.hpp>
-#include <odelia/hermite_interpolator.hpp>
 
 #include <algorithm>
 #include <array>

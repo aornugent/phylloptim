@@ -214,11 +214,11 @@ public:
   // model. In plant that is TF24_Strategy.
 
   // pre-computed root vulnerability curve f_r(m) = exp(-(m/root_b)^root_c)
-  odelia::interpolator::Interpolator root_vuln_from_psi;
+  odelia::interpolator::hermite_interpolator<double> root_vuln_from_psi;
   // cumulative integral of it, G(m) = int_0^m f_r(s) ds, indexed by magnitude
   // m = -psi. Lets uptake() obtain the mean conductivity over a potential
   // interval from 2 evals instead of (n+1).
-  odelia::interpolator::Interpolator root_vuln_integral_from_psi;
+  odelia::interpolator::hermite_interpolator<double> root_vuln_integral_from_psi;
   // What the two splines do past their last knot, cached by setup_vulnerability.
   // Both are read through the accessors below, never as bare .eval() calls --
   // see the accessors for why. util::na_value until a curve is built.
@@ -296,7 +296,7 @@ public:
   // why the key is (b, c, resolution) and why a handful of entries is enough.
   struct CurveCache {
     double b = 0.0, c = 0.0, resolution = 0.0;
-    odelia::interpolator::Interpolator conductivity, integral;
+    odelia::interpolator::hermite_interpolator<double> conductivity, integral;
     double last_knot = 0.0, integral_limit = 0.0;
   };
   static constexpr std::size_t curve_cache_size = 32;
@@ -326,24 +326,23 @@ public:
     cumulative_vulnerability_integral(root_b, root_c, resolution, x_psi_root,
                                       y_integral, y_f_r);
 
-    // Conductivity: NO extrapolation, matching the stem pair in
-    // Leaf::setup_transpiration. Its limit is zero, which is unusable as the
-    // divisor it becomes, so root_vuln_at clamps the argument to the last knot
-    // instead and this setting is what stops any other reading being possible.
-    root_vuln_from_psi.init(x_psi_root, y_f_r);
-    root_vuln_from_psi.set_extrapolate(false);
+    // Both carry a value AND a slope at every knot, and both slopes are closed
+    // forms rather than anything a fit infers: dG/dpsi IS f_r, which is the second
+    // vector the builder already returned, and df_r/dpsi is the integrand slope.
+    // At the same knot count that is five orders more accurate than a fit through
+    // the values alone, which is what these were.
+    std::vector<double> y_f_r_slope(x_psi_root.size());
+    for (std::size_t k = 0; k < x_psi_root.size(); ++k) {
+      y_f_r_slope[k] = vulnerability_curve_slope(x_psi_root[k], root_b, root_c);
+    }
+    root_vuln_from_psi.init(x_psi_root, y_f_r, y_f_r_slope);
+    root_vuln_integral_from_psi.init(x_psi_root, y_integral, y_f_r);
 
-    // Integral: extrapolation stays ON, under a ceiling. Its limit is finite and
-    // non-zero, and the end-knot polynomial tracks the true G closely over the
-    // half-MPa it takes to reach that limit (3.46212 against 3.46176 at 7 MPa), so
-    // capping the VALUE is both smooth and tighter than clamping the argument
-    // would be. root_vuln_integral_at applies the cap.
-    //
-    // Do not set this false "to match" the conductivity spline: odelia's deriv()
-    // has no extrapolation check where eval() does, so eval would throw while
-    // deriv went on extrapolating.
-    root_vuln_integral_from_psi.init(x_psi_root, y_integral);
-    root_vuln_integral_from_psi.set_extrapolate(true);
+    // Neither carries an extrapolation setting, because neither ever reads past
+    // its knots: root_vuln_at clamps the argument, and root_vuln_integral_at caps
+    // the value at the closed-form limit. Past the last knot the interpolant
+    // extends the end slope, which for the integral is f_r there -- under a
+    // hundredth -- so the cap binds smoothly instead of a quadratic running away.
 
     // The last knot, NOT vulnerability_psi_max: the knot loop advances by
     // accumulation and stops one step short of psi_max (6.8229 against 6.8918 at
@@ -363,9 +362,9 @@ public:
                                        root_vuln_integral_limit_});
   }
 
-  // f_r at a suction, clamped into the knot domain -- set_extrapolate(false)
-  // throws at both ends, and the last knot's ~1% is the driest conductivity this
-  // curve describes.
+  // f_r at a suction, clamped into the knot domain: the last knot holds about 1%
+  // of full conductivity, which is the driest this curve describes, and the clamp
+  // is what makes the read in-domain rather than a setting on the interpolant.
   //
   // Operand order is load-bearing: written this way both clamps return psi when
   // psi is NaN, where the reversed forms return the bound. The uptake call site's
@@ -400,14 +399,18 @@ public:
   }
 
   // dG/dpsi, consistent with root_vuln_integral_at: zero wherever that returns
-  // the cap, because there the value no longer depends on psi. Costs a second
-  // spline eval, which is affordable here and would not be on the uptake hot path
-  // -- duptake_dpsi runs once per gradient, not ~10^3 times per solve.
+  // the cap, because there the value no longer depends on psi.
   double root_vuln_integral_deriv_at(double psi) const {
     if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
       return 0.0;
     }
-    return root_vuln_integral_from_psi.deriv(psi);
+    // The interpolant's own slope, which is the exact derivative of the value the
+    // line above just read. The closed form f_r is the derivative of G and NOT of
+    // this tabulation of G, so returning it would give a value and a derivative
+    // taken from two different functions -- they agree at the knots, where the
+    // supplied slope IS f_r, and differ between them by the interpolation error.
+    // Measured: a differenced curvature moves from 1e-07 to 1.9e-07 that way.
+    return root_vuln_integral_from_psi.slope(psi);
   }
 
   // d(dG/dpsi)/dpsi -- the integrand's own slope, and NOT a second derivative of
@@ -426,8 +429,7 @@ public:
     if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
       return 0.0;
     }
-    const double x = std::pow(psi / root_b, root_c);
-    return -std::exp(-x) * root_c * x / psi;
+    return vulnerability_curve_slope(psi, root_b, root_c);
   }
 
   // The suction gap below which a layer's mean conductivity is 0/0, and the ONE
