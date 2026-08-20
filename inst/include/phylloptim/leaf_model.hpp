@@ -47,8 +47,8 @@ public:
        double ci_niter,
       double cost_scale_TF24);
 
-  odelia::interpolator::hermite_interpolator<double> transpiration_from_psi;
-  odelia::interpolator::hermite_interpolator<double> psi_from_transpiration;
+  odelia::interpolator::hermite_interpolator<double, 5> transpiration_from_psi;
+  odelia::interpolator::hermite_interpolator<double, 5> psi_from_transpiration;
 
   // The `stem_b` the two splines above were built at, which is normally just
   // `stem_b` -- and is not, while a gradient is perturbing it.
@@ -262,41 +262,49 @@ public:
   // curve and rebuilt onto another. The default constructor used to hardcode 100
   // beside this member, which is exactly how that happened.
   //
-  // ⚠️ IT IS SET BY WHERE THE GRID STOPS BEING THE LARGEST ERROR, and that is a
-  // rule rather than a number. Nothing reads a derivative of either table any
-  // more -- every derivative of G is f, taken from the curve -- so the tabulation
-  // carries two values and only two: G, and its inverse. Both are C1 Hermite
-  // through exact values and exact slopes, so both converge as h^4, and what
-  // that error reaches is the stem potential, which everything downstream is a
-  // function of. Measured against a difference of the solve, per knot count:
+  // ⚠️ IT IS NO LONGER SET BY THE GRID'S OWN ERROR, and what moved is the read
+  // rather than the count. Every channel of both tables is a closed form -- G, its
+  // slope f, and f's own slope -- so both are read as quintics: h^6 in the value
+  // and h^5 in the slope. What the rows follow is the SLOPE, which measured h^3
+  // against an h^4 value read, so the slope column is the one that decides.
+  // Measured against the closed form, worst over every span:
   //
-  //   knots   condition row   held row   round trip   build us   solve us    KB
-  //      50        1.1e-04     1.1e-04      3.5e-07        4.9       6.79     14
-  //     100        2.0e-05     2.0e-05      1.5e-08        8.7       6.74     28
-  //     200        3.1e-06     2.9e-06      1.5e-09       16.7       6.84     56
-  //     400        6.2e-07     5.8e-07      9.4e-11       31.6       6.81    112
-  //     800        9.6e-08     8.8e-08      4.2e-12         60       6.78    225
-  //    1600        3.9e-09     5.0e-09      3.3e-13      139.7       6.90    450
+  //   knots   cubic value   quint value   cubic slope   quint slope   quint KB
+  //      25     1.899e-06     3.532e-09     5.252e-05     1.099e-07        0.6
+  //      50     1.201e-07     5.555e-11     6.636e-06     3.455e-09        1.2
+  //     100     7.506e-09     8.717e-13     8.296e-07     1.084e-10        2.4
+  //     200     4.695e-10     1.421e-14     1.038e-07     3.417e-12        4.7
+  //     400     2.934e-11     2.220e-15     1.297e-08     4.827e-13        9.4
+  //     800     1.834e-12     2.220e-15     1.622e-09     1.251e-12       18.8
+  //    1600     1.155e-13     2.220e-15     2.033e-10     2.144e-12       37.5
   //
-  // The round trip is G(sigma) against the flux the inverse was asked for, which
-  // is the two tables' agreement that they are one relation, and it is what the
-  // other two columns follow.
+  // 1600 was the count a CUBIC read needed to bring the rows to the differenced
+  // reference's own floor of 2e-09 to 4e-09, and it reached it on the slope
+  // column's 2.033e-10. A quintic passes that at 100 knots and sits 60x below it at
+  // 200, so by the old rule this would now be 200.
   //
-  // The condition's OTHER scalar reads no table and sits at 2e-09 to 4e-09 at
-  // every count -- that is the floor of the difference these are compared to. So
-  // 1600 is the first count at which the rows reach it and stop being the grid's,
-  // and going further would refine below what any reference can see.
+  // ⚠️ IT IS NOT, AND THE REASON IS A FINDING RATHER THAN A TOLERANCE. Reducing it
+  // moves the knot SPACING, and the suite's wet-bound tests pin the feasibility
+  // sentinel at the wet end of the collar bracket -- a region measured at most
+  // 3.46e-07 MPa wide. Whether that sliver exists at all moves with the spacing,
+  // and NOT MONOTONICALLY: at 1600 and 800 knots it is there, at 400 and 200 it
+  // closes and five assertions that a 0.0 is a sentinel rather than a stationary
+  // point fail. A refusal channel whose existence depends on a discretisation is a
+  // defect in the refusal, not in the grid, so the grid is left where the tests
+  // were written and the defect is recorded rather than tuned around.
   //
-  // The solve does not pay for it at all: a read is O(1) on a uniform grid, and
-  // thirty-two times the knots is 1.7%, which is inside the noise between runs.
-  // What it costs is the build, once per strategy on a forward run, and 450 KB of
-  // tables on a leaf that one species shares.
+  // ⚠️ AND MORE KNOTS ARE NOT SAFER EITHER. The quintic's slope error bottoms out at
+  // 400 and then gets WORSE -- 4.8e-13, 1.3e-12, 2.1e-12 -- because the divided
+  // differences that seat the top three coefficients lose to roundoff as the span
+  // shrinks. A count chosen by refining until it stops moving would overshoot.
+  //
+  // The solve does not pay for any of it: a read is O(1) on a uniform grid.
   //
   // ⚠️ AND IT IS ONE NAME ACROSS THE PACKAGE BOUNDARY, not one per package. This
   // was three defaults -- Leaf's, phylloptim's R control, and plant's Control --
   // and plant's was the one every stand ran on, so two rounds of refining this
-  // member reached nothing plant does. A count that can disagree with its source
-  // of truth is the hazard the developer guide names first.
+  // member reached nothing plant does. plant's Control now reads this constant;
+  // phylloptim's own R defaults restate it, because an R default cannot read it.
   static constexpr double ncontrol_default = 1600.0;
   double vulnerability_curve_ncontrol;
   double ci_abs_tol;
@@ -648,7 +656,7 @@ public:
   // two traits -- so a handful of entries holds all of them.
   struct StemCurveCache {
     double b = 0.0, c = 0.0, resolution = 0.0;
-    odelia::interpolator::hermite_interpolator<double> from_psi, to_psi;
+    odelia::interpolator::hermite_interpolator<double, 5> from_psi, to_psi;
   };
   // Bounded: past the pairs a perturbation loop visits an entry is never read
   // again, so growing the store without limit would be a leak rather than a hit.
@@ -738,7 +746,7 @@ public:
   // Nor can it name the caller -- the same spline is read from four places, and
   // localising plant#576 came down to which.
   static double eval_stem_curve(
-      const odelia::interpolator::hermite_interpolator<double>& spline, double u,
+      const odelia::interpolator::hermite_interpolator<double, 5>& spline, double u,
       double scale, const char* spline_name, const char* arg_name,
       const char* caller);
 
@@ -767,9 +775,11 @@ public:
                                                double resolution,
                                                std::vector<double>& x,
                                                std::vector<double>& y_integral,
-                                               std::vector<double>& y_conductivity) {
+                                               std::vector<double>& y_conductivity,
+                                               std::vector<double>& y_conductivity_slope) {
     cumulative_vulnerability_integral(weibull_b, weibull_c, resolution, x,
-                                      y_integral, y_conductivity);
+                                      y_integral, y_conductivity,
+                                      y_conductivity_slope);
   }
   void setup_clean_leaf();
 
@@ -4300,24 +4310,32 @@ inline void Leaf::setup_transpiration(double resolution) {
       return;
     }
   }
-  // The conductivity knots come back from the same loop and the stem does not
-  // read them -- only the root curve builds a second spline on them.
-  std::vector<double> x_psi_, y_cumulative_transpiration_, y_conductivity_;
+  // All three channels of G come back from the one loop that forms it: the value,
+  // the conductivity G'(psi) = exp(-(psi/stem_b)^stem_c) which is the slope at each
+  // knot, and the conductivity's own slope which is the curvature. The slopes used
+  // to be recomputed here through proportion_of_conductivity -- the same expression
+  // written twice, and now three times would have been needed.
+  std::vector<double> x_psi_, y_cumulative_transpiration_, conductivity,
+                      conductivity_slope;
   build_cumulative_vulnerability_integral(stem_b, stem_c, resolution, x_psi_,
                                           y_cumulative_transpiration_,
-                                          y_conductivity_);
+                                          conductivity, conductivity_slope);
 
-  // The exact derivative of the cumulative integral is the conductivity itself,
-  // G'(psi) = exp(-(psi/stem_b)^stem_c), so it is the slope at each knot; the
-  // inverse carries the reciprocal, d(psi)/dG = 1 / G' (finite everywhere, since
-  // G' = 1 at the wet end and stays positive to the dry end).
-  std::vector<double> conductivity(x_psi_.size()), inverse_slope(x_psi_.size());
+  // The inverse carries the reciprocal, d(psi)/dG = 1 / G' (finite everywhere,
+  // since G' = 1 at the wet end and stays positive to the dry end), and its own
+  // curvature is d2(psi)/dG2 = -G'' / G'^3, which differentiating the reciprocal
+  // gives and which needs nothing beyond the two vectors above.
+  std::vector<double> inverse_slope(x_psi_.size()),
+                      inverse_curvature(x_psi_.size());
   for (size_t i = 0; i < x_psi_.size(); ++i) {
-    conductivity[i] = proportion_of_conductivity(x_psi_[i]);
-    inverse_slope[i] = 1.0 / conductivity[i];
+    const double f = conductivity[i];
+    inverse_slope[i] = 1.0 / f;
+    inverse_curvature[i] = -conductivity_slope[i] / (f * f * f);
   }
-  transpiration_from_psi.init(x_psi_, y_cumulative_transpiration_, conductivity);
-  psi_from_transpiration.init(y_cumulative_transpiration_, x_psi_, inverse_slope);
+  transpiration_from_psi.init(x_psi_, y_cumulative_transpiration_, conductivity,
+                              conductivity_slope);
+  psi_from_transpiration.init(y_cumulative_transpiration_, x_psi_, inverse_slope,
+                              inverse_curvature);
 
   if (stem_curve_cache_->size() >= curve_cache_size) {
     stem_curve_cache_->erase(stem_curve_cache_->begin());
@@ -4359,13 +4377,13 @@ inline void Leaf::setup_transpiration(double resolution) {
 // building costs nothing in production. Kept out of line from eval_stem_curve so
 // that function stays small enough to inline.
 [[noreturn]] inline void stem_curve_out_of_domain(
-    const odelia::interpolator::hermite_interpolator<double>& spline, double u,
+    const odelia::interpolator::hermite_interpolator<double, 5>& spline, double u,
     double v,
     double scale, const char* spline_name, const char* arg_name,
     const char* caller);
 
 inline double Leaf::eval_stem_curve(
-    const odelia::interpolator::hermite_interpolator<double>& spline, double u,
+    const odelia::interpolator::hermite_interpolator<double, 5>& spline, double u,
     double scale,
                                     const char* spline_name,
                                     const char* arg_name, const char* caller) {
@@ -4389,7 +4407,7 @@ inline double Leaf::eval_stem_curve(
 }
 
 inline void stem_curve_out_of_domain(
-    const odelia::interpolator::hermite_interpolator<double>& spline, double u,
+    const odelia::interpolator::hermite_interpolator<double, 5>& spline, double u,
     double v, double scale, const char* spline_name, const char* arg_name,
     const char* caller) {
     const bool below = v < spline.min();

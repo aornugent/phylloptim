@@ -49,6 +49,10 @@
   R_d_25 = 1.44
 )
 
+# The knot count is the C++ constant Leaf::ncontrol_default, restated here and in
+# leaf_control() below because an R default cannot read it. plant's Control does
+# read it, so those two cannot disagree; these two can, and the C++ header is the
+# one that decides.
 .leaf_control_defaults <- list(
   GSS_tol_abs = 1e-3,
   vulnerability_curve_ncontrol = 1600,

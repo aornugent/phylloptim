@@ -1377,7 +1377,7 @@ void test_root_vulnerability_is_bounded_past_its_grid() {
   printf("root vulnerability curves are bounded past their last knot\n");
   phylloptim::MultiLayerRoots r;
   r.setup_vulnerability(100);
-  const double last_knot = r.root_vuln_from_psi.max();
+  const double last_knot = r.root_vuln_integral_from_psi.max();
   const double G_inf =
       phylloptim::cumulative_vulnerability_integral_limit(r.root_b, r.root_c);
 
@@ -1385,7 +1385,7 @@ void test_root_vulnerability_is_bounded_past_its_grid() {
   // makes this fix golden-identical rather than merely golden-tolerable.
   for (double psi : {0.0, 0.5, 2.0, 4.0, 6.0}) {
     const std::string at = " at psi=" + std::to_string(psi);
-    ok(r.root_vuln_at(psi) == r.root_vuln_from_psi.eval(psi),
+    ok(r.root_vuln_at(psi) == r.root_vuln_integral_from_psi.slope(psi),
        "f_r is the unmodified spline on the grid" + at);
     ok(r.root_vuln_integral_at(psi) == r.root_vuln_integral_from_psi.eval(psi),
        "G is the unmodified spline on the grid" + at);
@@ -4867,9 +4867,17 @@ void test_the_condition_is_the_stem_potential_and_its_collar_response() {
 // ⚠️ THAT 15 IS NOT A RESPONSE, and the step says so. The maximum conductance is
 // 3.1e-05, so a relative step of 1e-06 is an ABSOLUTE step of 3.1e-11, and a
 // difference over it divides whatever floor the concentration's root-find leaves
-// by that. Over four decades of step the row goes 15.1, -1.51, -0.151, -1.2e-04
-// -- exactly 1/h, and it changes sign -- while the stem potential's row is
-// -20803.9 at every one of them.
+// by that. Over four decades of step the row spreads by four orders and changes
+// sign, while the stem potential's row is -20803.9 at every one of them.
+//
+// ⚠️ WHICH STEP THE FLOOR IS LARGEST AT IS THE TABLE'S, NOT THE MODEL'S, so it is
+// not what this checks. Read off a C1 table the floor was largest at the finest
+// step -- 15.1, -1.51, -0.151, -1.2e-04, close to 1/h -- because a difference of a
+// first derivative reads the second-derivative jump a C1 span leaves at every
+// knot. Read off a C2 one there is no jump to read and the finest step is the
+// smallest of the four: -1.7e-04, 0.756, 0.0756, -0.00756. Both are the same
+// finding, which is that the number is not a derivative, and the assertions below
+// say that directly instead of assuming where the floor lands.
 void test_the_transport_leaves_the_flux_where_it_is() {
   printf("the transport moves the potential and not the flux\n");
   namespace grad = phylloptim::gradient;
@@ -4887,7 +4895,9 @@ void test_the_transport_leaves_the_flux_where_it_is() {
   grad::Scratch scratch;
   const double base = grad::par_value(env::kTheta, d, false, grad::par_kmax);
 
-  double first_assim = 0.0, first_sigma = 0.0, last_sigma = 0.0;
+  double first_sigma = 0.0, last_sigma = 0.0;
+  double assim_lo = std::numeric_limits<double>::infinity(), assim_hi = 0.0;
+  bool changes_sign = false, seen_positive = false, seen_negative = false;
   int decade = 0;
   for (double rel : {1e-6, 1e-5, 1e-4, 1e-3}) {
     const double h = base * rel;
@@ -4912,24 +4922,29 @@ void test_the_transport_leaves_the_flux_where_it_is() {
     ok(uptake_total[0] == uptake_total[1],
        "no layer's draw moves at all, at a step of " + std::to_string(rel));
     if (decade == 0) {
-      first_assim = std::abs(d_assim);
       first_sigma = d_sigma;
     }
     last_sigma = d_sigma;
     ++decade;
-    // Each decade of step must take a tenth off it, which a derivative would not
-    // do and a floor divided by the step does.
-    ok(std::abs(d_assim) <= first_assim / std::pow(10.0, decade - 1) * 1.5,
-       "assimilation's apparent row falls with the step, at " +
-           std::to_string(rel));
+    assim_lo = std::min(assim_lo, std::abs(d_assim));
+    assim_hi = std::max(assim_hi, std::abs(d_assim));
+    if (d_assim > 0.0) seen_positive = true;
+    if (d_assim < 0.0) seen_negative = true;
   }
+  // A derivative is the same number at every step to within the differencing
+  // error. This says this one is not: it spreads by orders, and no step of any
+  // size makes it converge. The SIGN pattern is not checked -- it is the table's
+  // and not the model's, and which steps come out negative moves with the grid.
+  static_cast<void>(changes_sign);
+  static_cast<void>(seen_positive);
+  static_cast<void>(seen_negative);
+  ok(assim_hi > assim_lo * 1e3,
+     "assimilation's apparent row spreads by orders across the step");
   grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
   // Four decades of step move it by 1.5e-06, which is the coarsest step's own
   // truncation and not a floor: a floor would have shown at the FINEST.
   near(last_sigma, first_sigma, 1e-5,
        "while the stem potential's row barely moves with the step at all");
-  ok(first_assim > 1.0,
-     "and the coarsest step is what makes the fine one's number look real");
 }
 
 void test_the_transport_traits_rows_match_a_rebuilt_difference() {
@@ -6150,10 +6165,11 @@ void test_the_three_unchecked_invariants() {
     pl::Leaf l = env::fresh();
     grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 1, 1);
     grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
-    std::vector<double> x, y_integral, y_conductivity;
+    std::vector<double> x, y_integral, y_conductivity, y_conductivity_slope;
     l.build_cumulative_vulnerability_integral(l.stem_b, l.stem_c,
                                              l.vulnerability_curve_ncontrol,
-                                             x, y_integral, y_conductivity);
+                                             x, y_integral, y_conductivity,
+                                             y_conductivity_slope);
     double worst_forward = 0.0, worst_inverse = 0.0;
     for (std::size_t i = 0; i < x.size(); ++i) {
       const double f = l.proportion_of_conductivity(x[i]);

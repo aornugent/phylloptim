@@ -213,12 +213,15 @@ public:
   // arguments to root_network_from_carbon and members of whoever owns that
   // model. In plant that is TF24_Strategy.
 
-  // pre-computed root vulnerability curve f_r(m) = exp(-(m/root_b)^root_c)
-  odelia::interpolator::hermite_interpolator<double> root_vuln_from_psi;
-  // cumulative integral of it, G(m) = int_0^m f_r(s) ds, indexed by magnitude
-  // m = -psi. Lets uptake() obtain the mean conductivity over a potential
-  // interval from 2 evals instead of (n+1).
-  odelia::interpolator::hermite_interpolator<double> root_vuln_integral_from_psi;
+  // G(m) = int_0^m f_r(s) ds, indexed by magnitude m = -psi, carrying a value, a
+  // slope and a curvature at every knot -- all three the closed form's. Lets
+  // uptake() obtain the mean conductivity over a potential interval from 2 evals
+  // instead of (n+1).
+  //
+  // ONE table, not two. f_r is dG/dpsi, so the curve is this table's slope rather
+  // than a second tabulation of it: two tables agreed at their knots and differed
+  // between them, so uptake read G from one polynomial and f_r from another.
+  odelia::interpolator::hermite_interpolator<double, 5> root_vuln_integral_from_psi;
   // What the two splines do past their last knot, cached by setup_vulnerability.
   // Both are read through the accessors below, never as bare .eval() calls --
   // see the accessors for why. util::na_value until a curve is built.
@@ -296,7 +299,7 @@ public:
   // why the key is (b, c, resolution) and why a handful of entries is enough.
   struct CurveCache {
     double b = 0.0, c = 0.0, resolution = 0.0;
-    odelia::interpolator::hermite_interpolator<double> conductivity, integral;
+    odelia::interpolator::hermite_interpolator<double, 5> integral;
     double last_knot = 0.0, integral_limit = 0.0;
   };
   static constexpr std::size_t curve_cache_size = 32;
@@ -310,33 +313,21 @@ public:
   void setup_vulnerability(double resolution) {
     for (const CurveCache& hit : *curve_cache_) {
       if (hit.b == root_b && hit.c == root_c && hit.resolution == resolution) {
-        root_vuln_from_psi = hit.conductivity;
         root_vuln_integral_from_psi = hit.integral;
         root_vuln_last_knot_ = hit.last_knot;
         root_vuln_integral_limit_ = hit.integral_limit;
         return;
       }
     }
-    // Both knot vectors from one pass: dG/dpsi IS exp(-(psi/root_b)^root_c), so
-    // the conductivity knots are a quantity the integral's own series already
-    // forms rather than a second loop over pow and exp. Bit-identical to that
-    // loop at every knot, which is what says it is the same expression.
+    // Three knot vectors from one pass: dG/dpsi IS exp(-(psi/root_b)^root_c) and
+    // its own slope needs nothing the same series has not already formed, so every
+    // channel of this table is the closed form's and none is inferred.
     // f_r(0) = exp(-pow(0,root_c)) = 1.
-    std::vector<double> x_psi_root, y_integral, y_f_r;
+    std::vector<double> x_psi_root, y_integral, y_f_r, y_f_r_slope;
     cumulative_vulnerability_integral(root_b, root_c, resolution, x_psi_root,
-                                      y_integral, y_f_r);
+                                      y_integral, y_f_r, y_f_r_slope);
 
-    // Both carry a value AND a slope at every knot, and both slopes are closed
-    // forms rather than anything a fit infers: dG/dpsi IS f_r, which is the second
-    // vector the builder already returned, and df_r/dpsi is the integrand slope.
-    // At the same knot count that is five orders more accurate than a fit through
-    // the values alone, which is what these were.
-    std::vector<double> y_f_r_slope(x_psi_root.size());
-    for (std::size_t k = 0; k < x_psi_root.size(); ++k) {
-      y_f_r_slope[k] = vulnerability_curve_slope(x_psi_root[k], root_b, root_c);
-    }
-    root_vuln_from_psi.init(x_psi_root, y_f_r, y_f_r_slope);
-    root_vuln_integral_from_psi.init(x_psi_root, y_integral, y_f_r);
+    root_vuln_integral_from_psi.init(x_psi_root, y_integral, y_f_r, y_f_r_slope);
 
     // Neither carries an extrapolation setting, because neither ever reads past
     // its knots: root_vuln_at clamps the argument, and root_vuln_integral_at caps
@@ -348,7 +339,7 @@ public:
     // accumulation and stops one step short of psi_max (6.8229 against 6.8918 at
     // the root defaults), so psi_max is itself outside the domain and clamping to
     // it would throw.
-    root_vuln_last_knot_ = root_vuln_from_psi.max();
+    root_vuln_last_knot_ = root_vuln_integral_from_psi.max();
     root_vuln_integral_limit_ =
         cumulative_vulnerability_integral_limit(root_b, root_c);
 
@@ -356,7 +347,6 @@ public:
       curve_cache_->erase(curve_cache_->begin());
     }
     curve_cache_->push_back(CurveCache{root_b, root_c, resolution,
-                                       root_vuln_from_psi,
                                        root_vuln_integral_from_psi,
                                        root_vuln_last_knot_,
                                        root_vuln_integral_limit_});
@@ -373,7 +363,9 @@ public:
     if (psi > root_vuln_last_knot_ || psi < 0.0) {
       clamps.note(CLAMP_ROOT_VULN_ARGUMENT);
     }
-    return root_vuln_from_psi.eval(
+    // The integral's own slope, so f_r and G are derivatives of one polynomial. A
+    // second table of f_r agreed with this at the knots and nowhere between them.
+    return root_vuln_integral_from_psi.slope(
         std::max(std::min(psi, root_vuln_last_knot_), 0.0));
   }
 
@@ -709,8 +701,8 @@ public:
   // positive by construction -- pulling harder at the collar draws more water --
   // which is the whole reason for working in magnitudes (#25). Per layer, with
   // span = |T_collar - T_soil[i]| and integral = \int f_r over
-  // [T_src_min, T_src_max] (root_vuln_integral_from_psi, whose integrand is
-  // root_vuln_from_psi):
+  // [T_src_min, T_src_max] (root_vuln_integral_from_psi, whose integrand is that
+  // table's own slope):
   //   E_i        = (T_collar - T_soil[i] - grav) / r_R,
   //   r_R        = r_R_H_min[i] * span / integral + r_R_V_sum[i],
   //   dspan/dT   = sign_var   (+1 if T_collar is the upper bound, else -1),
@@ -848,11 +840,10 @@ private:
 
       // d(integral)/d(T_collar): for T_collar>0 the moving bound is in the
       // vulnerable region. The integrand is the derivative of the *same*
-      // cumulative curve that produced `integral`
-      // (root_vuln_integral_deriv_at), NOT the separate root_vuln_from_psi
-      // spline: the two agree on the knot domain but are bounded differently past
-      // it -- the conductivity lookup clamps its argument to the last knot, the
-      // integral is capped at G(inf) -- so beyond the domain only the integral's
+      // cumulative curve that produced `integral` (root_vuln_integral_deriv_at),
+      // and the two accessors differ only in how they are bounded past the knots:
+      // the conductivity read clamps its argument to the last knot, the integral is
+      // capped at G(inf) -- so beyond the domain only the integral's
       // own derivative stays consistent with the value used here (issue #1; the
       // reasoning is #527's, the "both clamp-to-last-value" it used to cite was
       // never true of either). For T_collar<0 (an above-atmospheric collar) the
@@ -1274,8 +1265,8 @@ private:
   // (hydraulic redistribution).
   //
   // Implementation decisions:
-  //   * f_r and its running integral are read from pre-computed splines
-  //     (root_vuln_from_psi, root_vuln_integral_from_psi) instead of repeatedly
+  //   * f_r and its running integral are read from one pre-computed table
+  //     (root_vuln_integral_from_psi, f_r being its slope) instead of repeatedly
   //     evaluating exp(-(psi/b)^c); see setup_vulnerability.
   //   * Two special cases are handled exactly to avoid division/round-off
   //     issues: (a) collar potential equals layer potential, and (b) the
@@ -1308,7 +1299,7 @@ private:
     // removed from this hot loop; the remaining two are load-bearing:
     //   * the equal-potentials f_ri <= 0 check below: it USED to be the only
     //     thing standing between a deep-drought layer and the negative
-    //     conductivity root_vuln_from_psi's extrapolant produced past its
+    //     conductivity the curve's extrapolant produced past its
     //     domain -- negative-but-FINITE r_R, so a wrong-sign E_i the post-loop
     //     isfinite(E_up) net would not catch. That case is now prevented at
     //     source: root_vuln_at clamps its argument to the last knot, so f_ri is
@@ -1335,9 +1326,9 @@ private:
 
       // Fraction of conductance in roots in a given layer at the driest suction
       // (which here equals the root collar's).
-      // root_vuln_from_psi is a pre-built spline of exp(-(psi/b_root)^c_root),
-      // read through root_vuln_at so a layer drier than the grid gets the last
-      // knot's conductivity rather than an extrapolated (eventually negative) one.
+      // f_r is the cumulative table's own slope, read through root_vuln_at so a
+      // layer drier than the grid gets the last knot's conductivity rather than an
+      // extrapolated (eventually negative) one.
       double f_ri = root_vuln_at(T_src_max);
       if (!std::isfinite(f_ri) || f_ri <= 0.0) {
         util::stop("E_from_Soil_to_Root_Collar invalid f_ri; layer=" + std::to_string(i) +
