@@ -73,7 +73,7 @@ test_that("a shaded leaf's soil rows are the cost row times the bound's", {
 
   worst <- 0
   for (j in seq_along(shut_profile)) {
-    predicted <- -cost_row[[2]] * bound[[8 + j]]
+    predicted <- -cost_row[[2]] * bound[[10 + j]]
     for (h in c(1e-5, 1e-4, 1e-3)) {
       up <- shut_profile; up[[j]] <- up[[j]] + h
       dn <- shut_profile; dn[[j]] <- dn[[j]] - h
@@ -90,7 +90,7 @@ test_that("a shaded leaf's soil rows are the cost row times the bound's", {
 
   # Non-vacuity: the rows are live, and they are live because the BOUND moves --
   # a shut leaf that read no soil at all would pass every check above.
-  expect_true(all(abs(bound[9:13]) > 1e-6))
+  expect_true(all(abs(bound[11:15]) > 1e-6))
   expect_gt(abs(cost_row[[2]]), 1e-6)
 })
 

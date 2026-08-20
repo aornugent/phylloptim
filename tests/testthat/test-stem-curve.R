@@ -41,10 +41,19 @@ test_that("a scaled stem curve reproduces a rebuilt one", {
     scaled <- scaled_leaf(b)
     rebuilt <- rebuilt_leaf(b)
     for (psi in sample_psi(b)) {
+      # ⚠️ THE BAND IS THE GRID'S, AND IT MOVES WITH THE KNOT COUNT. The two
+      # routes read splines laid out on different abscissae -- the scaled one at
+      # psi/s, the rebuilt one at psi -- so what is left is each interpolant's
+      # own resolution of the same curve, and a finer grid puts more of the
+      # sample points near a span boundary rather than fewer. Measured over the
+      # 45 sample points: 1 past 1e-12 at 400 knots, 3 at 800, 6 at 1600, with
+      # the worst going 1.0e-12, 2.9e-12, 3.3e-12. The default is 1600, so the
+      # bound is set above what that grid supports and stays four orders below
+      # the interpolant's own value error.
       expect_equal(scaled$stem_curve_integral(psi),
-                   rebuilt$stem_curve_integral(psi), tolerance = 1e-12)
+                   rebuilt$stem_curve_integral(psi), tolerance = 1e-11)
       expect_equal(scaled$stem_curve_integral_deriv(psi),
-                   rebuilt$stem_curve_integral_deriv(psi), tolerance = 1e-12)
+                   rebuilt$stem_curve_integral_deriv(psi), tolerance = 1e-11)
     }
   }
 })

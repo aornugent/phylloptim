@@ -182,6 +182,17 @@ public:
   // marginal_cost_water_multilayer (#25).
   double duptake_dpsi() const { return kg_per_mol_h2o / resistance_; }
 
+  // Exactly zero, and exactly is the word: the flux is linear in the difference
+  // over a constant resistance, so the conductance above does not move with the
+  // collar at all. The multi-layer path's is not zero, because there the
+  // resistance depends on the span.
+  double d2uptake_dpsi2(double T_collar,
+                        const std::vector<double>& psi_soil) const {
+    static_cast<void>(T_collar);
+    static_cast<void>(psi_soil);
+    return 0.0;
+  }
+
   // dE/d(psi_soil), the one-layer counterpart of
   // MultiLayerRoots::duptake_dpsi_soil. The flux is linear in (T_collar - psi)
   // over a constant resistance, so this is exactly minus the conductance -- and

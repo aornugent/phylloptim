@@ -33,7 +33,7 @@ bound_row_of <- function(psi_soil, which) {
   bound_row_leaf(psi_soil)$bound_row_values(which)
 }
 
-# Layout is documented at bound_row_values; entry 8 + j is layer j's soil row.
+# Layout is documented at bound_row_values; entry 10 + j is layer j's soil row.
 bound_row_worst <- function(psi_soil, which, h = 1e-5) {
   r <- bound_row_of(psi_soil, which)
   testthat::expect_equal(r[[1]], 1)          # the row is finite
@@ -42,7 +42,7 @@ bound_row_worst <- function(psi_soil, which, h = 1e-5) {
     up <- psi_soil; up[[j]] <- up[[j]] + h
     dn <- psi_soil; dn[[j]] <- dn[[j]] - h
     fd <- (bound_position(up, which) - bound_position(dn, which)) / (2 * h)
-    if (abs(fd) > 1e-12) worst <- max(worst, abs(r[[8 + j]] / fd - 1))
+    if (abs(fd) > 1e-12) worst <- max(worst, abs(r[[10 + j]] / fd - 1))
   }
   worst
 }
@@ -102,7 +102,9 @@ test_that("the root's own critical potential is an exact unit row", {
   expect_equal(r[[5]], 0)
   expect_equal(r[[7]], 0)
   expect_equal(r[[8]], 0)
-  expect_true(all(r[-(1:8)] == 0))
+  expect_equal(r[[9]], 0)
+  expect_equal(r[[10]], 0)
+  expect_true(all(r[-(1:10)] == 0))
 })
 
 test_that("a uniform profile cannot referee the wet bound", {
@@ -182,15 +184,15 @@ test_that("the root curve's position has a closed-form row in both bounds", {
     up <- base; up$root_b <- base$root_b + h
     dn <- base; dn$root_b <- base$root_b - h
     fd <- (bound_of(up, w, pv) - bound_of(dn, w, pv)) / (2 * h)
-    worst <- max(worst, abs(r[[8]] / fd - 1))
+    worst <- max(worst, abs(r[[9]] / fd - 1))
   }
   message(sprintf("  root_b bound row vs rebuilt difference: worst %.2e", worst))
   expect_lt(worst, 1e-3)
 
   # Non-vacuity: the entry is live, and it is live in BOTH bounds -- a row that
   # only filled the dry one would pass a dry-only check.
-  expect_true(seat(base, mild_gradient)$bound_row_values(0L)[[8]] != 0)
-  expect_true(seat(base, mild_gradient)$bound_row_values(1L)[[8]] != 0)
+  expect_true(seat(base, mild_gradient)$bound_row_values(0L)[[9]] != 0)
+  expect_true(seat(base, mild_gradient)$bound_row_values(1L)[[9]] != 0)
 })
 
 test_that("the root-carbon half agrees with a rebuilt difference, on both bounds", {
@@ -224,7 +226,7 @@ test_that("the root-carbon half agrees with a rebuilt difference, on both bounds
         up <- carbon; up[[j]] <- up[[j]] + h
         dn <- carbon; dn[[j]] <- dn[[j]] - h
         fd <- (bound_of(up, w) - bound_of(dn, w)) / (2 * h)
-        worst <- max(worst, abs(r[[13 + j]] / fd - 1))
+        worst <- max(worst, abs(r[[15 + j]] / fd - 1))
       }
     }
     message(sprintf("  root-carbon half, bound %d: worst %.2e over 5 layers x 3 steps",
@@ -243,7 +245,7 @@ test_that("the root-carbon entries are live, and their signs disagree", {
   set_drivers(l, psi_soil = mild_gradient, soil_depth = depth,
               root_network = root_network_from_carbon(rep(20 / 5, 5), depth))
   for (w in c(0L, 1L)) {
-    e <- l$bound_row_values(w)[14:18]
+    e <- l$bound_row_values(w)[16:20]
     expect_true(all(abs(e) > 1e-6))
     message(sprintf("  bound %d root-carbon entries: %s", w,
                     paste(sprintf("%+.4g", e), collapse = " ")))

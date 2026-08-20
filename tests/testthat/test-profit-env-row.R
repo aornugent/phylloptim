@@ -10,9 +10,9 @@
 # not one derivation. `marginal_price_water` is lambda*kmax*f(p)/S, and that IS
 # dProfit/dE_up only once dProfit/dp is zero -- the interior condition is inside
 # the expression rather than beside it. At a pin dProfit/dp is `nu`, and the
-# frozen-collar price is a DIFFERENT object -- dmarginal_profit_duptake_slope,
-# which is built from the cost and assimilation kernels with no stationarity in
-# it anywhere. Measured, using the interior price at a pin leaves the row 8% out
+# frozen-collar price is a DIFFERENT object -- `uptake_rows`' own dProfit/dE_up,
+# which is the marginal profit's recorded stem-potential coefficient times the
+# transport, with no stationarity in it anywhere. Measured, using the interior price at a pin leaves the row 8% out
 # at a wet pin and 15% to 47% out at a dry one, with every intermediate finite.
 #
 # The interior branch keeps the interior price. The two agree there by the
@@ -128,7 +128,7 @@ test_that("a wet pin cannot referee the price correction, and a dry pin can", {
   # And the half that WAS shipped on its own -- interior price, plus nu*dB -- is
   # wrong here by a margin nothing about the wet bound makes small.
   half <- vapply(seq_along(st$psi),
-                 function(j) r$dprofit_dpsi_soil[[j]] + nu * wet[[8 + j]],
+                 function(j) r$dprofit_dpsi_soil[[j]] + nu * wet[[10 + j]],
                  numeric(1))
   off <- max(abs(half / unlist(r$dprofit_dpsi_soil) - 1))
   message(sprintf("  wet pin: the bound term alone would move the row by %.1f%%",
@@ -152,13 +152,13 @@ test_that("the dry pin is where both halves of the correction are load-bearing",
     fd <- env_row_total(st, j, 1e-4)
     row <- r$dprofit_dpsi_soil[[j]]
     # (a) the bound term dropped -- the frozen-collar partial alone.
-    without_bound <- row - nu * dry[[8 + j]]
+    without_bound <- row - nu * dry[[10 + j]]
     # (b) the price correction dropped -- what was shipped before this check.
     #     nu/S is recovered from the two rows rather than restated: the bound
     #     row's own slope is S + kmax*G'(x) on this arm.
     S <- dry[[3]] - l$leaf_specific_conductance_max_ *
       l$stem_curve_integral_deriv(dry[[2]])
-    duptake <- -dry[[8 + j]] * dry[[3]]
+    duptake <- -dry[[10 + j]] * dry[[3]]
     without_price <- row - duptake * (nu / S)
 
     message(sprintf("  %-8s: correct %.5f  no bound term %.5f (%.0f%% out)  no price term %.5f (%.0f%% out)",

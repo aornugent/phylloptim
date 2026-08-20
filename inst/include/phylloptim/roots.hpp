@@ -410,6 +410,51 @@ public:
     return root_vuln_integral_from_psi.deriv(psi);
   }
 
+  // d(dG/dpsi)/dpsi -- the integrand's own slope, and NOT a second derivative of
+  // the tabulation. Differentiating a cumulative integral in its upper limit
+  // leaves the integrand there, so one more derivative leaves the integrand's
+  // slope, and exp(-(psi/root_b)^root_c) has that in closed form. A C1
+  // interpolant's second derivative is a difference of its data; this is data.
+  //
+  // Zero wherever the integral is at its cap, and zero at or below the surface,
+  // for the two reasons the first derivative is: past the cap the value no longer
+  // moves with psi, and below it the integrand is the constant 1.
+  double root_vuln_integrand_deriv_at(double psi) const {
+    if (!(psi > 0.0)) {
+      return 0.0;
+    }
+    if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
+      return 0.0;
+    }
+    const double x = std::pow(psi / root_b, root_c);
+    return -std::exp(-x) * root_c * x / psi;
+  }
+
+  // The suction gap below which a layer's mean conductivity is 0/0, and the ONE
+  // coincidence a derivative kernel here cannot answer at.
+  //
+  // The mean conductivity is a span over an integral over that span, so as the
+  // collar approaches a layer's potential both vanish together. The value's limit
+  // is 1/f_r, which uptake() already computes; the collar derivative's is
+  // -f_r'/(2 f_r^2), from the reciprocal of G's divided difference. That limit is
+  // NOT written, and the reason is a count rather than a difficulty: no state
+  // reaches it -- zero of 540 operating points over one to five layers,
+  // radiations from dark to full sun, and potentials from 0.5 to 7 MPa.
+  //
+  // ⚠️ TWO FURTHER COINCIDENCES WERE REFUSED HERE AND NEITHER IS A KINK FOR A
+  // DERIVATIVE, and one of them cost a consumer its whole water channel. A
+  // GRAVITY-BALANCED layer has only its NUMERATOR vanish -- the span, the integral
+  // and the resistance are all untouched -- so dE_i/dT is 1/r_R there, agreeing
+  // with a difference to 2e-12. A moving bound AT ATMOSPHERIC crosses the split the
+  // integral is taken in two parts about, and both parts have slope 1 there: below
+  // the surface the integrand is 1 and contributes linearly, and f_r(0) = 1 above
+  // it. The first is reached by one-layer shade death, where the collar of zero
+  // uptake IS the gravity balance; 30 of those 540 points came back not-a-number
+  // for it.
+  bool at_equal_potentials(double T_collar, double psi_soil_i) const {
+    return std::abs(T_collar - psi_soil_i) < 1e-8;
+  }
+
   // dG/d(root_b) at a fixed suction, from the homogeneity the curve already has
   // and with NO rebuild. G integrates exp(-(sigma/root_b)^root_c), which is
   // homogeneous of degree one in (psi, root_b), so Euler's theorem gives
@@ -429,6 +474,71 @@ public:
   double root_vuln_integral_droot_b(double psi) const {
     return (root_vuln_integral_at(psi) -
             psi * root_vuln_integral_deriv_at(psi)) / root_b;
+  }
+
+  // Which parameter of the root curve a row is taken in. The two reach the supply
+  // by the same single route -- the layer's mean conductivity integral, and
+  // nothing else -- so one loop serves both and all that differs is which
+  // derivative of the curve it accumulates.
+  enum class CurveTrait { Position, Steepness };
+
+  // dG/dtheta at a fixed suction. Position is Euler's identity on the TABULATED
+  // pair, which stays right past the cap because the limit is homogeneous of
+  // degree one in root_b too. Steepness has no such identity -- it reshapes the
+  // curve rather than scaling it -- and comes off the incomplete gamma's own
+  // shape series, which is the same loop the tabulation is built from.
+  //
+  // ⚠️ CAPPED, LIKE EVERY OTHER READER HERE, and this was the one that was not.
+  // The series holds only on the grid, so past the cap it refused -- by throwing,
+  // where the value beside it returns its limit. A deep dry layer under a wetter
+  // one is the state that reaches it, which is the arrangement a drying profile
+  // produces and whole-plant shutdown does not catch, since that keys off the
+  // WETTEST layer. It cost a shaded five-layer plant its whole water channel: the
+  // wet bound's row threw, and the row layer fell back to differencing the solve.
+  // Past the cap the integral IS the limit, so the limit's own derivative is the
+  // answer and no series is involved.
+  double root_vuln_integral_dtrait(double psi, CurveTrait trait) const {
+    if (trait == CurveTrait::Position) {
+      return root_vuln_integral_droot_b(psi);
+    }
+    if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
+      return cumulative_vulnerability_integral_limit_dc(root_b, root_c);
+    }
+    // ⚠️ A BAND BETWEEN THE TWO DOMAINS, AND IT REFUSES RATHER THAN THROWING.
+    // The grid stops one step short of psi_max and the spline extrapolates past it
+    // with the slope at its last knot, so between psi_max and the potential where
+    // that straight line finally exceeds the limit the value is neither on the grid
+    // nor at the cap: the series has no domain there and the model's own integral is
+    // a linear extrapolation whose steepness derivative is not one of these
+    // expressions. Non-finite is the honest answer -- the caller differences a
+    // genuine rebuild instead, which moves the grid as the model does.
+    //
+    // It threw here until now, and a throw is not a refusal: a deep dry layer under
+    // a wetter one put a live plant in this band, and the exception took the whole
+    // metric's gradient rather than one row's.
+    if (!(std::pow(psi / root_b, root_c) <= vulnerability_x_max())) {
+      return util::na_value;
+    }
+    return cumulative_vulnerability_integral_derivatives_at(psi, root_b, root_c)
+        .dc;
+  }
+
+  // d(dG/dpsi)/dtheta -- the curve's own trait derivative, elementary in all
+  // three of its arguments. Zero wherever the integral is at its cap, for the
+  // reason its psi-derivative is zero there: past the cap the value no longer
+  // moves, so nothing that moves it can either.
+  double root_vuln_integrand_dtrait(double psi, CurveTrait trait) const {
+    if (!(psi > 0.0)) {
+      return 0.0;   // f_r == 1 there whatever the parameters are
+    }
+    if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
+      return 0.0;
+    }
+    const double x = std::pow(psi / root_b, root_c);
+    const double f = std::exp(-x);
+    return trait == CurveTrait::Position
+               ? f * x * root_c / root_b
+               : -f * x * std::log(psi / root_b);
   }
 
   // Per-timestep soil state: the layer potentials, the layer depths, and the
@@ -495,6 +605,20 @@ public:
   // reallocate all five vectors on the next call -- reintroducing exactly the
   // +0.074 us the in-place overload exists to avoid. Copy-assigning into
   // already-sized vectors allocates nothing on either side once both are warm.
+  // A layer's root carbon, recovered from the network that was built out of it.
+  // The network holds the carbon split three ways rather than the carbon, and the
+  // vertical third is the half to read it back from -- the same inversion
+  // `duptake_droot_carbon` performs. NA rather than zero for an unrooted layer:
+  // the network is sized to the deepest rooted layer, so a layer below it has no
+  // carbon to move AND no slot to move it in, and a zero there would say the
+  // outputs are insensitive to carbon that could be put there.
+  double root_carbon(int layer) const {
+    const std::vector<double>& c = network_.c_r_V;
+    return layer >= 0 && layer < int(c.size()) && c[std::size_t(layer)] > 0.0
+               ? 3.0 * c[std::size_t(layer)]
+               : util::na_value;
+  }
+
   void set_root_network(const RootNetwork& network) {
     if (network.r_R_V_sum.size() != network.r_R_H_min.size()) {
       util::stop("set_root_network: r_R_H_min and r_R_V_sum must have the same "
@@ -591,12 +715,13 @@ public:
   //   dinteg/dT  = sign_var * f_r(T_collar)  for T_collar>0  (else sign_var, f_r==1),
   // and dE_i/dT follows by the quotient rule.
   //
-  // CONTRACT: returns NaN when any layer sits on a branch kink (T_collar ==
-  // T_soil[i], the gravity-balance point, or T_collar == 0). That is deliberate,
-  // not a failure -- the analytic general-branch derivative is not valid across
-  // those, and the caller falls back to a central difference. An implementation
-  // that threw, or returned 0, would silently degrade TF24f's acclimation
-  // gradient. Any alternative supply path must keep this contract.
+  // CONTRACT: returns NaN when any layer's potential equals T_collar, and only
+  // then -- see at_equal_potentials for why that one is 0/0 and why the
+  // gravity-balance and at-atmospheric coincidences it used to refuse at as well
+  // are not. That refusal is deliberate, not a failure: the caller falls back to a
+  // central difference, and an implementation that threw, or returned 0, would
+  // silently degrade an acclimation gradient. Any alternative supply path must
+  // keep it.
   double duptake_dpsi(double T_collar,
                       const std::vector<double>& psi_soil) const {
     std::vector<double> per_layer;
@@ -622,6 +747,69 @@ public:
     }
   }
 
+  // d2(E_up)/d(T_collar)2, in kg to match the conductance above. Mirrors
+  // duptake_dpsi_impl term for term with one more derivative of each moving part:
+  // the span is linear in the collar so its second derivative is zero, and the
+  // integral's is the integrand's own slope -- not the tabulation's curvature,
+  // which is a difference of the data rather than data.
+  //
+  // Same refusal as duptake_dpsi, and for the same one reason: NaN where a layer's
+  // potential equals the collar, because the mean conductivity is 0/0 there.
+  double d2uptake_dpsi2(double T_collar,
+                        const std::vector<double>& psi_soil) const {
+    double d2_mol = 0.0;
+    for (int i = 0; i < max_soil_layer; i++) {
+      if (at_equal_potentials(T_collar, psi_soil[i])) {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+
+      const double T_src_min = std::min(psi_soil[i], T_collar);
+      const double T_src_max = std::max(psi_soil[i], T_collar);
+      const double span = T_src_max - T_src_min;
+      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;
+
+      const double T_pos_lo = std::max(T_src_min, 0.0);
+      const double T_neg_hi = std::min(T_src_max, 0.0);
+      double integral = 0.0;
+      if (T_pos_lo < T_src_max) {
+        integral += root_vuln_integral_at(T_src_max) -
+                    root_vuln_integral_at(T_pos_lo);
+      }
+      if (T_src_min < T_neg_hi) {
+        integral += (T_neg_hi - T_src_min);
+      }
+
+      // Below the surface the moving bound is in the f_r == 1 part, contributed
+      // linearly, so the slope is 1 and its own slope is 0.
+      const double fr_at =
+          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
+      const double dfr_at =
+          (T_collar > 0.0) ? root_vuln_integrand_deriv_at(T_collar) : 0.0;
+      const double dinteg_dT = sign_var * fr_at;
+      const double d2integ_dT = sign_var * dfr_at;
+
+      // The mean resistance is r_R_H_min * span / integral, and both derivatives
+      // of that quotient are taken here rather than once each: the span's second
+      // derivative is zero, which is what leaves only two terms.
+      const double r_R_H = network_.r_R_H_min[i] * span / integral;
+      const double r_R = r_R_H + network_.r_R_V_sum[i];
+      const double quotient_dT =
+          (sign_var * integral - span * dinteg_dT) / (integral * integral);
+      const double quotient_d2T = -span * d2integ_dT / (integral * integral) -
+                                  2.0 * quotient_dT * dinteg_dT / integral;
+      const double dr_R_dT = network_.r_R_H_min[i] * quotient_dT;
+      const double d2r_R_dT = network_.r_R_H_min[i] * quotient_d2T;
+
+      const double num = T_collar - psi_soil[i] - grav_head_z_[i];
+      // E_i = num / r_R with num linear in the collar, so the same two terms
+      // again -- one for the resistance's curvature, one for the product of the
+      // two first derivatives.
+      const double dE_i = (r_R - num * dr_R_dT) / (r_R * r_R);
+      d2_mol += -num * d2r_R_dT / (r_R * r_R) - 2.0 * dE_i * dr_R_dT / r_R;
+    }
+    return d2_mol * kg_per_mol_h2o;
+  }
+
 private:
   // Per layer in mol, returning the sum in mol: the one loop both public forms
   // read, so a change reaches them together and the total is the sum of the
@@ -629,14 +817,11 @@ private:
   double duptake_dpsi_impl(double T_collar,
                            const std::vector<double>& psi_soil,
                            std::vector<double>& per_layer) const {
-    const double kink_tol = 1e-8;
     double dEup_dT_mol = 0.0;
     per_layer.assign(psi_soil.size(), 0.0);
 
     for (int i = 0; i < max_soil_layer; i++) {
-      if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
-          std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
-          std::abs(T_collar) < kink_tol) {
+      if (at_equal_potentials(T_collar, psi_soil[i])) {
         per_layer.assign(psi_soil.size(),
                          std::numeric_limits<double>::quiet_NaN());
         return std::numeric_limits<double>::quiet_NaN();
@@ -700,17 +885,15 @@ private:
   // Same kink contract as duptake_dpsi_impl, and for the same reason: the
   // general branch is not valid across them, and a caller mixing an analytic row
   // with a missing one is worse off than one told the whole block is undefined.
-  double duptake_droot_b_impl(double T_collar,
-                              const std::vector<double>& psi_soil,
-                              std::vector<double>& per_layer) const {
-    const double kink_tol = 1e-8;
+  double duptake_droot_curve_impl(double T_collar,
+                                  const std::vector<double>& psi_soil,
+                                  CurveTrait trait,
+                                  std::vector<double>& per_layer) const {
     double dEup_db_mol = 0.0;
     per_layer.assign(psi_soil.size(), 0.0);
 
     for (int i = 0; i < max_soil_layer; i++) {
-      if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
-          std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
-          std::abs(T_collar) < kink_tol) {
+      if (at_equal_potentials(T_collar, psi_soil[i])) {
         per_layer.assign(psi_soil.size(),
                          std::numeric_limits<double>::quiet_NaN());
         return std::numeric_limits<double>::quiet_NaN();
@@ -728,12 +911,12 @@ private:
       if (T_pos_lo < T_src_max) {
         integral += root_vuln_integral_at(T_src_max) -
                     root_vuln_integral_at(T_pos_lo);
-        dinteg_db += root_vuln_integral_droot_b(T_src_max) -
-                     root_vuln_integral_droot_b(T_pos_lo);
+        dinteg_db += root_vuln_integral_dtrait(T_src_max, trait) -
+                     root_vuln_integral_dtrait(T_pos_lo, trait);
       }
       if (T_src_min < T_neg_hi) {
         // The above-atmospheric part contributes its width, with f_r == 1
-        // throughout. No curve, so no root_b.
+        // throughout. No curve, so neither parameter of it.
         integral += (T_neg_hi - T_src_min);
       }
 
@@ -755,18 +938,29 @@ private:
 
 public:
 
-  // d(E_up)/d(root_b) at a fixed collar, in kg to match E_up. Closed form: the
-  // curve is scaled rather than reshaped by root_b, so no rebuild.
-  double duptake_droot_b(double T_collar,
-                         const std::vector<double>& psi_soil) const {
+  // d(E_up)/d(a root curve parameter) at a fixed collar, summed and in kg to
+  // match E_up. Closed form in both: the position by Euler's identity, because
+  // the curve is scaled rather than reshaped by it, and the steepness by the
+  // incomplete gamma's shape series.
+  double duptake_droot_curve(double T_collar,
+                             const std::vector<double>& psi_soil,
+                             CurveTrait trait) const {
     std::vector<double> per_layer;
-    return duptake_droot_b_impl(T_collar, psi_soil, per_layer) * kg_per_mol_h2o;
+    return duptake_droot_curve_impl(T_collar, psi_soil, trait, per_layer) *
+           kg_per_mol_h2o;
   }
 
-  void duptake_droot_b_by_layer(double T_collar,
-                                const std::vector<double>& psi_soil,
-                                std::vector<double>& out) const {
-    duptake_droot_b_impl(T_collar, psi_soil, out);
+  // The same in either parameter, per layer and in kg. The steepness used to have
+  // no row here at all and its perturbation rebuilt the grid; it reaches the
+  // supply exactly where the position does.
+  void duptake_droot_curve_by_layer(double T_collar,
+                                    const std::vector<double>& psi_soil,
+                                    CurveTrait trait,
+                                    std::vector<double>& out) const {
+    duptake_droot_curve_impl(T_collar, psi_soil, trait, out);
+    for (double& v : out) {
+      v *= kg_per_mol_h2o;
+    }
   }
 
   // d(E_i)/d(psi_soil[i]) for every rooted layer, in kg to match E_up.
@@ -787,18 +981,15 @@ public:
   // Layers past max_soil_layer carry no roots and are written zero rather than
   // left alone -- the caller's buffer is reused across solves (hazard 8).
   //
-  // NaN contract is duptake_dpsi's: at a branch kink the whole vector is NaN,
+  // NaN contract is duptake_dpsi's: where a bound meets a layer the whole vector is NaN,
   // because a caller that used some layers and not others would be mixing an
   // analytic row with a missing one.
   void duptake_dpsi_soil(double T_collar, const std::vector<double>& psi_soil,
                          std::vector<double>& out) const {
-    const double kink_tol = 1e-8;
     out.assign(psi_soil.size(), 0.0);
 
     for (int i = 0; i < max_soil_layer; i++) {
-      if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
-          std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
-          std::abs(psi_soil[i]) < kink_tol) {
+      if (at_equal_potentials(T_collar, psi_soil[i])) {
         out.assign(psi_soil.size(), std::numeric_limits<double>::quiet_NaN());
         return;
       }
@@ -856,7 +1047,7 @@ public:
   // so that column carries the horizontal term alone. The carbon direction
   // reaches both.
   //
-  // NaN contract is duptake_dpsi's -- at a branch kink both whole blocks are
+  // NaN contract is duptake_dpsi's -- where the collar meets a layer both blocks are
   // NaN, because a caller using some layers and not others would be mixing an
   // analytic row with a missing one. A layer with no carbon has no resistance
   // and contributes nothing rather than dividing by its carbon.
@@ -864,16 +1055,13 @@ public:
                             const std::vector<double>& psi_soil,
                             std::vector<std::vector<double>>& dE_drc,
                             std::vector<std::vector<double>>& dD_drc) const {
-    const double kink_tol = 1e-8;
     const std::size_t n = psi_soil.size();
     dE_drc.assign(n, std::vector<double>(n, 0.0));
     dD_drc.assign(n, std::vector<double>(n, 0.0));
     const double nan = std::numeric_limits<double>::quiet_NaN();
 
     for (int i = 0; i < max_soil_layer; i++) {
-      if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
-          std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
-          std::abs(T_collar) < kink_tol) {
+      if (at_equal_potentials(T_collar, psi_soil[i])) {
         dE_drc.assign(n, std::vector<double>(n, nan));
         dD_drc.assign(n, std::vector<double>(n, nan));
         return;
@@ -935,6 +1123,75 @@ public:
     }
   }
 
+  // d2(E_i)/d(T_collar) d(theta) for either parameter of the root curve, per
+  // layer and in kg.
+  //
+  // The curve reaches a flux through the layer's mean conductivity integral and
+  // nothing else, so this is one more application of the quotient rule to
+  // duptake_droot_curve_impl -- with the integral's moving bound now carrying the
+  // curve's own trait derivative as well as its slope.
+  //
+  // NaN contract is duptake_dpsi's, over the union of both first derivatives'
+  // kinks: a second derivative needs both of them off theirs.
+  void d2uptake_dpsi_droot_curve(double T_collar,
+                                 const std::vector<double>& psi_soil,
+                                 CurveTrait trait,
+                                 std::vector<double>& out) const {
+    out.assign(psi_soil.size(), 0.0);
+
+    for (int i = 0; i < max_soil_layer; i++) {
+      if (at_equal_potentials(T_collar, psi_soil[i])) {
+        out.assign(psi_soil.size(), std::numeric_limits<double>::quiet_NaN());
+        return;
+      }
+
+      const double T_src_min = std::min(psi_soil[i], T_collar);
+      const double T_src_max = std::max(psi_soil[i], T_collar);
+      const double span = T_src_max - T_src_min;
+      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;
+
+      const double T_pos_lo = std::max(T_src_min, 0.0);
+      const double T_neg_hi = std::min(T_src_max, 0.0);
+      double integral = 0.0;
+      double integral_t = 0.0;   // dI/dtheta
+      if (T_pos_lo < T_src_max) {
+        integral += root_vuln_integral_at(T_src_max) -
+                    root_vuln_integral_at(T_pos_lo);
+        integral_t += root_vuln_integral_dtrait(T_src_max, trait) -
+                      root_vuln_integral_dtrait(T_pos_lo, trait);
+      }
+      if (T_src_min < T_neg_hi) {
+        integral += (T_neg_hi - T_src_min);
+      }
+
+      // The integrand at the moving bound, and its own trait derivative there.
+      const double fr =
+          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
+      const double fr_t = (T_collar > 0.0)
+                              ? root_vuln_integrand_dtrait(T_collar, trait)
+                              : 0.0;
+      const double dI_dT = sign_var * fr;
+      const double dI_t_dT = sign_var * fr_t;
+
+      const double H = network_.r_R_H_min[i];
+      const double r_R = H * span / integral + network_.r_R_V_sum[i];
+      const double dr_dT =
+          H * (sign_var * integral - span * dI_dT) / (integral * integral);
+      // dr/dtheta, and its own collar derivative.
+      const double dr_dt = -H * span * integral_t / (integral * integral);
+      const double d2r =
+          -H * (sign_var * integral_t + span * dI_t_dT) / (integral * integral) +
+          2.0 * H * span * integral_t * dI_dT / (integral * integral * integral);
+
+      const double num = T_collar - psi_soil[i] - grav_head_z_[i];
+      // E_i = num / r_R, so dE/dtheta = -num dr/dtheta / r_R^2, and one more
+      // collar derivative of THAT is the three terms below.
+      out[std::size_t(i)] =
+          (-(dr_dt + num * d2r) / (r_R * r_R) +
+           2.0 * num * dr_dt * dr_dT / (r_R * r_R * r_R)) * kg_per_mol_h2o;
+    }
+  }
+
   // d2(E_i)/d(T_collar) d(psi_soil[i]), diagonal for duptake_dpsi_soil's reason.
   //
   // A stand adjoint needs this and the forward model does not, so it is worth
@@ -953,13 +1210,10 @@ public:
   void d2uptake_dpsi_dpsi_soil(double T_collar,
                                const std::vector<double>& psi_soil,
                                std::vector<double>& out) const {
-    const double kink_tol = 1e-8;
     out.assign(psi_soil.size(), 0.0);
 
     for (int i = 0; i < max_soil_layer; i++) {
-      if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
-          std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
-          std::abs(T_collar) < kink_tol || std::abs(psi_soil[i]) < kink_tol) {
+      if (at_equal_potentials(T_collar, psi_soil[i])) {
         out.assign(psi_soil.size(), std::numeric_limits<double>::quiet_NaN());
         return;
       }
