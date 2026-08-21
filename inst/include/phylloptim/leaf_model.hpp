@@ -283,15 +283,21 @@ public:
   // column's 2.033e-10. A quintic passes that at 100 knots and sits 60x below it at
   // 200, so by the old rule this would now be 200.
   //
-  // ⚠️ IT IS NOT, AND THE REASON IS A FINDING RATHER THAN A TOLERANCE. Reducing it
-  // moves the knot SPACING, and the suite's wet-bound tests pin the feasibility
-  // sentinel at the wet end of the collar bracket -- a region measured at most
-  // 3.46e-07 MPa wide. Whether that sliver exists at all moves with the spacing,
-  // and NOT MONOTONICALLY: at 1600 and 800 knots it is there, at 400 and 200 it
-  // closes and five assertions that a 0.0 is a sentinel rather than a stationary
-  // point fail. A refusal channel whose existence depends on a discretisation is a
-  // defect in the refusal, not in the grid, so the grid is left where the tests
-  // were written and the defect is recorded rather than tuned around.
+  // ⚠️ IT IS NOT, AND WHAT SETS IT IS THE ROWS RATHER THAN EITHER READ. Reducing it
+  // moves the knot SPACING, and two row checks follow the spacing and not G's own
+  // error: a wet pin's assembled point row and shade death's differenced rows both
+  // pass at 1600, one fails at 800, and two fail at 400 and below -- monotonically,
+  // and while the slope column above is sixty times inside its budget the whole
+  // way. So the rows are limited by the grid's geometry rather than by how well a
+  // span reproduces G, and refining the read does not buy a coarser grid.
+  //
+  // ⚠️ AND A SECOND THING MOVES WITH THE SPACING, which is why the counts above are
+  // read from the row checks and not from the whole suite. At zero flux
+  // transpiration_to_psi_stem round-trips G through its own inverse, so the wet end
+  // of the collar bracket reads as feasible or not according to the SIGN of the two
+  // tables' disagreement -- and the suite's failure count then runs 0, 1, 9, 8, 8
+  // over the counts above rather than monotonically. stem_curve_integral_inverse
+  // records what fixing that takes and why it is not this accessor's to fix.
   //
   // ⚠️ AND MORE KNOTS ARE NOT SAFER EITHER. The quintic's slope error bottoms out at
   // 400 and then gets WORSE -- 4.8e-13, 1.3e-12, 2.1e-12 -- because the divided
@@ -4461,6 +4467,25 @@ inline double Leaf::stem_curve_integral_inverse(double w, const char* caller) co
                          "conductivity integral G^-1, argument in E/K_max)",
                          "E/K_max", caller);
 }
+
+// ⚠️ POLISHING THIS INVERSE IS NOT A LOCAL CHANGE, and it was tried. One Newton
+// step against the forward table makes the round trip exact -- 6.27e-16 over 3999
+// potentials against 2.10e-12 raw -- and that matters because at zero flux
+// transpiration_to_psi_stem asks for G^-1(G(psi_upstream)), whose answer IS
+// psi_upstream: round-tripped through two tables it comes back within their
+// disagreement instead, and the SIGN of that disagreement decides whether the wet
+// end of the collar bracket reads as feasible. Made exact, the suite's failure
+// count over the knot counts 1600, 800, 400, 200, 100 goes from 0, 1, 9, 8, 8 to
+// 0, 1, 2, 2, 2 -- from a sentinel appearing and vanishing to a number drifting.
+//
+// What it cost is what stops it: every analytic derivative of this relation --
+// dpsistem_dpsi_, and the collar response slope the profit's curvature is built
+// from -- was derived for the unpolished map. Polishing the value alone leaves the
+// value and its derivatives describing different functions, and the symptom is not
+// a small error: 47 of 47 nodes on a dry stand refuse with "the profit's curvature
+// has no closed form at this point" at operating points the solve called interior.
+// A polished inverse needs the whole chain re-derived from the polished map, which
+// is the refusal channel's own work rather than this accessor's.
 
 inline void Leaf::perturb_stem_b(double stem_b_new) {
   check_psi_magnitudes(psi_crit, stem_b_new, roots_.root_b, roots_.root_psi_crit);
