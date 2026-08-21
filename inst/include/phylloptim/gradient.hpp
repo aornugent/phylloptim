@@ -54,8 +54,10 @@
 #include <cmath>
 #include <cstddef>
 #include <exception>
+#include <array>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace phylloptim {
@@ -71,37 +73,58 @@ namespace gradient {
 // parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
 // them with R's, so the two cannot drift apart without a failure.
 inline constexpr int n_traits = 14;
-inline constexpr int n_pars = 16;
+
+// THE list, in order. The first `n_traits` are `set_traits`' arguments in its
+// order, which is also `leaf_traits()`'; the two non-traits follow and take a
+// relative step.
+inline constexpr std::array<std::string_view, 16> par_table{
+    "vcmax_25",        "stem_c",
+    "stem_b",          "psi_crit",
+    "root_c",          "root_b",
+    "root_psi_crit",   "beta2",
+    "jmax_25",         "a",
+    "curv_fact_elec_trans", "curv_fact_colim",
+    "cost_scale_TF24", "R_d_25",
+    "leaf_specific_conductance_max",
+    "resistance"};
+
+inline constexpr int n_pars = static_cast<int>(par_table.size());
+
+// A parameter's index, found in the list that names it. Every constant below is
+// this, so an index and the name it stands for cannot be written down in two
+// places -- and a name the list does not hold is not a constant expression, so a
+// misspelling is a compile error at the constant rather than a -1 nobody checks.
+inline constexpr int par_of(std::string_view name) {
+  for (std::size_t i = 0; i < par_table.size(); ++i) {
+    if (par_table[i] == name) {
+      return static_cast<int>(i);
+    }
+  }
+  util::stop("par_of: `" + std::string(name) + "` is not a parameter");
+  return -1;
+}
 
 // Every index by name, so nothing below indexes `theta` with a bare integer.
-// The first `n_traits` are `set_traits`' arguments in its order, which is also
-// `leaf_traits()`'; the two non-traits follow and take a relative step.
-inline constexpr int par_vcmax_25 = 0;
-inline constexpr int par_stem_c = 1;
-inline constexpr int par_stem_b = 2;
-inline constexpr int par_psi_crit = 3;
-inline constexpr int par_root_c = 4;
-inline constexpr int par_root_b = 5;
-inline constexpr int par_root_psi_crit = 6;
-inline constexpr int par_beta2 = 7;
-inline constexpr int par_jmax_25 = 8;
-inline constexpr int par_a = 9;
-inline constexpr int par_curv_fact_elec_trans = 10;
-inline constexpr int par_curv_fact_colim = 11;
-inline constexpr int par_cost_scale_TF24 = 12;
-inline constexpr int par_R_d_25 = 13;
-inline constexpr int par_kmax = 14;
-inline constexpr int par_resistance = 15;
+inline constexpr int par_vcmax_25 = par_of("vcmax_25");
+inline constexpr int par_stem_c = par_of("stem_c");
+inline constexpr int par_stem_b = par_of("stem_b");
+inline constexpr int par_psi_crit = par_of("psi_crit");
+inline constexpr int par_root_c = par_of("root_c");
+inline constexpr int par_root_b = par_of("root_b");
+inline constexpr int par_root_psi_crit = par_of("root_psi_crit");
+inline constexpr int par_beta2 = par_of("beta2");
+inline constexpr int par_jmax_25 = par_of("jmax_25");
+inline constexpr int par_a = par_of("a");
+inline constexpr int par_curv_fact_elec_trans = par_of("curv_fact_elec_trans");
+inline constexpr int par_curv_fact_colim = par_of("curv_fact_colim");
+inline constexpr int par_cost_scale_TF24 = par_of("cost_scale_TF24");
+inline constexpr int par_R_d_25 = par_of("R_d_25");
+inline constexpr int par_kmax = par_of("leaf_specific_conductance_max");
+inline constexpr int par_resistance = par_of("resistance");
 
 inline const std::vector<std::string>& par_names() {
-  static const std::vector<std::string> names{
-      "vcmax_25",  "stem_c",              "stem_b",
-      "psi_crit",  "root_c",              "root_b",
-      "root_psi_crit", "beta2",           "jmax_25",
-      "a",         "curv_fact_elec_trans", "curv_fact_colim",
-      "cost_scale_TF24", "R_d_25",
-      "leaf_specific_conductance_max",
-      "resistance"};
+  static const std::vector<std::string> names(par_table.begin(),
+                                              par_table.end());
   return names;
 }
 
@@ -159,26 +182,25 @@ inline std::vector<std::string> par_names(int n_layers) {
   for (int i = 0; i < n_layers; ++i) {
     out.push_back("root_carbon_" + std::to_string(i + 1));
   }
+  // The arity and the list are two readings of one layout, and this is where
+  // they meet. A block added to one and not the other stops here.
+  if (out.size() != std::size_t(n_pars_total(n_layers))) {
+    util::stop("par_names: " + std::to_string(out.size()) + " names against " +
+               std::to_string(n_pars_total(n_layers)) + " parameters");
+  }
   return out;
 }
 
-// One name, for a diagnostic message. Does not build the whole vector.
+// One name, for a diagnostic message. Read out of the whole list rather than
+// re-deriving the block layout, which is the one place that layout is written:
+// two spellings of it agree until a block moves. A diagnostic can afford the
+// allocation.
 inline std::string par_name(int par, int n_layers) {
-  if (par >= 0 && par < n_pars) {
-    return par_names()[std::size_t(par)];
+  const std::vector<std::string> names = par_names(n_layers);
+  if (par < 0 || par >= static_cast<int>(names.size())) {
+    return "parameter " + std::to_string(par);
   }
-  if (par == par_PPFD) {
-    return "PPFD";
-  }
-  const int layer = par - par_psi_soil_first;
-  if (layer >= 0 && layer < n_layers) {
-    return "psi_soil_" + std::to_string(layer + 1);
-  }
-  const int carbon = par - par_root_carbon_first(n_layers);
-  if (carbon >= 0 && carbon < n_layers) {
-    return "root_carbon_" + std::to_string(carbon + 1);
-  }
-  return "parameter " + std::to_string(par);
+  return names[std::size_t(par)];
 }
 
 // --- the five differentiated outputs -----------------------------------------
@@ -198,16 +220,33 @@ inline std::string par_name(int par, int n_layers) {
 //     different means.
 //   * `profit` is the OBJECTIVE rather than an output read at the argmax, which
 //     is what brings the envelope theorem into play.
-inline constexpr int n_outputs = 5;
-inline constexpr int out_assim = 0;
-inline constexpr int out_stom_cond = 1;
-inline constexpr int out_psi_stem = 2;
-inline constexpr int out_collar = 3;
-inline constexpr int out_profit = 4;
+inline constexpr std::array<std::string_view, 5> output_table{
+    "A", "gc", "psi_stem", "collar", "profit"};
+
+inline constexpr int n_outputs = static_cast<int>(output_table.size());
+
+// An output's index, found in the list that names it, for the reason `par_of`
+// gives: an index and the name it stands for are one entry, and a name the list
+// does not hold does not compile.
+inline constexpr int output_of(std::string_view name) {
+  for (std::size_t i = 0; i < output_table.size(); ++i) {
+    if (output_table[i] == name) {
+      return static_cast<int>(i);
+    }
+  }
+  util::stop("output_of: `" + std::string(name) + "` is not an output");
+  return -1;
+}
+
+inline constexpr int out_assim = output_of("A");
+inline constexpr int out_stom_cond = output_of("gc");
+inline constexpr int out_psi_stem = output_of("psi_stem");
+inline constexpr int out_collar = output_of("collar");
+inline constexpr int out_profit = output_of("profit");
 
 inline const std::vector<std::string>& output_names() {
-  static const std::vector<std::string> names{"A", "gc", "psi_stem", "collar",
-                                              "profit"};
+  static const std::vector<std::string> names(output_table.begin(),
+                                              output_table.end());
   return names;
 }
 
@@ -244,19 +283,24 @@ inline std::vector<std::string> output_names(int n_layers) {
   for (int i = 0; i < n_layers; ++i) {
     out.push_back("uptake_" + std::to_string(i + 1));
   }
+  // The arity and the list are two readings of one layout, and this is where
+  // they meet.
+  if (out.size() != std::size_t(n_outputs_total(n_layers))) {
+    util::stop("output_names: " + std::to_string(out.size()) +
+               " names against " + std::to_string(n_outputs_total(n_layers)) +
+               " outputs");
+  }
   return out;
 }
 
-// One name, for a diagnostic message. Does not build the whole vector.
+// One name, for a diagnostic message. Read out of the whole list rather than
+// re-deriving the block layout, for the reason `par_name` gives.
 inline std::string output_name(int out, int n_layers) {
-  if (out >= 0 && out < n_outputs) {
-    return output_names()[std::size_t(out)];
+  const std::vector<std::string> names = output_names(n_layers);
+  if (out < 0 || out >= static_cast<int>(names.size())) {
+    return "output " + std::to_string(out);
   }
-  const int layer = out - out_uptake_first;
-  if (layer >= 0 && layer < n_layers) {
-    return "uptake_" + std::to_string(layer + 1);
-  }
-  return "output " + std::to_string(out);
+  return names[std::size_t(out)];
 }
 
 // How the operating point reaches an output. A PROPERTY OF THE OUTPUT, which is
