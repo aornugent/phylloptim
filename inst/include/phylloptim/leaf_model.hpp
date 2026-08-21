@@ -24,6 +24,14 @@
 
 namespace phylloptim {
 
+// The scalars a derivative here runs on. Every derivative in this package is a
+// forward tangent -- there is no tape and the build sets none of the flags one
+// would need -- so these are named once rather than restated per function.
+// odelia's own alias is not used: the header that holds it also names a tape,
+// and this package must stay visibly without one.
+using tangent = xad::fwd<double>::active_type;
+using tangent2 = xad::fwd_fwd<double>::active_type;
+
 class Leaf {
 public:
   //anonymous Leaf function as in canopy.h
@@ -996,7 +1004,7 @@ public:
                               double bound_a, double bound_b);
   // Exact d(profit)/d(opt_root_psi) at a given root-collar potential (positive
   // magnitude), for TF24f's acclimation tracking (#525/#527). Combines
-  // forward-mode AD for the analytic photosynthesis/cost algebra, the
+  // forward-mode tangent for the analytic photosynthesis/cost algebra, the
   // implicit-function theorem at the psi_stem_to_ci root-find, and analytic
   // spline derivatives (the stem curve's slope) for the smooth transport. Replaces
   // the noisy finite-difference gradient. Seats the soil-side caches itself, so a
@@ -1535,7 +1543,7 @@ public:
   // term left-to-right where `assim_electron_limited` divides the bracket first,
   // and used `s*s` where `assim_colimited` uses `pow(s, 2)`. Both are pure
   // reassociation, so the two functions were mathematically identical and
-  // numerically not: the AD derivative was the derivative of a *slightly
+  // numerically not: the tangent derivative was the derivative of a *slightly
   // different function* than the model evaluated. Harmless while the gradient only
   // set TF24f's acclimation rate; load-bearing once PLAN 11a made the collar solve
   // root-find on it. Measured cost of the fix: 4.98e-07 on the golden grid.
@@ -1549,7 +1557,7 @@ public:
   // detour.
   //
   // Keep them PURE -- no writes to members. `hydraulic_cost_TF` caches into
-  // `hydraulic_cost_`; its kernel must not, or the AD pass would write model state
+  // `hydraulic_cost_`; its kernel must not, or the tangent pass would write model state
   // while probing.
   //
   // Three of them take a trait on the scalar as well as the variable, and the
@@ -1964,7 +1972,7 @@ inline const char* Leaf::operating_point_kind_name(OperatingPointKind kind) {
 // algebra whose comment claimed they "mirror Leaf::assim_colimited and
 // Leaf::hydraulic_cost_TF exactly". One of them did not -- see the `_kernel`
 // declarations in the class. They are deleted: the real functions are now
-// templated on their scalar type, so AD differentiates the model itself and the
+// templated on their scalar type, so tangent differentiates the model itself and the
 // mirror cannot drift because there is no mirror.
 inline Leaf::Leaf()
     :
@@ -3224,7 +3232,7 @@ inline double Leaf::profit_at_collar_psi(double target_opt_root_psi,
 // dci/d* terms come from the implicit-function theorem on the residual
 //   g(ci; psi_stem, psi) = A(ci) umol_to_mol - gc(psi_stem,psi) (ca-ci)/(atm kPa)
 // with gc = const * transpiration(psi_stem,psi). A'/C' are obtained by forward
-// AD; the gc partials use the analytic spline derivative (transpiration_from_psi
+// tangent; the gc partials use the analytic spline derivative (transpiration_from_psi
 // .deriv); dpsi_stem/dpsi by a tight central difference on the smooth transport.
 inline double Leaf::dprofit_droot_collar_psi(double opt_root_psi, bool* feasible) {
   // Every transport evaluation below reads the supply path's per-solve caches, so
@@ -3236,9 +3244,8 @@ inline double Leaf::dprofit_droot_collar_psi(double opt_root_psi, bool* feasible
 }
 
 inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
-  using AD = xad::fwd<double>::active_type;
   const double psi = opt_root_psi;
-  // gstar_Pa used to be precomputed here and threaded into the AD replicas. The
+  // gstar_Pa used to be precomputed here and threaded into the tangent replicas. The
   // kernels read gamma_ and umol_per_mol_to_Pa_ themselves, which is one fewer
   // place for the two sides to disagree.
   // Infeasible until the two exits below have been passed; see the header for why
@@ -3373,7 +3380,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   // R_d' is obtained the same way A_T is, by differencing the model's own
   // temperature block, so the two cannot drift apart.
   if (ci_at_compensation_point_) {
-    AD ps_ad0 = psi_stem;  xad::derivative(ps_ad0) = 1.0;
+    tangent ps_ad0 = psi_stem;  xad::derivative(ps_ad0) = 1.0;
     const double C_prime0 = xad::derivative(hydraulic_cost_TF_kernel(ps_ad0));
     double dprofit = -C_prime0 * dpsistem_dpsi;
     if (use_energy_balance_ && dT_dE != 0.0) {
@@ -3404,13 +3411,13 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
     *feasible = true;
   }
 
-  // A'(ci) and C'(psi_stem) by forward-mode AD of THE MODEL'S OWN algebra -- the
+  // A'(ci) and C'(psi_stem) by forward-mode tangent of THE MODEL'S OWN algebra -- the
   // same kernels assim_colimited() and hydraulic_cost_TF() are instantiations of,
   // so these are derivatives of the function actually evaluated rather than of a
   // hand-kept mirror of it.
-  AD ci_ad = ci;            xad::derivative(ci_ad) = 1.0;
+  tangent ci_ad = ci;            xad::derivative(ci_ad) = 1.0;
   const double A_prime = xad::derivative(assim_colimited_kernel(ci_ad));
-  AD ps_ad = psi_stem;      xad::derivative(ps_ad) = 1.0;
+  tangent ps_ad = psi_stem;      xad::derivative(ps_ad) = 1.0;
   const double C_prime = xad::derivative(hydraulic_cost_TF_kernel(ps_ad));
 
   // Stomatal-conductance supply coefficient gc and its partials. gc =
@@ -3497,8 +3504,6 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
 // integral: A'' and C'' are one further seed of a kernel the evaluation already
 // seeds once, and gc_ss is the vulnerability curve's own slope.
 inline bool Leaf::condition_curvature(ConditionCurvature& out) const {
-  using AD = xad::fwd<double>::active_type;
-  using AD2 = xad::fwd_fwd<double>::active_type;
   out = ConditionCurvature();
   if (use_energy_balance_) {
     return false;
@@ -3518,14 +3523,14 @@ inline bool Leaf::condition_curvature(ConditionCurvature& out) const {
   // A'' and C'', from the kernels the evaluation seeds once each.
   double A_cici;
   {
-    AD2 x = ci;
+    tangent2 x = ci;
     x.value().derivative() = 1.0;
     x.derivative().value() = 1.0;
     A_cici = assim_colimited_kernel(x).derivative().derivative();
   }
   double C_pp;
   {
-    AD2 x = psi_stem;
+    tangent2 x = psi_stem;
     x.value().derivative() = 1.0;
     x.derivative().value() = 1.0;
     C_pp = hydraulic_cost_TF_kernel(x).derivative().derivative();
@@ -3541,12 +3546,12 @@ inline bool Leaf::condition_curvature(ConditionCurvature& out) const {
   const double gc_p = -gc_const * transport_slope(psi);
   double f_prime_sigma, f_prime_p;
   {
-    AD x = psi_stem;
+    tangent x = psi_stem;
     xad::derivative(x) = 1.0;
     f_prime_sigma = xad::derivative(proportion_of_conductivity_kernel(x));
   }
   {
-    AD x = psi;
+    tangent x = psi;
     xad::derivative(x) = 1.0;
     f_prime_p = xad::derivative(proportion_of_conductivity_kernel(x));
   }
@@ -3593,7 +3598,6 @@ inline bool Leaf::condition_slope(double& dcondition_dpsistem) const {
 }
 
 inline bool Leaf::collar_response_slope(double& dV_dpsi) const {
-  using AD = xad::fwd<double>::active_type;
   dV_dpsi = util::na_value;
   const double p = opt_root_psi_;
   const double sigma = opt_psi_stem_;
@@ -3607,13 +3611,13 @@ inline bool Leaf::collar_response_slope(double& dV_dpsi) const {
   }
   double f_sigma, f_prime_sigma, f_prime_p;
   {
-    AD x = sigma;  xad::derivative(x) = 1.0;
-    const AD r = proportion_of_conductivity_kernel(x);
+    tangent x = sigma;  xad::derivative(x) = 1.0;
+    const tangent r = proportion_of_conductivity_kernel(x);
     f_sigma = xad::value(r);
     f_prime_sigma = xad::derivative(r);
   }
   {
-    AD x = p;  xad::derivative(x) = 1.0;
+    tangent x = p;  xad::derivative(x) = 1.0;
     f_prime_p = xad::derivative(proportion_of_conductivity_kernel(x));
   }
   if (!(f_sigma > 0.0)) {
@@ -3642,7 +3646,6 @@ inline bool Leaf::condition_collar_slope(double& dcondition_dpsi) const {
 }
 
 inline bool Leaf::uptake_rows(UptakeRows& out) const {
-  using AD = xad::fwd<double>::active_type;
   out = UptakeRows();
   const double kappa = leaf_specific_conductance_max_;
   const double V = dpsistem_dpsi_;
@@ -3652,8 +3655,8 @@ inline bool Leaf::uptake_rows(UptakeRows& out) const {
   // them derivatives of the flux balance the solve just used.
   double f, f_prime;
   {
-    AD x = sigma;  xad::derivative(x) = 1.0;
-    const AD r = proportion_of_conductivity_kernel(x);
+    tangent x = sigma;  xad::derivative(x) = 1.0;
+    const tangent r = proportion_of_conductivity_kernel(x);
     f = xad::value(r);
     f_prime = xad::derivative(r);
   }
@@ -3670,7 +3673,7 @@ inline bool Leaf::uptake_rows(UptakeRows& out) const {
   if (ci_at_compensation_point_) {
     // Gross assimilation is identically zero there, so the stem reaches profit
     // through the cost alone and the concentration does not respond at all.
-    AD x = sigma;  xad::derivative(x) = 1.0;
+    tangent x = sigma;  xad::derivative(x) = 1.0;
     const double C_prime = xad::derivative(hydraulic_cost_TF_kernel(x));
     out.dassim = 0.0;
     out.dprofit = -C_prime * out.dpsistem;
@@ -3706,7 +3709,6 @@ inline bool Leaf::uptake_rows(UptakeRows& out) const {
 // seated the point, so this reads state and evaluates no kernel except the cost's
 // slope on the branch where assimilation has none.
 inline bool Leaf::collar_rows(CollarRows& out) const {
-  using AD = xad::fwd<double>::active_type;
   out = CollarRows();
   if (use_energy_balance_) {
     // With the gate on the collar reaches assimilation and the cost by two
@@ -3741,7 +3743,7 @@ inline bool Leaf::collar_rows(CollarRows& out) const {
   if (ci_at_compensation_point_) {
     // Gross assimilation is identically zero there, so the collar reaches profit
     // through the cost alone and the concentration does not respond at all.
-    AD x = sigma;  xad::derivative(x) = 1.0;
+    tangent x = sigma;  xad::derivative(x) = 1.0;
     const double C_prime = xad::derivative(hydraulic_cost_TF_kernel(x));
     out.dassim = 0.0;
     out.dprofit = -C_prime * V;
@@ -3766,7 +3768,6 @@ inline bool Leaf::collar_rows(CollarRows& out) const {
 }
 
 inline bool Leaf::zero_uptake_collar_rows(CollarRows& out) const {
-  using AD = xad::fwd<double>::active_type;
   out = CollarRows();
   if (operating_point_kind_ != OperatingPointKind::ShadeDeath) {
     return false;
@@ -3781,7 +3782,7 @@ inline bool Leaf::zero_uptake_collar_rows(CollarRows& out) const {
   // transpiration is the curve integrated between two potentials that coincide.
   out.dassim = 0.0;
   out.dstom_cond = 0.0;
-  AD x = opt_psi_stem_;  xad::derivative(x) = 1.0;
+  tangent x = opt_psi_stem_;  xad::derivative(x) = 1.0;
   const double C_prime = xad::derivative(hydraulic_cost_TF_kernel(x));
   out.dprofit = -C_prime;
   // Per layer, and not zero: the total vanishes at this collar by construction,
@@ -3801,7 +3802,6 @@ inline bool Leaf::zero_uptake_collar_rows(CollarRows& out) const {
 // integral's closed-form trait derivative.
 inline bool Leaf::transport_trait_rows(TransportTrait trait, double dpsistem_dp,
                                        TransportTraitRows& out) const {
-  using AD2 = xad::fwd_fwd<double>::active_type;
   out = TransportTraitRows();
   if (use_energy_balance_) {
     return false;
@@ -3819,14 +3819,14 @@ inline bool Leaf::transport_trait_rows(TransportTrait trait, double dpsistem_dp,
   // that distinguishes the three, and the maximum conductance seeds neither: it
   // does not shape the curve, it scales the flux the curve carries.
   auto curve_at = [&](double psi, double& f, double& f_psi, double& f_t) {
-    AD2 x = psi;  x.value().derivative() = 1.0;
-    AD2 b = stem_b, c = stem_c;
+    tangent2 x = psi;  x.value().derivative() = 1.0;
+    tangent2 b = stem_b, c = stem_c;
     if (trait == TransportTrait::Position) {
       b.derivative().value() = 1.0;
     } else if (trait == TransportTrait::Steepness) {
       c.derivative().value() = 1.0;
     }
-    const AD2 r = proportion_of_conductivity_kernel(x, b, c);
+    const tangent2 r = proportion_of_conductivity_kernel(x, b, c);
     f = r.value().value();
     f_psi = r.value().derivative();
     f_t = r.derivative().value();
@@ -3860,25 +3860,25 @@ inline bool Leaf::transport_trait_rows(TransportTrait trait, double dpsistem_dp,
   // potential. The maximum conductance is not in the cost at all.
   double C_psi = 0.0, C_psipsi = 0.0, C_t = 0.0, C_psi_t = 0.0;
   {
-    AD2 x = sigma;  x.value().derivative() = 1.0;
-    AD2 b = stem_b, c = stem_c;
+    tangent2 x = sigma;  x.value().derivative() = 1.0;
+    tangent2 b = stem_b, c = stem_c;
     if (trait == TransportTrait::Position) {
       b.derivative().value() = 1.0;
     } else if (trait == TransportTrait::Steepness) {
       c.derivative().value() = 1.0;
     }
-    const AD2 r = hydraulic_cost_TF_kernel(x, b, c, AD2(beta2),
-                                           AD2(cost_scale_TF24));
+    const tangent2 r = hydraulic_cost_TF_kernel(x, b, c, tangent2(beta2),
+                                           tangent2(cost_scale_TF24));
     C_psi = r.value().derivative();
     C_t = r.derivative().value();
     C_psi_t = r.derivative().derivative();
   }
   {
-    AD2 x = sigma;
+    tangent2 x = sigma;
     x.value().derivative() = 1.0;
     x.derivative().value() = 1.0;
-    C_psipsi = hydraulic_cost_TF_kernel(x, AD2(stem_b), AD2(stem_c), AD2(beta2),
-                                        AD2(cost_scale_TF24))
+    C_psipsi = hydraulic_cost_TF_kernel(x, tangent2(stem_b), tangent2(stem_c), tangent2(beta2),
+                                        tangent2(cost_scale_TF24))
                    .derivative()
                    .derivative();
   }
@@ -3920,7 +3920,6 @@ inline bool Leaf::transport_trait_rows(TransportTrait trait, double dpsistem_dp,
 
 
 inline Leaf::CostTraitRows Leaf::cost_trait_rows(double dpsistem_dp) const {
-  using AD = xad::fwd<double>::active_type;
   if (use_energy_balance_) {
     // photo_trait_rows' reason, and the same exposure: the marginal rows below
     // carry no analogue of dprofit_at_collar_psi's temperature term, so with the
@@ -3935,7 +3934,7 @@ inline Leaf::CostTraitRows Leaf::cost_trait_rows(double dpsistem_dp) const {
   // The kernel, not the wrapper: `hydraulic_cost_TF` stores its answer in
   // `hydraulic_cost_` on the way past, and a row is a read.
   const double C = hydraulic_cost_TF_kernel(psi_stem);
-  AD ps_ad = psi_stem;  xad::derivative(ps_ad) = 1.0;
+  tangent ps_ad = psi_stem;  xad::derivative(ps_ad) = 1.0;
   const double C_prime = xad::derivative(hydraulic_cost_TF_kernel(ps_ad));
 
   const double log_q = std::log(q);
@@ -3948,8 +3947,6 @@ inline Leaf::CostTraitRows Leaf::cost_trait_rows(double dpsistem_dp) const {
 }
 
 inline Leaf::PhotoTraitRows Leaf::photo_trait_rows(double dpsistem_dp) const {
-  using AD = xad::fwd<double>::active_type;
-  using AD2 = xad::fwd_fwd<double>::active_type;
   PhotoTraitRows out{0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   if (use_energy_balance_) {
@@ -3988,51 +3985,51 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows(double dpsistem_dp) const {
   double A_ci = 0.0, A_cici = 0.0, A_J = 0.0, A_J_ci = 0.0;
   double A_cv = 0.0, A_cv_ci = 0.0, A_vc = 0.0, A_vc_ci = 0.0;
   {
-    AD2 x = ci;
+    tangent2 x = ci;
     x.value().derivative() = 1.0;
     x.derivative().value() = 1.0;
-    const AD2 A = assim_colimited_kernel(x, AD2(vcmax_), AD2(J),
-                                         AD2(curv_fact_colim));
+    const tangent2 A = assim_colimited_kernel(x, tangent2(vcmax_), tangent2(J),
+                                         tangent2(curv_fact_colim));
     A_ci = A.value().derivative();
     A_cici = A.derivative().derivative();
   }
   {
-    AD2 x = ci;   x.value().derivative() = 1.0;
-    AD2 t = J;    t.derivative().value() = 1.0;
-    const AD2 A = assim_colimited_kernel(x, AD2(vcmax_), t,
-                                         AD2(curv_fact_colim));
+    tangent2 x = ci;   x.value().derivative() = 1.0;
+    tangent2 t = J;    t.derivative().value() = 1.0;
+    const tangent2 A = assim_colimited_kernel(x, tangent2(vcmax_), t,
+                                         tangent2(curv_fact_colim));
     A_J = A.derivative().value();
     A_J_ci = A.derivative().derivative();
   }
   {
-    AD2 x = ci;   x.value().derivative() = 1.0;
-    AD2 v = curv_fact_colim;  v.derivative().value() = 1.0;
-    const AD2 A = assim_colimited_kernel(x, AD2(vcmax_), AD2(J), v);
+    tangent2 x = ci;   x.value().derivative() = 1.0;
+    tangent2 v = curv_fact_colim;  v.derivative().value() = 1.0;
+    const tangent2 A = assim_colimited_kernel(x, tangent2(vcmax_), tangent2(J), v);
     A_cv = A.derivative().value();
     A_cv_ci = A.derivative().derivative();
   }
   {
-    AD2 x = ci;   x.value().derivative() = 1.0;
-    AD2 w = vcmax_;  w.derivative().value() = 1.0;
-    const AD2 A = assim_colimited_kernel(x, w, AD2(J), AD2(curv_fact_colim));
+    tangent2 x = ci;   x.value().derivative() = 1.0;
+    tangent2 w = vcmax_;  w.derivative().value() = 1.0;
+    const tangent2 A = assim_colimited_kernel(x, w, tangent2(J), tangent2(curv_fact_colim));
     A_vc = A.derivative().value();
     A_vc_ci = A.derivative().derivative();
   }
   // dJ/dtheta for the three that reach assimilation only through the transport.
   double dJ_da = 0.0, dJ_dcurv = 0.0, dJ_djmax = 0.0, dJ_dPPFD = 0.0;
   {
-    AD q = a;  xad::derivative(q) = 1.0;
+    tangent q = a;  xad::derivative(q) = 1.0;
     dJ_da = xad::derivative(electron_transport_kernel(
-        AD(PPFD_), q, AD(curv_fact_elec_trans), AD(jmax_)));
-    AD v = curv_fact_elec_trans;  xad::derivative(v) = 1.0;
+        tangent(PPFD_), q, tangent(curv_fact_elec_trans), tangent(jmax_)));
+    tangent v = curv_fact_elec_trans;  xad::derivative(v) = 1.0;
     dJ_dcurv = xad::derivative(electron_transport_kernel(
-        AD(PPFD_), AD(a), v, AD(jmax_)));
-    AD m = jmax_;  xad::derivative(m) = 1.0;
+        tangent(PPFD_), tangent(a), v, tangent(jmax_)));
+    tangent m = jmax_;  xad::derivative(m) = 1.0;
     dJ_djmax = xad::derivative(electron_transport_kernel(
-        AD(PPFD_), AD(a), AD(curv_fact_elec_trans), m));
-    AD p = PPFD_;  xad::derivative(p) = 1.0;
+        tangent(PPFD_), tangent(a), tangent(curv_fact_elec_trans), m));
+    tangent p = PPFD_;  xad::derivative(p) = 1.0;
     dJ_dPPFD = xad::derivative(electron_transport_kernel(
-        p, AD(a), AD(curv_fact_elec_trans), AD(jmax_)));
+        p, tangent(a), tangent(curv_fact_elec_trans), tangent(jmax_)));
   }
 
   // The theta-free half of the marginal profit, formed as
@@ -4890,7 +4887,6 @@ inline double Leaf::marginal_cost_water_multilayer() {
 }
 
 inline double Leaf::dprofit_dPPFD() {
-  using AD = xad::fwd<double>::active_type;
   const double ci = ci_;
   const double gc = stom_cond_CO2_;
   // No solved point, or a shut-down one: gc is zero there and the residual this
@@ -4905,20 +4901,20 @@ inline double Leaf::dprofit_dPPFD() {
   // linear coefficient is read off the kernel itself rather than rewritten here
   // -- the one arrangement that cannot drift away from the function it
   // differentiates.
-  AD ppfd_ad = PPFD_;
+  tangent ppfd_ad = PPFD_;
   xad::derivative(ppfd_ad) = 1.0;
-  const AD J = electron_transport_kernel(ppfd_ad);
+  const tangent J = electron_transport_kernel(ppfd_ad);
   const double per_J = assim_electron_limited_kernel(ci) / electron_transport_;
   // Materialised, not passed as the expression `J * per_J`: an XAD operator
   // returns an expression template holding references to its operands, so a
   // temporary handed straight on would be read after it died.
-  const AD assim_electron = J * per_J;
-  const AD assim_rubisco = assim_rubisco_limited_kernel(ci);
-  const AD assim = colimit_kernel(assim_rubisco, assim_electron);
+  const tangent assim_electron = J * per_J;
+  const tangent assim_rubisco = assim_rubisco_limited_kernel(ci);
+  const tangent assim = colimit_kernel(assim_rubisco, assim_electron);
   const double dA_dPPFD = xad::derivative(assim);
 
   // A'(ci), by the same forward-mode route dprofit_droot_collar_psi uses.
-  AD ci_ad = ci;
+  tangent ci_ad = ci;
   xad::derivative(ci_ad) = 1.0;
   const double A_prime = xad::derivative(assim_colimited_kernel(ci_ad));
 
@@ -4951,7 +4947,7 @@ inline double Leaf::g1_eff() const {
   return chi * std::sqrt(atm_vpd_) / (1.0 - chi);
 }
 
-// Pure: no write to hydraulic_cost_, so the AD pass cannot scribble model state
+// Pure: no write to hydraulic_cost_, so the tangent pass cannot scribble model state
 // while probing. The caching is the double entry point's job.
 template <typename T>
 inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem) const {
@@ -4966,15 +4962,14 @@ inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem, T b, T c, T beta,
 }
 
 inline Leaf::HydraulicCostRow Leaf::hydraulic_cost_row(double psi_stem) const {
-  using AD = xad::fwd<double>::active_type;
   HydraulicCostRow row;
   // One seeded pass per direction. Five passes of a handful of operations each,
   // against the alternative of five rebuilt differences of the curve.
   double* out[5] = {&row.d_dpsi_stem, &row.d_dstem_b, &row.d_dstem_c,
                     &row.d_dbeta2, &row.d_dcost_scale};
   for (int k = 0; k < 5; ++k) {
-    AD in[5] = {AD(psi_stem), AD(stem_b), AD(stem_c), AD(beta2),
-                AD(cost_scale_TF24)};
+    tangent in[5] = {tangent(psi_stem), tangent(stem_b), tangent(stem_c), tangent(beta2),
+                tangent(cost_scale_TF24)};
     xad::derivative(in[k]) = 1.0;
     *out[k] = xad::derivative(
         hydraulic_cost_TF_kernel(in[0], in[1], in[2], in[3], in[4]));
