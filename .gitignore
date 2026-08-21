@@ -31,3 +31,8 @@ CMakeFiles/
 docs/
 tests/cpp/probe_*
 !tests/cpp/probe_*.cpp
+
+# testthat writes these whenever a run has failures, and this suite has five
+# recorded ones -- so without this every test run dirties the tree.
+tests/testthat/_problems/
+tests/testthat/testthat-problems.rds
