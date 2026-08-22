@@ -703,7 +703,7 @@ void test_gradient_reports_feasibility() {
      "and the sentinel is still 0.0 for a caller that does not ask");
 }
 
-// PLAN 11b: the AD derivative and the forward model are now instantiations of ONE
+// PLAN 11b: the phylloptim::tangent derivative and the forward model are now instantiations of ONE
 // body, so they cannot be derivatives of different functions. That was not true
 // before: `detail::assim_colimited_ad` associated the electron-limited term
 // left-to-right where `assim_electron_limited` divides the bracket first, and used
@@ -715,11 +715,10 @@ void test_gradient_reports_feasibility() {
 // perfectly good derivative of *itself*, and agreed with the real function to
 // ~1e-16 in VALUE. It is the derivative-of-the-same-function property that failed.
 void test_ad_kernels_are_the_model_not_a_mirror() {
-  printf("AD differentiates the model's own algebra, not a mirror of it\n");
+  printf("phylloptim::tangent differentiates the model's own algebra, not a mirror of it\n");
   Drivers d;
   phylloptim::Leaf l = make_leaf(d, {2.0}, {1.0});
   l.find_root_collar_psi();
-  using AD = xad::fwd<double>::active_type;
 
   // 1. The kernels and the double entry points are the same code, so they must
   // agree BIT-EXACTLY, not merely closely. This is what "one body" means.
@@ -738,7 +737,7 @@ void test_ad_kernels_are_the_model_not_a_mirror() {
            std::to_string(p));
   }
 
-  // 2. The AD derivative of the kernel against a central difference of the DOUBLE
+  // 2. The phylloptim::tangent derivative of the kernel against a central difference of the DOUBLE
   // function. Richardson-extrapolated, so the FD reference is good to ~1e-10 and
   // the tolerance is testing the derivative rather than the difference quotient.
   const auto richardson = [](auto f, double x, double h) {
@@ -747,28 +746,28 @@ void test_ad_kernels_are_the_model_not_a_mirror() {
     return (4 * d2 - d1) / 3;
   };
   for (double ci : {12.0, 20.0, 29.26, 35.0}) {
-    AD a = ci; xad::derivative(a) = 1.0;
-    const double ad = xad::derivative(l.assim_colimited_kernel(a));
+    phylloptim::tangent a = ci; phylloptim::seed_direction(a, 1.0);
+    const double ad = phylloptim::derivative_along(l.assim_colimited_kernel(a));
     const double fd =
         richardson([&](double x) { return l.assim_colimited(x); }, ci, 1e-4);
-    near(ad, fd, 1e-8, "dA/dci: AD vs Richardson FD at ci=" + std::to_string(ci));
+    near(ad, fd, 1e-8, "dA/dci: phylloptim::tangent vs Richardson FD at ci=" + std::to_string(ci));
   }
   for (double p : {0.5, 2.0, 3.5949, 5.0}) {
-    AD a = p; xad::derivative(a) = 1.0;
-    const double ad = xad::derivative(l.hydraulic_cost_TF_kernel(a));
+    phylloptim::tangent a = p; phylloptim::seed_direction(a, 1.0);
+    const double ad = phylloptim::derivative_along(l.hydraulic_cost_TF_kernel(a));
     const double fd =
         richardson([&](double x) { return l.hydraulic_cost_TF_kernel(x); }, p, 1e-4);
-    near(ad, fd, 1e-8, "dcost/dpsi: AD vs Richardson FD at psi=" +
+    near(ad, fd, 1e-8, "dcost/dpsi: phylloptim::tangent vs Richardson FD at psi=" +
                            std::to_string(p));
   }
 
-  // 3. The cost kernel must be PURE -- an AD probe must not scribble the cached
+  // 3. The cost kernel must be PURE -- an phylloptim::tangent probe must not scribble the cached
   // hydraulic_cost_, or a gradient evaluation would corrupt reported model state.
   const double cached = l.hydraulic_cost_TF(3.0);
-  AD probe = 4.5; xad::derivative(probe) = 1.0;
+  phylloptim::tangent probe = 4.5; phylloptim::seed_direction(probe, 1.0);
   (void)l.hydraulic_cost_TF_kernel(probe);
   ok(l.hydraulic_cost_ == cached,
-     "an AD probe of the cost kernel leaves hydraulic_cost_ untouched");
+     "an phylloptim::tangent probe of the cost kernel leaves hydraulic_cost_ untouched");
 }
 
 // PLAN 11a: the collar solve now solves its own first-order condition, so the
@@ -5323,7 +5322,6 @@ void test_the_transport_response_is_the_flux_balances_own() {
   printf("the collar response is the flux balance's own derivative\n");
   namespace grad = phylloptim::gradient;
   namespace pl = phylloptim;
-  using AD = xad::fwd<double>::active_type;
   grad::Settings s;
   struct F { const char* what; double psi_soil, ppfd, vpd; int layers; };
   const F fixtures[] = {{"sodden", 0.5, 900, 2.0, 3}, {"wet", 2.0, 900, 2.0, 3},
@@ -5349,11 +5347,11 @@ void test_the_transport_response_is_the_flux_balances_own() {
     const double kappa = l.leaf_specific_conductance_max_;
     const double S = l.dE_from_soil_dpsi_collar(p, l.supply_psi_soil());
     double f_s, f_s_prime, f_p;
-    { AD x = sigma;  xad::derivative(x) = 1.0;
-      const AD r = l.proportion_of_conductivity_kernel(x);
-      f_s = xad::value(r);  f_s_prime = xad::derivative(r); }
-    { AD x = p;  xad::derivative(x) = 1.0;
-      f_p = xad::value(l.proportion_of_conductivity_kernel(x)); }
+    { phylloptim::tangent x = sigma;  phylloptim::seed_direction(x, 1.0);
+      const phylloptim::tangent r = l.proportion_of_conductivity_kernel(x);
+      f_s = odelia::util::to_passive(r);  f_s_prime = phylloptim::derivative_along(r); }
+    { phylloptim::tangent x = p;  phylloptim::seed_direction(x, 1.0);
+      f_p = odelia::util::to_passive(l.proportion_of_conductivity_kernel(x)); }
     const double V_balance = (S / kappa + f_p) / f_s;
     const double V_agrees = std::abs(V_balance / l.dpsistem_dpsi_ - 1.0);
 
@@ -5419,7 +5417,6 @@ void test_the_condition_is_carbon_bought_against_tension_paid() {
   printf("the condition is the carbon water buys against the tension it costs\n");
   namespace grad = phylloptim::gradient;
   namespace pl = phylloptim;
-  using AD = xad::fwd<double>::active_type;
   grad::Settings s;
   struct F { const char* what; double psi_soil, ppfd, vpd; int layers; };
   const F fixtures[] = {{"sodden", 0.5, 900, 2.0, 3}, {"wet", 2.0, 900, 2.0, 3},
@@ -5461,9 +5458,9 @@ void test_the_condition_is_carbon_bought_against_tension_paid() {
     // concentration's residual, and through nothing else.
     const double carbon =
         A_prime * gc_const * (l.ca_ - l.ci_at_collar_) * v / g_ci * S;
-    AD x = sigma;  xad::derivative(x) = 1.0;
+    phylloptim::tangent x = sigma;  phylloptim::seed_direction(x, 1.0);
     const double tension =
-        -xad::derivative(l.hydraulic_cost_TF_kernel(x)) * V;
+        -phylloptim::derivative_along(l.hydraulic_cost_TF_kernel(x)) * V;
     ++checked;
     printf("  %-22s carbon %11.7g  tension %11.7g  sum %11.7g vs %11.7g\n",
            tag.c_str(), carbon, tension, carbon + tension, R);

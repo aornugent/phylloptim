@@ -72,8 +72,6 @@ namespace gradient {
 // ⚠️ R INDEXES THESE POSITIONS, so a reordering silently differentiates the wrong
 // parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
 // them with R's, so the two cannot drift apart without a failure.
-inline constexpr int n_traits = 14;
-
 // THE list, in order. The first `n_traits` are `set_traits`' arguments in its
 // order, which is also `leaf_traits()`'; the two non-traits follow and take a
 // relative step.
@@ -121,6 +119,11 @@ inline constexpr int par_cost_scale_TF24 = par_of("cost_scale_TF24");
 inline constexpr int par_R_d_25 = par_of("R_d_25");
 inline constexpr int par_kmax = par_of("leaf_specific_conductance_max");
 inline constexpr int par_resistance = par_of("resistance");
+
+// The traits are everything before the first non-trait, read off the list
+// rather than counted: a trait added ahead of the conductance driver would
+// leave a hand-written count naming one of the two that are not traits.
+inline constexpr int n_traits = par_kmax;
 
 inline const std::vector<std::string>& par_names() {
   static const std::vector<std::string> names(par_table.begin(),
