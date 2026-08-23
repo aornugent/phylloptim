@@ -85,8 +85,10 @@ bool rebuilds_a_spline(int i) {
 void apply_traits(phylloptim::Leaf &l, const Traits &t) {
   // R_d_25 last, at the class default, so the benchmark measures the default
   // configuration.
-  l.set_traits(t.v[0], t.v[1], t.v[2], t.v[3], t.v[4], t.v[5], t.v[6], t.v[7],
-               t.v[8], t.v[9], t.v[10], t.v[11], t.v[12], 1.44);
+  double theta[phylloptim::gradient::n_traits];
+  std::copy(t.v, t.v + 13, theta);
+  theta[phylloptim::gradient::par_R_d_25] = 1.44;
+  l.set_traits(theta);
 }
 
 // One interior operating point. Drivers from plant's tests/testthat/test-leaf.r,

@@ -3,6 +3,7 @@
 #define PHYLLOPTIM_LEAF_MODEL_HPP_
 
 #include <phylloptim/constants.hpp>
+#include <phylloptim/inputs.hpp>
 #include <phylloptim/util.hpp>
 #include <phylloptim/uniroot.hpp>
 #include <phylloptim/optimize.hpp>
@@ -646,11 +647,41 @@ public:
   // resets both caches and requires set_physiology() before the next solve, exactly
   // as a fresh Leaf would. That last part is not conservatism: the derived
   // photosynthetic parameters really are unknown until the drivers are re-supplied.
+  // The traits, in the order gradient::par_table numbers them. One argument, so
+  // that order is not also spelled by fourteen parameter positions here and
+  // fourteen argument positions at every caller.
+  void set_traits(const double* theta);
+  void set_traits(const std::vector<double>& theta) {
+    odelia::util::check_length(theta.size(), std::size_t(gradient::n_traits));
+    set_traits(theta.data());
+  }
+
+  // The fourteen as separate values, for a caller that holds them that way: the R
+  // binding and the tests. Each is PLACED BY THE NAME OF ITS INDEX, so this is the
+  // one spelling of the order that a reader can check against par_table without
+  // counting positions -- and the only one left.
   void set_traits(double vcmax_25, double stem_c, double stem_b, double psi_crit,
                   double root_c, double root_b, double root_psi_crit,
                   double beta2, double jmax_25, double a,
                   double curv_fact_elec_trans, double curv_fact_colim,
-                  double cost_scale_TF24, double R_d_25);
+                  double cost_scale_TF24, double R_d_25) {
+    double theta[gradient::n_traits];
+    theta[gradient::par_vcmax_25] = vcmax_25;
+    theta[gradient::par_stem_c] = stem_c;
+    theta[gradient::par_stem_b] = stem_b;
+    theta[gradient::par_psi_crit] = psi_crit;
+    theta[gradient::par_root_c] = root_c;
+    theta[gradient::par_root_b] = root_b;
+    theta[gradient::par_root_psi_crit] = root_psi_crit;
+    theta[gradient::par_beta2] = beta2;
+    theta[gradient::par_jmax_25] = jmax_25;
+    theta[gradient::par_a] = a;
+    theta[gradient::par_curv_fact_elec_trans] = curv_fact_elec_trans;
+    theta[gradient::par_curv_fact_colim] = curv_fact_colim;
+    theta[gradient::par_cost_scale_TF24] = cost_scale_TF24;
+    theta[gradient::par_R_d_25] = R_d_25;
+    set_traits(theta);
+  }
 
   // The #25 boundary: the four potentials that must be positive magnitudes. One
   // copy, called from both the constructor and set_traits -- the alternative is
@@ -2073,13 +2104,24 @@ inline void Leaf::check_psi_magnitudes(double psi_crit, double stem_b,
 }
 
 // See the header for why this exists rather than fourteen settable fields.
-inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_b_,
-                             double psi_crit_, double root_c_, double root_b_,
-                             double root_psi_crit_, double beta2_,
-                             double jmax_25_, double a_,
-                             double curv_fact_elec_trans_,
-                             double curv_fact_colim_,
-                             double cost_scale_TF24_, double R_d_25_) {
+inline void Leaf::set_traits(const double* theta) {
+  // Each trait taken by the name of its index, so a member and the slot it is
+  // read from are written down beside each other.
+  const double vcmax_25_ = theta[gradient::par_vcmax_25];
+  const double stem_c_ = theta[gradient::par_stem_c];
+  const double stem_b_ = theta[gradient::par_stem_b];
+  const double psi_crit_ = theta[gradient::par_psi_crit];
+  const double root_c_ = theta[gradient::par_root_c];
+  const double root_b_ = theta[gradient::par_root_b];
+  const double root_psi_crit_ = theta[gradient::par_root_psi_crit];
+  const double beta2_ = theta[gradient::par_beta2];
+  const double jmax_25_ = theta[gradient::par_jmax_25];
+  const double a_ = theta[gradient::par_a];
+  const double curv_fact_elec_trans_ = theta[gradient::par_curv_fact_elec_trans];
+  const double curv_fact_colim_ = theta[gradient::par_curv_fact_colim];
+  const double cost_scale_TF24_ = theta[gradient::par_cost_scale_TF24];
+  const double R_d_25_ = theta[gradient::par_R_d_25];
+
   check_psi_magnitudes(psi_crit_, stem_b_, root_b_, root_psi_crit_);
 
   // Which splines have to be rebuilt, decided BEFORE the assignment. Exact
