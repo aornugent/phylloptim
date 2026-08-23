@@ -126,18 +126,18 @@ test_that("the bound row's parameter half agrees with a rebuilt difference", {
   # unrefereed would be building on numbers nothing had checked.
   base <- leaf_traits()
   kmax0 <- 3.14e-05
-  seat <- function(tr, kmax = kmax0) {
+  placement <- function(tr, kmax = kmax0) {
     l <- leaf_model(traits = tr)
     set_drivers(l, psi_soil = mild_gradient, leaf_specific_conductance_max = kmax)
     l
   }
   bound_of <- function(tr, which, kmax = kmax0) {
-    seat(tr, kmax)$find_root_psi(min(mild_gradient), mild_gradient,
+    placement(tr, kmax)$find_root_psi(min(mild_gradient), mild_gradient,
                                  if (which == 0L) 0L else 1L)
   }
 
   # Entry 4 is kappa, 5 is the stem's psi_crit, 7 is stem_b.
-  dry <- seat(base)$bound_row_values(1L)
+  dry <- placement(base)$bound_row_values(1L)
   for (e in list(list(5, "psi_crit"), list(7, "stem_b"))) {
     h <- max(abs(base[[e[[2]]]]), 1) * 1e-6
     up <- base; up[[e[[2]]]] <- up[[e[[2]]]] + h
@@ -151,7 +151,7 @@ test_that("the bound row's parameter half agrees with a rebuilt difference", {
 
   # And the wet bound has none of them, which is the derivation rather than a
   # coincidence: its residual is total uptake and the stem is not in it.
-  wet <- seat(base)$bound_row_values(0L)
+  wet <- placement(base)$bound_row_values(0L)
   expect_equal(wet[[4]], 0)
   expect_equal(wet[[5]], 0)
   expect_equal(wet[[7]], 0)
@@ -170,15 +170,15 @@ test_that("the root curve's position has a closed-form row in both bounds", {
   # ratio reads 1.20 at 1e-8, 0.998 at 1e-6, and 1.0000 across 1e-5 to 1e-3.
   # Take the difference on the plateau and say which end it is at.
   base <- leaf_traits()
-  seat <- function(tr, pv) {
+  placement <- function(tr, pv) {
     l <- leaf_model(traits = tr); set_drivers(l, psi_soil = pv); l
   }
   bound_of <- function(tr, w, pv) {
-    seat(tr, pv)$find_root_psi(min(pv), pv, if (w == 0L) 0L else 1L)
+    placement(tr, pv)$find_root_psi(min(pv), pv, if (w == 0L) 0L else 1L)
   }
   worst <- 0
   for (w in c(0L, 1L)) for (pv in list(mild_gradient, mild_gradient * 1.5)) {
-    r <- seat(base, pv)$bound_row_values(w)
+    r <- placement(base, pv)$bound_row_values(w)
     expect_equal(r[[1]], 1)
     h <- base$root_b * 1e-4
     up <- base; up$root_b <- base$root_b + h
@@ -191,8 +191,8 @@ test_that("the root curve's position has a closed-form row in both bounds", {
 
   # Non-vacuity: the entry is live, and it is live in BOTH bounds -- a row that
   # only filled the dry one would pass a dry-only check.
-  expect_true(seat(base, mild_gradient)$bound_row_values(0L)[[9]] != 0)
-  expect_true(seat(base, mild_gradient)$bound_row_values(1L)[[9]] != 0)
+  expect_true(placement(base, mild_gradient)$bound_row_values(0L)[[9]] != 0)
+  expect_true(placement(base, mild_gradient)$bound_row_values(1L)[[9]] != 0)
 })
 
 test_that("the root-carbon half agrees with a rebuilt difference, on both bounds", {
@@ -206,16 +206,16 @@ test_that("the root-carbon half agrees with a rebuilt difference, on both bounds
   # row is a derivative of and shares no code with it.
   depth <- rep(1, 5)
   carbon <- rep(20 / 5, 5)
-  seat <- function(cc) {
+  placement <- function(cc) {
     l <- leaf_model(traits = leaf_traits())
     set_drivers(l, psi_soil = mild_gradient, soil_depth = depth,
                 root_network = root_network_from_carbon(cc, depth))
     l
   }
-  bound_of <- function(cc, w) seat(cc)$find_root_psi(min(mild_gradient),
+  bound_of <- function(cc, w) placement(cc)$find_root_psi(min(mild_gradient),
                                                      mild_gradient, w)
   for (w in c(0L, 1L)) {
-    r <- seat(carbon)$bound_row_values(w)
+    r <- placement(carbon)$bound_row_values(w)
     expect_equal(r[[1]], 1)
     worst <- 0
     for (j in seq_along(carbon)) {

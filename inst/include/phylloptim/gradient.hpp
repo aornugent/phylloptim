@@ -72,7 +72,7 @@ namespace gradient {
 // computes rather than copies (uptake, lambda, g1_eff) are not among them.
 //
 // The uptake entries are the leaf's own per-layer consumption at the collar this
-// evaluation seated -- `find_psi_stem_from_psi_root` writes it on its way past --
+// evaluation placed -- `find_psi_stem_from_psi_root` writes it on its way past --
 // and not a second computation of it.
 inline void outputs(const Leaf& l, OutputValues& y) {
   y[out_assim] = l.assim_colimited_;
@@ -553,7 +553,7 @@ inline Branch branch_here(const Leaf& l) {
 //
 // ⚠️ THE CURVATURE IS NOT HERE, and it used to be. Taking it differenced the
 // marginal profit on both sides of p*, which left the collar one step below the
-// point and cost every later read a re-seating; `differenced_curvature` below is
+// point and cost every later read a re-placing; `differenced_curvature` below is
 // that difference, and only the route that has no closed form for it pays.
 struct BasePoint {
   double psi_star = util::na_value;
@@ -561,7 +561,7 @@ struct BasePoint {
   // Whether the evaluation at p* admits a derivative at all, from `dprofit`'s own
   // out-parameter. It is the same evaluation, so a later reader needs no second
   // one to find out.
-  bool seated = false;
+  bool placed = false;
   // ⚠️ Read the moment the solve ends, because the first evaluation at a held
   // collar overwrites it: `evaluate_root_collar_psi` tags the point Prescribed.
   Branch branch;
@@ -591,7 +591,7 @@ inline BasePoint base_point(const Leaf& l) {
   b.branch = branch_here(l);
   b.psi_star = l.opt_root_psi_;
   b.resid = l.collar_resid_;
-  b.seated = l.collar_resid_seated_;
+  b.placed = l.collar_resid_placed_;
   return b;
 }
 
@@ -602,7 +602,7 @@ inline BasePoint base_point(const Leaf& l) {
 // ⚠️ IT LEAVES THE COLLAR ONE STEP BELOW p*, so a caller that reads the point's
 // own coefficients afterwards is reading a neighbouring state -- 4.5e-06 relative,
 // which looks like nothing. `base_point` closed with this until the closed form
-// existed, and every reader after it had to re-seat.
+// existed, and every reader after it had to place it again.
 inline double differenced_curvature(Leaf& l, double psi_star, double resid,
                                     const Settings& s) {
   const double h_psi = collar_step(psi_star, s);
@@ -744,7 +744,7 @@ inline bool held_row(Leaf& l, const double* theta, const Drivers& d,
               s.fast_stem_curve, scratch);
       OutputValues& dst = side == 0 ? up : dn;
       // Evaluate first, then read dprofit at the same fixed collar -- R's order,
-      // and `evaluate_root_collar_psi` is what seats the state `dprofit` reads.
+      // and `evaluate_root_collar_psi` is what places the state `dprofit` reads.
       // Both arms are taken before either is tested, so which one moved the
       // interval does not change the order the leaf is moved in.
       const bool ok = outputs_at(l, psi_star, dst);
@@ -1344,14 +1344,14 @@ struct SupplyRows {
 // reaches profit by two further routes, which is where the condition's slope
 // refuses.
 // ⚠️ A PIN IS NOT EXCLUDED, and it was. Every row here is a partial at a HELD
-// collar, so it is the same number whether stationarity or a bound is what seats
+// collar, so it is the same number whether stationarity or a bound is what places
 // that collar -- what the branch decides is `dresidual`, not these. Excluding a
 // pin sent ten inputs to a re-solve for rows the leaf states in closed form. A
 // shut collar is excluded, because there the flux is zero and the coefficients
 // these multiply are not the ones the branch is on.
-inline bool supply_rows_apply(const Leaf& l, const RowRequest& r, bool seated,
+inline bool supply_rows_apply(const Leaf& l, const RowRequest& r, bool placed,
                              int n_layers) {
-  if (!seated || l.use_energy_balance_) {
+  if (!placed || l.use_energy_balance_) {
     return false;
   }
   for (std::size_t i = 0; i < r.n_input; ++i) {
@@ -1540,10 +1540,10 @@ inline bool transport_side(int par, Leaf::TransportTrait& trait) {
 }
 
 // Whether these describe this branch, for the supply's reason: a held-collar
-// partial does not read what seats the collar.
+// partial does not read what places the collar.
 inline bool transport_rows_apply(const Leaf& l, const RowRequest& r,
-                                 bool seated) {
-  if (!seated || l.use_energy_balance_) {
+                                 bool placed) {
+  if (!placed || l.use_energy_balance_) {
     return false;
   }
   Leaf::TransportTrait ignored = Leaf::TransportTrait::Conductance;
@@ -1559,7 +1559,7 @@ inline bool transport_rows_apply(const Leaf& l, const RowRequest& r,
 // zero, and exactly is the word: the flux does not move, so nothing downstream of
 // it does, and writing a difference's floor there instead would be reporting
 // noise as a response.
-// All three, taken at the seated point rather than one at a time inside the
+// All three, taken at the placed point rather than one at a time inside the
 // input loop.
 //
 // ⚠️ THEY ARE READS OF THE POINT, and the loop moves it: an input with no closed
@@ -1763,24 +1763,24 @@ inline double step_in_fraction(const Leaf::BoundRow& own,
 // Inputs whose row is exactly zero where the leaf has stopped moving water.
 // Gross assimilation is identically zero there, so profit is respiration plus a
 // hydraulic cost and the traits reaching only assimilation reach nothing;
-// neither seated potential is the root's own critical one; and neither radiation
+// neither placed potential is the root's own critical one; and neither radiation
 // nor the maximum conductance appears in what is left.
 //
 // ⚠️ DECLARED RATHER THAN DIFFERENCED, and not to save the evaluations. A step in
 // any of these moves the assimilation maximum, which is the quantity DECIDING
 // this branch, so a difference refuses at a boundary the row does not depend on.
 //
-// ⚠️ `seated_at_psi_crit` IS THE WHOLE DIFFERENCE BETWEEN THE TWO ZERO-FLUX
+// ⚠️ `placed_at_psi_crit` IS THE WHOLE DIFFERENCE BETWEEN THE TWO ZERO-FLUX
 // KINDS, and it decides two answers rather than one. A hydraulic shutdown holds
-// the stem at its critical potential: that input IS the seat, so its row is the
+// the stem at its critical potential: that input IS the placement, so its row is the
 // cost's own slope, and nothing the leaf reads is a function of the soil, so
 // every soil potential and every layer carbon is exactly zero too. Shade death
-// seats both potentials at the collar of zero uptake instead: the critical
-// potential reaches nothing there, and the seat is a function of the soil, so the
+// places both potentials at the collar of zero uptake instead: the critical
+// potential reaches nothing there, and the placement is a function of the soil, so the
 // soil block is not this function's to answer and falls through to the supply's
 // own rows.
 inline bool shut_row(const Leaf& l, const Leaf::HydraulicCostRow& cost,
-                     bool seated_at_psi_crit, int par, int n_layers,
+                     bool placed_at_psi_crit, int par, int n_layers,
                      double& profit_row) {
   switch (par) {
   case par_vcmax_25:
@@ -1794,8 +1794,8 @@ inline bool shut_row(const Leaf& l, const Leaf::HydraulicCostRow& cost,
     profit_row = 0.0;
     return true;
   // Dark respiration is the one of them whose row is not zero, and it is exact:
-  // profit there is minus respiration minus the hydraulic cost at the seated
-  // potential, neither seat moves with respiration, and respiration is its trait
+  // profit there is minus respiration minus the hydraulic cost at the placed
+  // potential, neither placement moves with respiration, and respiration is its trait
   // times a factor of temperature alone -- so the row is the derived value over
   // the trait, negated.
   //
@@ -1809,13 +1809,13 @@ inline bool shut_row(const Leaf& l, const Leaf::HydraulicCostRow& cost,
   default:
     break;
   }
-  // The soil block, where the seat is the stem's critical potential and so reads
+  // The soil block, where the placement is the stem's critical potential and so reads
   // no soil at all: the leaf holds there, every flux is written zero, and moving a
   // potential or a layer's carbon leaves both terms of profit where they are.
-  // Where the seat is the collar of zero uptake instead, the seat itself moves
+  // Where the placement is the collar of zero uptake instead, the placement itself moves
   // with the soil and these rows are the supply's.
   if (par >= par_psi_soil_first && par < n_pars_total(n_layers)) {
-    if (!seated_at_psi_crit) {
+    if (!placed_at_psi_crit) {
       return false;
     }
     profit_row = 0.0;
@@ -1824,7 +1824,7 @@ inline bool shut_row(const Leaf& l, const Leaf::HydraulicCostRow& cost,
   // The root curve reaches the leaf only by moving the supply, so the same
   // division applies to its two parameters.
   if (par == par_root_b || par == par_root_c) {
-    if (!seated_at_psi_crit) {
+    if (!placed_at_psi_crit) {
       return false;
     }
     profit_row = 0.0;
@@ -1833,16 +1833,16 @@ inline bool shut_row(const Leaf& l, const Leaf::HydraulicCostRow& cost,
   // The cost's own rows, which at a zero-flux point ARE the profit rows: the leaf
   // moves no water, so
   //
-  //   Pi = -R_d(T) - C(seat; stem_b, stem_c, beta2, scale)
+  //   Pi = -R_d(T) - C(placement; stem_b, stem_c, beta2, scale)
   //
   // and nothing else appears. Measured by differencing the solve at 36 shut points:
   // exactly these five and dark respiration move profit, and the other twenty
   // inputs move it by less than 1e-09.
   //
-  // ⚠️ psi_crit IS THE SEAT ON ONE OF THE TWO KINDS ONLY. Where the plant is
+  // ⚠️ psi_crit IS THE PLACEMENT ON ONE OF THE TWO KINDS ONLY. Where the plant is
   // holding AT its critical potential the row is the cost's own slope and the
   // constraint is the only thing binding; where the collar of zero uptake is the
-  // seat, the flux integrates up to that instead and the critical potential is
+  // placement, the flux integrates up to that instead and the critical potential is
   // inactive exactly as it is at an interior optimum. Reading the first for the
   // second put this row at -0.750 where the model says 0.
   if (!cost.finite) {
@@ -1850,7 +1850,7 @@ inline bool shut_row(const Leaf& l, const Leaf::HydraulicCostRow& cost,
   }
   switch (par) {
   case par_psi_crit:
-    profit_row = seated_at_psi_crit ? -cost.d_dpsi_stem : 0.0;
+    profit_row = placed_at_psi_crit ? -cost.d_dpsi_stem : 0.0;
     return true;
   case par_stem_b:          profit_row = -cost.d_dstem_b;     return true;
   case par_stem_c:          profit_row = -cost.d_dstem_c;     return true;
@@ -1865,14 +1865,14 @@ inline bool shut_row(const Leaf& l, const Leaf::HydraulicCostRow& cost,
 // -- at a shut point assimilation is minus respiration, so its row in that trait is
 // not zero, and this says so by refusing rather than by writing one.
 //
-// ⚠️ THE COLLAR IS NOT AMONG THEM EITHER, AND IT WAS. Three exits seat a shut
-// collar and they seat it at three DIFFERENT potentials -- the stem's critical one,
+// ⚠️ THE COLLAR IS NOT AMONG THEM EITHER, AND IT WAS. Three exits placement a shut
+// collar and they placement it at three DIFFERENT potentials -- the stem's critical one,
 // the root's own, or the collar at which the stem reaches critical -- so which
 // inputs the collar moves with is a property of the exit, and
 // `OperatingPointKind::HydraulicShutdown` records none of them. Declaring a zero
 // there was right for the eight inputs it covered on the exit this grid reaches and
 // wrong for the root's critical potential on the exit where that potential IS the
-// seat. A request naming the collar therefore differences the solve, which is right
+// placement. A request naming the collar therefore differences the solve, which is right
 // on every exit; the request this boundary exists for asks for profit and the
 // uptake block and keeps its declarations.
 inline bool shut_row_covers(const RowRequest& r) {
@@ -1927,7 +1927,7 @@ inline double differenced_bound(Leaf& l, const double* theta, const Drivers& d,
 //     other consumer's supply as well as its input.
 //   * under the energy-balance gate the collar reaches profit by two further routes
 //     through the leaf temperature, which no closed form here carries.
-//   * a shut collar's own row is declined because three exits seat it at different
+//   * a shut collar's own row is declined because three exits placement it at different
 //     potentials and the classification records only that it is shut. Nothing a shut
 //     leaf reports reads its collar, so no output of the set needs it.
 //
@@ -1989,7 +1989,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
   //
   // A hydraulic shutdown holds the stem at its critical potential and writes every
   // flux to zero, so nothing the leaf reads is a function of the soil and no
-  // condition defines the collar at all. Shade death seats BOTH potentials at the
+  // condition defines the collar at all. Shade death places BOTH potentials at the
   // collar where uptake vanishes -- the WET BOUND -- so the point is that bound, it
   // moves with the soil, profit reads the soil through it, and each layer's own
   // draw is non-zero while the total is not. So it is a pin whose carbon half is
@@ -1999,10 +1999,10 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
   // ⚠️ NOT const: shade death gives this up where its bound has no row. See the
   // fallback below, which is a whole stand's water channel.
   bool pinned = pinned_bound(b.branch.kind, bound) || shade;
-  // Where a marginal-profit evaluation seats the point and the closed forms are
+  // Where a marginal-profit evaluation places the point and the closed forms are
   // written at it. Shade death is out: the stem sits AT the collar, so the
   // marginal profit takes its no-flow exit and records nothing to read.
-  const bool at_a_seated_collar = interior || (pinned && !shade);
+  const bool at_a_placed_collar = interior || (pinned && !shade);
   // Both kinds' profit is respiration plus the cost at the potential they hold.
   const bool zero_flux = shut || shade;
   // What is left never solved or could not choose.
@@ -2017,10 +2017,10 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
   // leaf, because they are reads of the point the solve just left.
   //
   // ⚠️ `base_point` CLOSES AT p*, so the state these read is the point's own and
-  // nothing re-seats it. It used to close by differencing the marginal profit
+  // nothing re-places it. It used to close by differencing the marginal profit
   // across p*, which left the collar one step below and made every row here a
   // read of a neighbouring state -- 4.5e-06 relative, which looks like nothing.
-  // The curvature is a statement now, so the difference and the re-seat both went.
+  // The curvature is a statement now, so the difference and the place it again both went.
   //
   // The soil state's rows come off the same evaluation and are gathered FIRST:
   // they are reads of what it recorded, and the two trait readers below move the
@@ -2041,10 +2041,10 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
   // state at a collar rather than a read of a recording; what shade death has none
   // of is the coefficients that block multiplies.
   const bool want_supply = supply_rows_apply(l, r, interior || pinned, n_layers);
-  const bool want_transport = transport_rows_apply(l, r, at_a_seated_collar);
-  const bool seated = b.seated;
+  const bool want_transport = transport_rows_apply(l, r, at_a_placed_collar);
+  const bool placed = b.placed;
   bool have_collar_response = false;
-  if (seated && at_a_seated_collar) {
+  if (placed && at_a_placed_collar) {
     have_collar_response = l.collar_rows(channel);
     if (want_supply) {
       supply.usable = l.uptake_rows(supply.on_uptake) &&
@@ -2078,7 +2078,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
 
   Leaf::BoundRow condition;
   // The far end of the interval, and the fraction of it the solve stepped inside.
-  // Shade death is seated ON its bound rather than stepped in from it, so it has
+  // Shade death is placed ON its bound rather than stepped in from it, so it has
   // no far share and does not pay for a second root-find to learn that.
   Leaf::BoundRow far;
   double eps = 0.0;
@@ -2136,7 +2136,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
     out.residual_slope = 1.0;
   }
 
-  // dY/dp: read off the seating above where the leaf can state it, and
+  // dY/dp: read off the placing above where the leaf can state it, and
   // differenced across p* only where it cannot.
   //
   // ⚠️ THE DIFFERENCE OFTEN CANNOT BE CENTRED AT A PIN, which is where an
@@ -2159,7 +2159,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
   //
   // ⚠️ AT A SHADE-DEATH COLLAR THE MODEL'S OWN MARGINAL PROFIT IS A SENTINEL, so
   // `b.resid` is an exact 0.0 that would drop the whole channel. The value is the
-  // cost's slope at the seat: profit there is respiration plus the cost, and the
+  // cost's slope at the placement: profit there is respiration plus the cost, and the
   // branch ties the stem to the collar, so the whole of dProfit/dp is -C'.
   const double marginal_at_point = shade ? -shut_cost.d_dpsi_stem : b.resid;
 
@@ -2237,8 +2237,8 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
     if (zero_flux && shut_covered &&
         shut_row(l, shut_cost, shut, p, n_layers, shut_profit)) {
       // ⚠️ `dresidual` IS ZERO AND THAT IS A STATEMENT, not a default. Every input
-      // this covers leaves the seat where it is -- at a hydraulic shutdown because
-      // the seat is a registered potential, and at shade death because the wet
+      // this covers leaves the placement where it is -- at a hydraulic shutdown because
+      // the placement is a registered potential, and at shade death because the wet
       // bound is total uptake and none of these enters it. The soil block, which
       // does move that bound, is not covered here on the second kind.
       out.dresidual[i] = 0.0;
@@ -2266,7 +2266,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
     // The held row in closed form, where one describes this input and this
     // branch. Taken BEFORE the decision to follow the point, because a closed
     // form is what removes the need to follow it: a partial at a held collar does
-    // not read what seats that collar, so the same expression answers at a pin,
+    // not read what places that collar, so the same expression answers at a pin,
     // and the point's own movement goes into `dresidual` instead of into every
     // row a re-solve would have to measure.
     double dR = 0.0;
@@ -2289,7 +2289,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
       // Nor a grid rebuild, which is what this one replaces.
       transport_row(transport.by_trait[transport_index(transport_trait)], direct,
                     dR);
-    } else if (at_a_seated_collar && slack_side(p)) {
+    } else if (at_a_placed_collar && slack_side(p)) {
       // Declared rather than measured, and the difference agrees exactly: two
       // evaluations to confirm a zero the constraint's own inactivity states.
       // At a pin the same declaration holds for the HELD row and the constraint
@@ -2497,7 +2497,7 @@ struct ProfitEnvDerivatives {
 };
 
 // The three pieces a soil row is built from, at whatever collar the leaf is
-// currently seated at: the radiation row, the price that turns water into carbon,
+// currently placed at: the radiation row, the price that turns water into carbon,
 // and each layer's supply derivative. False where a piece of it is undefined.
 //
 // The price is handed back rather than already multiplied in because a pinned
@@ -2622,7 +2622,7 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
 //
 // The cheap-looking route is to notice that d2profit/dp du is the collar
 // derivative of dprofit/du, which `profit_env_derivatives` already computes
-// analytically, and so to difference THAT in the collar: two seatings, no
+// analytically, and so to difference THAT in the collar: two placements, no
 // re-driving, every column at once.
 //
 // ⚠️ IT IS WRONG, AND MEASURABLY SO -- the collar row comes back at -1.40x the

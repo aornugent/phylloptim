@@ -315,7 +315,7 @@ public:
   //
   // ⚠️ AND MORE KNOTS ARE NOT SAFER EITHER. The quintic's slope error bottoms out at
   // 400 and then gets WORSE -- 4.8e-13, 1.3e-12, 2.1e-12 -- because the divided
-  // differences that seat the top three coefficients lose to roundoff as the span
+  // differences that placement the top three coefficients lose to roundoff as the span
   // shrinks. A count chosen by refining until it stops moving would overshoot.
   //
   // The solve does not pay for any of it: a read is O(1) on a uniform grid.
@@ -498,7 +498,7 @@ public:
   // model's own sentinel zero where no condition defines the point, and the flag is
   // what separates that from stationarity.
   double collar_resid_ = util::na_value;
-  bool collar_resid_seated_ = false;
+  bool collar_resid_placed_ = false;
 
   // --- Medlyn stomatal-conductance model (from develop #450) ------------------
   // Standalone, R-callable alternative to the root-collar profit optimisation
@@ -806,7 +806,7 @@ public:
   // ⚠️ FOR DERIVATIVE WORK ONLY. It leaves the splines describing a different
   // stem_b, which is sound only because every read goes through the four
   // accessors, and it deliberately does NOT clear the solved operating point --
-  // re-seating the physiology is exactly the cost being avoided -- so whatever
+  // re-placing the physiology is exactly the cost being avoided -- so whatever
   // reads the outputs afterwards must write them first. `set_traits()` is the
   // way back, and forces a rebuild.
   void perturb_stem_b(double stem_b_new);
@@ -1043,7 +1043,7 @@ public:
   // forward-mode tangent for the analytic photosynthesis/cost algebra, the
   // implicit-function theorem at the psi_stem_to_ci root-find, and analytic
   // spline derivatives (the stem curve's slope) for the smooth transport. Replaces
-  // the noisy finite-difference gradient. Seats the soil-side caches itself, so a
+  // the noisy finite-difference gradient. Places the soil-side caches itself, so a
   // solve need not have run first.
   //
   // ⚠️ **The 0.0 returned on the shut-down / reversed-gradient exits is a
@@ -1071,9 +1071,9 @@ public:
   // and the generated R binding untouched.
   double dprofit_droot_collar_psi(double opt_root_psi, bool* feasible = nullptr);
   // Post-prepare body of dprofit_droot_collar_psi, with the same `feasible`
-  // contract. Assumes the supply path's per-solve caches are already seated, so
+  // contract. Assumes the supply path's per-solve caches are already placed, so
   // the collar solve can share ONE supply_begin_solve across all ~10 of its
-  // gradient evaluations instead of re-seating per call -- the same saving #530
+  // gradient evaluations instead of re-placing per call -- the same saving #530
   // made for the finite-difference path, and it matters here because
   // begin_solve() is a spline evaluation per soil layer.
   double dprofit_at_collar_psi(double opt_root_psi, bool* feasible = nullptr);
@@ -1214,13 +1214,13 @@ public:
   };
   bool collar_rows(CollarRows& out) const;
 
-  // The same channel where the leaf seats BOTH potentials at the collar of zero
+  // The same channel where the leaf places BOTH potentials at the collar of zero
   // uptake. No marginal-profit evaluation records that point -- the stem sits at
   // the collar, so it takes the no-flow exit and returns a sentinel -- and no
   // difference can be centred on it either, because it is a bound. So this is
   // stated from the branch: the stem follows the collar exactly, gross
   // assimilation is zero and so is the conductance, profit is respiration plus
-  // the cost at the seat, and each layer's own draw still responds because the
+  // the cost at the placement, and each layer's own draw still responds because the
   // supply is a function of the collar whether or not the total vanishes.
   //
   // False anywhere else, read off the recorded classification rather than off the
@@ -1916,7 +1916,7 @@ public:
   //
   // ⚠️ THE TWO ARE NOT THE SAME POINT. HydraulicShutdown holds the stem at
   // psi_crit and moves no water at all, so every environment row there is
-  // exactly zero. ShadeDeath seats BOTH potentials at the collar of zero
+  // exactly zero. ShadeDeath places BOTH potentials at the collar of zero
   // uptake -- which is the wet bound -- so its profit reads the soil through
   // that bound, and the per-layer consumptions are not zero either: they sum
   // to zero.
@@ -2354,7 +2354,7 @@ inline void Leaf::set_physiology(const RootNetwork& root_network, double PPFD, c
   // makes the calling convention independent of which path is in force.
   //
   // It stays HERE, after set_soil_state, because the multi-layer length check
-  // needs the soil profile seated first.
+  // needs the soil profile placed first.
   switch (supply_kind_) {
     case SupplyKind::MultiLayer:
       roots_.set_root_network(root_network);
@@ -2595,7 +2595,7 @@ inline void Leaf::set_shutdown_state(double root_collar) {
   // Declaring it costs nothing and evaluating it would move the fluxes just
   // written above.
   collar_resid_ = 0.0;
-  collar_resid_seated_ = false;
+  collar_resid_placed_ = false;
   // Invalidate the transpiration memo: it is keyed on (psi_stem, psi_upstream) and
   // we have just written transpiration_ without going through transpiration().
   transpiration_cached_ = false;
@@ -2618,7 +2618,7 @@ inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b){
   // reader after an exit that declined to write it would otherwise get a plausible
   // number from the previous plant.
   collar_resid_ = util::na_value;
-  collar_resid_seated_ = false;
+  collar_resid_placed_ = false;
   operating_point_kind_ = OperatingPointKind::Unsolved;
   // Same reason, and it needs saying because the arm is written LATER than the
   // classification is: an exit taken before the dry bound is formed would
@@ -2689,9 +2689,9 @@ if(assim_max_ < 0){
     stom_cond_CO2_ = 0.0;
     // As on the shut-down exits: the stem is tied to the collar here, so the
     // marginal profit takes its no-flow exit and returns the sentinel. The cost's
-    // own slope at the seat is what a consumer needs instead, and it is a read.
+    // own slope at the placement is what a consumer needs instead, and it is a read.
     collar_resid_ = 0.0;
-    collar_resid_seated_ = false;
+    collar_resid_placed_ = false;
 
         if(std::isnan(profit_)){
           util::stop("Error: profit nan");
@@ -2775,7 +2775,7 @@ if(assim_max_ < 0){
       // to evaluate at it either.
       operating_point_kind_ = OperatingPointKind::Determined;
       collar_resid_ = 0.0;
-      collar_resid_seated_ = false;
+      collar_resid_placed_ = false;
 
       if (!std::isfinite(profit_)) {
         util::stop("Error: non-finite profit in collapsed-root interval; "
@@ -2797,7 +2797,7 @@ if(assim_max_ < 0){
 
 // The profit-maximising collar potential, by solving the first-order condition
 // dprofit/dpsi == 0 instead of searching profit itself (PLAN 11a). Assumes
-// prepare_collar_solve has run, so the soil-side caches are seated and every
+// prepare_collar_solve has run, so the soil-side caches are placed and every
 // gradient evaluation below can go straight to dprofit_at_collar_psi.
 //
 // WHY this replaced golden section, in one line each -- PLAN 11a has the numbers:
@@ -2973,8 +2973,8 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
 // returned this places what it placed -- bit for bit, which is the only referee a
 // placement can have.
 //
-// What it does not do is look for the feasible interval: prepare_collar_solve seats
-// the soil-side caches on its way to the bounds, so this seats them itself and stops
+// What it does not do is look for the feasible interval: prepare_collar_solve places
+// the soil-side caches on its way to the bounds, so this places them itself and stops
 // there. That is the whole saving -- two bound root-finds and the search between
 // them, against one evaluation of the condition.
 inline bool Leaf::place_solved_point(const SolvedPoint& point) {
@@ -2988,7 +2988,7 @@ inline bool Leaf::place_solved_point(const SolvedPoint& point) {
     operating_point_kind_ = point.kind;
     dry_bound_arm_ = point.arm;
 
-    collar_resid_ = dprofit_at_collar_psi(point.collar, &collar_resid_seated_);
+    collar_resid_ = dprofit_at_collar_psi(point.collar, &collar_resid_placed_);
 
     opt_psi_stem_ = find_psi_stem_from_psi_root(point.collar, supply_psi_soil());
 
@@ -3032,9 +3032,9 @@ inline void Leaf::find_root_collar_psi(){
     //
     // Ordered before the placement rather than after it because this evaluation
     // moves the fluxes: the placement is what the outputs are, so it goes last and
-    // nothing has to be saved and restored. The soil caches are already seated by
+    // nothing has to be saved and restored. The soil caches are already placed by
     // prepare_collar_solve, so the body is called rather than the wrapper.
-    collar_resid_ = dprofit_at_collar_psi(opt_root_psi, &collar_resid_seated_);
+    collar_resid_ = dprofit_at_collar_psi(opt_root_psi, &collar_resid_placed_);
 
     opt_psi_stem_ = find_psi_stem_from_psi_root(opt_root_psi, supply_psi_soil());
 
@@ -3226,7 +3226,7 @@ inline Leaf::FixedCollarEval Leaf::profit_at_fixed_collar(double collar) {
     return out;
   }
 
-  // find_psi_stem_from_psi_root seats the uptake at this collar on its way past,
+  // find_psi_stem_from_psi_root places the uptake at this collar on its way past,
   // and the profit is taken at the stem potential it returns, so both outputs
   // describe the collar that was asked for.
   opt_root_psi_ = collar;
@@ -3283,9 +3283,9 @@ inline double Leaf::profit_at_collar_psi(double target_opt_root_psi,
 // .deriv); dpsi_stem/dpsi by a tight central difference on the smooth transport.
 inline double Leaf::dprofit_droot_collar_psi(double opt_root_psi, bool* feasible) {
   // Every transport evaluation below reads the supply path's per-solve caches, so
-  // seat them on the current psi_soil_ here rather than depending on whatever the
+  // placement them on the current psi_soil_ here rather than depending on whatever the
   // caller's last solve left cached. Keeping this in the wrapper is what lets the
-  // collar solve call the body directly and seat them once for the whole solve.
+  // collar solve call the body directly and placement them once for the whole solve.
   supply_begin_solve();
   return dprofit_at_collar_psi(opt_root_psi, feasible);
 }
@@ -3329,7 +3329,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
     return 0.0;  // shut-down / infeasible: no informative gradient
   }
 
-  // ⚠️ E1: SEAT THE TEMPERATURE PARAMETERS AT THIS CANDIDATE. Without this the
+  // ⚠️ E1: PLACE THE TEMPERATURE PARAMETERS AT THIS CANDIDATE. Without this the
   // whole derivative below is evaluated at the AIR-temperature baseline, because
   // nothing on this path calls set_leaf_states_rates_from_psi_stem and
   // set_physiology gates its temperature cache on !use_energy_balance_. The
@@ -3753,7 +3753,7 @@ inline bool Leaf::uptake_rows(UptakeRows& out) const {
 // The collar channel, read rather than differenced (see the header).
 //
 // Every coefficient here was recorded by the marginal-profit evaluation that
-// seated the point, so this reads state and evaluates no kernel except the cost's
+// placed the point, so this reads state and evaluates no kernel except the cost's
 // slope on the branch where assimilation has none.
 inline bool Leaf::collar_rows(CollarRows& out) const {
   out = CollarRows();

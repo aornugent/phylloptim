@@ -12,7 +12,7 @@
 # bound the profit algebra runs on a negative conductance and returns a plausible
 # number.
 
-fixed_collar_seated <- function(psi, traits = leaf_traits()) {
+fixed_collar_placed <- function(psi, traits = leaf_traits()) {
   l <- leaf_model(traits = traits)
   set_drivers(l, psi_soil = rep(psi, 5))
   l$find_root_collar_psi()
@@ -23,8 +23,8 @@ fixed_collar_seated <- function(psi, traits = leaf_traits()) {
 # hold the collar, move a trait, re-evaluate at the held collar.
 fixed_collar_arm <- function(psi, name, side, rel = 1e-3) {
   base <- leaf_traits()
-  seated <- fixed_collar_seated(psi, base)
-  collar <- seated$opt_root_psi_
+  placed <- fixed_collar_placed(psi, base)
+  collar <- placed$opt_root_psi_
 
   tr <- base
   tr[[name]] <- base[[name]] + side * max(abs(base[[name]]), 1) * rel
@@ -32,7 +32,7 @@ fixed_collar_arm <- function(psi, name, side, rel = 1e-3) {
   set_drivers(m, psi_soil = rep(psi, 5))
   v <- m$profit_at_fixed_collar_values(collar)
   list(collar = collar,
-       bound_a = seated$find_root_psi(psi, rep(psi, 5), 0L),
+       bound_a = placed$find_root_psi(psi, rep(psi, 5), 0L),
        moved_bound_a = m$find_root_psi(psi, rep(psi, 5), 0L),
        feasible = v[[1]] == 1,
        profit = v[[2]],
@@ -72,7 +72,7 @@ test_that("a trait step across the wet bound is refused, not projected", {
       expect_gt(moved, margin)          # the bound moves further than the margin
       if (!a$feasible) {
         crossed <- TRUE
-        # The clamp's tell: it reseats the collar somewhere else and returns a
+        # The clamp's tell: it places again the collar somewhere else and returns a
         # number anyway.
         expect_gt(abs(a$clamped_at - a$collar), 0)
         expect_true(is.finite(a$clamped))

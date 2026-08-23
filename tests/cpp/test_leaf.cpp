@@ -361,7 +361,7 @@ void test_a_placed_point_is_the_searched_one() {
 
       // Re-supplied first, because that is what a consumer does before every solve:
       // the placement has to stand on the drivers alone, not on what the last solve
-      // left seated.
+      // left placed.
       l = make_leaf(d, {psi}, {1.0});
       ok(l.place_solved_point(point), "the point is placed" + at);
       ok(l.profit_ == profit, "profit is bit-identical" + at);
@@ -596,8 +596,8 @@ void test_analytic_gradient_matches_finite_difference() {
 // so checking the analytic lambda against a finite-difference dA/dE is a check on
 // the whole optimisation, not just on one formula.
 // dprofit_droot_collar_psi reads the supply path's signed soil potentials, which
-// used to be seated only by a solve -- so calling it on a leaf that had had
-// set_physiology but not find_root_collar_psi read an empty vector. It now seats
+// used to be placed only by a solve -- so calling it on a leaf that had had
+// set_physiology but not find_root_collar_psi read an empty vector. It now places
 // them itself. Ported from plant develop (#585).
 void test_gradient_needs_no_prior_solve() {
   printf("dprofit/dpsi_collar does not require a prior solve\n");
@@ -605,7 +605,7 @@ void test_gradient_needs_no_prior_solve() {
   phylloptim::Leaf solved = make_leaf(d, {2.0}, {1.0});
   solved.find_root_collar_psi();
   phylloptim::Leaf unsolved = make_leaf(d, {2.0}, {1.0});
-  // Bit-identical, not merely close: seating the potentials from psi_soil_ is
+  // Bit-identical, not merely close: placing the potentials from psi_soil_ is
   // exactly what a solve does, so this is idempotent and moves no arithmetic.
   ok(unsolved.dprofit_droot_collar_psi(2.5) == solved.dprofit_droot_collar_psi(2.5),
      "the gradient is the same with and without a prior solve");
@@ -1917,7 +1917,7 @@ void test_pm_leaf_temperature_response() {
 //     temperature cache on `!use_energy_balance_`, so the derivative is
 //     evaluated with vcmax_/jmax_/gamma_/km_/R_d_ left at the AIR-temperature
 //     baseline while the objective is evaluated at Tleaf(E(psi)).
-//  2. THE MISSING CHAIN TERM. Even seated correctly, the derivative has no
+//  2. THE MISSING CHAIN TERM. Even placed correctly, the derivative has no
 //     dA/dTleaf * dTleaf/dE * dE/dpsi. `use_energy_balance_` appears at six
 //     sites in leaf_model.hpp and none of them is in the derivative.
 //
@@ -1954,7 +1954,7 @@ void test_energy_balance_collar_solve_is_measured() {
         if (!feasible) continue;
 
         // ORACLE: scan profit over the same feasible interval. A fresh leaf,
-        // because dprofit_droot_collar_psi above has just re-seated the
+        // because dprofit_droot_collar_psi above has just re-placed the
         // temperature parameters at yet another point.
         phylloptim::Leaf scan = make_pm_leaf(d, {2.0}, {1.0}, true);
         double lo = 0.0, hi = 0.0;
@@ -1996,7 +1996,7 @@ void test_energy_balance_collar_solve_is_measured() {
   ok(rows > 0, "the EB grid has feasible rows to measure");
 
   // The bounds this test landed with, and what they replaced. Before the three
-  // edits (seat the temperature parameters, add the dA/dTleaf chain term, handle
+  // edits (placement the temperature parameters, add the dA/dTleaf chain term, handle
   // the compensation point) the same grid gave: residual 5.76, collar 0.83 MPa
   // from the argmax, 2.34 umol m^-2 s^-1 of profit left behind.
   ok(worst_resid < 1e-9,
@@ -3299,7 +3299,7 @@ void test_rows_read_a_solved_leaf() {
   ok(uptake_ok, "nor any layer's uptake");
 }
 
-// A leaf too shaded to cover its own respiration seats both potentials at the
+// A leaf too shaded to cover its own respiration places both potentials at the
 // collar where uptake is zero and pays respiration plus a hydraulic cost there.
 // So its profit reads the soil only through that bound moving underneath it, and
 // the assembled rows must agree with that composition, which shares no code with
@@ -3307,7 +3307,7 @@ void test_rows_read_a_solved_leaf() {
 //
 // ⚠️ THE COMPOSITION IS THE ASSEMBLY, NOT THE HELD ROW, and it used to be both:
 // these rows came from differencing the whole solve, so the total sat in `held`
-// with the point declared not to move. It moves -- the seat IS the wet bound -- so
+// with the point declared not to move. It moves -- the placement IS the wet bound -- so
 // the held row is the zero a frozen collar makes it and the movement is reported
 // once in `dresidual`, exactly as at a pin.
 void test_shade_death_soil_rows() {
@@ -3339,12 +3339,12 @@ void test_shade_death_soil_rows() {
   const pl::Leaf::BoundRow b = l.bound_row(pl::Leaf::WhichBound::Wet);
   const pl::Leaf::HydraulicCostRow c = l.hydraulic_cost_row(b.bound);
   ok(b.finite && c.finite, "both halves of the composition are finite");
-  // The point's channel into profit is the cost's slope at the seat, and the
+  // The point's channel into profit is the cost's slope at the placement, and the
   // model's own marginal profit cannot say so: the stem sits AT the collar, so it
   // takes the no-flow exit and returns a sentinel zero.
   ok(std::abs(r.dy_dp[0] - (-c.d_dpsi_stem)) <=
          1e-12 * std::max(std::abs(c.d_dpsi_stem), 1.0),
-     "profit's channel into the point is the cost's slope at the seat");
+     "profit's channel into the point is the cost's slope at the placement");
   double worst = 0.0;
   double worst_held = 0.0;
   for (int j = 0; j < L; ++j) {
@@ -4096,7 +4096,7 @@ void test_rows_in_parts_assemble_to_the_totals() {
     if (is_interior && std::isfinite(rows.residual_slope) &&
         rows.residual_slope != 0.0) {
       ++slope_compared;
-      // Re-seat and difference the marginal profit at four steps a decade apart.
+      // Re-placement and difference the marginal profit at four steps a decade apart.
       // `at`'s own H is the 1e-06 one, so the second column below is what a
       // single-step referee reports and the first is what the sweep settles on.
       Plateau pl;
@@ -4561,7 +4561,7 @@ void test_rows_in_parts_assemble_to_the_totals() {
   ok(constrained > 90, "and the differenced solve over the constrained points");
   // ⚠️ THIS WAS AN IDENTITY AT 1e-12 AND IT IS NOW A BOUND, because the two routes
   // deliberately stopped running the same arithmetic. `rows_at` reads the collar
-  // channel off the seated state and the curvature off its closed form; `at`
+  // channel off the placed state and the curvature off its closed form; `at`
   // differences both, and must, being refereed bit for bit against a captured
   // reference. That was the stated price of the swap and this is its size: 7e-05,
   // at an output the read does not state at all, through the assembly's own
@@ -5238,7 +5238,7 @@ void test_the_supplys_mixed_partials_match_a_difference() {
       // curve invalidates them: without this the difference reads the new curve at
       // the collar and the OLD one at each soil layer, which is a difference of two
       // models. Every production path reaches this through the collar solve, which
-      // seats it; a check that perturbs and reads directly has to seat it itself.
+      // places it; a check that perturbs and reads directly has to placement it itself.
       l.supply_begin_solve();
       l.E_from_Soil_to_Root_Collar(p, l.supply_psi_soil());
       total[side] = l.E_up_;
@@ -5523,9 +5523,9 @@ void test_the_collar_channel_is_read_rather_than_differenced() {
     const std::string tag =
         std::string(f.what) + " (" +
         pl::Leaf::operating_point_kind_name(b.branch.kind) + ")";
-    bool seated = false;
-    l.dprofit_droot_collar_psi(b.psi_star, &seated);
-    if (!seated) continue;
+    bool placed = false;
+    l.dprofit_droot_collar_psi(b.psi_star, &placed);
+    if (!placed) continue;
     pl::Leaf::CollarRows c;
     const bool read = l.collar_rows(c);
     ok(read, "the channel is readable at " + tag);
@@ -5600,10 +5600,10 @@ void test_the_collar_channel_is_read_rather_than_differenced() {
         pl::Leaf::WhichBound which = pl::Leaf::WhichBound::Wet;
         if (!grad::pinned_bound(b.branch.kind, which)) continue;
         ++pinned_points;
-        bool seated = false;
-        l.dprofit_droot_collar_psi(b.psi_star, &seated);
+        bool placed = false;
+        l.dprofit_droot_collar_psi(b.psi_star, &placed);
         pl::Leaf::CollarRows c;
-        if (seated && l.collar_rows(c)) ++read_answers;
+        if (placed && l.collar_rows(c)) ++read_answers;
         grad::OutputValues diff(L);
         if (grad::collar_response(l, b.psi_star, s, diff)) ++difference_answers;
       }
@@ -5777,7 +5777,7 @@ void test_a_pinned_point_answers_from_parts_rather_than_re_solving() {
 // A shut point's rows against the differencing they replace.
 //
 // At a shut collar the leaf holds the stem at its critical potential and moves no
-// water at all, so profit is respiration plus the cost at that seat:
+// water at all, so profit is respiration plus the cost at that placement:
 //
 //   Pi = -R_d(T) - C(psi_crit; stem_b, stem_c, beta2, scale)
 //
@@ -5788,7 +5788,7 @@ void test_a_pinned_point_answers_from_parts_rather_than_re_solving() {
 // ⚠️ THE COLLAR IS NOT CHECKED HERE AND MUST NOT BE. `set_shutdown_state` writes
 // `opt_psi_stem_ = psi_crit` on every exit, which is why the profit rows above hold
 // unconditionally -- but it writes `opt_root_psi_` from the exit's own reason, and
-// the three reasons seat it at three different potentials. `shut_row_covers`
+// the three reasons placement it at three different potentials. `shut_row_covers`
 // refuses a request naming the collar for that reason.
 
 // The supply's SECOND collar derivative, against a difference of its first, over
@@ -5829,7 +5829,7 @@ void test_a_pinned_point_answers_from_parts_rather_than_re_solving() {
 // Both halves are asserted, because they say different things. The agreement is
 // what makes the eventual merge a deletion rather than an investigation. The LOSS
 // is why the merge is wanted: three kinds map onto one status, and a consumer
-// holding the status cannot tell a bound it must differentiate from a seat it must
+// holding the status cannot tell a bound it must differentiate from a placement it must
 // not.
 void test_the_two_classifications_of_one_point() {
   printf("the numerical status against the branch the solve took\n");
@@ -5941,7 +5941,7 @@ void test_the_two_classifications_of_one_point() {
 
   // ⚠️ AND THE BAND IS NOT EMPTY, WHICH IS THE ARGUMENT FOR ONE CLASSIFICATION
   // RATHER THAN TWO. Where radiation is zero, gross assimilation is identically
-  // zero, the marginal profit at the seated collar is a SENTINEL rather than a
+  // zero, the marginal profit at the placed collar is a SENTINEL rather than a
   // derivative, and the implied Newton step is exactly 0 -- the interior side of a
   // cut whose whole justification is that no point lands there. The curvature
   // beside it is finite and large, so nothing about the pair says which branch this
@@ -6400,16 +6400,16 @@ void test_the_transport_responses_collar_slope() {
   ok(worst <= 1e-6, "and it is the difference of the recorded response");
 }
 
-// The two zero-flux kinds are two points, and the seat is what tells them apart.
+// The two zero-flux kinds are two points, and the placement is what tells them apart.
 //
 // Both pay respiration plus a hydraulic cost, so both take the cost's own rows as
 // their profit rows. A hydraulic shutdown holds the stem AT its critical
-// potential, so that input is the seat and its row is the cost's slope, and
+// potential, so that input is the placement and its row is the cost's slope, and
 // nothing the leaf reads is a function of the soil. Shade death holds both
 // potentials at the collar of zero uptake instead: the critical potential is
-// inactive exactly as at an interior optimum, and the seat moves with the soil.
+// inactive exactly as at an interior optimum, and the placement moves with the soil.
 void test_the_two_zero_flux_kinds_are_two_points() {
-  printf("the two zero-flux kinds are two points, and the seat says which\n");
+  printf("the two zero-flux kinds are two points, and the placement says which\n");
   namespace grad = phylloptim::gradient;
   namespace pl = phylloptim;
   grad::Settings s;
@@ -6439,11 +6439,11 @@ void test_the_two_zero_flux_kinds_are_two_points() {
     return;
   }
 
-  // The seats are different potentials, and each leaf's stem sits at its own.
+  // The places are different potentials, and each leaf's stem sits at its own.
   ok(shaded.opt_psi_stem_ == shaded.opt_root_psi_,
-     "shade death seats the stem exactly at the collar");
+     "shade death places the stem exactly at the collar");
   ok(parched.opt_psi_stem_ == parched.psi_crit,
-     "and a hydraulic shutdown seats it exactly at the critical potential");
+     "and a hydraulic shutdown places it exactly at the critical potential");
   ok(shaded.opt_psi_stem_ != shaded.psi_crit,
      "which the shaded leaf's is not");
 
@@ -6461,23 +6461,23 @@ void test_the_two_zero_flux_kinds_are_two_points() {
   ok(shaded_worst > 1e-8 && std::abs(shaded_sum) < 1e-15,
      "shade death's per-layer draws are non-zero and sum to zero");
 
-  // The declared rows, and the two the seat decides. `shut_row` takes the seat as
+  // The declared rows, and the two the placement decides. `shut_row` takes the placement as
   // a fact rather than inferring it from the potentials, which is what makes it
   // impossible to read one kind's answer at the other.
   const pl::Leaf::HydraulicCostRow shaded_cost =
       shaded.hydraulic_cost_row(shaded.opt_psi_stem_);
   const pl::Leaf::HydraulicCostRow parched_cost =
       parched.hydraulic_cost_row(parched.opt_psi_stem_);
-  ok(shaded_cost.finite && parched_cost.finite, "both seats have a cost row");
+  ok(shaded_cost.finite && parched_cost.finite, "both places have a cost row");
   double row = 1234.0;
   ok(grad::shut_row(parched, parched_cost, true, grad::par_psi_crit, L, row) &&
          row == -parched_cost.d_dpsi_stem,
-     "at a hydraulic shutdown the critical potential IS the seat");
+     "at a hydraulic shutdown the critical potential IS the placement");
   row = 1234.0;
   ok(grad::shut_row(shaded, shaded_cost, false, grad::par_psi_crit, L, row) &&
          row == 0.0,
      "and at shade death it is inactive, exactly");
-  // The soil block: declared where the seat reads no soil, and refused where it
+  // The soil block: declared where the placement reads no soil, and refused where it
   // is a function of it, so the supply's own rows answer instead.
   row = 1234.0;
   ok(grad::shut_row(parched, parched_cost, true, grad::par_psi_soil_first, L,
@@ -6488,7 +6488,7 @@ void test_the_two_zero_flux_kinds_are_two_points() {
                      row),
      "and shade death declares none of them");
   ok(!grad::shut_row(shaded, shaded_cost, false, grad::par_root_c, L, row),
-     "nor the root curve's, which moves the supply the seat is defined by");
+     "nor the root curve's, which moves the supply the placement is defined by");
 
   // The collar channel, which no evaluation of this model can record: the stem
   // sits at the collar, so the marginal profit takes its no-flow exit.
@@ -6505,7 +6505,7 @@ void test_the_two_zero_flux_kinds_are_two_points() {
   ok(ch.dassim == 0.0 && ch.dstom_cond == 0.0,
      "gross assimilation and the conductance move by exactly zero");
   ok(ch.dprofit == -shaded_cost.d_dpsi_stem,
-     "and profit's channel is minus the cost's slope at the seat");
+     "and profit's channel is minus the cost's slope at the placement");
   std::vector<double> per_layer;
   shaded.dE_from_soil_dpsi_collar_by_layer(shaded.opt_root_psi_,
                                            shaded.supply_psi_soil(), per_layer);
@@ -6524,7 +6524,7 @@ void test_the_two_zero_flux_kinds_are_two_points() {
   // items meet. The wet bound is the collar at which total uptake vanishes; with a
   // SINGLE layer that is the collar at which its numerator vanishes, which is the
   // gravity balance -- and the supply refused every derivative there, so the bound
-  // had no row and a shade-death point seated on it could not report its own
+  // had no row and a shade-death point placed on it could not report its own
   // movement. Only the numerator vanishes at that collar, so nothing about it was
   // ever 0/0; with the refusal gone the bound has a row at every layer count and
   // the point's movement is reported rather than folded into a re-solve.
@@ -6574,7 +6574,7 @@ void test_the_two_zero_flux_kinds_are_two_points() {
 // of each input and holds both arms on this branch. What it referees is the
 // composition -- a held partial the frozen collar makes zero for the carbon side
 // and the supply's own Jacobian for the water, plus the wet bound's movement
-// priced by the cost's slope at the seat.
+// priced by the cost's slope at the placement.
 void test_shade_deaths_rows_against_a_differenced_solve() {
   printf("shade death's assembled rows against a differenced solve\n");
   namespace grad = phylloptim::gradient;
@@ -6712,9 +6712,9 @@ void test_a_shut_points_rows_are_the_costs_own() {
       continue;
     }
     ++shut;
-    // The seat, which is what makes the profit rows exit-independent.
+    // The placement, which is what makes the profit rows exit-independent.
     ok(phylloptim::util::identical(l.opt_psi_stem_, l.psi_crit),
-       "a shut collar seats the stem at its critical potential");
+       "a shut collar places the stem at its critical potential");
 
     const std::size_t row_profit = 0;
     std::vector<int> outs, ins;

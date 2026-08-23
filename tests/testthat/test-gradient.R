@@ -688,7 +688,7 @@ test_that("a reused leaf is differentiated at `traits`, not at its own state", {
   # fresh one, because the setter applies `traits` before anything is read. If it
   # did not, `value` and `psi_star` -- and so the whole composite -- would describe
   # the wrong point, plausibly and with no symptom. This is the failure mode that
-  # made seating the leaf with reset() rather than set_drivers() load-bearing.
+  # made placing the leaf with reset() rather than set_drivers() load-bearing.
   tr <- leaf_traits(vcmax_25 = 105, stem_b = 4.2)
   args <- list(psi_soil = 2.0, PPFD = 900, traits = tr, pars = "vcmax_25")
   fresh <- do.call(leaf_gradient, args)

@@ -36,7 +36,7 @@ void one(double ps, double ppfd, int L, double pc) {
   const grad::Settings s;
   grad::apply(l, th, d, false, -1, s.fast_stem_curve);
   l.find_root_collar_psi();
-  std::printf("psi_soil=%.2f..%.2f psi_crit=%.4f L=%d  %-16s seat=%.10g\n", ps,
+  std::printf("psi_soil=%.2f..%.2f psi_crit=%.4f L=%d  %-16s placement=%.10g\n", ps,
               ps + 0.25 * (L - 1), pc, L,
               phylloptim::Leaf::operating_point_kind_name(l.operating_point_kind()),
               l.opt_root_psi_);
@@ -44,7 +44,7 @@ void one(double ps, double ppfd, int L, double pc) {
     const phylloptim::Leaf::BoundRow w =
         l.bound_row(phylloptim::Leaf::WhichBound::Wet);
     std::printf("   bound_row(Wet): bound=%.10g finite=%d slope=%.6g "
-                "seat-match=%d\n",
+                "placement-match=%d\n",
                 w.bound, int(w.finite), w.residual_slope,
                 int(w.bound == l.opt_root_psi_));
   } catch (const std::exception& e) {

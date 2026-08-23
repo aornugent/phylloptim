@@ -538,7 +538,7 @@ test_that("`pars` order does not change any gradient (#72)", {
   # displaced by one step in whichever parameter preceded it.
   #
   # ⚠️ Asserted as the GENERAL invariant -- order changes nothing, for any
-  # parameter -- rather than as "stem_b is now reseated". `root_b` obeys the same
+  # parameter -- rather than as "stem_b is now placed again". `root_b` obeys the same
   # homogeneity identity and would get the same shortcut, and a stem_b-shaped
   # test would silently stop covering the case it was written for.
   b <- leaf_batch(psi_soil = 1.5, PPFD = 900)

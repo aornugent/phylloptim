@@ -1,5 +1,5 @@
 # The profit's rows in the environment -- radiation and each soil layer -- at
-# the operating point the leaf is seated at.
+# the operating point the leaf is placed at.
 #
 # The referee is a central difference of the profit at a RE-SOLVED operating
 # point. That is the relation the rows are the derivative of, and it shares no
@@ -19,7 +19,7 @@
 # first-order condition and differ in the last bits, and a gradient that already
 # answers must not move.
 
-env_row_seat <- function(psi_soil, ...) {
+env_row_placement <- function(psi_soil, ...) {
   l <- leaf_model(traits = leaf_traits())
   set_drivers(l, psi_soil = psi_soil, ...)
   l$find_root_collar_psi()
@@ -42,7 +42,7 @@ env_row_states <- list(
 )
 
 env_row_leaf <- function(st, psi = st$psi, extra = list()) {
-  do.call(env_row_seat, c(list(psi_soil = psi), st$args, extra))
+  do.call(env_row_placement, c(list(psi_soil = psi), st$args, extra))
 }
 
 # dProfit*/dpsi_j by re-solving either side. Returns NA where an arm left the
@@ -209,7 +209,7 @@ test_that("a point on no branch these rows serve is refused by name", {
   # The rows exist for an interior optimum and for a bound to follow. Anything
   # else has to come back unusable WITH a message, because a caller reading
   # sentinels as numbers is the failure this flag exists to prevent.
-  l <- env_row_seat(rep(3.0, 5), PPFD = 0)
+  l <- env_row_placement(rep(3.0, 5), PPFD = 0)
   r <- profit_env_row_values(l)
   expect_false(r$usable)
   expect_false(r$pinned)

@@ -7,7 +7,7 @@
 #
 #   hydraulic shutdown  the stem is held at psi_crit and every layer is zeroed,
 #                       so the environment rows really are exactly zero
-#   shade death         BOTH potentials are seated at the collar of zero uptake,
+#   shade death         BOTH potentials are placed at the collar of zero uptake,
 #                       which IS the wet bound -- so profit reads the soil
 #                       through it, and the per-layer consumptions are not zero
 #                       either: they sum to zero
@@ -26,12 +26,12 @@ shut_leaf <- function(psi_soil = shut_profile, PPFD = 10) {
   l
 }
 
-test_that("a shaded leaf seats both potentials at the collar of zero uptake", {
+test_that("a shaded leaf places both potentials at the collar of zero uptake", {
   l <- shut_leaf()
   expect_identical(l$operating_point_kind_name(), "shade-death")
   expect_true(l$zero_flux_operating_point())
 
-  # The identity the rows are built on, asserted rather than assumed: the seated
+  # The identity the rows are built on, asserted rather than assumed: the placed
   # potential IS the wet bound, to the bit.
   wet <- l$find_root_psi(min(shut_profile), shut_profile, 0L)
   expect_identical(l$opt_psi_stem_, wet)
