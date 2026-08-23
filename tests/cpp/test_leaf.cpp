@@ -4070,7 +4070,7 @@ void test_rows_in_parts_assemble_to_the_totals() {
       }
       phylloptim::Leaf::TransportTrait ignored =
           phylloptim::Leaf::TransportTrait::Conductance;
-      return grad::waist_side(par, grad::n_soil_layers(d, single)) ||
+      return grad::supply_side(par, grad::n_soil_layers(d, single)) ||
              grad::transport_side(par, ignored) || grad::slack_side(par);
     };
     // The scale each of the five outputs is judged against, which is the largest
@@ -4740,7 +4740,7 @@ void test_the_condition_reaches_the_state_through_two_intermediates() {
     // ⚠️ WHAT BOUNDS THIS IS THE INTERPOLANT'S SECOND DERIVATIVE, and it is not a
     // property of the differencing: the residual is flat to three digits over five
     // decades of step, so it is systematic. Solving both coefficients from two
-    // state directions and predicting the rest puts the waist's rank-two structure
+    // state directions and predicting the rest puts the supply's rank-two structure
     // at 1e-09 and dR/dV at 1e-10, so what carries the residual is dR/dsigma,
     // which agrees with the solved value to 2e-05.
     //
@@ -5356,10 +5356,10 @@ void test_the_transport_response_is_the_flux_balances_own() {
     const double V_balance = (S / kappa + f_p) / f_s;
     const double V_agrees = std::abs(V_balance / l.dpsistem_dpsi_ - 1.0);
 
-    grad::WaistRows w;
-    if (!l.uptake_rows(w.on_uptake) || !grad::waist_supply(l, w, false, L)) continue;
+    grad::SupplyRows w;
+    if (!l.uptake_rows(w.on_uptake) || !grad::gather_supply(l, w, false, L)) continue;
     double dEup = 0.0, d2Eup = 0.0;
-    grad::waist_supply_of(w, grad::par_psi_soil_first, L, dEup, d2Eup);
+    grad::supply_of(w, grad::par_psi_soil_first, L, dEup, d2Eup);
     const double dsigma = dEup / (kappa * f_s);
     const double dV = d2Eup / (kappa * f_s) - V_balance * f_s_prime * dsigma / f_s;
 
@@ -6047,11 +6047,11 @@ void test_the_three_unchecked_invariants() {
     }
   }
 
-  // --- 2. THE PASSIVATION SITES AND THE GRAFTED INPUTS ARE ONE SET ------------
+  // --- 2. THE PASSIVATION SITES AND THE RECORDED INPUTS ARE ONE SET ------------
   //
   // The count 14 + L + 1 + 1 + L is the arithmetic a reader does; what makes it an
   // invariant is that no member of it is severed. A `to_passive` on the leaf path
-  // that nobody grafted back is INVISIBLE -- every row of that input comes back
+  // that nobody recorded back is INVISIBLE -- every row of that input comes back
   // exactly zero, which is indistinguishable from an input the model does not
   // read. So the check is that every input moves something somewhere: an
   // accidental passivation shows up as a whole column of exact zeros across the
@@ -6080,7 +6080,7 @@ void test_the_three_unchecked_invariants() {
     // defaults psi_crit and root_psi_crit are the SAME NUMBER, so the dry bound's
     // min can never prefer the root's -- and `root_psi_crit` is then slack at every
     // state any default-trait grid can reach, which reads exactly like an input
-    // nobody grafted back. Its live row exists and is exactly +1, being a
+    // nobody recorded back. Its live row exists and is exactly +1, being a
     // registered constant, and reaching it needs a plant whose ROOT gives up before
     // its stem. That is the configuration the dry bound's clamp exists for.
     double parted[grad::n_pars];
@@ -6831,11 +6831,11 @@ void test_the_soil_states_two_scalars_are_separable_and_right() {
     ok(b.branch.kind == pl::Leaf::OperatingPointKind::Interior,
        "the fixture is interior, " + tag);
     if (b.branch.kind != pl::Leaf::OperatingPointKind::Interior) continue;
-    grad::WaistRows w;
+    grad::SupplyRows w;
     bool feasible = false;
     l.dprofit_droot_collar_psi(b.psi_star, &feasible);
     ok(feasible && l.uptake_rows(w.on_uptake) &&
-           grad::waist_supply(l, w, false, L),
+           grad::gather_supply(l, w, false, L),
        "the coefficients and the supply derivatives answer, " + tag);
     if (!feasible) continue;
 
@@ -6849,7 +6849,7 @@ void test_the_soil_states_two_scalars_are_separable_and_right() {
       if (!grad::held_row(l, env::kTheta, d, false, input[i], b.psi_star, s, true,
                           at_base, scratch, direct, dR)) continue;
       double dEup = 0.0, d2Eup = 0.0;
-      grad::waist_supply_of(w, input[i], L, dEup, d2Eup);
+      grad::supply_of(w, input[i], L, dEup, d2Eup);
       x1.push_back(dEup); x2.push_back(d2Eup); y.push_back(dR);
       s11 += dEup*dEup; s12 += dEup*d2Eup; s22 += d2Eup*d2Eup;
       s1y += dEup*dR;   s2y += d2Eup*dR;
@@ -6954,11 +6954,11 @@ void test_the_soil_states_rows_match_a_differenced_solve() {
       // ⚠️ THE DIFFERENCE COMES FROM `held_row`, NOT FROM `rows_at`. The
       // dispatcher prefers these same closed forms for these same inputs, so a
       // comparison through it would compare each row with itself.
-      grad::WaistRows w;
+      grad::SupplyRows w;
       // The rows below are checked directly, so this asserts the DISPATCHER
       // reaches them too -- a correct row the row layer never calls is the failure
       // this pair exists to separate.
-      ok(grad::waist_rows_apply(l, req, interior, L),
+      ok(grad::supply_rows_apply(l, req, interior, L),
          "the row layer takes these rows here, " + tag);
       bool evaluable = false;
       l.dprofit_droot_collar_psi(b.psi_star, &evaluable);
@@ -6966,7 +6966,7 @@ void test_the_soil_states_rows_match_a_differenced_solve() {
       ok(l.uptake_rows(w.on_uptake), "the uptake coefficients answer, " + tag);
       ok(std::isfinite(w.on_uptake.dcondition),
          "including the condition's own, " + tag);
-      ok(grad::waist_supply(l, w, false, L),
+      ok(grad::gather_supply(l, w, false, L),
          "and every supply derivative exists, " + tag);
       w.usable = true;
 
@@ -7002,7 +7002,7 @@ void test_the_soil_states_rows_match_a_differenced_solve() {
           continue;
         }
         double dR = 0.0;
-        grad::waist_row(w, input[i], L, got, dR);
+        grad::supply_row(w, input[i], L, got, dR);
         for (int j = 0; j < grad::n_outputs; ++j) {
           if (j == grad::out_collar) {
             continue;   // held, so both routes have it at exactly zero
@@ -7025,7 +7025,7 @@ void test_the_soil_states_rows_match_a_differenced_solve() {
           // disagreement, and with every derivative taken from the curve the
           // whole block sits at the difference's own floor regardless.
           double dEup = 0.0, d2Eup = 0.0;
-          grad::waist_supply_of(w, input[i], L, dEup, d2Eup);
+          grad::supply_of(w, input[i], L, dEup, d2Eup);
           const double dsigma = w.on_uptake.dpsistem * dEup;
           const double G = l.dprofit_dpsistem_;
           const double dV =

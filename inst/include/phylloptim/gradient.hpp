@@ -1287,15 +1287,15 @@ inline bool carbon_rows_apply(const Leaf& l, const RowRequest& r, bool shut) {
 // the supply PRODUCES rather than something the leaf reads, so its row is the
 // supply's own Jacobian -- diagonal in the potentials, lower triangular in the
 // carbons, and never the total's.
-inline bool waist_side(int par, int n_layers) {
+inline bool supply_side(int par, int n_layers) {
   // The root curve's two parameters belong here and not with the transport's:
   // they move the SUPPLY, so they reach the leaf the way a soil potential does --
   // through total uptake -- and the only thing that distinguishes them is which
   // closed form gives that input's own supply derivative.
-  if (channel_of(par) == Channel::Waist) {
+  if (channel_of(par) == Channel::Supply) {
     return true;
   }
-  // The blocks past the parameters are the waist's by construction: a soil
+  // The blocks past the parameters are the supply's by construction: a soil
   // potential and a layer's carbon both reach the leaf through total uptake.
   const par_ref::Kind k = decode(par, n_layers).kind;
   return (k == par_ref::Kind::SoilPotential ||
@@ -1305,7 +1305,7 @@ inline bool waist_side(int par, int n_layers) {
 
 // The coefficients on total uptake and the supply derivatives they multiply,
 // taken once for the whole request.
-struct WaistRows {
+struct SupplyRows {
   Leaf::UptakeRows on_uptake{};
   // dE_up/dpsi_j and its collar derivative. Both are diagonal, so entry j is the
   // total's response as well as layer j's.
@@ -1349,13 +1349,13 @@ struct WaistRows {
 // pin sent ten inputs to a re-solve for rows the leaf states in closed form. A
 // shut collar is excluded, because there the flux is zero and the coefficients
 // these multiply are not the ones the branch is on.
-inline bool waist_rows_apply(const Leaf& l, const RowRequest& r, bool seated,
+inline bool supply_rows_apply(const Leaf& l, const RowRequest& r, bool seated,
                              int n_layers) {
   if (!seated || l.use_energy_balance_) {
     return false;
   }
   for (std::size_t i = 0; i < r.n_input; ++i) {
-    if (waist_side(r.input[i], n_layers)) {
+    if (supply_side(r.input[i], n_layers)) {
       return true;
     }
   }
@@ -1365,7 +1365,7 @@ inline bool waist_rows_apply(const Leaf& l, const RowRequest& r, bool seated,
 // The supply derivatives at the collar the solve left. Every primitive here
 // reports a whole vector of NaN at a branch kink rather than one entry, so one
 // test per block is the whole check.
-inline bool waist_supply(Leaf& l, WaistRows& w, bool single, int n_layers) {
+inline bool gather_supply(Leaf& l, SupplyRows& w, bool single, int n_layers) {
   const std::vector<double>& psi_soil = l.supply_psi_soil();
   const double psi = l.opt_root_psi_;
   l.dE_from_soil_dpsi_soil(psi, psi_soil, w.dEup_dpsi_soil);
@@ -1379,7 +1379,7 @@ inline bool waist_supply(Leaf& l, WaistRows& w, bool single, int n_layers) {
   // ⚠️ BEFORE THE SINGLE-PATH RETURN, because the curve's two rows exist on both
   // paths: the single potential has no root curve, so they are exactly zero
   // there, and a zero row is a row. Gathered after it, they would be empty
-  // vectors that `waist_row` indexes.
+  // vectors that `supply_row` indexes.
   using Trait = Leaf::SupplyCurveTrait;
   l.dE_from_soil_droot_curve(psi, psi_soil, Trait::Position, w.dE_droot_b,
                              w.d2E_droot_b);
@@ -1413,9 +1413,9 @@ inline bool waist_supply(Leaf& l, WaistRows& w, bool single, int n_layers) {
 // own draw, which is not the total's row but the supply's Jacobian.
 //
 // `par` is a soil potential, a layer carbon or a root curve parameter;
-// `waist_side` is that test and the caller has already made it, so the index
+// `supply_side` is that test and the caller has already made it, so the index
 // arithmetic here does not repeat it.
-inline void waist_supply_of(const WaistRows& w, int par, int n_layers,
+inline void supply_of(const SupplyRows& w, int par, int n_layers,
                             double& dEup, double& d2Eup,
                             OutputValues* into = nullptr,
                             double per_layer = 1.0) {
@@ -1457,10 +1457,10 @@ inline void waist_supply_of(const WaistRows& w, int par, int n_layers,
   }
 }
 
-// One input's rows. The held block is the outer product the waist makes it, and
+// One input's rows. The held block is the outer product the supply makes it, and
 // the condition reads the state through the stem potential and through the stem
 // potential's collar response, which is why the second term is there.
-inline void waist_row(const WaistRows& w, int par, int n_layers,
+inline void supply_row(const SupplyRows& w, int par, int n_layers,
                       OutputValues& direct, double& dR) {
   for (int j = 0; j < direct.size(); ++j) {
     direct[j] = 0.0;
@@ -1472,7 +1472,7 @@ inline void waist_row(const WaistRows& w, int par, int n_layers,
   const double per_layer = 1.0 / kg_per_mol_h2o;
   double dEup = 0.0;
   double d2Eup = 0.0;
-  waist_supply_of(w, par, n_layers, dEup, d2Eup, &direct, per_layer);
+  supply_of(w, par, n_layers, dEup, d2Eup, &direct, per_layer);
   const Leaf::UptakeRows& u = w.on_uptake;
   direct[out_assim] = u.dassim * dEup;
   direct[out_stom_cond] = u.dstom_cond * dEup;
@@ -1539,7 +1539,7 @@ inline bool transport_side(int par, Leaf::TransportTrait& trait) {
   }
 }
 
-// Whether these describe this branch, for the waist's reason: a held-collar
+// Whether these describe this branch, for the supply's reason: a held-collar
 // partial does not read what seats the collar.
 inline bool transport_rows_apply(const Leaf& l, const RowRequest& r,
                                  bool seated) {
@@ -2026,7 +2026,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
   // they are reads of what it recorded, and the two trait readers below move the
   // leaf on their way past.
   CarbonRows carbon;
-  WaistRows waist;
+  SupplyRows supply;
   TransportRows transport;
   Leaf::CollarRows channel;
   // The cost at the potential a zero-flux collar is held at, read off the leaf
@@ -2037,19 +2037,19 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
     shut_cost = l.hydraulic_cost_row(l.opt_psi_stem_);
   }
   const bool want_carbon = carbon_rows_apply(l, r, zero_flux);
-  // The waist's supply block exists on both, because it is arithmetic on the soil
+  // The supply's supply block exists on both, because it is arithmetic on the soil
   // state at a collar rather than a read of a recording; what shade death has none
   // of is the coefficients that block multiplies.
-  const bool want_waist = waist_rows_apply(l, r, interior || pinned, n_layers);
+  const bool want_supply = supply_rows_apply(l, r, interior || pinned, n_layers);
   const bool want_transport = transport_rows_apply(l, r, at_a_seated_collar);
   const bool seated = b.seated;
   bool have_channel = false;
   if (seated && at_a_seated_collar) {
     have_channel = l.collar_rows(channel);
-    if (want_waist) {
-      waist.usable = l.uptake_rows(waist.on_uptake) &&
-                     std::isfinite(waist.on_uptake.dcondition) &&
-                     waist_supply(l, waist, single, n_layers);
+    if (want_supply) {
+      supply.usable = l.uptake_rows(supply.on_uptake) &&
+                     std::isfinite(supply.on_uptake.dcondition) &&
+                     gather_supply(l, supply, single, n_layers);
     }
     if (want_transport) {
       transport_gather(l, transport);
@@ -2066,13 +2066,13 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
     // exception and they are the whole content -- the supply is a function of the
     // collar and of the soil either way.
     have_channel = l.zero_uptake_collar_rows(channel);
-    if (want_waist) {
-      waist.on_uptake.dassim = 0.0;
-      waist.on_uptake.dstom_cond = 0.0;
-      waist.on_uptake.dpsistem = 0.0;
-      waist.on_uptake.dprofit = 0.0;
-      waist.on_uptake.dcondition = 0.0;
-      waist.usable = waist_supply(l, waist, single, n_layers);
+    if (want_supply) {
+      supply.on_uptake.dassim = 0.0;
+      supply.on_uptake.dstom_cond = 0.0;
+      supply.on_uptake.dpsistem = 0.0;
+      supply.on_uptake.dprofit = 0.0;
+      supply.on_uptake.dcondition = 0.0;
+      supply.usable = gather_supply(l, supply, single, n_layers);
     }
   }
 
@@ -2097,7 +2097,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
       // IS the condition; here the model still differences as a whole.
       pinned = false;
       have_channel = false;
-      waist.usable = false;
+      supply.usable = false;
       out.residual_slope = 1.0;
     } else if (!condition.finite) {
       out.message = "the bound this point is pinned to has no derivative here";
@@ -2177,7 +2177,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
     dY_dpsi[out_psi_stem] = channel.dpsistem;
     dY_dpsi[out_collar] = 1.0;
     dY_dpsi[out_profit] = channel.dprofit;
-    // `waist_row`'s conversion, for its reason: the supply sums in mol and
+    // `supply_row`'s conversion, for its reason: the supply sums in mol and
     // reports the total in kg, and this channel belongs to the per-layer output,
     // which stayed in mol.
     const double per_layer = 1.0 / kg_per_mol_h2o;
@@ -2280,10 +2280,10 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
       }
       direct[out_profit] = carbon_profit(carbon, p);
       dR = carbon_marginal(carbon, p);
-    } else if (waist.usable && waist_side(p, n_layers)) {
+    } else if (supply.usable && supply_side(p, n_layers)) {
       // No perturbation and no solve either: every row here is a coefficient
       // the last evaluation recorded times a supply derivative in closed form.
-      waist_row(waist, p, n_layers, direct, dR);
+      supply_row(supply, p, n_layers, direct, dR);
     } else if (transport_side(p, transport_trait) &&
                transport.usable[transport_index(transport_trait)]) {
       // Nor a grid rebuild, which is what this one replaces.
@@ -2635,7 +2635,7 @@ inline void profit_env_derivatives(Leaf& l, ProfitEnvDerivatives& out) {
 // row off the optimum.
 //
 // So d2profit/dp du has to come from the marginal profit itself, and it does:
-// `waist_row` above takes it from the condition's own two coefficients, which
+// `supply_row` above takes it from the condition's own two coefficients, which
 // are written in the stem potential and its collar response rather than in total
 // uptake and uptake's collar slope. THAT DISTINCTION IS THE WHOLE OF IT -- the
 // two pairs span the same directions, so a rank test passes for both, and it was

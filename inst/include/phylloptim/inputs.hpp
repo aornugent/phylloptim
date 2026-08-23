@@ -34,7 +34,7 @@ namespace gradient {
 enum class Channel {
   Carbon,     // reaches profit through assimilation or the hydraulic cost
   Transport,  // moves the stem potential at a frozen flux
-  Waist,      // moves the supply, so it reaches the leaf through total uptake
+  Supply,      // moves the supply, so it reaches the leaf through total uptake
   Slack,      // a limit the point may or may not be sitting on
   None        // no row here: the other supply path's input
 };
@@ -51,8 +51,8 @@ inline constexpr std::array<par_entry, 16> par_table{{
     {"stem_c", Channel::Transport},
     {"stem_b", Channel::Transport},
     {"psi_crit", Channel::Slack},
-    {"root_c", Channel::Waist},
-    {"root_b", Channel::Waist},
+    {"root_c", Channel::Supply},
+    {"root_b", Channel::Supply},
     {"root_psi_crit", Channel::Slack},
     {"beta2", Channel::Carbon},
     {"jmax_25", Channel::Carbon},
@@ -173,14 +173,14 @@ struct par_ref {
 };
 
 // The channel of one of the sixteen. Asked only of a parameter index; the blocks
-// past them belong to the waist by construction, which is what waist_side says.
+// past them belong to the supply by construction, which is what supply_side says.
 inline constexpr Channel channel_of(int par) {
   return par >= 0 && par < n_pars ? par_table[std::size_t(par)].channel
                                   : Channel::None;
 }
 
 // ⚠️ AN INPUT NO CHANNEL CLAIMS HAS NO ROW, AND ONE IS EXPECTED. `rows_at`
-// defaults every row to NA and the graft refuses a non-finite derivative by name,
+// defaults every row to NA and the recording refuses a non-finite derivative by name,
 // so an unclaimed input fails safe -- but it fails safe by accident unless the
 // set of them is known. `resistance` is the one, and this is what says so.
 static_assert(
