@@ -175,6 +175,30 @@ inline constexpr int n_pars_total(int n_layers) {
   return par_root_carbon_first(n_layers) + n_layers;
 }
 
+// Which block an input index falls in, and where in that block. The layout above
+// is arithmetic, and every reader of it used to redo the arithmetic: seven
+// functions each subtracted par_psi_soil_first and compared against n_layers, so
+// moving a block meant finding all seven.
+struct par_ref {
+  enum class Kind { Parameter, Radiation, SoilPotential, RootCarbon };
+  Kind kind;
+  int index;
+};
+
+inline constexpr par_ref decode(int par, int n_layers) {
+  if (par < n_pars) {
+    return {par_ref::Kind::Parameter, par};
+  }
+  if (par == par_PPFD) {
+    return {par_ref::Kind::Radiation, 0};
+  }
+  const int layer = par - par_psi_soil_first;
+  if (layer < n_layers) {
+    return {par_ref::Kind::SoilPotential, layer};
+  }
+  return {par_ref::Kind::RootCarbon, layer - n_layers};
+}
+
 inline std::vector<std::string> par_names(int n_layers) {
   std::vector<std::string> out = par_names();
   out.reserve(std::size_t(n_pars_total(n_layers)));
@@ -449,10 +473,9 @@ inline double rounded(double x) {
 // where the architecture model refuses a negative mass and the layer leaves the
 // network on one arm only.
 inline double step_for(int par, double value, double step, int n_layers) {
-  const double floor = (par == par_kmax || par == par_resistance ||
-                        par >= par_root_carbon_first(n_layers))
-                           ? 0.0
-                           : 1.0;
+  const bool carbon = decode(par, n_layers).kind == par_ref::Kind::RootCarbon;
+  const double floor =
+      (par == par_kmax || par == par_resistance || carbon) ? 0.0 : 1.0;
   return std::max(std::abs(value), floor) * step;
 }
 
@@ -504,18 +527,14 @@ inline double root_carbon_of(const Drivers& d, int layer) {
 // for why those two are different places rather than one.
 inline double par_value(const double* theta, const Drivers& d, bool single,
                         int par) {
-  if (par < n_pars) {
-    return theta[par];
+  const par_ref r = decode(par, n_soil_layers(d, single));
+  switch (r.kind) {
+  case par_ref::Kind::Parameter:     return theta[r.index];
+  case par_ref::Kind::Radiation:     return d.PPFD;
+  case par_ref::Kind::SoilPotential: return d.psi_soil[std::size_t(r.index)];
+  case par_ref::Kind::RootCarbon:    break;
   }
-  if (par == par_PPFD) {
-    return d.PPFD;
-  }
-  const int layer = par - par_psi_soil_first;
-  const int n_layers = n_soil_layers(d, single);
-  if (layer < n_layers) {
-    return d.psi_soil[std::size_t(layer)];
-  }
-  return root_carbon_of(d, layer - n_layers);
+  return root_carbon_of(d, r.index);
 }
 
 // Every requested index names an input this observation has and this package can
@@ -543,7 +562,7 @@ inline void check_pars(const int* pars, std::size_t npars, int n_layers,
                  std::to_string(n_layers) + " soil layer(s), so there are " +
                  std::to_string(n_pars_total(n_layers)) + " parameters.");
     }
-    if (single && pars[k] >= par_root_carbon_first(n_layers)) {
+    if (single && decode(pars[k], n_layers).kind == par_ref::Kind::RootCarbon) {
       util::stop(caller + ": `" + par_name(pars[k], n_layers) +
                  "` has no row on the single-potential path, which takes one "
                  "series resistance and no root architecture.");
@@ -780,27 +799,26 @@ inline void set_one(Leaf& l, double* th, const double* theta, const Drivers& d,
                     bool single, int par, double value, bool fast_stem_curve,
                     Scratch& scratch) {
   std::copy(theta, theta + n_pars, th);
-  if (par < n_pars) {
+  const par_ref r = decode(par, n_soil_layers(d, single));
+  switch (r.kind) {
+  case par_ref::Kind::Parameter:
     th[par] = value;
     apply(l, th, d, single, par, fast_stem_curve);
     return;
-  }
-  if (par == par_PPFD) {
+  case par_ref::Kind::Radiation:
     apply(l, th, d, single, par, fast_stem_curve, value, d.psi_soil,
           d.root_network);
     return;
-  }
-  const int layer = par - par_psi_soil_first;
-  const int n_layers = n_soil_layers(d, single);
-  if (layer < n_layers) {
+  case par_ref::Kind::SoilPotential:
     scratch.psi_soil = d.psi_soil;
-    scratch.psi_soil[std::size_t(layer)] = value;
+    scratch.psi_soil[std::size_t(r.index)] = value;
     apply(l, th, d, single, par, fast_stem_curve, d.PPFD, scratch.psi_soil,
           d.root_network);
     return;
+  case par_ref::Kind::RootCarbon:
+    break;
   }
-  perturb_root_carbon(d.root_network, layer - n_layers, value,
-                      scratch.root_network);
+  perturb_root_carbon(d.root_network, r.index, value, scratch.root_network);
   apply(l, th, d, single, par, fast_stem_curve, d.PPFD, d.psi_soil,
         scratch.root_network);
 }
@@ -1611,8 +1629,13 @@ inline bool waist_side(int par, int n_layers) {
   // they move the SUPPLY, so they reach the leaf the way a soil potential does --
   // through total uptake -- and the only thing that distinguishes them is which
   // closed form gives that input's own supply derivative.
-  return par == par_root_b || par == par_root_c ||
-         (par >= par_psi_soil_first && par < n_pars_total(n_layers));
+  if (par == par_root_b || par == par_root_c) {
+    return true;
+  }
+  const par_ref::Kind k = decode(par, n_layers).kind;
+  return (k == par_ref::Kind::SoilPotential ||
+          k == par_ref::Kind::RootCarbon) &&
+         par < n_pars_total(n_layers);
 }
 
 // The coefficients on total uptake and the supply derivatives they multiply,
@@ -1749,16 +1772,16 @@ inline void waist_supply_of(const WaistRows& w, int par, int n_layers,
     }
     return;
   }
-  const int layer = par - par_psi_soil_first;
-  if (layer < n_layers) {
-    dEup = w.dEup_dpsi_soil[std::size_t(layer)];
-    d2Eup = w.d2Eup_dpsi_dpsi_soil[std::size_t(layer)];
+  const par_ref r = decode(par, n_layers);
+  if (r.kind == par_ref::Kind::SoilPotential) {
+    dEup = w.dEup_dpsi_soil[std::size_t(r.index)];
+    d2Eup = w.d2Eup_dpsi_dpsi_soil[std::size_t(r.index)];
     if (into != nullptr && into->n_uptake() > 0) {
-      (*into)[out_uptake_first + layer] = dEup * per_layer;
+      (*into)[out_uptake_first + r.index] = dEup * per_layer;
     }
     return;
   }
-  const std::size_t a = std::size_t(par - par_root_carbon_first(n_layers));
+  const std::size_t a = std::size_t(r.index);
   for (int i = 0; i < n_layers; ++i) {
     const double dE_i = w.dE_drc[std::size_t(i)][a];
     dEup += dE_i;
