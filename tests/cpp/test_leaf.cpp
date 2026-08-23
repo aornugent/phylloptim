@@ -3425,8 +3425,9 @@ void test_root_carbon_rows() {
      "an unrooted layer's carbon row is NA rather than zero");
   ok(!std::isfinite(rows.dresidual[0]),
      "and its condition gradient is NA too");
-  ok(rows.message.find("root_carbon_3") != std::string::npos,
-     "and the refusal names the layer");
+  const std::string* said = rows.reason_for(pars[0]);
+  ok(said != nullptr && said->find("no root carbon") != std::string::npos,
+     "and the refusal is stated against that layer's own input");
 
   // THE REFEREE FOR THE PERTURBATION ITSELF: against the architecture model run
   // again from moved carbon, which is the thing being stood in for. It shares no

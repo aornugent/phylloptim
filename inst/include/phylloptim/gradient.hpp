@@ -1949,6 +1949,27 @@ struct Rows {
     DifferenceAtAHeldCollar
   };
   std::vector<NoRow> no_row;
+
+  // Why one input has no row, against the input it is about. Sparse on purpose:
+  // empty on every call that refused nothing, which is nearly all of them, so a
+  // read costs no allocation. `message` above is what the POINT has to say and
+  // holds nothing about a particular input -- said in one string for the whole
+  // call, a per-input reason has to be matched to its input by whoever reads it,
+  // and the consumer cannot.
+  struct refusal {
+    int input;
+    std::string why;
+  };
+  std::vector<refusal> refused;
+
+  const std::string* reason_for(int input) const {
+    for (const refusal& f : refused) {
+      if (f.input == input) {
+        return &f.why;
+      }
+    }
+    return nullptr;
+  }
 };
 
 // Which bound a pinned point is sitting on. The dry end is a min of two limits
@@ -2513,10 +2534,10 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
         out.held[j * r.n_input + i] = util::na_value;
       }
       out.no_row[i] = Rows::NoRow::NoCarbonSlot;
-      out.message += out.message.empty() ? "" : "; ";
-      out.message += "no row for `" + par_name(p, n_layers) +
-                     "`: that layer holds no root carbon, so the architecture "
-                     "model gave the network no slot for it";
+      out.refused.push_back({p,
+                             "that layer holds no root carbon, so the "
+                             "architecture model gave the network no slot for "
+                             "it"});
       continue;
     }
     // The single path's series resistance moves the bound and no closed form here
@@ -2709,10 +2730,10 @@ inline Rows rows_differenced(Leaf& l, const double* theta, const Drivers& d,
       }
     }
     if (!got) {
-      out.message += out.message.empty() ? "" : "; ";
-      out.message += "no row for `" + par_name(p, n_layers) +
-                     "`: no step within the shrink floor keeps both arms on the " +
-                     Leaf::operating_point_kind_name(out.kind) + " branch";
+      out.refused.push_back(
+          {p, std::string("no step within the shrink floor keeps both arms on "
+                          "the ") +
+                  Leaf::operating_point_kind_name(out.kind) + " branch"});
       continue;
     }
     out.no_row[i] = Rows::NoRow::None;
