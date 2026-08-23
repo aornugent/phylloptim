@@ -72,7 +72,9 @@ test_that("set_traits() enforces the one representation for psi (#25)", {
 })
 
 test_that("the composite reproduces the arbitrated reference gradients", {
-  # psi_soil = 2, PPFD = 900, VPD = 2, one layer, default traits. H = -8.9561.
+  # psi_soil = 2, PPFD = 900, VPD = 2, one layer, default traits. H = -8.95316,
+  # which a central difference of dprofit/dcollar reproduces to seven digits over
+  # h = 1e-03 to 3e-05, at a collar where that first derivative is 8e-15.
   # Ratios against a least-squares slope over +-2% at n = 41 were 0.9979-1.0000
   # when these were established; the tolerance below is that agreement, not the
   # composite's own precision, which is finer.
@@ -93,7 +95,7 @@ test_that("the composite reproduces the arbitrated reference gradients", {
   g <- grid_gradient(2.0, pars = rownames(ref))
   expect_identical(g$status, "interior")
   expect_identical(g$method, "ift")
-  expect_equal(g$H, -8.9561, tolerance = 1e-4)
+  expect_equal(g$H, -8.95316, tolerance = 1e-4)
 
   expect_equal(g$gradient[rownames(ref), "collar"], ref[, "collar"],
                tolerance = 5e-3)
@@ -321,7 +323,36 @@ test_that("a shut-down operating point reports no gradient and still differences
   # exactly here, so `dA/dR_d_25` is -1 and `dA/dvcmax_25` is EXACTLY zero --
   # vcmax_25 does not reach A at all at a shut-down point, so both perturbed solves
   # return the same bits. The -1 is a central difference and lands within ~6e-11.
-  g <- grid_gradient(6.0, pars = c("vcmax_25", "stem_b", "R_d_25"))
+  # Asserted against the closed form rather than recorded numbers. Nothing on this
+  # branch is splined:
+  #
+  #   hydraulic_cost_TF_kernel(psi) = cost_scale_TF24 * (1 - exp(-(psi/stem_b)^stem_c))^beta2
+  #
+  # at psi = psi_crit, and R_d_ == R_d_25 at leaf_temp = 25 because peak_arrh_curve
+  # is the identity at its own reference temperature. So profit = -R_d_25 - C(psi_crit)
+  # and every partial below is elementary. Write x = (psi_crit/stem_b)^stem_c and
+  # u = 1 - exp(-x); the trait enters through x for stem_b, stem_c and psi_crit, and
+  # outside it for the rest. vcmax_25 is absent because it drives neither term.
+  #
+  # Nothing saturates, which is why these are O(1) rather than rounding: x is 2.996,
+  # so exp(-x) = 0.0500 -- psi_crit IS the 5% loss point by construction. A reader who
+  # expects the cost to have flattened by psi_crit will misread these rows.
+  tr <- leaf_traits()
+  x <- (tr$psi_crit / tr$stem_b)^tr$stem_c
+  u <- 1 - exp(-x)
+  dC_dx <- tr$cost_scale_TF24 * tr$beta2 * u^(tr$beta2 - 1) * exp(-x)
+  # dprofit/dtheta = -dC/dtheta for the cost traits; R_d_25 enters profit directly.
+  analytic <- c(
+    R_d_25          = -1,
+    cost_scale_TF24 = -u^tr$beta2,
+    beta2           = -tr$cost_scale_TF24 * u^tr$beta2 * log(u),
+    psi_crit        = -dC_dx * tr$stem_c * x / tr$psi_crit,     # dx/dpsi_crit
+    stem_b          =  dC_dx * tr$stem_c * x / tr$stem_b,       # dx/dstem_b < 0
+    stem_c          = -dC_dx * x * log(tr$psi_crit / tr$stem_b))
+  # root_b is the negative control: it reaches neither R_d_ nor the stem cost, so its
+  # profit row must be exactly zero. Without it, "all of them are non-zero" would be
+  # consistent with a column that is non-zero everywhere for the wrong reason.
+  g <- grid_gradient(6.0, pars = c(names(analytic), "root_b", "vcmax_25"))
   expect_identical(g$status, "no-gradient")
   expect_identical(g$method, "fd")
   expect_equal(g$value[["A"]], -leaf_traits()$R_d_25)

@@ -37,7 +37,7 @@ test_that("leaf_model() and the raw Leaf() constructor agree", {
   # and is never noticed. So check it against a hand-written positional call
   # with the same values, on a full solve rather than on the arguments.
   raw <- Leaf(96, 2.680147, 3.898245, 5.870283, 2.680147, 3.898245, 5.870283,
-              1.5, 157.44, 0.30, 0.7, 0.99, 1e-3, 100, 1e-3, 1000, 7.5)
+              1.5, 157.44, 0.30, 0.7, 0.99, 1e-3, 1600, 1e-3, 1000, 7.5)
   raw$initialize_integrator(21, 1e-8)
   friendly <- leaf_model()
 
