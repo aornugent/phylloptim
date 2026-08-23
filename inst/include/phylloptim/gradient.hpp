@@ -1202,24 +1202,11 @@ struct RowRequest {
 // each of their rows is one of the leaf's own closed forms, and their uptake rows
 // are exactly zero rather than nearly -- at a fixed collar a carbon-side trait
 // moves no water.
+// Radiation is not a trait and takes the same route: it reaches assimilation
+// through the electron transport and nothing else, so at a fixed collar it moves
+// no water either.
 inline bool carbon_side(int par) {
-  switch (par) {
-  case par_vcmax_25:
-  case par_jmax_25:
-  case par_a:
-  case par_curv_fact_elec_trans:
-  case par_curv_fact_colim:
-  case par_R_d_25:
-  case par_beta2:
-  case par_cost_scale_TF24:
-  // Radiation is not a trait and takes the same route: it reaches assimilation
-  // through the electron transport and nothing else, so at a fixed collar it
-  // moves no water either.
-  case par_PPFD:
-    return true;
-  default:
-    return false;
-  }
+  return par == par_PPFD || channel_of(par) == Channel::Carbon;
 }
 
 // The two readers answer together or not at all, so they are carried together.
@@ -1305,9 +1292,11 @@ inline bool waist_side(int par, int n_layers) {
   // they move the SUPPLY, so they reach the leaf the way a soil potential does --
   // through total uptake -- and the only thing that distinguishes them is which
   // closed form gives that input's own supply derivative.
-  if (par == par_root_b || par == par_root_c) {
+  if (channel_of(par) == Channel::Waist) {
     return true;
   }
+  // The blocks past the parameters are the waist's by construction: a soil
+  // potential and a layer's carbon both reach the leaf through total uptake.
   const par_ref::Kind k = decode(par, n_layers).kind;
   return (k == par_ref::Kind::SoilPotential ||
           k == par_ref::Kind::RootCarbon) &&
@@ -1506,7 +1495,7 @@ inline void waist_row(const WaistRows& w, int par, int n_layers,
 // tell a reader the model has no answer where it has a state-dependent one, and
 // that is the one distinction a declared zero can destroy.
 inline bool slack_side(int par) {
-  return par == par_psi_crit || par == par_root_psi_crit;
+  return channel_of(par) == Channel::Slack;
 }
 
 // --- the transport's rows, read rather than rebuilt ---------------------------
@@ -1520,7 +1509,28 @@ inline bool slack_side(int par) {
 //
 // They were the last inputs the row layer took by REBUILDING a vulnerability grid
 // and differencing it, which is two grid builds per input per node.
+// Which of the transport's three, as well as whether it is one. The mapping is
+// the leaf's own vocabulary, so it stays here rather than on the table entry --
+// the entry says the channel and this says which member of it.
+// The switch below names three parameters; the table decides which three are the
+// transport's. This is what keeps the two from disagreeing.
+static_assert(
+    [] {
+      int n = 0;
+      for (int p = 0; p < n_pars; ++p) {
+        if (channel_of(p) == Channel::Transport) ++n;
+      }
+      return n == 3 && channel_of(par_kmax) == Channel::Transport &&
+             channel_of(par_stem_b) == Channel::Transport &&
+             channel_of(par_stem_c) == Channel::Transport;
+    }(),
+    "transport_side names three parameters the table no longer agrees are the "
+    "transport's");
+
 inline bool transport_side(int par, Leaf::TransportTrait& trait) {
+  if (channel_of(par) != Channel::Transport) {
+    return false;
+  }
   switch (par) {
   case par_kmax:   trait = Leaf::TransportTrait::Conductance; return true;
   case par_stem_b: trait = Leaf::TransportTrait::Position;    return true;

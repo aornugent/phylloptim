@@ -27,19 +27,45 @@ namespace gradient {
 // ⚠️ R INDEXES THESE POSITIONS, so a reordering silently differentiates the wrong
 // parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
 // them with R's, so the two cannot drift apart without a failure.
-// THE list, in order. The first `n_traits` are `set_traits`' arguments in its
-// order, which is also `leaf_traits()`'; the two non-traits follow and take a
-// relative step.
-inline constexpr std::array<std::string_view, 16> par_table{
-    "vcmax_25",        "stem_c",
-    "stem_b",          "psi_crit",
-    "root_c",          "root_b",
-    "root_psi_crit",   "beta2",
-    "jmax_25",         "a",
-    "curv_fact_elec_trans", "curv_fact_colim",
-    "cost_scale_TF24", "R_d_25",
-    "leaf_specific_conductance_max",
-    "resistance"};
+// Which physical route an input reaches the leaf by, which is what decides the
+// shape of its row. Carried on the entry rather than tested for by four separate
+// lists of names, so the four are a partition by construction and an input
+// belonging to none says so.
+enum class Channel {
+  Carbon,     // reaches profit through assimilation or the hydraulic cost
+  Transport,  // moves the stem potential at a frozen flux
+  Waist,      // moves the supply, so it reaches the leaf through total uptake
+  Slack,      // a limit the point may or may not be sitting on
+  None        // no row here: the other supply path's input
+};
+
+// THE list, in order. The first `n_traits` are the traits `set_traits` places and
+// `leaf_traits()` names; the two non-traits follow and take a relative step.
+struct par_entry {
+  std::string_view name;
+  Channel channel;
+};
+
+inline constexpr std::array<par_entry, 16> par_table{{
+    {"vcmax_25", Channel::Carbon},
+    {"stem_c", Channel::Transport},
+    {"stem_b", Channel::Transport},
+    {"psi_crit", Channel::Slack},
+    {"root_c", Channel::Waist},
+    {"root_b", Channel::Waist},
+    {"root_psi_crit", Channel::Slack},
+    {"beta2", Channel::Carbon},
+    {"jmax_25", Channel::Carbon},
+    {"a", Channel::Carbon},
+    {"curv_fact_elec_trans", Channel::Carbon},
+    {"curv_fact_colim", Channel::Carbon},
+    {"cost_scale_TF24", Channel::Carbon},
+    {"R_d_25", Channel::Carbon},
+    {"leaf_specific_conductance_max", Channel::Transport},
+    // The single-potential path's series resistance. No closed form here says how
+    // it moves the bound, so the read declines it and a difference answers
+    // instead -- which is why it is the one input no channel claims.
+    {"resistance", Channel::None}}};
 
 inline constexpr int n_pars = static_cast<int>(par_table.size());
 
@@ -49,7 +75,7 @@ inline constexpr int n_pars = static_cast<int>(par_table.size());
 // misspelling is a compile error at the constant rather than a -1 nobody checks.
 inline constexpr int par_of(std::string_view name) {
   for (std::size_t i = 0; i < par_table.size(); ++i) {
-    if (par_table[i] == name) {
+    if (par_table[i].name == name) {
       return static_cast<int>(i);
     }
   }
@@ -81,8 +107,14 @@ inline constexpr int par_resistance = par_of("resistance");
 inline constexpr int n_traits = par_kmax;
 
 inline const std::vector<std::string>& par_names() {
-  static const std::vector<std::string> names(par_table.begin(),
-                                              par_table.end());
+  static const std::vector<std::string> names = [] {
+    std::vector<std::string> ret;
+    ret.reserve(par_table.size());
+    for (const par_entry& e : par_table) {
+      ret.emplace_back(e.name);
+    }
+    return ret;
+  }();
   return names;
 }
 
@@ -139,6 +171,29 @@ struct par_ref {
   Kind kind;
   int index;
 };
+
+// The channel of one of the sixteen. Asked only of a parameter index; the blocks
+// past them belong to the waist by construction, which is what waist_side says.
+inline constexpr Channel channel_of(int par) {
+  return par >= 0 && par < n_pars ? par_table[std::size_t(par)].channel
+                                  : Channel::None;
+}
+
+// ⚠️ AN INPUT NO CHANNEL CLAIMS HAS NO ROW, AND ONE IS EXPECTED. `rows_at`
+// defaults every row to NA and the graft refuses a non-finite derivative by name,
+// so an unclaimed input fails safe -- but it fails safe by accident unless the
+// set of them is known. `resistance` is the one, and this is what says so.
+static_assert(
+    [] {
+      for (int p = 0; p < n_pars; ++p) {
+        if (channel_of(p) == Channel::None && p != par_resistance) {
+          return false;
+        }
+      }
+      return true;
+    }(),
+    "a parameter has no channel, so it has no row, and only `resistance` is "
+    "meant to be in that position");
 
 inline constexpr par_ref decode(int par, int n_layers) {
   if (par < n_pars) {
