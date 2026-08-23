@@ -31,7 +31,7 @@ namespace gradient {
 // shape of its row. Carried on the entry rather than tested for by four separate
 // lists of names, so the four are a partition by construction and an input
 // belonging to none says so.
-enum class Channel {
+enum class InputRole {
   Carbon,     // reaches profit through assimilation or the hydraulic cost
   Transport,  // moves the stem potential at a frozen flux
   Supply,      // moves the supply, so it reaches the leaf through total uptake
@@ -43,29 +43,29 @@ enum class Channel {
 // `leaf_traits()` names; the two non-traits follow and take a relative step.
 struct par_entry {
   std::string_view name;
-  Channel channel;
+  InputRole role;
 };
 
 inline constexpr std::array<par_entry, 16> par_table{{
-    {"vcmax_25", Channel::Carbon},
-    {"stem_c", Channel::Transport},
-    {"stem_b", Channel::Transport},
-    {"psi_crit", Channel::Slack},
-    {"root_c", Channel::Supply},
-    {"root_b", Channel::Supply},
-    {"root_psi_crit", Channel::Slack},
-    {"beta2", Channel::Carbon},
-    {"jmax_25", Channel::Carbon},
-    {"a", Channel::Carbon},
-    {"curv_fact_elec_trans", Channel::Carbon},
-    {"curv_fact_colim", Channel::Carbon},
-    {"cost_scale_TF24", Channel::Carbon},
-    {"R_d_25", Channel::Carbon},
-    {"leaf_specific_conductance_max", Channel::Transport},
+    {"vcmax_25", InputRole::Carbon},
+    {"stem_c", InputRole::Transport},
+    {"stem_b", InputRole::Transport},
+    {"psi_crit", InputRole::Slack},
+    {"root_c", InputRole::Supply},
+    {"root_b", InputRole::Supply},
+    {"root_psi_crit", InputRole::Slack},
+    {"beta2", InputRole::Carbon},
+    {"jmax_25", InputRole::Carbon},
+    {"a", InputRole::Carbon},
+    {"curv_fact_elec_trans", InputRole::Carbon},
+    {"curv_fact_colim", InputRole::Carbon},
+    {"cost_scale_TF24", InputRole::Carbon},
+    {"R_d_25", InputRole::Carbon},
+    {"leaf_specific_conductance_max", InputRole::Transport},
     // The single-potential path's series resistance. No closed form here says how
     // it moves the bound, so the read declines it and a difference answers
-    // instead -- which is why it is the one input no channel claims.
-    {"resistance", Channel::None}}};
+    // instead -- which is why it is the one input no role claims.
+    {"resistance", InputRole::None}}};
 
 inline constexpr int n_pars = static_cast<int>(par_table.size());
 
@@ -172,27 +172,28 @@ struct par_ref {
   int index;
 };
 
-// The channel of one of the sixteen. Asked only of a parameter index; the blocks
-// past them belong to the supply by construction, which is what supply_side says.
-inline constexpr Channel channel_of(int par) {
-  return par >= 0 && par < n_pars ? par_table[std::size_t(par)].channel
-                                  : Channel::None;
+// What part one of the sixteen parameters plays. The blocks past them are the
+// supply's, which input_role() below adds -- so a caller asking about a role only
+// a parameter can have needs no layer count.
+inline constexpr InputRole parameter_role(int par) {
+  return par >= 0 && par < n_pars ? par_table[std::size_t(par)].role
+                                  : InputRole::None;
 }
 
-// ⚠️ AN INPUT NO CHANNEL CLAIMS HAS NO ROW, AND ONE IS EXPECTED. `rows_at`
+// ⚠️ AN INPUT NO ROLE CLAIMS HAS NO ROW, AND ONE IS EXPECTED. `rows_at`
 // defaults every row to NA and the recording refuses a non-finite derivative by name,
 // so an unclaimed input fails safe -- but it fails safe by accident unless the
 // set of them is known. `resistance` is the one, and this is what says so.
 static_assert(
     [] {
       for (int p = 0; p < n_pars; ++p) {
-        if (channel_of(p) == Channel::None && p != par_resistance) {
+        if (parameter_role(p) == InputRole::None && p != par_resistance) {
           return false;
         }
       }
       return true;
     }(),
-    "a parameter has no channel, so it has no row, and only `resistance` is "
+    "a parameter has no role, so it has no row, and only `resistance` is "
     "meant to be in that position");
 
 inline constexpr par_ref decode(int par, int n_layers) {
@@ -208,6 +209,23 @@ inline constexpr par_ref decode(int par, int n_layers) {
   }
   return {par_ref::Kind::RootCarbon, layer - n_layers};
 }
+
+// What part an input plays in the solve, for ANY input index. The blocks past the
+// parameters belong to the supply by construction: a soil potential and a layer's
+// carbon both reach the leaf through total uptake and nothing else.
+inline constexpr InputRole input_role(int par, int n_layers) {
+  if (par < 0 || par >= n_pars_total(n_layers)) {
+    return InputRole::None;
+  }
+  const par_ref r = decode(par, n_layers);
+  switch (r.kind) {
+  case par_ref::Kind::Parameter: return parameter_role(r.index);
+  case par_ref::Kind::Radiation: return InputRole::Carbon;
+  default:                       break;
+  }
+  return InputRole::Supply;
+}
+
 
 inline std::vector<std::string> par_names(int n_layers) {
   std::vector<std::string> out = par_names();
@@ -341,18 +359,18 @@ inline std::string output_name(int out, int n_layers) {
 }
 
 // How the operating point reaches an output. A PROPERTY OF THE OUTPUT, which is
-// why `role_of` below is a function of the index and not a field of the request:
+// why `output_role` below is a function of the index and not a field of the request:
 // which output IS the objective is fixed by the enumeration, and a caller free to
 // say otherwise is a caller free to disagree with it.
-enum class Role { Objective, Point, Ordinary };
+enum class OutputRole { Objective, Point, Ordinary };
 
 // The collar IS the operating point; profit is what it maximises; everything else
 // reads the point without being it. Read here and nowhere else -- `out_collar` and
 // `out_profit` are ordinary indices at every other site.
-inline Role role_of(int output) {
-  return output == out_collar   ? Role::Point
-       : output == out_profit   ? Role::Objective
-                                : Role::Ordinary;
+inline OutputRole output_role(int output) {
+  return output == out_collar   ? OutputRole::Point
+       : output == out_profit   ? OutputRole::Objective
+                                : OutputRole::Ordinary;
 }
 
 // dy/dp, from what the output is and what defines the point. That pairing is the
@@ -360,17 +378,17 @@ inline Role role_of(int output) {
 //
 // ⚠️ THE OBJECTIVE'S ZERO IS NOT A PROPERTY OF BEING THE OBJECTIVE. It is the
 // interior stationarity condition, so it holds where that condition does; at a
-// bound the same output's channel is the constraint's shadow price. An interface
+// bound the same output's dy/dp is the constraint's shadow price. An interface
 // that let a consumer infer the zero from the output's identity is correct at an
 // interior optimum and silently wrong at exactly the states a pin exists for.
 //
-// The point's own two channels are genuine identities: one, because it IS the
+// The point's own two are genuine identities: one, because it IS the
 // point, and a held partial cannot move what it holds. Neither reads the kind.
-inline double point_channel(Role role, bool pinned, double marginal_at_bound,
+inline double dy_dp_for(OutputRole role, bool pinned, double marginal_at_bound,
                             double measured) {
   switch (role) {
-  case Role::Point:     return 1.0;
-  case Role::Objective: return pinned ? marginal_at_bound : 0.0;
+  case OutputRole::Point:     return 1.0;
+  case OutputRole::Objective: return pinned ? marginal_at_bound : 0.0;
   default:              return measured;
   }
 }

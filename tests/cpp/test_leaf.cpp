@@ -5538,7 +5538,7 @@ void test_the_collar_channel_is_read_rather_than_differenced() {
          "the profit channel is the marginal profit, " + tag);
 
     grad::OutputValues diff(L);
-    const bool differenced = grad::collar_channel(l, b.psi_star, s, diff);
+    const bool differenced = grad::collar_response(l, b.psi_star, s, diff);
     if (b.branch.kind == pl::Leaf::OperatingPointKind::Interior) {
       ++interior_seen;
       ok(differenced, "an interior point admits the difference too, " + tag);
@@ -5605,7 +5605,7 @@ void test_the_collar_channel_is_read_rather_than_differenced() {
         pl::Leaf::CollarRows c;
         if (seated && l.collar_rows(c)) ++read_answers;
         grad::OutputValues diff(L);
-        if (grad::collar_channel(l, b.psi_star, s, diff)) ++difference_answers;
+        if (grad::collar_response(l, b.psi_star, s, diff)) ++difference_answers;
       }
     printf("  over the grid: %d pinned points, the difference answers at %d, "
            "the read at %d\n",

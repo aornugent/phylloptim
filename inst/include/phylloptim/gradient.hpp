@@ -648,7 +648,7 @@ inline double differenced_curvature(Leaf& l, double psi_star, double resid,
 // the same channel read rather than differenced and it answers at all 42; this
 // route is kept because `at` is refereed bit for bit against a captured
 // reference, and the two must run the same arithmetic there.
-inline bool collar_channel(Leaf& l, double psi_star, const Settings& s,
+inline bool collar_response(Leaf& l, double psi_star, const Settings& s,
                            OutputValues& dY_dpsi) {
   OutputValues hi(dY_dpsi.n_uptake());
   OutputValues lo(dY_dpsi.n_uptake());
@@ -942,7 +942,7 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
     held_row_or_stop(l, theta, d, single, pars[k], psi_star, s,
                      "leaf_gradient()", at_base, scratch, direct, M);
     const double dpsi_dtheta = -(M / H);
-    // Each output once, by what it is to the point. `role_of` is where those two
+    // Each output once, by what it is to the point. `output_role` is where those two
     // facts live; what belongs here is why they are BRANCHES rather than a
     // channel multiplied in.
     //
@@ -961,13 +961,13 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
     // `at()`'s `status` is the one place that choice is made.
     for (int j = 0; j < n_outputs; ++j) {
       double& into = out[k * n_outputs + j];
-      switch (role_of(j)) {
-      case Role::Point:
+      switch (output_role(j)) {
+      case OutputRole::Point:
         // It IS psi*, held fixed, so its direct term is zero by construction and
         // the composite reduces to dpsi*/dtheta.
         into = dpsi_dtheta;
         break;
-      case Role::Objective:
+      case OutputRole::Objective:
         into = direct[j];
         break;
       default:
@@ -1078,7 +1078,7 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
   // Written straight into the result rather than into a local, so that the
   // transpose can read the same numbers instead of measuring them again.
   OutputValues& dY_dpsi = out.dY_dpsi;
-  if (use_ift && !collar_channel(l, psi_star, s, dY_dpsi)) {
+  if (use_ift && !collar_response(l, psi_star, s, dY_dpsi)) {
     if (s.method == Method::Ift) {
       util::stop("leaf_gradient(): method = \"ift\" was asked for at a point "
                  "whose feasible collar interval is narrower than one step, "
@@ -1206,7 +1206,7 @@ struct RowRequest {
 // through the electron transport and nothing else, so at a fixed collar it moves
 // no water either.
 inline bool carbon_side(int par) {
-  return par == par_PPFD || channel_of(par) == Channel::Carbon;
+  return par == par_PPFD || parameter_role(par) == InputRole::Carbon;
 }
 
 // The two readers answer together or not at all, so they are carried together.
@@ -1292,7 +1292,7 @@ inline bool supply_side(int par, int n_layers) {
   // they move the SUPPLY, so they reach the leaf the way a soil potential does --
   // through total uptake -- and the only thing that distinguishes them is which
   // closed form gives that input's own supply derivative.
-  if (channel_of(par) == Channel::Supply) {
+  if (input_role(par, n_layers) == InputRole::Supply) {
     return true;
   }
   // The blocks past the parameters are the supply's by construction: a soil
@@ -1495,7 +1495,7 @@ inline void supply_row(const SupplyRows& w, int par, int n_layers,
 // tell a reader the model has no answer where it has a state-dependent one, and
 // that is the one distinction a declared zero can destroy.
 inline bool slack_side(int par) {
-  return channel_of(par) == Channel::Slack;
+  return parameter_role(par) == InputRole::Slack;
 }
 
 // --- the transport's rows, read rather than rebuilt ---------------------------
@@ -1518,17 +1518,17 @@ static_assert(
     [] {
       int n = 0;
       for (int p = 0; p < n_pars; ++p) {
-        if (channel_of(p) == Channel::Transport) ++n;
+        if (parameter_role(p) == InputRole::Transport) ++n;
       }
-      return n == 3 && channel_of(par_kmax) == Channel::Transport &&
-             channel_of(par_stem_b) == Channel::Transport &&
-             channel_of(par_stem_c) == Channel::Transport;
+      return n == 3 && parameter_role(par_kmax) == InputRole::Transport &&
+             parameter_role(par_stem_b) == InputRole::Transport &&
+             parameter_role(par_stem_c) == InputRole::Transport;
     }(),
     "transport_side names three parameters the table no longer agrees are the "
     "transport's");
 
 inline bool transport_side(int par, Leaf::TransportTrait& trait) {
-  if (channel_of(par) != Channel::Transport) {
+  if (parameter_role(par) != InputRole::Transport) {
     return false;
   }
   switch (par) {
@@ -2043,9 +2043,9 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
   const bool want_supply = supply_rows_apply(l, r, interior || pinned, n_layers);
   const bool want_transport = transport_rows_apply(l, r, at_a_seated_collar);
   const bool seated = b.seated;
-  bool have_channel = false;
+  bool have_collar_response = false;
   if (seated && at_a_seated_collar) {
-    have_channel = l.collar_rows(channel);
+    have_collar_response = l.collar_rows(channel);
     if (want_supply) {
       supply.usable = l.uptake_rows(supply.on_uptake) &&
                      std::isfinite(supply.on_uptake.dcondition) &&
@@ -2065,7 +2065,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
     // nothing and nothing downstream of it responds. The per-layer draws are the
     // exception and they are the whole content -- the supply is a function of the
     // collar and of the soil either way.
-    have_channel = l.zero_uptake_collar_rows(channel);
+    have_collar_response = l.zero_uptake_collar_rows(channel);
     if (want_supply) {
       supply.on_uptake.dassim = 0.0;
       supply.on_uptake.dstom_cond = 0.0;
@@ -2096,7 +2096,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
       // a corner. At a pin proper there is nothing else to offer, since the bound
       // IS the condition; here the model still differences as a whole.
       pinned = false;
-      have_channel = false;
+      have_collar_response = false;
       supply.usable = false;
       out.residual_slope = 1.0;
     } else if (!condition.finite) {
@@ -2171,7 +2171,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
   // centred because the point sits on its bound, and it is the last thing here that
   // wanted a step.
   OutputValues dY_dpsi(n_uptake);
-  if (have_channel) {
+  if (have_collar_response) {
     dY_dpsi[out_assim] = channel.dassim;
     dY_dpsi[out_stom_cond] = channel.dstom_cond;
     dY_dpsi[out_psi_stem] = channel.dpsistem;
@@ -2190,7 +2190,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
   }
   for (std::size_t j = 0; j < r.n_output; ++j) {
     // What an output that merely READS the point gets, and the only one of
-    // `point_channel`'s arguments this function has to decide.
+    // `dy_dp_for`'s arguments this function has to decide.
     //
     // ⚠️ WITHOUT A CHANNEL, ZERO IS ONLY EXACT WHERE THE POINT DOES NOT MOVE --
     // and a pin is no longer such a place. It was: every input the bound moved
@@ -2198,10 +2198,10 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
     // here multiplied a point that stood still. Now the bound's own row is live,
     // so a zero would multiply a real movement by nothing and drop it silently.
     // Refuse instead, and leave the exact zero to a point no condition defines.
-    const double measured = have_channel            ? dY_dpsi[r.output[j]]
+    const double measured = have_collar_response            ? dY_dpsi[r.output[j]]
                             : (interior || pinned)  ? util::na_value
                                                     : 0.0;
-    out.dy_dp[j] = point_channel(role_of(r.output[j]), pinned, marginal_at_point,
+    out.dy_dp[j] = dy_dp_for(output_role(r.output[j]), pinned, marginal_at_point,
                                  measured);
   }
 
@@ -2244,7 +2244,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
       out.dresidual[i] = 0.0;
       for (std::size_t j = 0; j < r.n_output; ++j) {
         out.held[j * r.n_input + i] =
-            role_of(r.output[j]) == Role::Objective ? shut_profit : 0.0;
+            output_role(r.output[j]) == OutputRole::Objective ? shut_profit : 0.0;
       }
       continue;
     }
@@ -2336,7 +2336,7 @@ inline Rows rows_at(Leaf& l, const RowRequest& r) {
       // The point's own held row is zero by construction: a partial at a held
       // collar cannot move what it holds.
       out.held[j * r.n_input + i] =
-          role_of(r.output[j]) == Role::Point ? 0.0 : direct[r.output[j]];
+          output_role(r.output[j]) == OutputRole::Point ? 0.0 : direct[r.output[j]];
     }
   }
   return out;
@@ -2426,7 +2426,7 @@ inline Rows rows_differenced(Leaf& l, const double* theta, const Drivers& d,
     for (std::size_t j = 0; j < r.n_output; ++j) {
       // A followed row already carries the point's movement; a held one leaves the
       // point where it is, so there the point's own row is exactly zero.
-      const bool held_is_zero = role_of(r.output[j]) == Role::Point &&
+      const bool held_is_zero = output_role(r.output[j]) == OutputRole::Point &&
                                 why == Rows::NoRow::DifferenceAtAHeldCollar;
       out.held[j * r.n_input + i] = held_is_zero ? 0.0 : direct[r.output[j]];
     }

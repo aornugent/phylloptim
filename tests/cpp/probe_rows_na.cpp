@@ -85,7 +85,7 @@ struct KindStats {
   // Point-level cross-tab: is the point ACTIVE (some finite non-zero dresidual)
   // where a dy_dp is missing?
   long n_any_dydp_na = 0;
-  long n_ordinary_dydp_na = 0;   // == collar_channel returned false
+  long n_ordinary_dydp_na = 0;   // == collar_response returned false
   long n_objective_dydp_na = 0;
   long n_active = 0;             // some dresidual finite and != 0
   long n_dres_all_na = 0;
@@ -178,8 +178,8 @@ void tabulate(const grad::Rows& rows, const std::vector<int>& inputs,
     if (nf(rows.dy_dp[j])) {
       ++p.nonfinite;
       any_dydp_na = true;
-      if (roles[j] == grad::Role::Ordinary) ordinary_na = true;
-      if (roles[j] == grad::Role::Objective) objective_na = true;
+      if (roles[j] == grad::OutputRole::Ordinary) ordinary_na = true;
+      if (roles[j] == grad::OutputRole::Objective) objective_na = true;
     }
   }
   st.n_any_dydp_na += any_dydp_na;
@@ -301,9 +301,9 @@ void one_point(double psi_soil, double ppfd, double vpd, int layers,
   std::vector<grad::Role> roles;
   for (int j = 0; j < grad::n_outputs_total(n_layers); ++j) {
     outputs.push_back(j);
-    roles.push_back(j == grad::out_collar    ? grad::Role::Point
-                    : j == grad::out_profit  ? grad::Role::Objective
-                                             : grad::Role::Ordinary);
+    roles.push_back(j == grad::out_collar    ? grad::OutputRole::Point
+                    : j == grad::out_profit  ? grad::OutputRole::Objective
+                                             : grad::OutputRole::Ordinary);
   }
   grad::RowRequest req;
   req.output = outputs.data();
@@ -366,9 +366,9 @@ void unrooted(double psi_soil, double ppfd, double vpd, int layers, int rooted,
   std::vector<grad::Role> roles;
   for (int j = 0; j < grad::n_outputs_total(layers); ++j) {
     outputs.push_back(j);
-    roles.push_back(j == grad::out_collar   ? grad::Role::Point
-                    : j == grad::out_profit ? grad::Role::Objective
-                                            : grad::Role::Ordinary);
+    roles.push_back(j == grad::out_collar   ? grad::OutputRole::Point
+                    : j == grad::out_profit ? grad::OutputRole::Objective
+                                            : grad::OutputRole::Ordinary);
   }
   grad::RowRequest req{outputs.data(), outputs.size(), inputs.data(),
                        inputs.size()};
@@ -461,7 +461,7 @@ void report_kind(Kind k, const KindStats& st) {
       printf("\n");
     }
   }
-  printf("  point-level: any dy_dp NA %ld, ordinary NA (collar_channel false) "
+  printf("  point-level: any dy_dp NA %ld, ordinary NA (collar_response false) "
          "%ld, objective NA %ld\n",
          st.n_any_dydp_na, st.n_ordinary_dydp_na, st.n_objective_dydp_na);
   printf("             active (some dresidual finite non-zero) %ld, all "
