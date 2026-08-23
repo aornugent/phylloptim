@@ -1075,6 +1075,21 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
                "determined operating point; use method = \"auto\".");
   }
 
+  // Stationarity is the composite's premise and a pinned optimum has none: psi*
+  // is a bound, dprofit is not zero at the answer, and -M/H is not the bound's
+  // derivative. Refused rather than returned, because the wrong answer here is
+  // O(1) against a truth of ~1e-08 and so reads as a gradient. The narrow-bracket
+  // test below catches most of these as a side effect of the step not centring;
+  // this is the predicate itself, so a pinned optimum on a wide bracket is caught
+  // too.
+  if (use_ift && out.status != Status::Interior) {
+    util::stop("leaf_gradient(): method = \"ift\" was asked for at a pinned "
+               "operating point (stationarity = " +
+               util::to_string(out.stationarity) + " against a tolerance of " +
+               util::to_string(s.stationarity_tol) + "), where psi* is a bound "
+               "and -M/H is not its derivative. Use method = \"auto\".");
+  }
+
   // Written straight into the result rather than into a local, so that the
   // transpose can read the same numbers instead of measuring them again.
   OutputValues& dY_dpsi = out.dY_dpsi;

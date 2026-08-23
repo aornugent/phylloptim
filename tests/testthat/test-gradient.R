@@ -245,15 +245,14 @@ test_that("a pinned optimum takes the fallback, and the composite would be wrong
     expect_gt(auto$stationarity, 1e-7)
     expect_lt(abs(auto$gradient["stem_b", "A"]), 1e-3)
 
-    # Forcing the composite here does not produce the wrong number -- it fails.
-    # That was not the design and is worth stating as a measurement: psi* sits
-    # 1e-06 of a bracket width from its bound at a pinned point, so the step in
-    # psi cannot be centred without clamping, and that is checked. The grid test
-    # below shows it holds at all 42 pinned rows, which means the composite's
-    # O(1) answer is not reachable through this function.
+    # Forcing the composite here does not produce the wrong number -- it fails, on
+    # the stationarity the composite rests on. Asserted by the refusal rather than
+    # by which guard raised it: psi* also sits 1e-06 of a bracket width from its
+    # bound here, so the centred step cannot fit either, and pinning that message
+    # would pin the narrower of two reasons.
     expect_error(grid_gradient(w$psi_soil, vpd = w$vpd, layers = w$layers,
                                pars = "stem_b", method = "ift"),
-                 "narrower than one step", label = lab)
+                 "pinned operating point", label = lab)
   }
 
   # Pinned DRY is the milder case and is worth separating: the composite is only

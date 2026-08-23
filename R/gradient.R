@@ -515,6 +515,16 @@ leaf_gradient <- function(psi_soil,
          "on. This is a shut-down or otherwise determined operating point; use ",
          "method = \"auto\".", call. = FALSE)
   }
+  # Stationarity is the composite's premise and a pinned optimum has none: psi* is
+  # a bound, dprofit is not zero at the answer, and -M/H is not the bound's
+  # derivative. Refused rather than returned, because the wrong answer here is O(1)
+  # against a truth of ~1e-08 and so reads as a gradient.
+  if (use_ift && !identical(status, "interior")) {
+    stop("leaf_gradient(): method = \"ift\" was asked for at a pinned operating ",
+         "point (stationarity = ", format(stationarity), " against a tolerance of ",
+         format(stationarity_tol), "), where psi* is a bound and -M/H is not its ",
+         "derivative. Use method = \"auto\".", call. = FALSE)
+  }
 
   if (use_ift) {
     # dY/dpsi at fixed traits. evaluate_root_collar_psi CLAMPS its target into the
@@ -522,20 +532,9 @@ leaf_gradient <- function(psi_soil,
     # evaluation would silently make this a one-sided difference over a shorter
     # interval, which is the same class of error as the pinned case.
     #
-    # This turns out to be a SECOND, INDEPENDENT detector of a pinned optimum
-    # rather than the unreachable guard it was written as, and the measurement is
-    # worth recording. At a pinned point psi* sits one step-in fraction (1e-06 of
-    # the bracket width) from the bound, so a step of `step` * psi in psi crosses
-    # it whenever the bracket is narrower than psi -- which every pinned row in
-    # the package's grid is, being at the dry end where the feasible interval has
-    # nearly closed. Measured: forcing method = "ift" fails here on all 42 pinned
-    # rows and on all 48 shut-down ones, so the composite's silently-wrong answer
-    # is not reachable through this function at all.
-    #
-    # It is NOT a substitute for the stationarity test, and reading it as one
-    # would be the mistake: it fires only when the bracket is narrow, so a pinned
-    # optimum on a wide bracket would pass it. The stationarity test is the one
-    # that is scale-free and the one the default relies on.
+    # Pinned and shut-down optima are refused above, on curvature and stationarity,
+    # so what reaches here is a stationary optimum whose bracket is narrower than
+    # one step anyway.
     hi <- .gradient_outputs_at(l, psi_star + h_psi)
     lo <- .gradient_outputs_at(l, psi_star - h_psi)
     if (is.null(hi) || is.null(lo)) {
