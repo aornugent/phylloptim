@@ -167,8 +167,8 @@ inline constexpr int n_pars_total(int n_layers) {
 // functions each subtracted par_psi_soil_first and compared against n_layers, so
 // moving a block meant finding all seven.
 struct par_ref {
-  enum class Kind { Parameter, Radiation, SoilPotential, RootCarbon };
-  Kind kind;
+  enum class Block { Parameter, Radiation, SoilPotential, RootCarbon };
+  Block block;
   int index;
 };
 
@@ -198,16 +198,16 @@ static_assert(
 
 inline constexpr par_ref decode(int par, int n_layers) {
   if (par < n_pars) {
-    return {par_ref::Kind::Parameter, par};
+    return {par_ref::Block::Parameter, par};
   }
   if (par == par_PPFD) {
-    return {par_ref::Kind::Radiation, 0};
+    return {par_ref::Block::Radiation, 0};
   }
   const int layer = par - par_psi_soil_first;
   if (layer < n_layers) {
-    return {par_ref::Kind::SoilPotential, layer};
+    return {par_ref::Block::SoilPotential, layer};
   }
-  return {par_ref::Kind::RootCarbon, layer - n_layers};
+  return {par_ref::Block::RootCarbon, layer - n_layers};
 }
 
 // What part an input plays in the solve, for ANY input index. The blocks past the
@@ -218,9 +218,9 @@ inline constexpr InputRole input_role(int par, int n_layers) {
     return InputRole::None;
   }
   const par_ref r = decode(par, n_layers);
-  switch (r.kind) {
-  case par_ref::Kind::Parameter: return parameter_role(r.index);
-  case par_ref::Kind::Radiation: return InputRole::Carbon;
+  switch (r.block) {
+  case par_ref::Block::Parameter: return parameter_role(r.index);
+  case par_ref::Block::Radiation: return InputRole::Carbon;
   default:                       break;
   }
   return InputRole::Supply;

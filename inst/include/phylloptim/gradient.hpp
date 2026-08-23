@@ -154,7 +154,7 @@ inline double rounded(double x) {
 // where the architecture model refuses a negative mass and the layer leaves the
 // network on one arm only.
 inline double step_for(int par, double value, double step, int n_layers) {
-  const bool carbon = decode(par, n_layers).kind == par_ref::Kind::RootCarbon;
+  const bool carbon = decode(par, n_layers).block == par_ref::Block::RootCarbon;
   const double floor =
       (par == par_kmax || par == par_resistance || carbon) ? 0.0 : 1.0;
   return std::max(std::abs(value), floor) * step;
@@ -209,11 +209,11 @@ inline double root_carbon_of(const Drivers& d, int layer) {
 inline double par_value(const double* theta, const Drivers& d, bool single,
                         int par) {
   const par_ref r = decode(par, n_soil_layers(d, single));
-  switch (r.kind) {
-  case par_ref::Kind::Parameter:     return theta[r.index];
-  case par_ref::Kind::Radiation:     return d.PPFD;
-  case par_ref::Kind::SoilPotential: return d.psi_soil[std::size_t(r.index)];
-  case par_ref::Kind::RootCarbon:    break;
+  switch (r.block) {
+  case par_ref::Block::Parameter:     return theta[r.index];
+  case par_ref::Block::Radiation:     return d.PPFD;
+  case par_ref::Block::SoilPotential: return d.psi_soil[std::size_t(r.index)];
+  case par_ref::Block::RootCarbon:    break;
   }
   return root_carbon_of(d, r.index);
 }
@@ -243,7 +243,7 @@ inline void check_pars(const int* pars, std::size_t npars, int n_layers,
                  std::to_string(n_layers) + " soil layer(s), so there are " +
                  std::to_string(n_pars_total(n_layers)) + " parameters.");
     }
-    if (single && decode(pars[k], n_layers).kind == par_ref::Kind::RootCarbon) {
+    if (single && decode(pars[k], n_layers).block == par_ref::Block::RootCarbon) {
       util::stop(caller + ": `" + par_name(pars[k], n_layers) +
                  "` has no row on the single-potential path, which takes one "
                  "series resistance and no root architecture.");
@@ -476,22 +476,22 @@ inline void set_one(Leaf& l, double* th, const double* theta, const Drivers& d,
                     Scratch& scratch) {
   std::copy(theta, theta + n_pars, th);
   const par_ref r = decode(par, n_soil_layers(d, single));
-  switch (r.kind) {
-  case par_ref::Kind::Parameter:
+  switch (r.block) {
+  case par_ref::Block::Parameter:
     th[par] = value;
     apply(l, th, d, single, par, fast_stem_curve);
     return;
-  case par_ref::Kind::Radiation:
+  case par_ref::Block::Radiation:
     apply(l, th, d, single, par, fast_stem_curve, value, d.psi_soil,
           d.root_network);
     return;
-  case par_ref::Kind::SoilPotential:
+  case par_ref::Block::SoilPotential:
     scratch.psi_soil = d.psi_soil;
     scratch.psi_soil[std::size_t(r.index)] = value;
     apply(l, th, d, single, par, fast_stem_curve, d.PPFD, scratch.psi_soil,
           d.root_network);
     return;
-  case par_ref::Kind::RootCarbon:
+  case par_ref::Block::RootCarbon:
     break;
   }
   perturb_root_carbon(d.root_network, r.index, value, scratch.root_network);
@@ -1297,9 +1297,9 @@ inline bool supply_side(int par, int n_layers) {
   }
   // The blocks past the parameters are the supply's by construction: a soil
   // potential and a layer's carbon both reach the leaf through total uptake.
-  const par_ref::Kind k = decode(par, n_layers).kind;
-  return (k == par_ref::Kind::SoilPotential ||
-          k == par_ref::Kind::RootCarbon) &&
+  const par_ref::Block k = decode(par, n_layers).block;
+  return (k == par_ref::Block::SoilPotential ||
+          k == par_ref::Block::RootCarbon) &&
          par < n_pars_total(n_layers);
 }
 
@@ -1438,7 +1438,7 @@ inline void supply_of(const SupplyRows& w, int par, int n_layers,
     return;
   }
   const par_ref r = decode(par, n_layers);
-  if (r.kind == par_ref::Kind::SoilPotential) {
+  if (r.block == par_ref::Block::SoilPotential) {
     dEup = w.dEup_dpsi_soil[std::size_t(r.index)];
     d2Eup = w.d2Eup_dpsi_dpsi_soil[std::size_t(r.index)];
     if (into != nullptr && into->n_uptake() > 0) {
