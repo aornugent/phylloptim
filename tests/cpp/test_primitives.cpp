@@ -42,7 +42,7 @@
 // plant" would be comparing this file with itself. The two `compare_*.R` harnesses
 // that did compare against plant are deleted rather than revived, for that reason.
 // What they established -- bit-identical, including 78 of 78 SCM nodes -- is
-// recorded in PLAN.md item 1 and cannot be re-run.
+// on record here and cannot be re-run.
 //
 // ⚠️ ONE THING THE ORIGINAL HARNESS NEEDED AND THIS DOES NOT: hex floats. It emitted
 // every value twice, decimal and `%a`, because its counterpart read the file into R

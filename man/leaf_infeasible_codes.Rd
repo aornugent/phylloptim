@@ -10,22 +10,22 @@ leaf_infeasible_codes()
 A named character vector: codes, with a one-line description each.
 }
 \description{
-The `code` values a `phylloptim_infeasible` condition can carry, and what each
+The \code{code} values a \code{phylloptim_infeasible} condition can carry, and what each
 one means. Use these rather than matching on the message text, which changes
 whenever an error message is improved.
 }
 \section{What is deliberately NOT here}{
 
-Every input-validation failure. A mismatched `psi_soil`/`soil_depth` length, a
-non-finite driver, a negative water potential, an unusable `R_d_25`, a
+Every input-validation failure. A mismatched \code{psi_soil}/\code{soil_depth} length, a
+non-finite driver, a negative water potential, an unusable \code{R_d_25}, a
 misconfigured supply path: those stay ordinary errors, and that is the whole
 safety property of this list. Classifying one of them as infeasible would let it
-be swallowed by the very `tryCatch()` this exists to enable, and a fit would
+be swallowed by the very \code{tryCatch()} this exists to enable, and a fit would
 report a plausible likelihood over whichever rows survived — which is exactly
 the failure #39 rejected silent NA rows to prevent.
 
 So the test a site has to pass is narrow: it must be reachable from a
-**well-formed call with in-range data**, because the parameters or the state make
+\strong{well-formed call with in-range data}, because the parameters or the state make
 the operating point unsolvable. Anything reachable only by handing the model
 something malformed is not infeasibility, it is a bug in the caller, and it
 should be loud.
@@ -33,24 +33,25 @@ should be loud.
 
 \section{Three judgement calls left ordinary, and why}{
 
-Of the roughly fifty `stop` sites in the headers, seventeen are classified. Three
+Of the 64 \code{stop} sites in the headers, nineteen are classified. Three
 of the rest are genuinely arguable, and all three were left ordinary because that
 is the direction whose failure mode is a loud error rather than a quiet wrong
 answer. They are listed here so the decision can be overruled on purpose rather
 than rediscovered:
-
-* **`psi_crit` past the stem curve's P99** (`check_psi_crit_domain`, #38). An
-  unconstrained optimiser proposing `stem_b` really can walk into this, which
-  argues for infeasible. Against: it is also precisely what #38 exists to make
-  *loud* for someone who fitted a vulnerability curve and carried over a
-  `psi_crit` from the defaults, and making it swallowable would put that back.
-  Constrain the pair instead — `vignette("fitting")` derives both from a P50/P88.
-* **`method = "ift"` requested at a point where the IFT does not hold**
-  (`leaf_gradient`). The default `method = "auto"` never reaches it, so getting
-  here means the caller overrode the choice and the answer is "not at this point".
-* **Trait sign and magnitude checks** (`psi_crit`, `stem_b`, `root_b`,
-  `root_psi_crit` must be positive). Reachable by an unbounded proposal, but a
-  negative `stem_b` is not an infeasible operating point, it is not a stem.
+\itemize{
+\item ~~\strong{\code{psi_crit} past the stem curve's P99.}~~ No longer reachable, and so no
+longer a decision: \code{psi_crit} is the 5\%-conductivity quantile of the stem
+curve rather than a trait beside it, so it scales with the curve and lands
+inside the domain for every shape parameter. An optimiser moving \code{stem_P50}
+cannot walk out of it.
+Constrain the pair instead — \code{vignette("fitting")} derives both from a P50/P88.
+\item \strong{\code{method = "ift"} requested at a point where the IFT does not hold}
+(\code{leaf_gradient}). The default \code{method = "auto"} never reaches it, so getting
+here means the caller overrode the choice and the answer is "not at this point".
+\item \strong{Trait sign and magnitude checks} (\code{psi_crit}, \code{stem_b}, \code{root_b},
+\code{root_psi_crit} must be positive). Reachable by an unbounded proposal, but a
+negative \code{stem_b} is not an infeasible operating point, it is not a stem.
+}
 
 Every other unclassified site is input or configuration validation — vector
 lengths, non-finite drivers, an unusable supply path — where there is no argument
@@ -61,5 +62,5 @@ for infeasibility at all.
 leaf_infeasible_codes()
 }
 \seealso{
-[with_phylloptim_conditions()]
+\code{\link[=with_phylloptim_conditions]{with_phylloptim_conditions()}}
 }

@@ -13,7 +13,7 @@
 #   * `name_cpp: phylloptim::Leaf`, not `plant::Leaf`.
 #   * The constructor's R-side argument names are the real C++ ones. plant still
 #     says `c`, `b` and `g1_TF24` positionally; #15 renamed those to `stem_c`,
-#     `stem_b` and `cost_scale_TF24`, and the whole reason 10a had to land before
+#     `stem_b` and `TF24_cost_scale`, and the whole reason 10a had to land before
 #     this item is that an R name is much harder to change than a C++ one. `c` is
 #     also the name of a base R function, which is its own small argument.
 #   * The four fields #15 deleted are gone: `rho_`, `a_bio_`, `area_leaf_` and
@@ -75,52 +75,71 @@ Leaf:
       for the model and for how it differs from `plantecophys`, `tealeaves` and
       `bigleaf`.
 
-      Set the drivers with `$set_physiology()`, solve with
-      `$find_root_collar_psi()`, then read the operating point off the object:
-      `$opt_psi_stem_`, `$profit_`, `$assim_colimited_`, `$transpiration_`,
-      `$lambda`, `$g1_eff`.
+      Set the drivers with `$set_physiology()`, solve with `$optimise()`, then
+      read the operating point off the object: `$opt_psi_stem_`, `$profit_`,
+      `$assim_colimited_`, `$transpiration_`, `$lambda`, `$g1_eff`.
+      `$find_root_collar_psi()` is the same solve under the default model, kept
+      because that is what `plant`'s own sources spell.
 
-      A second optimality formulation is available on the single-soil-layer
-      supply path: `$optimise_psi_stem_ProfitMax()` maximises Sperry (2017)'s
-      normalised profit, and `$profitmax_curve()` returns the whole cost, gain
-      and profit curve in one call. `$optimise_psi_stem_TF()` runs the TF24 cost
-      through the same solver, so the two can be compared at identical drivers.
-      These write `$carbon_gain_`, `$hydraulic_cost_norm_` and `$thermal_cost_`,
-      which are unitless and are NOT the same quantities as `$hydraulic_cost_`.
+      **Which model is configuration, not a call argument.** `$set_model(curve,
+      route)` seats it and `$optimise()` takes nothing, because the curves'
+      constants already live on the object -- `$CF77_lambda_` is a field, and
+      `JS22_gamma`, `CMax_a` and `CMax_b` are traits. `curve` is any name from
+      [cost_curve_names()]; `route` is `"collar"` (the full soil-to-collar path,
+      any supply) or `"stem"` (psi_stem with the upstream potential pinned at
+      `psi_soil`, single soil layer only). `$model_curve()` and `$model_route()`
+      report what is seated. The defaults are `"TF24"` and `"collar"`, which is
+      the production path.
+
+      ```r
+      l$set_model("ProfitMax", "stem")
+      l$optimise()
+      ```
+
+      `ProfitMax` writes `$carbon_gain_`, `$hydraulic_cost_norm_` and
+      `$thermal_cost_`, which are unitless and are NOT the same quantities as
+      `$hydraulic_cost_`; `$profitmax_curve()` returns its whole cost, gain and
+      profit curve in one call.
+
+      ⚠️ **`$profit_` carries three kinds of number across the seven curves** --
+      carbon for the four difference objectives, a dimensionless normalised
+      profit for `ProfitMax`, and carbon times a dimensionless factor for the two
+      products. Comparing it BETWEEN curves is not meaningful; comparing each
+      curve's argmax is.
 
       All water potentials are **positive magnitudes in MPa**. There is one
       representation throughout and it is asserted, not documented: a negative
-      `psi_crit`, `stem_b`, `root_b` or `root_psi_crit` is an error here, and a
-      negative `psi_soil` is an error in `set_physiology`.
+      `stem_P50` or `root_P50` is an error here, and a negative `psi_soil` is an
+      error in `set_physiology`.
 
       @param vcmax_25 maximum carboxylation rate at 25 C (umol m^-2 s^-1)
       @param stem_c shape parameter of the STEM hydraulic vulnerability curve (unitless)
-      @param stem_b sensitivity parameter of the STEM hydraulic vulnerability curve (MPa)
-      @param psi_crit critical stem water potential (MPa, positive magnitude)
+      @param stem_P50 STEM potential at 50% loss of hydraulic conductivity (MPa, positive magnitude)
       @param root_c shape parameter of the ROOT hydraulic vulnerability curve (unitless)
-      @param root_b sensitivity parameter of the ROOT hydraulic vulnerability curve (MPa)
-      @param root_psi_crit critical root water potential (MPa, positive magnitude)
-      @param beta2 exponent for the effect of hydraulic risk (unitless)
+      @param root_P50 ROOT potential at 50% loss of hydraulic conductivity (MPa, positive magnitude)
+      @param TF24_beta2 exponent for the effect of hydraulic risk (unitless)
       @param jmax_25 maximum rate of electron transport at 25 C (umol m^-2 s^-1)
       @param a quantum yield of photosynthetic electron transport (mol mol^-1)
       @param curv_fact_elec_trans curvature factor for the light response curve (unitless)
       @param curv_fact_colim curvature factor for the colimited photosynthesis equation
-      @param GSS_tol_abs absolute tolerance for the golden-section search
+      @param GSS_tol_abs absolute tolerance for the collar route's golden-section
+        FALLBACK, and for the width below which it treats the feasible collar
+        interval as a single point. ⚠️ It does NOT set how well the operating
+        point is determined -- the collar solve root-finds its own first-order
+        condition -- and it does NOT reach the stem route at all.
       @param vulnerability_curve_ncontrol number of control points for the pre-computed vulnerability curves
       @param ci_abs_tol absolute tolerance for root-solving ci
       @param ci_niter maximum number of iterations for root-solving ci
-      @param cost_scale_TF24 cost parameter for the TF24 profit model (umol m^-2 s^-1)
+      @param TF24_cost_scale cost parameter for the TF24 profit model (umol m^-2 s^-1)
 
       @export
     args:
       - vcmax_25: double
       - stem_c: double
-      - stem_b: double
-      - psi_crit: double
+      - stem_P50: double
       - root_c: double
-      - root_b: double
-      - root_psi_crit: double
-      - beta2: double
+      - root_P50: double
+      - TF24_beta2: double
       - jmax_25: double
       - a: double
       - curv_fact_elec_trans: double
@@ -129,7 +148,7 @@ Leaf:
       - vulnerability_curve_ncontrol: double
       - ci_abs_tol: double
       - ci_niter: double
-      - cost_scale_TF24: double
+      - TF24_cost_scale: double
 
   active:
     # --- the traits, READ-ONLY (#95) ------------------------------------------
@@ -141,7 +160,7 @@ Leaf:
     # normalises by `k(psi_soil) - k_crit`, and `k_crit = kmax *
     # proportion_of_conductivity(psi_crit)` -- both of those are bound, so the only
     # missing piece was `psi_crit`, and a probe script in
-    # `leaf_calibration_test/sicangco-2026` carried a hard-coded 5.870283 for it.
+    # a downstream replication study carried a hard-coded 5.870283 for it.
     #
     # ⚠️ READ-ONLY, and that is hazard 10 rather than caution: changing a trait
     # means rebuilding up to two vulnerability splines and clearing the solved
@@ -156,19 +175,24 @@ Leaf:
     vcmax_25: {type: double, access: field, readonly: true}
     jmax_25: {type: double, access: field, readonly: true}
     stem_c: {type: double, access: field, readonly: true}
+    stem_P50: {type: double, access: field, readonly: true}
+    root_c: {type: double, access: field, readonly: true, name_cpp: "roots_.root_c"}
+    root_P50: {type: double, access: field, readonly: true, name_cpp: "roots_.root_P50"}
+    # DERIVED from the (P50, c) pair above, and bound because callers need to read
+    # them: `stem_b` is the curve's scale and `psi_crit` its 5%-conductivity
+    # quantile, which is also Sperry's reference potential.
     stem_b: {type: double, access: field, readonly: true}
     psi_crit: {type: double, access: field, readonly: true}
-    root_c: {type: double, access: field, readonly: true, name_cpp: "roots_.root_c"}
     root_b: {type: double, access: field, readonly: true, name_cpp: "roots_.root_b"}
     root_psi_crit: {type: double, access: field, readonly: true, name_cpp: "roots_.root_psi_crit"}
-    beta2: {type: double, access: field, readonly: true}
+    TF24_beta2: {type: double, access: field, readonly: true}
     # `a` reads badly as a field name and stays `a` anyway: it is what `set_traits()`
     # and `leaf_traits()` call the quantum yield, and a read whose name differs from
     # the write's cannot be round-tripped by a caller iterating over trait names.
     a: {type: double, access: field, readonly: true}
     curv_fact_elec_trans: {type: double, access: field, readonly: true}
     curv_fact_colim: {type: double, access: field, readonly: true}
-    cost_scale_TF24: {type: double, access: field, readonly: true}
+    TF24_cost_scale: {type: double, access: field, readonly: true}
 
     # --- solved operating point ----------------------------------------------
     ci_: {type: double, access: field}
@@ -178,7 +202,7 @@ Leaf:
     soil_consumption_: {type: "std::vector<double>", access: field}
     profit_: {type: double, access: field}
     psi_stem: {type: double, access: field}
-    lambda_: {type: double, access: field}
+    CF77_lambda_: {type: double, access: field}
     # --- Sperry (2017) ProfitMax, all unitless -------------------------------
     # Written ONLY by the ProfitMax path. `hydraulic_cost_` is deliberately NOT
     # reused: it holds carbon units on the TF24 path and conductance units on the
@@ -248,6 +272,13 @@ Leaf:
     # argument, because plant's own bindings pin the generated constructor by arity
     # so `leaf_model()` has to apply it afterwards.
     R_d_25: {type: double, access: field}
+    # Joshi & Stocker (2022)'s hydraulic unit cost. A field for the same reason
+    # R_d_25 is one: the constructor is pinned by arity, so leaf_model() assigns it
+    # after construction. ⚠️ The default is NOT a literature value -- see the member.
+    JS22_gamma: {type: double, access: field}
+    # Wolf/Anderegg CMax. Fields for the same reason. ⚠️ CMax_b is SIGNED.
+    CMax_a: {type: double, access: field}
+    CMax_b: {type: double, access: field}
     # The Tjoelker (2001) declining-Q10 coefficients:
     #   Q10(T) = rd_q10_intercept_ - rd_q10_slope_ * (T + 25) / 2
     # Set the slope to zero and the intercept IS a constant Q10.
@@ -294,8 +325,7 @@ Leaf:
     T50_: {type: double, access: field}
     Tcrit_: {type: double, access: field}
     # Points used to scan the supply stream for |A|max. Sicangco use 500-600.
-    profitmax_scan_n_: {type: int, access: field}
-    # Cells optimise_psi_stem_TF/_Sperry scan before refining, so a maximum at
+    # Cells the single-layer optimisers scan before refining, so a maximum at
     # full closure or past a second hump is reachable. 64 matches a 2001-point
     # reference over a 1728-row driver sweep; lower it only with a measurement.
     boundary_scan_n_: {type: int, access: field}
@@ -345,6 +375,20 @@ Leaf:
     lambda: {type: double, access: member, name_cpp: marginal_cost_water}
     lambda_molar: {type: double, access: member, name_cpp: marginal_cost_water_molar}
     lambda_multilayer: {type: double, access: member, name_cpp: marginal_cost_water_multilayer}
+    # THE MARGINAL COST OF WATER THE OPERATING POINT IMPLIES, `(dC/dpsi)/(dE/dpsi)`
+    # in umol C (kg H2O)^-1 -- the one output every cost curve reports on the same
+    # axis, and in the same units as the `$CF77_lambda_` INPUT so the two are directly
+    # comparable. Cowan-Farquhar prices water at a constant, so its emergent lambda
+    # IS that constant; every other curve's moves with the drivers.
+    #
+    # Read-only: a settable one would be a way to disagree with the operating point
+    # it comes from. NA until an optimiser has run.
+    lambda_emergent: {type: double, access: member, name_cpp: lambda_emergent}
+    # ProfitMax's normalisers, so its equivalence ratio |A|max/k_span is one
+    # division away. ⚠️ That ratio is NOT a lambda -- it is carbon per unit
+    # CONDUCTANCE lost, because it multiplies `k(psi_soil) - k(psi)`.
+    profitmax_A_max: {type: double, access: member, name_cpp: profitmax_A_max}
+    profitmax_k_span: {type: double, access: member, name_cpp: profitmax_k_span}
     g1_eff: {type: double, access: member, name_cpp: g1_eff}
     # Conductance to WATER, mol H2O m^-2 s^-1 (#56). Every data source and the g1
     # literature record gs to water; the model solves for gs to CO2. An accessor, not
@@ -362,7 +406,7 @@ Leaf:
     # All thirteen reported outputs in ONE call, for the R boundary's benefit.
     #
     # A method rather than an `active` entry because it does a little work (the
-    # uptake sum), and it is bound at all because reading the twelve outputs
+    # uptake sum), and it is bound at all because reading the thirteen outputs
     # through their individual active bindings costs ~15 us -- five times the ~3
     # us solve that produced them (#39). R's operating_point() and leaf_solve()
     # both read it, and test-surface.R asserts it agrees element-for-element
@@ -412,12 +456,12 @@ Leaf:
     # clear the solved outputs; set_traits() is the way back. Bound because
     # leaf_gradient() is in R -- not because a user should reach for it, which is
     # why its documentation is on leaf_gradient() rather than here.
-    perturb_stem_b:
+    perturb_stem_P50:
       return_type: void
-      args: [stem_b: double]
+      args: [stem_P50: double]
     set_traits:
       return_type: void
-      args: [vcmax_25: double, stem_c: double, stem_b: double, psi_crit: double, root_c: double, root_b: double, root_psi_crit: double, beta2: double, jmax_25: double, a: double, curv_fact_elec_trans: double, curv_fact_colim: double, cost_scale_TF24: double, R_d_25: double]
+      args: [vcmax_25: double, stem_c: double, stem_P50: double, root_c: double, root_P50: double, TF24_beta2: double, jmax_25: double, a: double, curv_fact_elec_trans: double, curv_fact_colim: double, TF24_cost_scale: double, R_d_25: double, JS22_gamma: double, CMax_a: double, CMax_b: double]
 
     # --- transpiration and conductance ---------------------------------------
     proportion_of_conductivity:
@@ -504,16 +548,58 @@ Leaf:
       args: [psi_stem: double, psi_upstream: double]
 
     # --- leaf economics -------------------------------------------------------
-    hydraulic_cost_Sperry:
-      return_type: double
-      args: [psi_stem: double, psi_upstream: double]
     hydraulic_cost_TF:
       return_type: double
       args: [psi_stem: double]
-    profit_psi_stem_Sperry:
+    # Cowan & Farquhar (1977): `lambda * E`, a carbon flux, because `$CF77_lambda_` is
+    # umol C per kg of water. This is the cost curve `$CF77_lambda_`'s units belong to,
+    # and the one whose first-order condition is the dA/dE == lambda that the
+    # optimality literature is written in.
+    hydraulic_cost_CF77:
+      return_type: double
+      args: [psi_stem: double, psi_upstream: double]
+    hydraulic_cost_JS22:
+      return_type: double
+      args: [psi_stem: double, psi_upstream: double]
+    hydraulic_cost_CMax:
       return_type: double
       args: [psi_stem: double, psi_upstream: double]
     profit_psi_stem_TF:
+      return_type: double
+      args: [psi_stem: double, psi_upstream: double]
+    profit_psi_stem_CF77:
+      return_type: double
+      args: [psi_stem: double, psi_upstream: double]
+    profit_psi_stem_JS22:
+      return_type: double
+      args: [psi_stem: double, psi_upstream: double]
+    profit_psi_stem_CMax:
+      return_type: double
+      args: [psi_stem: double, psi_upstream: double]
+    lambda_JS22:
+      return_type: double
+      args: [psi_stem: double, psi_upstream: double]
+    lambda_CMax:
+      return_type: double
+      args: [psi_stem: double, psi_upstream: double]
+    # --- the product-objective family (PLAN 7c) ------------------------------
+    # ⚠️ profit_psi_stem_SOX returns a PRODUCT, not a carbon profit.
+    sox_reduction:
+      return_type: double
+      args: [psi_stem: double]
+    profit_psi_stem_SOX:
+      return_type: double
+      args: [psi_stem: double, psi_upstream: double]
+    lambda_SOX:
+      return_type: double
+      args: [psi_stem: double, psi_upstream: double]
+    jw26_reduction:
+      return_type: double
+      args: [psi_stem: double]
+    profit_psi_stem_JW26:
+      return_type: double
+      args: [psi_stem: double, psi_upstream: double]
+    lambda_JW26:
       return_type: double
       args: [psi_stem: double, psi_upstream: double]
     lambda_TF24:
@@ -521,20 +607,102 @@ Leaf:
       args: [psi_stem: double]
 
     # --- optimisers -----------------------------------------------------------
-    optimise_psi_stem_Sperry:
+
+    # Cowan & Farquhar (1977), the model the whole optimality family is measured
+    # against: maximise `A - lambda*E`, so the optimum satisfies dA/dE == lambda.
+    #
+    # ⚠️ `$CF77_lambda_` IS A REQUIRED INPUT and has no default -- it is the marginal
+    # value of water in umol C (kg H2O)^-1, and this refuses rather than optimise
+    # a NaN objective. Its SCALE is set by the leaf, not chosen freely: at the
+    # package defaults the leaf's own marginal cost of water runs 9e4 to 3e5, and
+    # a lambda far outside that band pins the optimum shut or wide open.
+    # `$lambda` (that is, `marginal_cost_water()`) reports the same quantity for
+    # the other cost curves, so it is how you find a value that means something.
+    # --- runtime curve selection, for the gradient ----------------------------
+    # ⚠️ `curve` is the CostCurve enum's VALUE. R sends positions into it, so
+    # appending is safe and reordering would silently solve a different model;
+    # `curve_name()` is bound so R can compare the mapping rather than trust it.
+    # Refresh the analytic normalisers and PIN |A|max, which is what a
+    # perturbation needs: the scan-derived normaliser is held at the base point so
+    # the gradient is the partial this package reports.
+    prepare_profitmax_at:
       return_type: void
-      args: []
+      args: [A_max: double]
+    set_model:
+      roxygen: |
+        Choose the optimality model this leaf solves.
+
+        The model is configuration rather than a call argument, because its
+        PARAMETERS already are: `CF77_lambda_` is a field, and `JS22_gamma`,
+        `CMax_a` and `CMax_b` are traits. Seat the model, set whatever constants it
+        needs, then call `optimise()`.
+
+        `route = "collar"` is the production formulation -- the full
+        soil-to-collar-to-stem path, with a root network or with a single soil
+        potential carrying a series resistance. `route = "stem"` optimises
+        `psi_stem` with the upstream potential pinned at `psi_soil`, the form the
+        published models are written in, and needs a single soil potential.
+
+        Defaults to `"TF24"` and `"collar"`, so a caller that never sets a model
+        gets the production path.
+        @param curve cost curve name, from \code{\link{cost_curve_names}}
+        @param route `"collar"` or `"stem"`
+        @export
+      return_type: void
+      args: [curve: "std::string", route: "std::string"]
+    model_curve:
+      return_type: "std::string"
+    model_route:
+      return_type: "std::string"
+    optimise:
+      roxygen: |
+        Solve for the operating point under the model this leaf is set to.
+
+        Takes no arguments: the curve, the route, the supply path and the curve's
+        own constants are all already on the object. See `set_model()`.
+        @export
+      return_type: void
+    # The stem route's two off-solve entry points. Neither names a curve: they
+    # read the one `set_model()` seated, exactly as `optimise()` does, so a
+    # caller never handles an index that means a different model when the
+    # enumeration grows. Both refuse on the collar route.
+    evaluate_psi_stem_at:
+      roxygen: |
+        Evaluate the leaf at a prescribed psi_stem, rather than optimising one.
+
+        Uses the model `set_model()` seated, so seat a STEM route first. Leaves
+        the same outputs a solve would and returns `profit_`.
+        @param target_psi_stem stem water potential to evaluate at, MPa as a
+          positive magnitude. Clamped into `[psi_soil, psi_crit]`; compare the
+          resulting `$opt_psi_stem_` with what you asked for to detect it.
+        @export
+      return_type: double
+      args: [target_psi_stem: double]
+    dprofit_dpsi_stem_checked:
+      roxygen: |
+        dprofit/dpsi_stem at a given stem potential, with its feasibility.
+
+        Uses the model `set_model()` seated, so seat a STEM route first.
+
+        ⚠️ **Returns `c(dprofit, feasible)`, and the second entry is not
+        optional.** The derivative is a hard `0.0` SENTINEL on the shut-down and
+        reversed-gradient exits, which is indistinguishable from a stationary
+        point; a composite that reads the value without the flag reports the
+        shut-down state as the optimum.
+        @param psi_stem stem water potential, MPa as a positive magnitude
+        @export
+      return_type: "std::vector<double>"
+      args: [psi_stem: double]
 
     # --- Sperry (2017) ProfitMax with BOTH terms normalised -------------------
     #
-    # `optimise_psi_stem_Sperry` maximises `A - lambda*cost` with lambda a
-    # PRESCRIBED input; these maximise `CG - (HC + TC)` with CG and HC normalised
-    # as Sperry defines them. The two share an argmax exactly when
-    # lambda = |A|max/(k_soil - kcrit), and `optimise_psi_stem_ProfitMax` reports
-    # that lambda in `$lambda_` so the equivalence can be checked rather than
-    # believed. Use these unless you have a lambda of your own: |A|max is a
-    # property of the drivers, so the equivalent lambda has to be recomputed at
-    # every observation and doing that from R costs more than the model does.
+    # Maximises `CG - (HC + TC)` with CG and HC normalised as Sperry defines them.
+    # Multiplying that objective by |A|max gives the constant-lambda form
+    # `A - lambda*(k_soil - k(psi))` with lambda = |A|max/(k_soil - kcrit), so the
+    # two share an argmax -- and `$lambda` reports that value, so the relation is
+    # inspectable. There is deliberately no prescribed-lambda entry point: |A|max
+    # is a property of the drivers, so the equivalent lambda is not a constant, and
+    # fixing one contradicts the model rather than configuring it.
     #
     # Single soil layer only, like the other two -- which is not a restriction for
     # this model, whose supply is the integral of one vulnerability curve with no
@@ -554,12 +722,6 @@ Leaf:
     profitmax_curve:
       return_type: "std::vector<double>"
       args: [n: int]
-    optimise_psi_stem_ProfitMax:
-      return_type: void
-      args: []
-    optimise_psi_stem_TF:
-      return_type: void
-      args: []
 
     # --- Medlyn stomatal-conductance model (plant develop #450) --------------
     medlyn_model_gs:

@@ -7,12 +7,10 @@
 Leaf(
   vcmax_25,
   stem_c,
-  stem_b,
-  psi_crit,
+  stem_P50,
   root_c,
-  root_b,
-  root_psi_crit,
-  beta2,
+  root_P50,
+  TF24_beta2,
   jmax_25,
   a,
   curv_fact_elec_trans,
@@ -21,7 +19,7 @@ Leaf(
   vulnerability_curve_ncontrol,
   ci_abs_tol,
   ci_niter,
-  cost_scale_TF24
+  TF24_cost_scale
 )
 }
 \arguments{
@@ -29,17 +27,13 @@ Leaf(
 
 \item{stem_c}{shape parameter of the STEM hydraulic vulnerability curve (unitless)}
 
-\item{stem_b}{sensitivity parameter of the STEM hydraulic vulnerability curve (MPa)}
-
-\item{psi_crit}{critical stem water potential (MPa, positive magnitude)}
+\item{stem_P50}{STEM potential at 50\% loss of hydraulic conductivity (MPa, positive magnitude)}
 
 \item{root_c}{shape parameter of the ROOT hydraulic vulnerability curve (unitless)}
 
-\item{root_b}{sensitivity parameter of the ROOT hydraulic vulnerability curve (MPa)}
+\item{root_P50}{ROOT potential at 50\% loss of hydraulic conductivity (MPa, positive magnitude)}
 
-\item{root_psi_crit}{critical root water potential (MPa, positive magnitude)}
-
-\item{beta2}{exponent for the effect of hydraulic risk (unitless)}
+\item{TF24_beta2}{exponent for the effect of hydraulic risk (unitless)}
 
 \item{jmax_25}{maximum rate of electron transport at 25 C (umol m^-2 s^-1)}
 
@@ -49,7 +43,11 @@ Leaf(
 
 \item{curv_fact_colim}{curvature factor for the colimited photosynthesis equation}
 
-\item{GSS_tol_abs}{absolute tolerance for the golden-section search}
+\item{GSS_tol_abs}{absolute tolerance for the collar route's golden-section
+FALLBACK, and for the width below which it treats the feasible collar
+interval as a single point. ⚠️ It does NOT set how well the operating
+point is determined -- the collar solve root-finds its own first-order
+condition -- and it does NOT reach the stem route at all.}
 
 \item{vulnerability_curve_ncontrol}{number of control points for the pre-computed vulnerability curves}
 
@@ -57,32 +55,49 @@ Leaf(
 
 \item{ci_niter}{maximum number of iterations for root-solving ci}
 
-\item{cost_scale_TF24}{cost parameter for the TF24 profit model (umol m^-2 s^-1)}
+\item{TF24_cost_scale}{cost parameter for the TF24 profit model (umol m^-2 s^-1)}
 }
 \description{
 Stomatal behaviour emerges from a gain-risk profit maximisation over the
 root-collar water potential rather than from an empirical conductance
 model, coupled to Farquhar-von Caemmerer-Berry photosynthesis and an
 explicit soil-root-stem-leaf water transport path. See the package README
-for the model and for how it differs from `plantecophys`, `tealeaves` and
-`bigleaf`.
+for the model and for how it differs from \code{plantecophys}, \code{tealeaves} and
+\code{bigleaf}.
 }
 \details{
-Set the drivers with `$set_physiology()`, solve with
-`$find_root_collar_psi()`, then read the operating point off the object:
-`$opt_psi_stem_`, `$profit_`, `$assim_colimited_`, `$transpiration_`,
-`$lambda`, `$g1_eff`.
+Set the drivers with \verb{$set_physiology()}, solve with \verb{$optimise()}, then
+read the operating point off the object: \verb{$opt_psi_stem_}, \verb{$profit_},
+\verb{$assim_colimited_}, \verb{$transpiration_}, \verb{$lambda}, \verb{$g1_eff}.
+\verb{$find_root_collar_psi()} is the same solve under the default model, kept
+because that is what \code{plant}'s own sources spell.
 
-A second optimality formulation is available on the single-soil-layer
-supply path: `$optimise_psi_stem_ProfitMax()` maximises Sperry (2017)'s
-normalised profit, and `$profitmax_curve()` returns the whole cost, gain
-and profit curve in one call. `$optimise_psi_stem_TF()` runs the TF24 cost
-through the same solver, so the two can be compared at identical drivers.
-These write `$carbon_gain_`, `$hydraulic_cost_norm_` and `$thermal_cost_`,
-which are unitless and are NOT the same quantities as `$hydraulic_cost_`.
+\strong{Which model is configuration, not a call argument.} \verb{$set_model(curve, route)} seats it and \verb{$optimise()} takes nothing, because the curves'
+constants already live on the object -- \verb{$CF77_lambda_} is a field, and
+\code{JS22_gamma}, \code{CMax_a} and \code{CMax_b} are traits. \code{curve} is any name from
+\code{\link[=cost_curve_names]{cost_curve_names()}}; \code{route} is \code{"collar"} (the full soil-to-collar path,
+any supply) or \code{"stem"} (psi_stem with the upstream potential pinned at
+\code{psi_soil}, single soil layer only). \verb{$model_curve()} and \verb{$model_route()}
+report what is seated. The defaults are \code{"TF24"} and \code{"collar"}, which is
+the production path.
 
-All water potentials are **positive magnitudes in MPa**. There is one
+\if{html}{\out{<div class="sourceCode r">}}\preformatted{l$set_model("ProfitMax", "stem")
+l$optimise()
+}\if{html}{\out{</div>}}
+
+\code{ProfitMax} writes \verb{$carbon_gain_}, \verb{$hydraulic_cost_norm_} and
+\verb{$thermal_cost_}, which are unitless and are NOT the same quantities as
+\verb{$hydraulic_cost_}; \verb{$profitmax_curve()} returns its whole cost, gain and
+profit curve in one call.
+
+⚠️ \strong{\verb{$profit_} carries three kinds of number across the seven curves} --
+carbon for the four difference objectives, a dimensionless normalised
+profit for \code{ProfitMax}, and carbon times a dimensionless factor for the two
+products. Comparing it BETWEEN curves is not meaningful; comparing each
+curve's argmax is.
+
+All water potentials are \strong{positive magnitudes in MPa}. There is one
 representation throughout and it is asserted, not documented: a negative
-`psi_crit`, `stem_b`, `root_b` or `root_psi_crit` is an error here, and a
-negative `psi_soil` is an error in `set_physiology`.
+\code{stem_P50} or \code{root_P50} is an error here, and a negative \code{psi_soil} is an
+error in \code{set_physiology}.
 }

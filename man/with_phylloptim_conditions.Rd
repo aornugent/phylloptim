@@ -10,34 +10,34 @@ with_phylloptim_conditions(expr)
 \item{expr}{An expression to evaluate.}
 }
 \value{
-The value of `expr`.
+The value of \code{expr}.
 }
 \description{
-Evaluates `expr` and, if it fails with an error the model has tagged as
-infeasible, re-signals it as a `phylloptim_infeasible` condition carrying a
-machine-readable `code`. Anything else propagates unchanged.
+Evaluates \code{expr} and, if it fails with an error the model has tagged as
+infeasible, re-signals it as a \code{phylloptim_infeasible} condition carrying a
+machine-readable \code{code}. Anything else propagates unchanged.
 }
 \details{
-[leaf_solve()] and [leaf_gradient_batch()] already do this, so wrap
-`expr` yourself when you are **driving a `Leaf` directly** —
-`$find_root_collar_psi()` is generated glue and cannot signal a classified
-condition on its own — or when you are calling [leaf_gradient()].
+\code{\link[=leaf_solve]{leaf_solve()}} and \code{\link[=leaf_gradient_batch]{leaf_gradient_batch()}} already do this, so wrap
+\code{expr} yourself when you are \strong{driving a \code{Leaf} directly} —
+\verb{$find_root_collar_psi()} is generated glue and cannot signal a classified
+condition on its own — or when you are calling \code{\link[=leaf_gradient]{leaf_gradient()}}.
 
-⚠️ [leaf_gradient()] is **not** routed through this, and that is a gap rather
-than a design: it is one long function that depends on `missing()` for two of its
+⚠️ \code{\link[=leaf_gradient]{leaf_gradient()}} is \strong{not} routed through this, and that is a gap rather
+than a design: it is one long function that depends on \code{missing()} for two of its
 arguments, so making it delegate to an inner implementation would change argument
 matching in ways worth a separate change. Wrap the call yourself until then.
-[leaf_gradient_batch()] is the path a fit should be on anyway — one boundary
+\code{\link[=leaf_gradient_batch]{leaf_gradient_batch()}} is the path a fit should be on anyway — one boundary
 crossing rather than one per observation — and it is routed.
 }
 \section{Why this and not a per-row NA mode}{
 
-Returning `NA` rows instead of throwing is the other half of #57 and is not built
+Returning \code{NA} rows instead of throwing is the other half of #57 and is not built
 yet, deliberately: it must not be built before the classification in
-[leaf_infeasible_codes()] has been reviewed, or the opt-in would return `NA` for
+\code{\link[=leaf_infeasible_codes]{leaf_infeasible_codes()}} has been reviewed, or the opt-in would return \code{NA} for
 programming errors too and a guard written against "most rows failed" would be
-applied to bugs as well as to infeasibility. [leaf_gradient_batch()] already
-reports per-row `status`, which is the same idea where it was safe to have it.
+applied to bugs as well as to infeasibility. \code{\link[=leaf_gradient_batch]{leaf_gradient_batch()}} already
+reports per-row \code{status}, which is the same idea where it was safe to have it.
 }
 
 \examples{
@@ -52,5 +52,5 @@ tryCatch(
   phylloptim_infeasible = function(e) message("infeasible: ", e$code))
 }
 \seealso{
-[leaf_infeasible_codes()]
+\code{\link[=leaf_infeasible_codes]{leaf_infeasible_codes()}}
 }

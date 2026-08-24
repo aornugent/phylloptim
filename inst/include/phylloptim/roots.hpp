@@ -200,8 +200,12 @@ class MultiLayerRoots {
 public:
   // --- root vulnerability trait pair (hazard 1: NOT the stem's b/c) ---------
   double root_c = 2.680147;       // unitless
-  double root_b = 3.898245;       // -MPa
-  double root_psi_crit = 5.870283; // -MPa
+  // THE TRAIT is root_P50, the potential at 50% loss of conductivity. root_b and
+  // root_psi_crit are DERIVED from it and root_c by Leaf, and are kept here
+  // because the supply path's own curve and bracket are written in terms of them.
+  double root_P50 = 3.4;          // MPa, positive magnitude
+  double root_b = 3.8982451221145307;   // MPa, = P50 / (ln 2)^(1/c)
+  double root_psi_crit = 5.8702827267723245; // MPa, = P95 of that curve
 
   // NOTE: beta_R_H and beta_R_V used to live here. They are parameters of the
   // root-architecture model, not of water transport, and since #33 this class
@@ -500,7 +504,7 @@ public:
   // cached path for every caller, including the hot one. It is kept here only so
   // this entry point cannot change behaviour for a caller that happens to hand
   // back psi_soil_ itself; the hot path above no longer depends on
-  // address identity to be fast. PLAN 7b-ii trap 3.
+  // address identity to be fast.
   void uptake_at(double T_collar, const std::vector<double>& psi_soil,
                  std::vector<double>& soil_consumption, double& E_up) const {
     uptake_impl(T_collar, psi_soil,
@@ -566,8 +570,8 @@ public:
       // it -- the conductivity lookup clamps its argument to the last knot, the
       // integral is capped at G(inf) -- so beyond the domain only the integral's
       // own derivative stays consistent with the value used here (issue #1; the
-      // reasoning is #527's, the "both clamp-to-last-value" it used to cite was
-      // never true of either). For T_collar<0 (an above-atmospheric collar) the
+      // reasoning is #527's). ⚠️ They do NOT both clamp to the last value.
+      // For T_collar<0 (an above-atmospheric collar) the
       // moving bound is in the f_r==1 part, contributed linearly, so the slope
       // is 1.
       const double fr_at =

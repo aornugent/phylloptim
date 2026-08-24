@@ -1,4 +1,4 @@
-# Trait gradients over many observations at once (issue #4, PLAN 11d stage 2).
+# Trait gradients over many observations at once (#4).
 #
 # WHAT THIS FILE IS FOR. `leaf_gradient()` in `gradient.R` computes one
 # observation's gradient in R, over primitives that are already C++. Measured
@@ -17,7 +17,7 @@
 # parameterisation Jacobian. The likelihood is the CALLER's model -- sigma,
 # robustness, a hierarchy -- and putting one in C++ would commit this package to
 # it. The Jacobian belongs in R because that is where the win comes from:
-# `leaf-calibration` maps 40 fitted parameters onto 4 model ones, so C++ returns
+# a companion calibration study maps 40 fitted parameters onto 4 model ones, so C++ returns
 # dY/dtheta for the four and R applies a 40 x 4 chain rule, vectorised over
 # observations. That is exactly the `P_fit > P_model` structure
 # `vignette("fitting")` identified as where an exact gradient wins at all -- see
@@ -42,8 +42,9 @@
 ##' because it is an `RcppR6` `list:` class and every crossing rebuilds a
 ##' five-element named list. Converting 1,327 of them per likelihood evaluation
 ##' would cost ~80 ms and swamp the ~13 ms of gradient it was carrying. The same
-##' argument applies to the `Leaf`: constructing one from R costs ~204 µs, about
-##' 70 solves, so a fit builds it once here rather than once per gradient (#52).
+##' argument applies to the `Leaf`: constructing one from R costs about **180x a
+##' trivial `.Call`**, or 45 solves, so a fit builds it once here rather than once
+##' per gradient (#52).
 ##'
 ##' ⚠️ **The result holds a C++ pointer, so it does not survive `saveRDS()` or a
 ##' new session.** Rebuild it rather than restoring it; [leaf_gradient_batch()]
@@ -59,12 +60,16 @@
 ##'
 ##' @inheritParams leaf_solve
 ##'
+##' @param CF77_lambda Cowan-Farquhar's prescribed marginal value of water, in
+##'   umol C (kg H2O)^-1, one per observation. Only `model = "CF77"` reads it;
+##'   `NA_real_` (the default) leaves it unset, which every other model wants.
+##'
 ##' @return A `leaf_batch` object.
 ##' @seealso [leaf_gradient_batch()], [leaf_gradient()] for one observation.
 ##' @examples
 ##' b <- leaf_batch(psi_soil = c(1.0, 1.5, 2.0), PPFD = 900)
 ##' b
-##' leaf_gradient_batch(b, pars = c("vcmax_25", "stem_b"))$gradient[, , "A"]
+##' leaf_gradient_batch(b, pars = c("vcmax_25", "stem_P50"))$gradient[, , "A"]
 ##' @export
 leaf_batch <- function(psi_soil,
                        PPFD = 900,
@@ -78,7 +83,8 @@ leaf_batch <- function(psi_soil,
                        atm_kpa = 101.3,
                        traits = leaf_traits(),
                        control = leaf_control(),
-                       supply = leaf_supply_multilayer()) {
+                       supply = leaf_supply_multilayer(),
+                       CF77_lambda = NA_real_) {
   if (!inherits(traits, "leaf_traits")) {
     stop("`traits` must come from leaf_traits()", call. = FALSE)
   }
@@ -167,6 +173,7 @@ leaf_batch <- function(psi_soil,
          traits = traits,
          kmax = if (shared) kmax[[1L]] else kmax,
          resistance = if (shared) resistance[[1L]] else resistance,
+         CF77_lambda = CF77_lambda,
          theta_nrow = if (shared) 1L else n),
     class = "leaf_batch")
 }
@@ -241,6 +248,8 @@ print.leaf_batch <- function(x, ...) {
 ##' @param traits a [leaf_traits()] object: the point in trait space to
 ##'   differentiate at. Defaults to the one `batch` was built with. Ignored when
 ##'   `theta` is given.
+##' @param model which optimality model to differentiate, as in
+##'   [leaf_gradient()]: `"collar"` by default, or any [cost_curve_names()] entry.
 ##' @param pars what to differentiate with respect to, as in [leaf_gradient()].
 ##'   ⚠️ **Always pass it.** It is `P_model`, so the default — all of them — is
 ##'   the most expensive thing you can ask for.
@@ -269,7 +278,7 @@ print.leaf_batch <- function(x, ...) {
 ##'   derivation.
 ##' @examples
 ##' b <- leaf_batch(psi_soil = seq(0.5, 4, length.out = 6), PPFD = 900)
-##' g <- leaf_gradient_batch(b, pars = c("vcmax_25", "stem_b"))
+##' g <- leaf_gradient_batch(b, pars = c("vcmax_25", "stem_P50"))
 ##' g$status
 ##' g$gradient[, "vcmax_25", "A"]
 ##' @export
@@ -282,7 +291,8 @@ leaf_gradient_batch <- function(batch,
                                 step = 1e-6,
                                 stationarity_tol = 1e-8,
                                 method = c("auto", "ift", "fd"),
-                                fast_stem_curve = TRUE) {
+                                fast_stem_curve = TRUE,
+                                model = "collar") {
   if (!inherits(batch, "leaf_batch")) {
     stop("`batch` must come from leaf_batch(); got ", class(batch)[[1]],
          call. = FALSE)
@@ -310,7 +320,27 @@ leaf_gradient_batch <- function(batch,
   if (is.null(pars)) {
     pars <- .gradient_available_pars(single)
   }
-  .gradient_check_pars(pars, single)
+  .gradient_check_pars(pars, single, model)
+
+  # ⚠️ THE SAME ROUTE OBJECT `leaf_gradient()` USES, on the batch's own leaf, so
+  # the two entry points cannot disagree about which model a name selects, which
+  # step differencing its solve needs, or which supply path it requires. It is
+  # built for its VALIDATION and for `fd_step` rather than to be called: the loop
+  # lives in C++, and `gradient::route_seat` seats the model there.
+  route <- .gradient_route(batch$leaf, model, list(kind = batch$supply_kind))
+  # The one place an integer curve index survives, and it does not cross the R
+  # surface: `gradient::Settings::curve` is C++-internal, with -1 for the collar
+  # route. R callers name a model; C++ turns the name back into a `CostCurve`.
+  curve <- if (identical(model, .GRADIENT_COLLAR_ROUTE)) {
+    -1L
+  } else {
+    as.integer(match(model, cost_curve_names()) - 1L)
+  }
+  # ProfitMax's normaliser is cleared by `apply()` at every perturbation, so C++ has
+  # to put it back. The flag says RE-SOLVE it rather than hold it: `|A|max` is found
+  # by a root-find now, so letting it follow the traits makes the composite a total
+  # derivative. The name is a leftover; the value is a boolean in disguise.
+  reseat_profitmax <- if (identical(model, "ProfitMax")) 1 else 0
 
   if (is.null(theta)) {
     if (is.null(traits)) {
@@ -338,7 +368,8 @@ leaf_gradient_batch <- function(batch,
   res <- with_phylloptim_conditions(gradient_batch_run(batch$leaf, batch$drivers, theta,
                             match(pars, par_names) - 1L, step,
                             stationarity_tol, method, fast_stem_curve,
-                            psi, dpsi_dtheta))
+                            psi, dpsi_dtheta, curve, route$fd_step,
+                            reseat_profitmax))
 
   dimnames(res$gradient) <- list(NULL, pars, .gradient_output_names())
   dimnames(res$value) <- list(NULL, .gradient_output_names())
@@ -433,22 +464,32 @@ leaf_gradient_batch <- function(batch,
 .gradient_theta_matrix <- function(batch, traits) {
   nr <- batch$theta_nrow
   par_names <- .gradient_par_names()
-  m <- matrix(NA_real_, nrow = nr, ncol = length(par_names))
-  # By NAME, not by position. `leaf_traits()` is in `set_traits()`'s order and
-  # test-gradient.R asserts it, but this is the one place a silent reordering
-  # would produce plausible numbers for the wrong parameters.
-  trait_names <- par_names[seq_len(length(par_names) - 2L)]
+  m <- matrix(NA_real_, nrow = nr, ncol = length(par_names),
+              dimnames = list(NULL, par_names))
+  # ⚠️ EVERY COLUMN IS ADDRESSED BY NAME, including the two non-traits. The traits
+  # always were; the tail two were written as `length(par_names)` and
+  # `length(par_names) - 1L`, which is correct only while they are the last two
+  # columns in that order. Appending a parameter -- which the enumeration is
+  # explicitly designed to allow -- silently wrote `kmax` into the new slot and
+  # `resistance` into `kmax`'s, with no length change to notice. Naming them
+  # removes the class rather than the instance.
+  trait_names <- setdiff(par_names, .gradient_non_traits)
   tv <- unlist(traits)[trait_names]
   if (anyNA(tv)) {
     stop("`traits` is missing: ",
          paste(trait_names[is.na(tv)], collapse = ", "), call. = FALSE)
   }
-  m[, seq_along(tv)] <- rep(tv, each = nr)
-  m[, length(par_names) - 1L] <- batch$kmax
+  m[, trait_names] <- rep(tv, each = nr)
+  m[, "leaf_specific_conductance_max"] <- batch$kmax
   # NA on the multi-layer path, where there is no such parameter and C++ never
   # reads the column.
-  m[, length(par_names)] <- batch$resistance
-  m
+  m[, "resistance"] <- batch$resistance
+  # NA unless the batch was built for the CF77 route; C++ reads the slot
+  # unconditionally, so it must hold whatever the solve will actually use.
+  m[, "CF77_lambda_"] <- batch$CF77_lambda
+  # Handed over WITHOUT names, as `leaf_gradient_batch()` documents: C++ indexes by
+  # position, and the check there rejects any colnames that are not this order.
+  unname(m)
 }
 
 .gradient_check_theta <- function(theta, batch, par_names) {

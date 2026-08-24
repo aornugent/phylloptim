@@ -58,14 +58,14 @@ timeit <- function(f, n, reps) {
 # --- which API surface is this? -------------------------------------------
 sd_args <- names(formals(set_drivers))
 has_network <- "root_network" %in% sd_args
-single_takes_resistance <- "resistance" %in% names(formals(leaf_supply_single))
+single_takes_resistance <- "resistance" %in% names(formals(leaf_supply_singlelayer))
 api <- paste0(if (has_network) "resistance-driver" else "root-carbon",
               if (single_takes_resistance) "/supply-cfg" else "/supply-driver")
 
 supply <- if (single_takes_resistance) {
-  leaf_supply_single(resistance = 1e3)
+  leaf_supply_singlelayer(resistance = 1e3)
 } else {
-  leaf_supply_single()
+  leaf_supply_singlelayer()
 }
 net <- if (has_network && !single_takes_resistance) series_resistance(1e3) else NULL
 
@@ -109,7 +109,7 @@ ctor <- timeit(function() leaf_model(supply = supply), 300, reps)
 # P = 1 figure overstates what a fit gets.
 NOBS <- 24L
 PSET <- list(p1 = "vcmax_25",
-             p4 = c("vcmax_25", "jmax_25", "cost_scale_TF24", "beta2"))
+             p4 = c("vcmax_25", "jmax_25", "TF24_cost_scale", "TF24_beta2"))
 gN <- list(p1 = c(fresh = NA_real_, reuse = NA_real_),
            p4 = c(fresh = NA_real_, reuse = NA_real_))
 if (exists("leaf_gradient")) {
@@ -171,7 +171,7 @@ if (exists("leaf_gradient_batch")) {
 # recorded rather than fatal.
 g1 <- g3 <- greuse <- NA_real_
 if (exists("leaf_gradient")) {
-  gp <- c("vcmax_25", "stem_b", "cost_scale_TF24")
+  gp <- c("vcmax_25", "stem_P50", "TF24_cost_scale")
   grad_args <- c(list(psi_soil = 1.5, PPFD = 900, atm_vpd = 1.5, supply = supply,
                       pars = gp), extra)
   g3 <- timeit(function() do.call(leaf_gradient, grad_args), 30, reps)

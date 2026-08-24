@@ -101,10 +101,13 @@ grid_drivers <- function(psi_soil, ppfd = 900, vpd = 2.0, layers = 1L) {
 }
 
 # Five rows, chosen for the branch each one takes rather than to sample evenly.
-# `psi_crit` is in `pars` throughout on purpose: it does not appear in the profit
-# function at all, so the composite must return EXACTLY zero for it at an
-# interior optimum and the fallback must return ~1.26 at a dry-pinned one. A pin
-# that omitted it would miss the sharpest statement of why there are two routes.
+# `stem_P50` and `stem_c` are in `pars` throughout because they are the two
+# parameters of one curve and their derivatives are taken by different routes:
+# `stem_P50` moves the curve by the homogeneity rescale, `stem_c` has no such
+# identity and rebuilds. Both now carry a term through the derived `stem_b` and
+# `psi_crit`, which is the part a hand-written chain rule would be most likely to
+# drop -- so pinning them here is what would catch a partial masquerading as a
+# total derivative.
 #
 # `R_d_25` is in `pars` throughout because it is the smallest-magnitude parameter
 # here, so it takes the smallest absolute step and sets this file's cross-platform
@@ -112,19 +115,19 @@ grid_drivers <- function(psi_soil, ppfd = 900, vpd = 2.0, layers = 1L) {
 cases <- list(
   list(label = "interior-1layer",
        args = grid_drivers(2.0),
-       pars = c("vcmax_25", "stem_b", "psi_crit", "R_d_25")),
+       pars = c("vcmax_25", "stem_P50", "stem_c", "R_d_25")),
   list(label = "interior-5layer",
        args = grid_drivers(0.5, vpd = 0.5, layers = 5L),
-       pars = c("vcmax_25", "stem_b", "psi_crit", "R_d_25")),
+       pars = c("vcmax_25", "stem_P50", "stem_c", "R_d_25")),
   list(label = "pinned-dry-3layer",
        args = grid_drivers(4.0, vpd = 0.5, layers = 3L),
-       pars = c("vcmax_25", "stem_b", "psi_crit", "R_d_25")),
+       pars = c("vcmax_25", "stem_P50", "stem_c", "R_d_25")),
   list(label = "shutdown-1layer",
        args = grid_drivers(6.0),
-       pars = c("vcmax_25", "stem_b", "psi_crit", "R_d_25")),
+       pars = c("vcmax_25", "stem_P50", "stem_c", "R_d_25")),
   list(label = "single-potential",
        args = list(psi_soil = 1.5, PPFD = 900, atm_vpd = 2.0,
-                   supply = leaf_supply_single(),
+                   supply = leaf_supply_singlelayer(),
                    root_network = series_resistance(1e4)),
        pars = c("vcmax_25", "leaf_specific_conductance_max", "resistance",
                 "R_d_25"))

@@ -21,39 +21,49 @@ This code was developed as the TF24 strategy inside
 so it can be tested, profiled, extended and embedded on its own.
 
 ## Why a separate package
+**A home for several stomatal models, not just ours.** The package solves **seven**
+optimality models through one optimiser, at identical drivers, behind one gradient
+entry point: our hydraulic gain-risk formulation (`TF24`), Sperry-style profit
+maximisation (`ProfitMax`), Cowan-Farquhar (`CF77`), Joshi & Stocker's quadratic
+cost (`JS22`), Wolf-Anderegg-Pacala carbon maximisation (`CMax`), and the two
+product objectives `SOX` and `JW26`. The Medlyn et al. (2011) empirical model is
+here too, bypassing the hydraulic solve. `vignette("the-models")` sets them side
+by side and derives each one.
 
-**A home for several stomatal models, not just ours.** The package carries our
-hydraulic gain-risk formulation, and it already contains two alternatives — the
-Sperry et al. (2017) cost formulation and the Medlyn et al. (2011) optimal
-stomatal model — inherited from plant. The Sperry side is now runnable as the paper
-defines it: `optimise_psi_stem_ProfitMax()` maximises `CG - HC` with both terms
-normalised, on the single-potential supply path, and `optimise_psi_stem_TF()` runs
-the TF24 cost through the same solver so the two can be compared at identical
-drivers. Both are still off the production collar solve, and the Medlyn path
-bypasses the hydraulic solve altogether. The goal is to make each one a
-**first-class member** there too,
-selectable and runnable against identical drivers, alongside Prentice et al. (2014)
-least-cost and Cowan-Farquhar.
+Making that comparison apples-to-apples needed one level more generality than
+swapping cost functions. Every one of these models maximises
 
-The right way to do that turns out to be one level deeper than swapping cost
-functions. Those models all maximise a profit, so they all satisfy the same
-first-order condition `dA/dE = λ` and differ **only** in the function λ(state) —
-the marginal cost of water. So what should be pluggable is λ. Six models become
-six small functions sharing one tested numerical core, which makes a comparison
-apples-to-apples by construction rather than by careful bookkeeping. This is the
-central result of a companion manuscript (see [PLAN.md](PLAN.md) item 14), and it
-is something none of the existing R packages can support, because each commits to
-a single hydraulically explicit scheme or to none. See [PLAN.md](PLAN.md) item 7a.
+    h(A(psi)) - C(psi)
 
-The same refactor applies from the other side, to the **water supply path**. The
-gas-exchange core is already entirely soil-agnostic — the multi-layer soil and
-root system enter the solve only as a single supply function `E_up = f(P_collar)`,
-so pulling them behind an interface would let the multi-layer root system be
-swapped for a single soil water potential. That both lowers the barrier for a
-bare-leaf user (no root-mass profile to construct) and is what makes comparison
-*fair*: the alternative formulations worth comparing against are all written for
-one ψ_soil, so you have to be able to hold the supply side fixed. [PLAN.md](PLAN.md)
-item 7b.
+so a model is fully specified by a **cost curve** `C` and a **benefit link** `h`,
+and one derivative serves all seven:
+
+    d/dpsi [h(A) - C] = h'(A) * dA/dpsi - dC/dpsi
+
+The marginal cost of water λ — the quantity that distinguishes these models in the
+literature — is a *consequence* of that pair rather than a primitive:
+λ = (dC/dψ)/(dE/dψ). That is what lets the product objectives (`A·g`) sit
+alongside the difference objectives at all: a log link turns one into the other
+without moving the argmax. This is the central result of a companion manuscript,
+and it is something none of the existing R packages can support, because each
+commits to a single hydraulically explicit scheme or to none.
+
+**One solver, so the comparison is not just fair but cheap.** Every model reaches its
+operating point through the same call: evaluate both interval endpoints, optionally
+scan for the basin, then root-find `dJ/dψ = 0` inside the winning cell. Nothing here
+is per-model except a row in two dispatch tables. That is what keeps a seven-model
+package as fast as a one-model one — the stem entry points run at **2.9 µs** and
+ProfitMax at **5.6 µs**, against 9.3 and 58.2 before the solvers were merged, because
+a basin scan is now used only where multi-modality is measured rather than everywhere
+by default. The residual `|dJ/dψ|` at the returned optimum has a median of **1.2e-15**.
+
+**Either supply path, so the comparison is fair.** The gas-exchange core is
+soil-agnostic: the multi-layer soil and root system enter the solve only as a
+supply function `E_up = f(P_collar)`. So the multi-layer root system can be
+swapped for a single soil water potential (`leaf_supply_singlelayer()`), which both
+lowers the barrier for a bare-leaf user — no root-mass profile to construct — and
+is what makes the comparison fair, because the alternative formulations worth
+comparing against are all written for one ψ_soil.
 
 **Fast and differentiable, so it is built for calibration.** A full hydraulic
 solve costs ~3 µs, and derivatives are analytic rather than finite differences:
@@ -63,28 +73,23 @@ calibration wants — gradient-based optimisers and Hamiltonian samplers need ma
 evaluations *and* clean gradients, and finite-differencing a nested root-find is
 exactly the case where numerical gradients are noisiest.
 
-One honest caveat, and one correction this paragraph used to get wrong. The caveat
-is that there is still no calibration vignette in the package ([PLAN.md](PLAN.md)
-item 12), though the fit that drove the gradient work exists outside it. The
-correction: trait gradients are **done**, and they did not need the templated
-`Leaf<T>` this paragraph pointed at — that item is closed unbuilt. What they
-needed was the implicit function theorem, which is cheaper and gives the
-active-set classification a drought calibration actually has to have. See
-[Trait gradients](#trait-gradients) below and [PLAN.md](PLAN.md) item 11e.
+One honest caveat: there is still no calibration vignette in the package, though
+the fit that drove the gradient work exists outside it in
+a companion calibration study.
 
 ## Status
 
-**v0.1.0 — early, but validated.** The model itself is mature and in production
-use inside plant. The *packaging* is what is new.
+**v0.6.0 — the model is mature and in production use inside plant; the
+*packaging* is what is new.**
 
 - **Cross-checked against plant's compiled build**, and the swap was bit-identical
   at the point it was made: plant's full suite 0 fail / 0 error on both builds,
   and the SCM regression identical across 78/78 nodes. The 1-ULP disagreement
   that held this up turned out to be R's decimal parser rather than either model.
 - **The shutdown defect is fixed.** On the hydraulic-shutdown path, transpiration,
-  assimilation and uptake used to be left holding the previous solve's values
-  (plant #578). That, and three further stale-state exits ported from plant #585,
-  are all fixed here.
+  assimilation and uptake were left holding the previous solve's values (plant
+  #578). That, and three further stale-state exits ported from plant #585, are all
+  fixed here.
 - **Results now differ from plant's own leaf, deliberately** — see
   [NEWS.md](NEWS.md). The most consequential single change is deriving the
   ppm→Pa conversion from the actual atmospheric pressure instead of a hard-coded
@@ -98,8 +103,8 @@ no R and no Rcpp, depend only on Boost and the header-only parts of odelia, and
 compile and run with no R installed — so the same model is available to a C++
 program, to a Python extension, and to R, with none of those paying for the
 others. The R layer (`src/`, `R/`) sits on top of those headers and is never
-included by them; the dependency runs one way only. See [PLAN.md](PLAN.md) item
-6a for the decision, and `.github/workflows/cpp-tests.yml` for what enforces it —
+included by them; the dependency runs one way only. See
+`.github/workflows/cpp-tests.yml` for what enforces it —
 it builds the whole C++ suite on a runner with no R on it.
 
 ## Use from C++
@@ -264,12 +269,12 @@ the operating point, and `g1_eff` re-expresses the solved conductance as a Medly
 `g1`, which is a convenient common scale for comparison.
 
 Traits and numerical settings are separate, so a calibration loop varying traits
-never has to know which of the C++ constructor's seventeen arguments are
+never has to know which of the C++ constructor's fifteen arguments are
 tolerances:
 
 ```r
 leaf_solve(psi_soil = 3.0, PPFD = 900,
-           traits  = leaf_traits(vcmax_25 = 120, stem_b = 2.5),
+           traits  = leaf_traits(vcmax_25 = 120, stem_P50 = 2.5),
            control = leaf_control(GSS_tol_abs = 1e-5))
 ```
 
@@ -279,16 +284,32 @@ care about intermediate state:
 ```r
 l <- leaf_model()                          # or leaf_model(traits, control)
 set_drivers(l, psi_soil = 2.0, PPFD = 900)
-l$find_root_collar_psi()
+l$optimise()
 
 operating_point(l)   # the same one-row data.frame
 l$profit_            # or reach into the object directly
 l$lambda             # marginal cost of water, dA/dE
 ```
 
-`Leaf()` is also exported: it is the raw C++ constructor, seventeen positional
-arguments and no defaults. `leaf_model()` is that with the arguments named,
-defaulted and split into traits versus tolerances, and is what you should use.
+**Which model is configuration, not a call argument.** `$set_model()` seats a cost
+curve and a route; `$optimise()` takes nothing, because the curves' constants are
+already on the object. The defaults are `"TF24"` and `"collar"`, the production
+path, so an existing caller that never sets a model is unaffected —
+`$find_root_collar_psi()` is that solve under its own name, which is what plant's
+sources spell.
+
+```r
+l <- leaf_model(supply = leaf_supply_singlelayer())
+set_drivers(l, psi_soil = 1.5, PPFD = 900)
+l$set_model("SOX", "stem")     # any of cost_curve_names(); "collar" or "stem"
+l$optimise()
+l$model_curve(); l$model_route()
+```
+
+`Leaf()` is also exported: it is the raw C++ constructor, fifteen positional
+arguments and no defaults — and four traits it does not take at all.
+`leaf_model()` is that with the arguments named, defaulted, split into traits
+versus tolerances, and the missing four assigned, and is what you should use.
 
 **All water potentials are positive magnitudes in MPa.** One representation
 throughout, and it is asserted rather than documented — a negative `psi_soil` is
@@ -299,7 +320,7 @@ soil-to-collar path to one resistance:
 
 ```r
 leaf_solve(psi_soil = 1.5, PPFD = 900,
-           supply = leaf_supply_single(),
+           supply = leaf_supply_singlelayer(),
            root_network = series_resistance(1e3))
 ```
 
@@ -326,9 +347,13 @@ traits, which is what a gradient-based optimiser or a Hamiltonian sampler wants:
 
 ```r
 g <- leaf_gradient(psi_soil = 2.0, PPFD = 900,
-                   pars = c("vcmax_25", "stem_b", "cost_scale_TF24"))
+                   pars = c("vcmax_25", "stem_P50", "TF24_cost_scale"))
 g$gradient   # rows: parameters.  columns: A, gc, psi_stem, collar, profit
 g$method     # "ift" or "fd" -- see below
+
+# any of the seven models, same call -- and `leaf_solve()` takes `model` too
+leaf_gradient(psi_soil = 2.0, PPFD = 900, model = "JS22",
+              supply = leaf_supply_singlelayer(), pars = c("vcmax_25", "JS22_gamma"))
 ```
 
 The first four columns are what a gas-exchange calibration observes. `profit` is
@@ -342,15 +367,15 @@ fits them and nothing in the derivation cares whether a parameter is a trait.
 
 ```r
 leaf_gradient(psi_soil = 1.5, PPFD = 900,
-              supply = leaf_supply_single(),
+              supply = leaf_supply_singlelayer(),
               root_network = series_resistance(1e4),
               pars = c("leaf_specific_conductance_max", "resistance"))
 ```
 
 These are not finite differences of the solve. The outputs are evaluated at the
 profit-maximising collar potential, so a trait moves them both directly and by
-moving that optimum — and for `cost_scale_TF24`, `beta2`, `stem_b` and `stem_c`
-the second route is **100%** of the answer. Differentiating the optimality
+moving that optimum — and for `TF24_cost_scale`, `TF24_beta2`, `stem_P50` and
+`stem_c` the second route is **100%** of the answer. Differentiating the optimality
 condition rather than the solved output gets both terms exactly.
 
 `profit` is the exception, and it is the cheapest column for the reason it is the
@@ -362,7 +387,7 @@ If your model **tracks** the optimum instead of finding it, pass the collar
 potential you are operating at and the derivation simplifies rather than breaks:
 
 ```r
-leaf_gradient(psi_soil = 2.0, PPFD = 900, pars = c("vcmax_25", "stem_b"),
+leaf_gradient(psi_soil = 2.0, PPFD = 900, pars = c("vcmax_25", "stem_P50"),
               psi = 2.7)                # evaluate here, do not solve
 ```
 
@@ -388,7 +413,7 @@ has** — `length(pars)`. They are equal only if you fit traits directly. Poolin
 hierarchy, or any derived parameter makes the first much larger than the second,
 which is where this route wins; `vignette("fitting")` measures both regimes and
 `?leaf_gradient` has the cost model. ⚠️ **Always pass `pars`** — the default is all
-fourteen, which is the most expensive request there is.
+sixteen on the multi-layer path, which is the most expensive request there is.
 
 **For a fit, use `leaf_gradient_batch()`.** It is the same gradient, composed in C++
 and vectorised over observations, so a likelihood evaluation crosses the R boundary
@@ -397,7 +422,7 @@ differentiated parameters (`length(pars)`), 22×.
 
 ```r
 b <- leaf_batch(psi_soil = obs$psi_soil, PPFD = obs$PPFD)   # once per fit
-g <- leaf_gradient_batch(b, traits, pars = c("vcmax_25", "stem_b"))
+g <- leaf_gradient_batch(b, traits, pars = c("vcmax_25", "stem_P50"))
 g$gradient   # [observation, parameter, output]
 g$status     # per observation: "interior", "pinned", "no-gradient" or "error"
 ```
@@ -416,7 +441,7 @@ change invalidates derived state that is not obvious from the outside:
 l <- leaf_model()
 set_traits(l, leaf_traits(vcmax_25 = 120))
 set_drivers(l, psi_soil = 2.0, PPFD = 900)   # required: the drivers must be re-set
-l$find_root_collar_psi()
+l$optimise()
 ```
 
 See `vignette("phylloptim")` for the whole tour.
@@ -432,7 +457,7 @@ supply:
 | | µs per row |
 |---|---:|
 | `leaf_solve()`, vectorised | **21.5** |
-| `leaf_model()` once, then `set_drivers()` + `$find_root_collar_psi()` + `operating_point()` per row | 20.3 |
+| `leaf_model()` once, then `set_drivers()` + `$optimise()` + `operating_point()` per row | 20.3 |
 | the same, reading one field instead of `operating_point()` | 17.1 |
 | the C++ solve inside all three | **2.8** |
 
@@ -453,18 +478,19 @@ imply:
 
 Two costs worth knowing because they surprise people:
 
-- **Constructing a `Leaf` from R costs ~204 µs** — 70 solves — and only ~32 µs of
+- **Constructing a `Leaf` from R costs about 180× a trivial `.Call`** — 45 solves — and only ~32 µs of
   that is the two vulnerability splines; the rest is R-side object construction
   over ~60 active bindings. So construct once and reuse. `leaf_solve(reuse = TRUE)`
   is the default for this reason, and [`set_traits()`](#trait-gradients) exists so
   that a trait sweep need not reconstruct either.
-- **`set_traits()` is ~0.02 µs unless you change `stem_b`, `stem_c`, `root_b` or
-  `root_c`, and 21.8 µs if you do**, because those four own the pre-integrated
+- **`set_traits()` is ~0.02 µs unless you change `stem_P50`, `stem_c`, `root_P50`
+  or `root_c`, and 21.8 µs if you do**, because those four own the pre-integrated
   vulnerability splines and it rebuilds one. That is 8× a solve, in C++, where
   batching cannot help — worth knowing before writing a sweep over a vulnerability
   curve. Most of it is the incomplete gamma function seeding 101 knots, not the
-  spline machinery. `leaf_gradient()` sidesteps it for `stem_b`, which is
-  homogeneous: see `fast_stem_curve` in `?leaf_gradient`.
+  spline machinery. `leaf_gradient()` sidesteps it for `stem_P50`, because the
+  curve is homogeneous of degree 1 in the scale that pair implies: see
+  `fast_stem_curve` in `?leaf_gradient`.
 
 ### As a dependency of another R package
 

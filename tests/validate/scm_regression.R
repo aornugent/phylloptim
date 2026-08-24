@@ -1,4 +1,4 @@
-# PLAN.md item 1: the SCM regression, which is the check that mattered there --
+# The SCM regression, which is the check that mattered there --
 # an adaptive stepper and a discrete node-splitting schedule could turn a
 # below-tolerance perturbation into a visible difference. It did not: 78/78 nodes.
 #

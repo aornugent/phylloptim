@@ -201,14 +201,35 @@ jobs:
             d.PPFD = 900; d.psi_soil = {2.0}; d.soil_depth = soil_depth;
             d.atm_vpd = 2.0; d.ca = 40.0; d.leaf_temp = 25.0;
             d.atm_o2_kpa = 21.0; d.atm_kpa = 101.3;
-            // ⚠️ ALL n_pars ELEMENTS, WRITTEN OUT: a short initialiser compiles
-            // and zero-fills the rest, so adding a parameter would silently pass
-            // 0.0 for it here. The traits in set_traits' order, then the two
-            // non-traits.
+            // ⚠️ ALL n_pars ELEMENTS, WRITTEN OUT, ONE PER LINE WITH ITS NAME.
+            // A short initialiser compiles and zero-fills the rest, so adding a
+            // parameter upstream silently passes 0.0 for it here -- and if the
+            // new parameter is not last, it shifts kmax and resistance into the
+            // wrong slots and the gradient comes back NaN with no diagnostic.
+            // That is exactly what happened when the trait vector went 14 -> 15.
+            // Count these against gradient::n_pars whenever this file is touched.
             double theta[phylloptim::gradient::n_pars] = {
-                96.0, 2.680147, 3.898245, 5.870283, 2.680147, 3.898245,
-                5.870283, 1.5, 157.44, 0.30, 0.7, 0.99, 7.5, 1.44,
-                1.0 * 0.000157 / 5.0, 0.0};
+                96.0,                   // vcmax_25
+                2.680147,               // stem_c
+                3.4,                    // stem_P50
+                2.680147,               // root_c
+                3.4,                    // root_P50
+                1.5,                    // TF24_beta2
+                157.44,                 // jmax_25
+                0.30,                   // a
+                0.7,                    // curv_fact_elec_trans
+                0.99,                   // curv_fact_colim
+                7.5,                    // TF24_cost_scale
+                1.44,                   // R_d_25
+                1.0,                    // JS22_gamma
+                0.6,                    // CMax_a
+                0.0,                    // CMax_b
+                1.0 * 0.000157 / 5.0,   // leaf_specific_conductance_max
+                0.0,                    // resistance
+                0.0};                   // CF77_lambda_ (CF77 only)
+            static_assert(phylloptim::gradient::n_pars == 18,
+                          "theta above is written out element by element; update "
+                          "it and this assertion together");
             const int pars[1] = {0};  // vcmax_25
             const std::vector<phylloptim::gradient::Drivers> obs{d, d};
             const std::vector<phylloptim::gradient::Result> g =
@@ -226,7 +247,7 @@ jobs:
             // compared for the same reason profit is below. ⚠️ COPY THIS FROM
             // tests/testthat/gradient_golden.tsv WHENEVER RESULTS MOVE -- the
             // `interior-1layer` / `vcmax_25` / `A` cell. Do not re-derive it.
-            if (std::fabs(g[0].grad[0] - 0.0209510) > 1e-5) {
+            if (std::fabs(g[0].grad[0] - 0.0209555) > 1e-5) {
               return 1;
             }
             l.set_physiology(roots, 900, {2.0}, soil_depth,

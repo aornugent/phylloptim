@@ -3,17 +3,21 @@
 #define PHYLLOPTIM_CLOSED_FORM_HPP_
 
 // A fast approximate solver for the TF24 leaf optimum, as an alternative to the
-// exact golden-section search in Leaf::optimise_psi_stem_TF.
+// exact stem-route solve -- `set_model("TF24", "stem")` then `optimise()`.
 //
 // WHY. The exact solve is the model's whole cost. Measured in the companion
 // analysis (`Falster-stomatal_analytical_analysis`, notes/tf24_closed_form_bench.cpp,
-// benchmarked against the genuine plant::Leaf):
+// benchmarked against the genuine plant::Leaf). ⚠️ THESE FIGURES PREDATE THE
+// SOLVER MERGE, when that entry point was a golden-section search over the
+// objective; it root-finds its first-order condition now and `bench_solve` reports
+// 2.66 us/call, so the 1x baseline happens to be unchanged while the algorithm
+// under it is not. Re-measure before quoting a speedup from this table.
 //
-//     exact optimise_psi_stem_TF          2.611 us      1x
+//     exact TF24 stem solve               2.611 us      1x
 //     power law + 1 Newton step           0.241 us     10.8x
-//     explicit form at beta2 = 1/stem_c   0.056 us     47x
+//     explicit form at TF24_beta2 = 1/stem_c   0.056 us     47x
 //
-// At beta2 = 1/stem_c, 0.051 of the 0.056 us is set_physiology -- the leaf solve itself
+// At TF24_beta2 = 1/stem_c, 0.051 of the 0.056 us is set_physiology -- the leaf solve itself
 // has essentially vanished. For scale: making this library header-only, and
 // enabling LTO, each measured at *zero*. This is where the speed is.
 //
@@ -25,11 +29,11 @@
 // with Q below. Because lambda_TF24 is a power law in psi to leading order, that
 // can be inverted explicitly for a starting psi, and one Newton step on the
 // unapproximated supply-minus-demand residual finishes the job. When
-// beta2 = 1/stem_c the power cancels and there is nothing left to solve at all.
+// TF24_beta2 = 1/stem_c the power cancels and there is nothing left to solve at all.
 //
 // STATUS: this is NOT wired into Leaf, and nothing calls it by default. It is a
 // selectable alternative whose accuracy has to be established per use (see
-// within_guard below and PLAN.md item 9) before it can replace the exact solve on
+// within_guard below) before it can replace the exact solve on
 // a production path.
 //
 // ⚠️ AND IT HAS DRIFTED FROM THE SOLVE IT APPROXIMATES. Every `D` below is
@@ -64,7 +68,7 @@
 // LIMITATION: single-layer only, with the collar held at zero
 // (`l.transpiration(psi, 0.0)`), matching the reference. The multi-layer case is a
 // three-level nest, so the prize there is larger -- but the closed form for it does
-// not exist yet. See PLAN.md item 7b.
+// not exist yet.
 
 #include <phylloptim/constants.hpp>
 #include <phylloptim/leaf_model.hpp>
@@ -97,16 +101,16 @@ inline double transpiration_from_assim(const Leaf &l, double assim, double ci) {
 }
 
 // d(lambda)/d(psi), analytic. Differentiates Leaf::lambda_TF24, whose form is
-//     lambda = K * (1-f)^(beta2-1) * p^(stem_c-1),  p = psi/stem_b,  f = exp(-p^stem_c)
+//     lambda = K * (1-f)^(TF24_beta2-1) * p^(stem_c-1),  p = psi/stem_b,  f = exp(-p^stem_c)
 inline double dlambda_TF24(const Leaf &l, double psi) {
   const double K =
-      l.cost_scale_TF24 * l.beta2 * l.stem_c / (l.stem_b * l.leaf_specific_conductance_max_);
+      l.TF24_cost_scale * l.TF24_beta2 * l.stem_c / (l.stem_b * l.leaf_specific_conductance_max_);
   const double p = psi / l.stem_b;
   const double f = std::exp(-std::pow(p, l.stem_c));
   return K * std::pow(p, l.stem_c - 2.0) *
-         ((l.beta2 - 1.0) * std::pow(1.0 - f, l.beta2 - 2.0) * f * l.stem_c *
+         ((l.TF24_beta2 - 1.0) * std::pow(1.0 - f, l.TF24_beta2 - 2.0) * f * l.stem_c *
               std::pow(p, l.stem_c) +
-          std::pow(1.0 - f, l.beta2 - 1.0) * (l.stem_c - 1.0)) /
+          std::pow(1.0 - f, l.TF24_beta2 - 1.0) * (l.stem_c - 1.0)) /
          l.stem_b;
 }
 
@@ -152,16 +156,16 @@ inline Solution evaluate_at(Leaf &l, double psi, double Q, double sqrt_D) {
                   xi};
 }
 
-// General beta2. Explicit power-law leading order, then `newton_steps` Newton
+// General TF24_beta2. Explicit power-law leading order, then `newton_steps` Newton
 // steps on the full supply-minus-demand residual. Requires set_physiology to have
 // run. See note 1 above: leave newton_steps at 1.
 inline Solution solve(Leaf &l, int newton_steps = 1) {
   const double kmax = l.leaf_specific_conductance_max_;
   const double sqrt_D = std::sqrt(l.atm_vpd_);
   const double Q = uso_group(l);
-  const double K_lambda = l.cost_scale_TF24 * l.beta2 * l.stem_c / (l.stem_b * kmax);
+  const double K_lambda = l.TF24_cost_scale * l.TF24_beta2 * l.stem_c / (l.stem_b * kmax);
   const double Xi = std::sqrt(Q / K_lambda);
-  const double n = l.stem_c * l.beta2 - 1.0;
+  const double n = l.stem_c * l.TF24_beta2 - 1.0;
   const double electron_transport = l.electron_transport();
 
   // Leading order, taking kappa from the wet-end limit A(ci -> ca).
@@ -201,14 +205,14 @@ inline Solution solve(Leaf &l, int newton_steps = 1) {
   return evaluate_at(l, p * l.stem_b, Q, sqrt_D);
 }
 
-// beta2 == 1/stem_c. The psi dependence cancels out of lambda entirely, so xi is
+// TF24_beta2 == 1/stem_c. The psi dependence cancels out of lambda entirely, so xi is
 // constant and there is nothing to solve -- no power law, no Newton step. This is
-// the 47x case. Only correct when beta2 == 1/stem_c; check beta2_is_exact below.
+// the 47x case. Only correct when TF24_beta2 == 1/stem_c; check beta2_is_exact below.
 inline Solution solve_exact_beta2(Leaf &l) {
   const double sqrt_D = std::sqrt(l.atm_vpd_);
   const double Q = uso_group(l);
   const double xi = std::sqrt(Q * l.stem_b * l.leaf_specific_conductance_max_ /
-                              (l.cost_scale_TF24 * l.beta2 * l.stem_c));
+                              (l.TF24_cost_scale * l.TF24_beta2 * l.stem_c));
   const double ci = l.ca_ * xi / (xi + sqrt_D);
   const double assim = l.assim_colimited(ci);
   const double E = transpiration_from_assim(l, assim, ci);
@@ -219,7 +223,7 @@ inline Solution solve_exact_beta2(Leaf &l) {
 }
 
 inline bool beta2_is_exact(const Leaf &l, double tol = 1e-12) {
-  return std::abs(l.beta2 - 1.0 / l.stem_c) <= tol * std::max(1.0, 1.0 / l.stem_c);
+  return std::abs(l.TF24_beta2 - 1.0 / l.stem_c) <= tol * std::max(1.0, 1.0 / l.stem_c);
 }
 
 // The validity guard. The closed form degrades where the leaf is far from the

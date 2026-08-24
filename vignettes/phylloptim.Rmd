@@ -26,17 +26,31 @@ theme_set(theme_bw(base_size = 11) +
 
 ## What this model does differently
 
-Most leaf gas-exchange models get stomatal conductance from an empirical
-function of assimilation, VPD and CO₂ — Ball-Berry, Medlyn, and their
-descendants. This one has no such function. It builds an explicit hydraulic path
-from the soil, through the roots and the root collar, up the stem to the leaf,
-and then asks: **which stem water potential maximises profit?** Profit is
-assimilation minus a hydraulic cost that rises as the xylem loses conductivity.
-Conductance is whatever falls out of the answer.
+Most leaf gas-exchange models obtain stomatal conductance from an empirical
+function of assimilation, VPD and CO₂. Ball-Berry, Medlyn and their descendants
+all work that way. This model has no such function.
 
-So stomatal closure under drought here is not fitted. It is derived, from two
-Weibull vulnerability curves, the soil potential, and the plant's own
+Instead it builds an explicit hydraulic path from the soil, through the roots and
+the root collar, up the stem to the leaf. Then it asks which stem water potential
+maximises profit, where profit is assimilation minus a hydraulic cost that rises
+as the xylem loses conductivity. Conductance is whatever falls out of the answer.
+
+Stomatal closure under drought is therefore not fitted here. It is derived, from
+two Weibull vulnerability curves, the soil potential, and the plant's own
 conductance.
+
+## What is on this page
+
+| Section | What it covers |
+|---|---|
+| *One solve* to *Light and VPD together* | driving the model and reading the result |
+| *Traits and numerical settings are separate* | which arguments are physiology and which are numerics |
+| *Water potentials are positive magnitudes* | the one convention that will break a ported script |
+| *A bare leaf* | the simpler supply path, for a leaf with no root profile |
+| *Trait gradients* | exact derivatives, and when they are worth using |
+
+`vignette("the-models")` is the reference for what is being solved.
+`vignette("fitting")` works through a calibration.
 
 ## One solve
 
@@ -46,18 +60,18 @@ leaf_solve(psi_soil = 2.0, PPFD = 900) |>
   glimpse()
 ```
 
-Drivers in, operating point out. `psi_soil` is a **positive magnitude in MPa** —
-more on that below.
+Drivers in, operating point out. `psi_soil` is a positive magnitude in MPa, which
+a later section covers.
 
-Most of those columns are the usual gas-exchange quantities. Two are less usual:
+Most of those columns are the usual gas-exchange quantities. Two are less usual.
 
-- **`lambda`** is the marginal cost of water, dA/dE, at the operating point —
-  how much carbon the leaf gives up per unit of water it declines to transpire.
-  It is the quantity the optimisation equalises.
-- **`g1_eff`** re-expresses the solved conductance as the `g1` of the Medlyn
-  model, which is a convenient common scale if that is the model you are used
-  to. It is computed from the solve rather than supplied, so it varies with
-  conditions.
+`lambda` is the marginal cost of water, dA/dE, at the operating point. It is how
+much carbon the leaf gives up per unit of water it declines to transpire, and it
+is the quantity the optimisation equalises.
+
+`g1_eff` re-expresses the solved conductance as the `g1` of the Medlyn model,
+which is a convenient common scale if that is the model you are used to. It is
+computed from the solve rather than supplied, so it varies with conditions.
 
 ## A drought response
 
@@ -80,9 +94,9 @@ drought |>
 ```
 
 Note where both hit exactly zero. That is not a floor imposed by a
-minimum-conductance parameter — it is the solve reporting that no operating
-point both moves water and stays inside the root's hydraulic limit, so the
-answer is shut-down.
+minimum-conductance parameter. It is the solve reporting that no operating point
+both moves water and stays inside the root's hydraulic limit, so the answer is
+shut-down.
 
 ## The same sweep on a familiar scale
 
@@ -103,8 +117,8 @@ being a parameter of it.
 ## Light and VPD together
 
 Because `leaf_solve()` recycles its drivers elementwise, a factorial design is an
-`expand_grid()` and a single call — no loop, and nothing to join back afterwards,
-since the drivers come back as columns of the answer.
+`expand_grid()` and a single call. There is no loop, and nothing to join back
+afterwards, because the drivers come back as columns of the answer.
 
 ```{r}
 expand_grid(PPFD = seq(50, 1800, length.out = 30),
@@ -123,14 +137,14 @@ transpiration needed to support a given assimilation rises with VPD.
 
 ## Traits and numerical settings are separate
 
-The C++ constructor takes seventeen positional arguments, four of which are
-tolerances sitting among the physiology. `leaf_traits()` and `leaf_control()`
-split them, so a calibration loop varying traits never has to know which of the
-seventeen are not traits.
+The C++ constructor takes fifteen positional arguments, four of which are
+tolerances sitting among the physiology. There are also four traits it does not
+take at all, which have to be assigned afterwards. `leaf_traits()` and
+`leaf_control()` split the first fifteen and supply the missing four, so a
+calibration loop varying traits never has to know either fact.
 
 ```{r}
-vulnerable <- leaf_traits(stem_b = 2.5, psi_crit = 4.0,
-                          root_b = 2.5, root_psi_crit = 4.0)
+vulnerable <- leaf_traits(stem_P50 = 2.2, root_P50 = 2.2)
 
 bind_rows(
   default = leaf_solve(psi_soil = 3.0, PPFD = 900),
@@ -140,11 +154,11 @@ bind_rows(
   select(traits, psi_stem, A, gc, g1_eff)
 ```
 
-`stem_b`/`stem_c` and `root_b`/`root_c` are **two different vulnerability
-curves** — the stem pair drives the hydraulic cost, the root pair drives uptake.
-They are named rather than left as an unmarked `b`/`c` because using one where
-the other belongs is a mistake that has been made here and reached a manuscript
-draft.
+`stem_P50`/`stem_c` and `root_P50`/`root_c` are two different vulnerability
+curves. The stem pair drives the hydraulic cost; the root pair drives uptake.
+They are named explicitly rather than left as an unmarked `b`/`c` pair, because
+using one where the other belongs is easy to do and produces a plausible wrong
+answer rather than an error.
 
 Tolerances go the other way, through `leaf_control()`:
 
@@ -159,17 +173,21 @@ tibble(
 )
 ```
 
-Those are **identical**, and this passage used to say they differed in the fourth
-decimal. They did, until the collar solve stopped searching profit and started
-solving its own first-order condition instead: the operating point is now
-determined to about `1e-12` rather than to `GSS_tol_abs`, which no longer reaches
-the production path at all. It survives as the threshold below which the feasible
-interval is treated as a single point, and for two single-layer optimisers that
-are off this path.
+Those two are identical, because the collar solve solves its own first-order
+condition rather than searching profit. The operating point is determined to about
+1e-12, so `GSS_tol_abs` does not reach the production path at all.
 
-That is not only a precision story — it is what makes the next section possible.
-An argmax resolved only to `1e-3` moves in discontinuous jumps as a trait varies,
-so its derivative comes back as noise, or worse, smooth and sign-inverted.
+It is read in two places, both on the collar route: the threshold below which the
+feasible collar interval is treated as a single point, and the tolerance of a
+fallback search used when neither bracket endpoint has a usable gradient. It does
+not reach the stem route, which root-finds its own first-order condition at a
+hardcoded tolerance, so tightening it to sharpen a stem-route argmax does
+nothing.
+
+This is not only a precision story. It is what makes the trait gradients below
+possible. An argmax resolved only to 1e-3 moves in discontinuous jumps as a trait
+varies, so its derivative comes back as noise, or worse, as something smooth,
+plausible and sign-inverted.
 
 ## Water potentials are positive magnitudes
 
@@ -184,19 +202,19 @@ script that passed signed potentials:
 leaf_solve(psi_soil = -2.0, PPFD = 900)
 ```
 
-An error, not a quiet `abs()`. A model that accepted both conventions would let
-that script return a plausible wrong number instead.
+That is an error rather than a quiet `abs()`. A model accepting both conventions
+would let such a script return a plausible wrong number instead.
 
 ## A bare leaf: one soil potential, one resistance
 
-Everything above went through the multi-layer root network, which is what plant
+Everything above went through the multi-layer root network, which is what `plant`
 uses. The other supply path collapses the whole soil-to-collar journey into a
-single resistance — and note that it is driven through **the same `root_network`
-argument**, because both paths take their resistances as a per-call driver:
+single resistance. It is driven through the same `root_network` argument, because
+both paths take their resistances as a per-call driver:
 
 ```{r}
 leaf_solve(psi_soil = 1.5, PPFD = 900,
-           supply = leaf_supply_single(),
+           supply = leaf_supply_singlelayer(),
            root_network = series_resistance(1e3)) |>
   as_tibble() |>
   select(psi_soil, psi_stem, collar, A, gc, g1_eff)
@@ -204,16 +222,17 @@ leaf_solve(psi_soil = 1.5, PPFD = 900,
 
 No depth profile, and one number instead of a per-layer network. `soil_depth` is
 the only argument that differs between the two paths, and passing it here is an
-error rather than ignored: there is no depth profile for anything to read. The
-resistance is **per unit leaf area**, because nothing in this model is allowed to
-scale with plant size. Raising it makes water harder to get and the leaf closes
+error rather than ignored, because there is no depth profile for anything to read.
+
+The resistance is per unit leaf area, because nothing in this model is allowed to
+scale with plant size. Raising it makes water harder to get, and the leaf closes
 down:
 
 ```{r, fig.height = 3.4}
 tibble(resistance = 10^seq(2.5, 4.5, length.out = 25)) |>
   rowwise() |>
   mutate(A = leaf_solve(psi_soil = 1.5, PPFD = 900,
-                        supply = leaf_supply_single(),
+                        supply = leaf_supply_singlelayer(),
                         root_network = series_resistance(resistance))$A) |>
   ungroup() |>
   ggplot(aes(resistance, A)) +
@@ -224,12 +243,12 @@ tibble(resistance = 10^seq(2.5, 4.5, length.out = 25)) |>
 ```
 
 This path is also what makes comparison against other optimality models
-meaningful: Medlyn, Prentice least-cost and Cowan-Farquhar are all formulated
-against a *single* soil potential, so comparing them against a multi-layer root
+meaningful. Medlyn, Prentice least-cost and Cowan-Farquhar are all formulated
+against a single soil potential, so comparing them against a multi-layer root
 network would compare two things at once.
 
-The choice is made when the leaf is built, not afterwards. There is no
-`leaf$supply_kind <- "single"`:
+The choice is made when the leaf is built rather than afterwards. There is no
+settable `leaf$supply_kind`:
 
 ```{r, error = TRUE}
 l <- leaf_model()
@@ -237,8 +256,8 @@ l$supply_kind <- "single"
 ```
 
 Flipping the tag alone would leave the other path's state configured and silently
-ignored — so instead both `leaf_supply_*()` reconfigure the object completely,
-and the object can never be in a state where the tag and the supply disagree.
+ignored. Both `leaf_supply_*()` functions therefore reconfigure the object
+completely, so it can never be in a state where the tag and the supply disagree.
 
 ## Multiple soil layers
 
@@ -256,22 +275,22 @@ column stays numeric and the frame stays rectangular.
 
 ## The stateful interface
 
-`leaf_solve()` is a wrapper over an R6 object you can drive yourself. This is
-what plant does, and it is what you want when you care about the intermediate
-state rather than only the operating point.
+`leaf_solve()` is a wrapper over an R6 object you can drive yourself. This is what
+`plant` does, and it is what you want when you care about the intermediate state
+rather than only the operating point.
 
-It is **not** the faster route, which is worth saying because it looks like it
+It is not the faster route, which is worth saying because it looks as though it
 ought to be. Measured over 32 rows, `leaf_solve()` costs 21.5 µs a row and this
-loop costs 20.3 — within 6%, because both are dominated by the same thing: each
-call across the R boundary costs about 1.1 µs, against 2.8 µs for the whole C++
-solve. If you need an inner loop faster than that, what has to go is the number of
-R calls per row, not which R function makes them. `?leaf_solve` has the numbers
-and the README a section on it.
+loop costs 20.3, so they are within 6% of each other. Both are dominated by the
+same thing: a call across the R boundary costs about 1.1 µs, against 2.8 µs for
+the whole C++ solve. If you need an inner loop faster than that, what has to go is
+the number of R calls per row rather than which R function makes them.
+`?leaf_solve` has the numbers, and the README has a section on it.
 
 ```{r}
 l <- leaf_model()
 set_drivers(l, psi_soil = 2.0, PPFD = 900)
-l$find_root_collar_psi()
+l$optimise()          # or l$find_root_collar_psi(), which plant's sources spell
 
 tibble(profit = l$profit_, cost = l$hydraulic_cost_, A = l$assim_colimited_)
 ```
@@ -288,12 +307,12 @@ tibble(psi = seq(0, 6, length.out = 200)) |>
        title = "stem vulnerability")
 ```
 
-The profit function is not. Water flows from the soil to the leaf, so
-`psi_stem` must be **at least** the upstream potential; below it the leaf would
-be wetter than the soil, and `transpiration()` and `stom_cond_CO2()` duly return
-negative values. Evaluate profit there and you get a number, but it is built on a
-negative conductance and means nothing. Plot the domain the solve actually
-searches:
+The profit function is not defined everywhere. Water flows from the soil to the
+leaf, so `psi_stem` must be at least the upstream potential. Below it the leaf
+would be wetter than the soil, and `transpiration()` and `stom_cond_CO2()` duly
+return negative values. Evaluating profit there returns a number, but the number
+is built on a negative conductance and means nothing. Plot the domain the solve
+actually searches:
 
 ```{r, fig.height = 3.4}
 psi_upstream <- 2.0
@@ -308,13 +327,12 @@ tibble(psi = seq(psi_upstream, 6, length.out = 200)) |>
        title = "the function being maximised")
 ```
 
-The dashed line is where the solve landed, and the maximum it sits on is
-**flat**. That is worth knowing rather than glossing: the profit *value* is far
-better determined than its *location*, which is why `profit` is the only reported
-field well conditioned across platforms. It is also why the solve does not search
-this curve — an error `dp` in a flat maximum's *value* displaces its *location* by
-`sqrt(dp/k)`, so locating the peak by comparing heights costs precision that
-solving `dprofit = 0` keeps.
+The dashed line is where the solve landed, and the maximum it sits on is flat.
+That flatness has a practical consequence: the profit *value* is much better
+determined than its *location*. An error `dp` in the value displaces the location
+by `sqrt(dp/k)` for curvature `k`, so locating the peak by comparing heights costs
+precision that solving `dprofit = 0` keeps. It is why the solve does not search
+this curve. `vignette("the-models")` Appendix C has the measurements.
 
 ## Trait gradients, and where they stop working
 
@@ -324,13 +342,13 @@ each trait:
 
 ```{r}
 g <- leaf_gradient(psi_soil = 2.0, PPFD = 900,
-                   pars = c("vcmax_25", "jmax_25", "stem_b", "cost_scale_TF24"))
+                   pars = c("vcmax_25", "jmax_25", "stem_P50", "TF24_cost_scale"))
 round(g$gradient, 5)
 ```
 
 ### Choosing which gradients to compute
 
-**`pars` selects them, and by default you get all of them.** Omit it and
+`pars` selects them, and by default you get all of them. Omit it and
 `leaf_gradient()` differentiates every parameter it can:
 
 ```{r}
@@ -338,16 +356,19 @@ dim(leaf_gradient(psi_soil = 2.0, PPFD = 900)$gradient)
 rownames(leaf_gradient(psi_soil = 2.0, PPFD = 900)$gradient)
 ```
 
-Fifteen on the multi-layer path — the fourteen traits from `leaf_traits()`, plus
-`leaf_specific_conductance_max`, which is not a trait but is fitted like one. The
-single-potential path adds `resistance`, making sixteen.
+That is `r length(leaf_traits())` traits from `leaf_traits()`, plus
+`leaf_specific_conductance_max`, which is not a trait but is fitted like one,
+giving `r length(leaf_traits()) + 1L` on the multi-layer path. The
+single-potential path adds `resistance`, and `model = "CF77"` adds
+`CF77_lambda_`, that curve's prescribed marginal value of water. These counts are
+computed rather than written out, for the reason the hidden chunk below records.
 
-`R_d_25`, dark respiration at 25 °C, is one of those fourteen and behaves like any
-other trait. So `dY/dvcmax_25` is a **partial** derivative at fixed respiration: a
-fit that wants respiration to follow Vcmax moves both and adds the two columns.
+`R_d_25`, dark respiration at 25 °C, is one of the traits and behaves like any
+other. So `dY/dvcmax_25` is a partial derivative at fixed respiration. A fit that
+wants respiration to follow Vcmax moves both and adds the two columns.
 
-**Selecting fewer genuinely costs less**: the work is one solve plus two cheap
-evaluations per parameter, so it scales with what you ask for.
+Selecting fewer parameters genuinely costs less. The work is one solve plus two
+cheap evaluations per parameter, so it scales with what you ask for.
 
 ```{r}
 #| echo: false
@@ -358,33 +379,34 @@ bench <- function(pars) {
 }
 tibble::tibble(
   # Counted, not written down: this label said 16 for a while when the answer was
-  # 14, which is exactly the way a number beside a chunk rots (the chunk runs, the
-  # prose next to it is never asserted).
+  # 14, and the prose above it went on saying 14 after the answer became 16. That
+  # is exactly the way a number beside a chunk rots -- the chunk runs, the prose
+  # next to it is never asserted -- so the prose uses inline R now too.
   request = c(sprintf("`pars = NULL` (all %d)",
                       nrow(leaf_gradient(psi_soil = 2.0, PPFD = 900)$gradient)),
               "4 parameters", "1 parameter"),
   `ms per call` = round(c(bench(NULL),
-                          bench(c("vcmax_25", "jmax_25", "stem_b",
-                                  "cost_scale_TF24")),
+                          bench(c("vcmax_25", "jmax_25", "stem_P50",
+                                  "TF24_cost_scale")),
                           bench("vcmax_25")), 2)
 ) |>
   knitr::kable()
 ```
 
-So in a calibration, name only the parameters you are fitting. Asking for all
-fourteen when you fit three is several times the work.
+So in a calibration, name only the parameters you are fitting. Asking for all of
+them when you fit three is several times the work.
 
-⚠️ **The five outputs are not selectable** — every call returns the derivative of
-`A`, `gc`, `psi_stem`, `collar` and `profit` with respect to each requested
-parameter, because they are read off the same solve and cost nothing extra.
-`pars` chooses the rows of that matrix, never the columns.
+The five outputs are not selectable. Every call returns the derivative of `A`,
+`gc`, `psi_stem`, `collar` and `profit` with respect to each requested parameter,
+because they are read off the same solve and cost nothing extra. `pars` chooses
+the rows of that matrix, never the columns.
 
 The first four are what a gas-exchange calibration observes. `profit` is the
 objective, and it is there for a demographic consumer: `plant` bills carbon from
-the leaf's `profit`, not its assimilation. It is also the one output the envelope
-theorem reaches — at an interior optimum its gradient is the direct partial
-alone — which `?leaf_gradient` explains along with the measurement that makes
-that worth doing rather than merely true.
+the leaf's `profit` rather than its assimilation. It is also the one output the
+envelope theorem reaches, so at an interior optimum its gradient is the direct
+partial alone. `?leaf_gradient` explains that, along with the measurement that
+makes it worth doing rather than merely true.
 
 ### A collar potential you supply
 
@@ -397,10 +419,10 @@ c(status = g$status, method = g$method)
 ```
 
 `psi` is exogenous, so the answer is the partial derivative at fixed collar, plus
-`dpsi_dtheta` if the collar you imposed itself moves with the traits. `stationarity`
-still comes back and now says how far the point you chose is from the optimum;
-`M`, `H` and `dY_dpsi` come back so a caller integrating its own sensitivity of
-`psi` has the coefficients.
+`dpsi_dtheta` if the collar you imposed itself moves with the traits.
+`stationarity` still comes back, and on this path it says how far the point you
+chose sits from the optimum. `M`, `H` and `dY_dpsi` come back too, so a caller
+integrating its own sensitivity of `psi` has the coefficients.
 
 Hand back the collar the solver found, with the response it derived, and the two
 paths agree exactly:
@@ -412,79 +434,108 @@ b <- leaf_gradient(psi_soil = 2.0, PPFD = 900, pars = "vcmax_25",
 identical(a$gradient, b$gradient)
 ```
 
-⚠️ **A `psi` outside the feasible collar interval gets no gradient.** It is
-clamped, so the collar actually used moves with the *bound* rather than with your
+A `psi` outside the feasible collar interval gets no gradient. It is clamped, so
+the collar actually used moves with the *bound* rather than with your
 `dpsi_dtheta`, and the direct term alone would be plausible and wrong. `status`
-says `"clamped"`, the gradient is `NA`, and `g$psi` tells you where it was pulled
-to.
+reports `"clamped"`, the gradient is `NA`, and `g$psi` tells you where the collar
+was pulled to.
 
-Naming something undifferentiable is an error rather than a silent omission, and
-it tells you what is available:
+Naming something that cannot be differentiated is an error rather than a silent
+omission, and the message says what is available instead:
 
 ```{r, error = TRUE}
 leaf_gradient(psi_soil = 2.0, PPFD = 900, pars = "resistance")
 ```
 
 These are not finite differences of the solve. The outputs are read at the
-profit-maximising collar potential, so a trait moves them twice over — directly,
+profit-maximising collar potential, so a trait moves them twice over: directly,
 and by moving the optimum itself. Differentiating the optimality condition
-`dprofit/dψ = 0` rather than the solved output captures both terms, and for
-`cost_scale_TF24`, `beta2`, `stem_b` and `stem_c` the second one is **the entire
-answer**: change them and assimilation moves *only* because the leaf chooses a
-different operating point.
+`dprofit/dψ = 0`, rather than the solved output, captures both terms.
+
+For `TF24_cost_scale`, `TF24_beta2`, `stem_P50` and `stem_c` the second term is
+the entire answer. Change any of them and assimilation moves only because the leaf
+chooses a different operating point.
 
 The interesting part is where the derivation stops being valid. It assumes the
-optimum is interior, and in dry soil it often is not — the leaf ends up pinned
-against the edge of the range of collar potentials it can physically occupy.
-There `dprofit/dψ` is not zero at the answer, the formula is not merely imprecise
-but wrong by orders of magnitude, and it does not fail loudly. So the assumption
-is tested at every point, and `leaf_gradient()` differences the solve instead
-where it does not hold:
+optimum is interior, and in dry soil it often is not: the leaf ends up at the very
+edge of the range of collar potentials it can physically occupy. There
+`dprofit/dψ` is not zero at the answer, and the formula is not merely imprecise
+but wrong by orders of magnitude, without failing loudly. The assumption is
+therefore tested at every point, and `leaf_gradient()` differences the solve
+instead where it does not hold:
 
 ```{r, fig.height = 3.4}
 sweep <- lapply(seq(1.0, 5.0, by = 0.125), function(p) {
-  g <- leaf_gradient(psi_soil = p, PPFD = 900, atm_vpd = 3.0, pars = "stem_b")
-  tibble(psi_soil = p, dA_dstem_b = g$gradient["stem_b", "A"],
+  g <- leaf_gradient(psi_soil = p, PPFD = 900, atm_vpd = 3.0, pars = "stem_P50")
+  tibble(psi_soil = p, dA_dstem_P50 = g$gradient["stem_P50", "A"],
          method = g$method, status = g$status)
 }) |> bind_rows()
 
-ggplot(sweep, aes(psi_soil, dA_dstem_b)) +
+ggplot(sweep, aes(psi_soil, dA_dstem_P50)) +
   geom_line(colour = "grey60") +
   geom_point(aes(colour = status), size = 2) +
   labs(x = expression(psi[soil]~(MPa)),
-       y = expression(dA/d*italic(stem_b)),
+       y = expression(dA/d*italic(stem_P50)),
        colour = NULL,
        title = "sensitivity to stem vulnerability, and where the optimum pins")
 ```
 
-Left to right: in wet soil a less vulnerable stem is worth about two units of
-assimilation per MPa of `stem_b`. The sensitivity rises as the soil dries, because
-vulnerability matters more when water is scarce, peaks near 2.9 MPa, eases off —
-and then falls off a cliff. Past about 3.9 MPa the optimum is **pinned**: the leaf
-is stuck at the wettest collar potential it can physically reach, and a stem trait
-it has no freedom to exploit stops mattering at all.
+Read that left to right. In wet soil, a less vulnerable stem is worth about two
+units of assimilation per MPa of `stem_P50`. The sensitivity rises as the soil
+dries, because vulnerability matters more when water is scarce, peaks near 2.9 MPa,
+eases off, and then falls away sharply. Past about 3.9 MPa the optimum is a bound:
+the leaf is stuck at the wettest collar potential it can physically reach, and a
+stem trait it has no freedom to exploit stops mattering at all.
 
-Two honest notes about that flat tail. The true gradient there is smaller than the
-`5e-05` the plotted points reach, so what is drawn is the finite difference's own
-noise about zero — which is why it wobbles in sign. Treat it as "zero", not as a
-small effect. And the
-transition itself is a genuine **kink** in trait space — a real
-non-differentiable set that belongs to the constrained problem rather than to this
+Two things about that flat tail are worth stating plainly. The true gradient there
+is smaller than the 5e-05 the plotted points reach, so what is drawn is the finite
+difference's own noise about zero, which is why it wobbles in sign. Read it as
+zero rather than as a small effect.
+
+The transition itself is a genuine kink in trait space, and a real
+non-differentiable set. It belongs to the constrained problem rather than to this
 implementation. A gradient-based fit that wanders across it is optimising through
 a corner, and no amount of care in the derivative changes that. What
-`leaf_gradient()` can do is tell you when you are there, which the naive finite
+`leaf_gradient()` can do is tell you when you are there, which a naive finite
 difference cannot: `status` marks these points, and `g$stationarity` reports the
-measured distance from stationarity the classification rests on.
+measured distance from stationarity that the classification rests on.
+
+## What the model assumes
+
+Every model simplifies. The assumptions most worth keeping in mind when reading
+output from this one are:
+
+- **Stomatal behaviour is optimal and instantaneous.** The leaf sits at the
+  maximum of its objective at every point, with no cost of adjustment and no lag.
+- **The leaf is intensive.** Every input is per unit leaf area, or is a
+  dimensionless driver. Nothing scales with plant size, so whole-plant allometry
+  belongs to the caller.
+- **The hydraulic path is two Weibull curves in steady state.** There is no
+  capacitance and no refilling.
+- **The default cost curve is one hypothesis among several.** `TF24` is the
+  default because it is what `plant` runs, not because it has been shown to be
+  the right account of what a leaf is spending. `vignette("the-models")` has the
+  other six and how they differ.
+- **The default traits are *Eucalyptus saligna*.** They are a starting point
+  rather than a recommendation, and the same is true of both default supply
+  networks.
 
 ## Where to go next
 
-- The model is a set of self-contained C++ headers that need no R at all, so the
-  same solve is available from a C++ program or a Python extension. See the
-  README.
-- `COMPARISON.md` sets this against `plantecophys`, `tealeaves` and `bigleaf`.
-- Both supply paths now take resistances, through the same `root_network`
-  argument, so a caller with measured or fitted resistances never has to go
-  through a root carbon model to reach a leaf. The one asymmetry left is
-  `gravity_head`, which `leaf_supply_single()` still takes as configuration
-  because this path has no depth profile to derive it from — see its
-  documentation.
+- **I want to know what is being solved.** `vignette("the-models")` is the
+  reference: the objective, the seven cost curves, the first-order conditions,
+  and the two optional gates.
+- **I want to fit this to data.** `vignette("fitting")` works through a
+  calibration, and covers when the exact gradient earns its complexity.
+- **I want to call it without R.** The model is a set of self-contained C++
+  headers, so the same solve is available from a C++ program or a Python
+  extension. `vignette("cpp-interface")` covers it.
+- **I want to know how this differs from what I already use.**
+  `COMPARISON.md` sets it against `plantecophys`, `tealeaves` and `bigleaf`.
+
+One loose end worth flagging if you are supplying your own hydraulics. Both
+supply paths take resistances through the same `root_network` argument, so a
+caller with measured or fitted resistances never has to go through a root carbon
+model. The single exception is `gravity_head`, which `leaf_supply_singlelayer()`
+still takes as configuration, because that path has no depth profile to derive it
+from.

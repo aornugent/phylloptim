@@ -16,9 +16,45 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 7,
 library(phylloptim)
 ```
 
-`vignette("phylloptim")` shows the model solving and differentiating. This one
-uses both to recover traits from data, and is honest about the three things that
-make it harder than it looks.
+Fitting an optimality model to gas-exchange data used to mean choosing between two
+bad options. Either accept a finite-difference gradient, which costs two full
+model solves per parameter per observation and returns a number whose accuracy
+depends on a step size you have to guess, or give up on gradients and use a
+derivative-free optimiser that scales badly past a handful of parameters.
+
+This package removes that choice. Two things make the difference.
+
+**The model itself is fast.** It is a set of header-only C++ routines with no R in
+the solve path, and one operating point costs about **3 µs**. A likelihood over a
+thousand observations is therefore milliseconds of model, which means the fit is
+no longer bounded by how long the biology takes to evaluate.
+
+**And it differentiates itself, exactly.** Forward-mode automatic differentiation
+supplies the derivatives of the photosynthesis and cost algebra, and the implicit
+function theorem carries them through the two nested solvers, so
+`leaf_gradient()` returns the exact derivative of every solved output with respect
+to every parameter — with no step size to choose and no truncation error. The
+composite is assembled in C++ and vectorised over observations, at **10.6 µs per
+observation** for four differentiated parameters.
+
+Put together, those change what is affordable. A finite-difference fit costs two
+solves for every parameter *the optimiser is moving*. The exact route costs a term
+in the number of parameters *the model has*, and those two counts are only equal
+in the simplest possible design. The moment you pool, add a hierarchy, or share a
+parameter across species — which is to say, the moment the fit becomes
+interesting — the first count grows and the second does not:
+
+| a fit with | finite differences | exact gradient |
+|---|---:|---:|
+| 3 parameters, 72 observations | fast enough not to care | fast enough not to care |
+| 40 parameters over 4 model parameters, 1,327 observations | 2.3 s | **0.67 s** |
+| 57 parameters over the same 4 | 3.3 s | **0.67 s**, unchanged |
+
+That last row is the point. Adding seventeen more fitted parameters costs the
+exact route nothing at all, because the model still has four.
+
+This vignette works through such a fit from the beginning, and is honest about the
+three things that make it harder than it looks.
 
 ## Simulated data, so the answer is known
 
@@ -28,7 +64,7 @@ converged" from "the model works". Real data cannot supply it, so start here.
 ```{r}
 set.seed(sum(utf8ToInt("phylloptim-fitting")))
 
-truth <- leaf_traits(vcmax_25 = 85, jmax_25 = 140, cost_scale_TF24 = 40)
+truth <- leaf_traits(vcmax_25 = 85, jmax_25 = 140, TF24_cost_scale = 40)
 
 drivers <- expand.grid(
   psi_soil = seq(0.4, 3.2, length.out = 12),
@@ -54,7 +90,7 @@ leaves the two trading off against each other.
 ## The objective, and the loop that makes it affordable
 
 ```{r}
-FIT <- c("vcmax_25", "jmax_25", "cost_scale_TF24")
+FIT <- c("vcmax_25", "jmax_25", "TF24_cost_scale")
 
 predict_at <- function(theta, l) {
   set_traits(l, do.call(leaf_traits, as.list(exp(theta))))
@@ -75,32 +111,34 @@ ssq <- function(theta, l) {
 }
 ```
 
-⚠️ **Build the model once, outside the loop.** `set_traits()` replaces the traits
-on an existing object; constructing a fresh one costs ~204 µs against ~4 µs to
-re-trait, which is 73 solves thrown away per evaluation. In a fit that dominates
-everything else.
+Two things about that loop are worth getting right, because both are easy to get
+wrong and neither fails loudly.
 
-⚠️ **And do not write `l$vcmax_25 <- x` instead.** It compiles and is wrong, though
-not for the reason this vignette used to give. Two pieces of derived state describe
-the old trait afterwards and no re-driving repairs either: the **pre-integrated
-vulnerability splines** (`stem_b`/`stem_c` and `root_b`/`root_c` each own one), and
-the **solved operating point**, which no code path rewrites — so it goes on reading
-as though it belonged to the new traits. A bare write also bypasses the
-positive-magnitude checks on `psi_crit` and the two `b` parameters.
+**Build the model once, outside the loop.** `set_traits()` replaces the traits on
+an existing object. Constructing a fresh one costs about 45 solves, against 3.4 to
+re-trait, so building inside the loop throws away roughly 40 solves per objective
+evaluation. In a fit, that dominates everything else.
 
-`set_traits()` clears all of it, and is the only route bound to R.
+**Do not write `l$vcmax_25 <- x` instead.** It compiles, and it is wrong. Two
+pieces of derived state go on describing the old trait afterwards, and no
+re-driving repairs either. The first is the pre-integrated vulnerability splines,
+one owned by `stem_P50`/`stem_c` and one by `root_P50`/`root_c`. The second is the
+solved operating point, which no code path rewrites, so it reads as though it
+belonged to the new traits.
 
-*Corrected in 0.5.0:* this warning used to say the derived `vcmax_`, `jmax_` and
-`R_d_` sat behind a temperature cache keyed on `(leaf_temp, atm_o2_kpa)` and
-*nothing else*, so that re-supplying the drivers took a cache **hit** and silently
-kept the old response. That was true and is not: since the cache key became every
-input of the temperature block — `vcmax_25` and `jmax_25` among them — re-driving
-after a bare trait write *does* recompute those three. The advice is unchanged; the
-reason for it is narrower.
+A bare write also bypasses the positive-magnitude checks on the two `P50`
+parameters, and it cannot reach `stem_b` or `psi_crit` at all, since those are
+derived and read-only. `set_traits()` clears all of it, and is the only route
+bound to R.
+
+The temperature-dependent `vcmax_`, `jmax_` and `R_d_` are not part of this
+problem. Their cache is keyed on every input of the temperature block, including
+`vcmax_25` and `jmax_25`, so re-driving after a bare trait write does recompute
+them. It is the splines and the operating point that no re-driving repairs.
 
 ```{r}
 l <- leaf_model(truth)
-start <- log(c(vcmax_25 = 60, jmax_25 = 100, cost_scale_TF24 = 15))
+start <- log(c(vcmax_25 = 60, jmax_25 = 100, TF24_cost_scale = 15))
 fit <- optim(start, ssq, l = l, method = "Nelder-Mead",
              control = list(maxit = 2000, reltol = 1e-10))
 
@@ -117,13 +155,13 @@ data.frame(
 ## Using the gradients
 
 `leaf_gradient()` gives exact derivatives of each output, so the objective's
-gradient follows by the chain rule — no differencing of the solve.
+gradient follows by the chain rule, with no differencing of the solve.
 
-This fit names three of the five columns, and that is the normal case here: `A`,
-`gc` and `psi_stem` are measured, `collar` and `profit` are not. `profit` is in
-the matrix for a *demographic* consumer rather than a calibration one — `plant`
-bills carbon from it — so a fit against gas exchange simply ignores that column.
-It costs nothing to leave there; the whole row is read off one solve.
+This fit names three of the five columns, which is the normal case here. `A`, `gc`
+and `psi_stem` are measured; `collar` and `profit` are not. `profit` is in the
+matrix for a demographic consumer rather than a calibration one, since `plant`
+bills carbon from it, so a fit against gas exchange simply ignores that column. It
+costs nothing to leave there, because the whole row is read off one solve.
 
 ```{r}
 ssq_grad <- function(theta, l) {
@@ -143,21 +181,21 @@ ssq_grad <- function(theta, l) {
 }
 ```
 
-Note `pars = FIT`. Requesting all fourteen parameters here would compute eleven
+Note `pars = FIT`. Requesting all sixteen parameters here would compute twelve
 gradients per observation that the optimiser never reads.
 
-⚠️ **Bound the parameters, or the first step overflows.** The objective is scaled
+**Bound the parameters, or the first step overflows.** The objective is scaled
 by `1/sigma^2` and `sigma_gc` is 0.0015, so the gradient has magnitude ~2e4 in log
 units. Plain `method = "BFGS"` starts from an identity Hessian approximation, which
-makes its first trial point `theta - g` — and `exp()` of that is `Inf`, so the
+makes its first trial point `theta - g`, and `exp()` of that is `Inf`, so the
 objective errors out before the line search gets a chance to shrink the step. This
 is not a pathology of the model; it is what an unscaled least-squares objective
 does to any quasi-Newton method started cold. Bounds are the one-line fix, and are
 what you would want on a real fit anyway.
 
 ```{r}
-lower <- log(c(vcmax_25 = 10, jmax_25 = 20, cost_scale_TF24 = 2))
-upper <- log(c(vcmax_25 = 400, jmax_25 = 700, cost_scale_TF24 = 400))
+lower <- log(c(vcmax_25 = 10, jmax_25 = 20, TF24_cost_scale = 2))
+upper <- log(c(vcmax_25 = 400, jmax_25 = 700, TF24_cost_scale = 400))
 
 fit_g <- optim(start, ssq, gr = ssq_grad, l = l, method = "L-BFGS-B",
                lower = lower, upper = upper, control = list(maxit = 500))
@@ -181,17 +219,17 @@ data.frame(
 ```
 
 All three find the same optimum. The exact gradient cuts the solve count roughly
-five-fold against Nelder-Mead — and **that is the whole of its advantage here.**
+five-fold against Nelder-Mead, and that is the whole of its advantage here.
 
-⚠️ **Counting evaluations fairly is harder than it looks.** `optim` reports
+**Counting evaluations fairly is harder than it looks.** `optim` reports
 function and gradient calls separately, and when it differences a gradient
 *numerically* it does not count those calls at all. BFGS and L-BFGS-B use central
 differences, so each numerical gradient silently costs `2 × npar` extra objective
-evaluations — the `honest total` column above adds them back. Comparing a
+evaluations, which the `honest total` column above adds back. Comparing a
 derivative-free method's reported count against a gradient method's reported count
 without that correction flatters the gradient method by a factor of `2 × npar`.
 
-## ⚠️ Faster or slower depends on the parameter count — and on *which* parameter count
+## Faster or slower depends on which parameter count you mean
 
 Evaluation counts are not wall clock, and here the two disagree: at three
 parameters the exact gradient **loses**. That is a real result, and it is also the
@@ -207,9 +245,9 @@ tm <- function(f) {
   t0 <- Sys.time(); f(); 1000 * as.numeric(difftime(Sys.time(), t0, units = "secs"))
 }
 
-CAND <- c("vcmax_25", "jmax_25", "cost_scale_TF24", "beta2", "a",
-          "curv_fact_elec_trans", "curv_fact_colim", "psi_crit",
-          "root_psi_crit", "stem_b", "stem_c", "root_b", "root_c")
+CAND <- c("vcmax_25", "jmax_25", "TF24_cost_scale", "TF24_beta2", "a",
+          "curv_fact_elec_trans", "curv_fact_colim",
+          "stem_P50", "stem_c", "root_P50", "root_c")
 
 exact_n <- function(pars) {
   vapply(seq_len(nrow(obs)), function(i) {
@@ -241,7 +279,7 @@ fd_n <- function(pars, l) {
 
 for (k in 1:3) { invisible(exact_n(CAND[1:2])); fd_n(CAND[1:2], l) }  # warm both
 
-scaling <- do.call(rbind, lapply(c(1, 3, 5, 8, 13), function(n) {
+scaling <- do.call(rbind, lapply(c(1, 3, 5, 8, 11), function(n) {
   p <- CAND[seq_len(n)]
   r <- replicate(3, c(tm(function() exact_n(p)), tm(function() fd_n(p, l))))
   data.frame(n_par = n, exact_ms = round(min(r[1, ]), 1),
@@ -261,18 +299,18 @@ rbind(
 
 Both are linear, and the two coefficients are the whole story:
 
-- **the finite difference is pure slope** — its intercept is ~0 and its slope is
+- **the finite difference is pure slope.** Its intercept is about 0 and its slope is
   `2 ×` one objective evaluation, because that is literally what it does;
 - **the exact gradient has a large intercept and a slope too.** The intercept is
   the per-observation `Leaf` construction and solve, paid once whatever you ask
   for. The slope is `2` evaluations per parameter per observation.
 
 Here the exact route's *slope* is the larger of the two, so **growing the parameter
-count in this design never makes it win** — the ratio improves but does not reach 1.
+count in this design never makes it win.** The ratio improves but does not reach 1.
 Each extra parameter costs it two more R calls per observation, and from R a call
 costs more than the C++ work it wraps.
 
-### ⚠️ So what reverses it is not more parameters, but more *fitted* parameters per *model* parameter
+### What reverses it is more *fitted* parameters per *model* parameter
 
 The two counts are the same thing only because this vignette fits traits directly.
 They come apart as soon as a parameterisation sits between the fit and the model:
@@ -286,20 +324,19 @@ T_\text{exact} = N\,(t_\text{construct} + t_\text{solve}) + 2\,P_\text{model}\,N
 non-centred population mean, SD and per-species deviation are three fitted
 parameters that reach the leaf as *one*.
 
-The companion study
-[`leaf-calibration`](https://github.com/traitecoevo/leaf_calibration_test) is that
-case, and it is worth quoting because it comes out the other way round. 1,327
+A companion calibration study is that case, and it is worth quoting because it
+comes out the other way round. 1,327
 observations, 16 species, **40 fitted parameters that map onto 4 model
 parameters**:
 
 | | |
 |---|---|
 | exact gradient, 40 fitted parameters | **0.68 s** |
-| exact gradient, 57 fitted parameters | **0.67 s** — unchanged, because `P_model` is still 4 |
+| exact gradient, 57 fitted parameters | **0.67 s**, unchanged, because `P_model` is still 4 |
 | central differences, 40 fitted parameters | **2.12 s** |
 | the resulting fit | same optimum, **3.4× less wall clock** |
 
-⚠️ **The cost model is not fitted to that study — it PREDICTS it.** Take the two
+**The cost model is not fitted to that study. It predicts it.** Take the two
 coefficients measured above, divide by this vignette's 72 observations to get
 per-observation costs, and substitute that study's design:
 
@@ -328,8 +365,8 @@ coincidence of either design.
 > costs the former.
 
 If those numbers are equal, difference the objective. If your parameterisation
-makes the first much smaller than the second — pooling, hierarchy, any shared or
-derived parameter — use the gradient.
+makes the first much smaller than the second, which pooling, hierarchy and any
+shared or derived parameter all do, use the gradient.
 
 ### Where the intercept goes
 
@@ -362,13 +399,13 @@ data.frame(
 ```
 
 The third row is most of the intercept. `leaf_gradient()` constructs a fresh model
-on every call — there is no argument for handing it one you already have — so a
+on every call, and there is no argument for handing it one you already have, so a
 gradient over `n` observations pays `n` constructions.
 
 The rest is the R call boundary itself. The composite replaces one solve with a
 handful of much cheaper evaluations, but each of those is an R call into C++, and an
 R call costs more than the C++ work it wraps. The theorem does less arithmetic and
-more crossing — which is also why the exact route has a *slope* in `P_model` at all,
+more crossing. That is also why the exact route has a slope in `P_model` at all,
 rather than the near-free one the C++ benchmarks show.
 
 Four things follow:
@@ -379,21 +416,20 @@ Four things follow:
 - **`P_fit` = `P_model` is the worst case for the composite**, and it is the case a
   vignette naturally demonstrates because fitting traits directly is the simplest
   thing to show. Real fits are usually not that case.
-- **Model reuse was most of the intercept, and it is fixed**
-  ([phylloptim#52](https://github.com/traitecoevo/phylloptim/issues/52)):
-  `leaf_gradient(x = )` takes a model you already have. In `leaf-calibration` that
-  was 29% of the exact gradient. It did not make the composite the faster arm
-  *here*, because here the problem is the slope.
-- **And the slope is gone too, which supersedes this whole comparison.**
+- **Reuse the model object.** `leaf_gradient(x = )` takes a `Leaf` you already
+  have, which removes the construction cost from the intercept. In
+  that study, model construction was 29% of the exact gradient. It does not make the
+  composite the faster arm in *this* design, because here the problem is the slope
+  rather than the intercept.
+- **Use the batch entry point, which removes the slope.**
   `leaf_gradient_batch()` composes the theorem in C++ and loops over observations
   there, so the boundary is crossed once per call instead of 112 times per
-  observation: **363 → 10.6 µs per observation** at `length(pars)` = 4, 22×.
+  observation: **10.6 µs per observation against 363**, at `length(pars)` = 4.
 
-⚠️ **So do not read the table above as the state of the art — read it as what the R
-boundary costs.** It is kept because the cost *model* is still the thing to reason
-with, and because `P_fit` versus `P_model` still decides which arm wins. What has
-changed is only the constant in front of the exact arm. The same fit through
-`leaf_batch()` + `leaf_gradient_batch()`:
+Read the table above as what the R boundary costs, not as the fastest this can
+go. The cost *model* is the thing to reason with, and `P_fit` against `P_model` is
+what decides which arm wins; the batch route changes only the constant in front of
+the exact arm. The same fit through `leaf_batch()` and `leaf_gradient_batch()`:
 
 ```r
 b <- leaf_batch(psi_soil = obs$psi_soil, PPFD = obs$PPFD)   # once, not per draw
@@ -401,13 +437,13 @@ g <- leaf_gradient_batch(b, traits, pars = FIT)
 ```
 
 with the likelihood and your parameterisation Jacobian still in R, vectorised over
-observations — which is where they belong, and is why the `P_fit > P_model`
+observations, which is where they belong, and is why the `P_fit > P_model`
 structure is what the exact route exploits.
 
 ## Fitting a different collection of parameters
 
 Nothing above is specific to the parameters it fits. `pars` is an argument, so a
-second study wanting a different collection changes that argument and nothing else —
+second study wanting a different collection changes that argument and nothing else,
 the same prepared `leaf_batch()` serves any of them, because a batch holds the
 *drivers*, and which parameters you differentiate is not a property of the data.
 
@@ -418,9 +454,9 @@ b <- leaf_batch(psi_soil = seq(0.6, 3.0, length.out = 40), PPFD = 900,
 
 studies <- list(
   "demand only"      = c("vcmax_25", "jmax_25"),
-  "the cost model"   = c("cost_scale_TF24", "beta2"),
-  "hydraulic supply" = c("leaf_specific_conductance_max", "stem_b", "stem_c"),
-  "adds thresholds"  = c("vcmax_25", "psi_crit", "root_psi_crit")
+  "the cost model"   = c("TF24_cost_scale", "TF24_beta2"),
+  "hydraulic supply" = c("leaf_specific_conductance_max", "stem_P50", "stem_c"),
+  "adds both curves" = c("vcmax_25", "stem_P50", "root_P50")
 )
 
 do.call(rbind, lapply(names(studies), function(nm) {
@@ -447,31 +483,34 @@ Compare the `ms per par` column across rows: the hydraulic study is several time
 the others, and that ratio is the point rather than its exact value, which moves
 with the machine. `stem_b` and
 `stem_c` own the pre-integrated stem vulnerability spline, so perturbing either
-**rebuilds** it — 11.9 µs of incomplete gamma functions per side, several times the
+rebuilds it, at 11.9 µs of incomplete gamma functions per side, several times the
 cost of a whole solve. `stem_b` escapes most of that by a homogeneity identity
 (`fast_stem_curve`, on by default); `stem_c` has no such identity and cannot.
 
 So **a fit that frees a vulnerability curve is in a different cost regime from one
-that does not**, and it is the regime the exact gradient helps least with — the
+that does not**, and it is the regime the exact gradient helps least with, since the
 four hydraulic traits are also the ones whose gradient is *entirely*
 argmax-mediated, which is to say the ones you most need it for. Budget for it, and
 see `?leaf_gradient`'s `fast_stem_curve`.
 
-### ⚠️ `psi_crit` and `root_psi_crit` come back EXACTLY ZERO, and that is correct
+### A stem gradient means something different at a boundary
 
 This is the sharpest trap on this surface, and the table above provokes it
 deliberately.
 
-Neither appears in the profit function. They set the dry end of the *feasible*
-collar interval and nothing else — so at an interior optimum, moving them moves
-nothing, and the composite reports exactly that. **At a pinned optimum the same
-parameter carries a real gradient of order 1**, because there it *is* the binding
-constraint, and `leaf_gradient()` differences the solve instead precisely so that
-case is not lost.
+`psi_crit` sets the dry end of the *feasible* collar interval and appears in the
+profit function nowhere else. It is not a parameter you can ask for, being the
+5%-conductivity quantile of the stem curve, so its effect arrives as a term
+inside `d/dstem_P50`**, and that term behaves completely differently on the two
+sides of a pin. At an interior optimum it is exactly zero, and the gradient is the
+curve's own effect scaled by `(ln 2)^{-1/c}`. **At a boundary-crit optimum the bound
+is binding**, the term is order 1, and at the default traits it is 29% of the
+total. `leaf_gradient()` differences the solve there precisely so that half is not
+lost.
 
 A silent zero is a worse failure than a wildly wrong number: it tells an optimiser
 the parameter does nothing, and nothing about it looks suspicious. If you fit a
-threshold parameter, **check `status` alongside the gradient** — an all-interior
+threshold parameter, **check `status` alongside the gradient.** An all-interior
 dataset cannot inform it at all, and that is a statement about your design rather
 than about the solver.
 
@@ -480,22 +519,22 @@ than about the solver.
 `resistance` exists only on the single-potential supply path; ask for it on the
 multi-layer path and you get an error naming the path rather than "unknown
 parameter". `beta_R_H` and `beta_R_V` left with the root-architecture model
-entirely — a fit that needs them has to difference `root_network_from_carbon()`
+entirely, so a fit that needs them has to difference `root_network_from_carbon()`
 itself, which is cheap to perturb (it is homogeneous of degree 1 in each) but still
 costs two solves.
 
 ### What a new study actually has to write
 
-Not the gradient — the **map from its own sampled parameters onto the model's**, and
+Not the gradient, but the map from its own sampled parameters onto the model's, and
 that map's Jacobian. `pars` names four things; an optimiser moving forty needs a
 40 × 4 chain rule, and that is the caller's arithmetic because it encodes the
-caller's model. `vignette("phylloptim")` and the companion `leaf-calibration` study
+caller's model. `vignette("phylloptim")` and the companion calibration study
 both do this; the latter's `leaf_natural_jacobian()` is the worked example, including
-the case worth being careful about — **one sampled parameter that reaches two model
+the case worth being careful about: **one sampled parameter that reaches two model
 quantities, in opposite directions**. Getting a sign wrong there does not fail. It
 converges, somewhere else.
 
-## ⚠️ Where a gradient-based fit goes wrong
+## Where a gradient-based fit goes wrong
 
 The derivation behind `leaf_gradient()` assumes the optimum is interior. In dry
 soil it often is not, and the boundary is a genuine kink in trait space rather
@@ -510,53 +549,53 @@ status <- vapply(seq_len(nrow(obs)), function(i) {
 table(status)
 ```
 
-**A third of the design is pinned**, and the fit above still recovered the traits
-to a few percent — because `leaf_gradient()` detects those points and differences
+**A third of the design sits on a boundary**, and the fit above still recovered the traits
+to a few percent, because `leaf_gradient()` detects those points and differences
 the solve there instead of applying a formula that would be wrong by orders of
 magnitude. That is the fallback doing its job on a perfectly ordinary drought
 design, not an exotic case.
 
 Check this *before* trusting a fit rather than after. `status` is reported
 precisely so it can be checked, and a naive finite difference cannot tell you
-which points are which. Where the pinned fraction is large, expect a
+which points are which. Where that fraction is large, expect a
 gradient-based optimiser to behave less well than it does here.
 
 Because a fit that straddles the boundary has three problems:
 
 - **the objective is not differentiable there**, so a gradient method is
   optimising through a corner and may stall or oscillate;
-- `leaf_gradient()` falls back to differencing the solve at pinned points, which
+- `leaf_gradient()` falls back to differencing the solve at boundary points, which
   is correct but noisier;
-- ⚠️ **`psi_crit` is special.** It does not appear in the profit function at all
-  — it only bounds the feasible range — so the composite returns **exactly zero**
-  for it. At an interior optimum that is right. At a dry-pinned optimum it is
-  binding and the true derivative is not zero, so a silent zero would tell an
-  optimiser the parameter does nothing. The fallback exists for exactly this and
-  is not a degraded path.
+- **the stem traits are special.** The dry bound `psi_crit` is a quantile of
+  the stem curve, so it moves with `stem_P50`. But it bounds the feasible range
+  rather than entering the profit function, so the composite cannot see that
+  movement and returns only the curve's own term. At an interior optimum that is
+  the whole answer. At a boundary-crit optimum it is 29% short, and nothing about the
+  number looks wrong. The fallback exists for exactly this and is not a degraded
+  path.
 
 ## Fitting to real data
 
 The same machinery, with two additions worth planning for.
 
 **Not every parameter is identified.** Parameters that enter the model only in
-combination cannot be separated by data that sees only the combination — fitting
+combination cannot be separated by data that sees only the combination. Fitting
 them independently produces respectable-looking estimates that mean nothing.
 Check with a profile, or a Hessian at the optimum, before reporting anything
 per-parameter.
 
-**Some traits are measured.** `P50` and `P88` determine the Weibull
-`stem_b`/`stem_c` analytically, so a species with a published vulnerability curve
-needs no hydraulic calibration at all:
+**Some traits are measured.** `stem_P50` *is* a published quantity, and a second
+quantile of the same curve fixes `stem_c`, so a species with a measured
+vulnerability curve needs no hydraulic calibration at all:
 
 ```{r}
-weibull_from_p50_p88 <- function(P50, P88) {
-  c_ <- log(log(1 / 0.12) / log(2)) / log(P88 / P50)
-  c(stem_b = P50 / log(2)^(1 / c_), stem_c = c_)
+shape_from_p50_p88 <- function(P50, P88) {
+  log(log(1 / 0.12) / log(2)) / log(P88 / P50)
 }
-w <- weibull_from_p50_p88(P50 = 6.88, P88 = 9.43)
+w <- c(stem_P50 = 6.88, stem_c = shape_from_p50_p88(P50 = 6.88, P88 = 9.43))
 round(w, 4)
 
-lw <- leaf_model(leaf_traits(stem_b = w[["stem_b"]], stem_c = w[["stem_c"]]))
+lw <- leaf_model(leaf_traits(stem_P50 = w[["stem_P50"]], stem_c = w[["stem_c"]]))
 round(c(PLC_at_P50 = 1 - lw$proportion_of_conductivity(6.88),
         PLC_at_P88 = 1 - lw$proportion_of_conductivity(9.43)), 4)
 ```

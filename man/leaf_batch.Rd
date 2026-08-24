@@ -17,11 +17,12 @@ leaf_batch(
   atm_kpa = 101.3,
   traits = leaf_traits(),
   control = leaf_control(),
-  supply = leaf_supply_multilayer()
+  supply = leaf_supply_multilayer(),
+  CF77_lambda = NA_real_
 )
 }
 \arguments{
-\item{psi_soil}{soil water potential, MPa, **positive magnitude**. Length
+\item{psi_soil}{soil water potential, MPa, \strong{positive magnitude}. Length
 sets the number of soil layers.}
 
 \item{PPFD}{photosynthetic photon flux density, umol m^-2 s^-1}
@@ -30,9 +31,9 @@ sets the number of soil layers.}
 to 1 m layers.}
 
 \item{root_network}{the soil-to-collar hydraulic resistances, a
-[RootNetwork()]. **The same argument on both supply paths**: per rooted layer
-from [root_network_from_carbon()] on the multi-layer path, or one series
-resistance from [series_resistance()] on the single-potential path. Defaults
+\code{\link[=RootNetwork]{RootNetwork()}}. \strong{The same argument on both supply paths}: per rooted layer
+from \code{\link[=root_network_from_carbon]{root_network_from_carbon()}} on the multi-layer path, or one series
+resistance from \code{\link[=series_resistance]{series_resistance()}} on the single-potential path. Defaults
 to a nominal value on either — 20 kg C m^-2 leaf split evenly, or 1e3 —
 written out in the body where you can see and replace it. Stand-ins, not
 recommendations.}
@@ -52,53 +53,58 @@ conductance, kg m^-2 s^-1 MPa^-1}
 ppm-to-Pa conversion is derived from it, and getting it wrong moves
 assimilation by percent, not by rounding.}
 
-\item{traits}{a [leaf_traits()] object}
+\item{traits}{a \code{\link[=leaf_traits]{leaf_traits()}} object}
 
-\item{control}{a [leaf_control()] object}
+\item{control}{a \code{\link[=leaf_control]{leaf_control()}} object}
 
-\item{supply}{how water reaches the root collar: [leaf_supply_multilayer()]
-(the default) or [leaf_supply_single()]. On the single-potential path
-`soil_depth` and `root_network` must be omitted, and each `psi_soil` is one
+\item{supply}{how water reaches the root collar: \code{\link[=leaf_supply_multilayer]{leaf_supply_multilayer()}}
+(the default) or \code{\link[=leaf_supply_singlelayer]{leaf_supply_singlelayer()}}. On the single-potential path
+\code{soil_depth} and \code{root_network} must be omitted, and each \code{psi_soil} is one
 value rather than a profile.}
+
+\item{CF77_lambda}{Cowan-Farquhar's prescribed marginal value of water, in
+umol C (kg H2O)^-1, one per observation. Only \code{model = "CF77"} reads it;
+\code{NA_real_} (the default) leaves it unset, which every other model wants.}
 }
 \value{
-A `leaf_batch` object.
+A \code{leaf_batch} object.
 }
 \description{
 Resolves N observations' drivers once and holds them C++-side, together with
-one `Leaf`. Hand the result to [leaf_gradient_batch()], repeatedly: the
+one \code{Leaf}. Hand the result to \code{\link[=leaf_gradient_batch]{leaf_gradient_batch()}}, repeatedly: the
 drivers do not change across a fit, only the parameters do.
 }
 \section{Why this is a separate call}{
 
-Because the conversion is expensive and the gradient is not. A [RootNetwork()]
-costs 60-100 µs to cross the R boundary — some 60 times a trivial `.Call`,
-because it is an `RcppR6` `list:` class and every crossing rebuilds a
+Because the conversion is expensive and the gradient is not. A \code{\link[=RootNetwork]{RootNetwork()}}
+costs 60-100 µs to cross the R boundary — some 60 times a trivial \code{.Call},
+because it is an \code{RcppR6} \verb{list:} class and every crossing rebuilds a
 five-element named list. Converting 1,327 of them per likelihood evaluation
 would cost ~80 ms and swamp the ~13 ms of gradient it was carrying. The same
-argument applies to the `Leaf`: constructing one from R costs ~204 µs, about
-70 solves, so a fit builds it once here rather than once per gradient (#52).
+argument applies to the \code{Leaf}: constructing one from R costs about \strong{180x a
+trivial \code{.Call}}, or 45 solves, so a fit builds it once here rather than once
+per gradient (#52).
 
-⚠️ **The result holds a C++ pointer, so it does not survive `saveRDS()` or a
-new session.** Rebuild it rather than restoring it; [leaf_gradient_batch()]
+⚠️ \strong{The result holds a C++ pointer, so it does not survive \code{saveRDS()} or a
+new session.} Rebuild it rather than restoring it; \code{\link[=leaf_gradient_batch]{leaf_gradient_batch()}}
 says so rather than crashing if you try.
 }
 
 \section{Recycling}{
 
-The same rules as [leaf_solve()]. `PPFD`, `atm_vpd`, `ca`, `leaf_temp`,
-`atm_o2_kpa`, `atm_kpa` and `leaf_specific_conductance_max` are recycled to a
-common length. `psi_soil` is recycled when it is a plain numeric vector, each
+The same rules as \code{\link[=leaf_solve]{leaf_solve()}}. \code{PPFD}, \code{atm_vpd}, \code{ca}, \code{leaf_temp},
+\code{atm_o2_kpa}, \code{atm_kpa} and \code{leaf_specific_conductance_max} are recycled to a
+common length. \code{psi_soil} is recycled when it is a plain numeric vector, each
 element then being a single-layer observation; pass a list of numeric vectors
-for multi-layer ones, and `soil_depth` follows the same rule. `root_network`
-is either one [RootNetwork()] used for every observation, or a list of them.
+for multi-layer ones, and \code{soil_depth} follows the same rule. \code{root_network}
+is either one \code{\link[=RootNetwork]{RootNetwork()}} used for every observation, or a list of them.
 }
 
 \examples{
 b <- leaf_batch(psi_soil = c(1.0, 1.5, 2.0), PPFD = 900)
 b
-leaf_gradient_batch(b, pars = c("vcmax_25", "stem_b"))$gradient[, , "A"]
+leaf_gradient_batch(b, pars = c("vcmax_25", "stem_P50"))$gradient[, , "A"]
 }
 \seealso{
-[leaf_gradient_batch()], [leaf_gradient()] for one observation.
+\code{\link[=leaf_gradient_batch]{leaf_gradient_batch()}}, \code{\link[=leaf_gradient]{leaf_gradient()}} for one observation.
 }

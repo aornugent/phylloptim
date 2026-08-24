@@ -7,6 +7,9 @@
 *.Rcheck/
 *.tar.gz
 
+# plot_model_overview() written out by hand, as vignette("the-models") suggests
+overview.pdf
+
 # C++ / test harness
 *.o
 *.so

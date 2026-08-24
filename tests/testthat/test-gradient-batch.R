@@ -1,4 +1,4 @@
-# The batched trait gradient (issue #4, PLAN 11d stage 2).
+# The batched trait gradient (#4).
 #
 # WHAT IS BEING PINNED HERE, in order of how much it matters.
 #
@@ -82,12 +82,12 @@ test_that("the parameter enumeration is the same order in R and in C++", {
   # is safe and reordering would differentiate the wrong parameter and report
   # plausible numbers for it. Compared rather than trusted, in both directions.
   r_side <- c(names(leaf_traits()), "leaf_specific_conductance_max",
-              "resistance")
+              "resistance", "CF77_lambda_")
   expect_identical(gradient_par_names(), r_side)
   # And the count, which is what a positional trait call would silently break:
-  # fourteen traits then the two that are not traits.
-  expect_length(gradient_par_names(), 16L)
-  expect_identical(gradient_par_names()[1:14], names(leaf_traits()))
+  # fifteen traits then the two that are not traits.
+  expect_length(gradient_par_names(), 18L)
+  expect_identical(gradient_par_names()[1:15], names(leaf_traits()))
 })
 
 test_that("the batch reproduces leaf_gradient() bit-for-bit across the grid", {
@@ -97,11 +97,12 @@ test_that("the batch reproduces leaf_gradient() bit-for-bit across the grid", {
   # rows where there is no curvature at all, and the forced-route cases where R
   # raises an error and the batch has to report one per row instead.
   #
-  # `psi_crit` is in `pars` deliberately: it appears nowhere in the profit
-  # function, so the composite must return exactly zero for it and the fallback
-  # must not. A transcription that dropped the explicit `collar` assignment, or
-  # differenced two identical numbers instead, shows up on that column.
-  pars <- c("vcmax_25", "stem_b", "cost_scale_TF24", "psi_crit")
+  # `stem_c` is in `pars` deliberately: it is the one curve parameter with no
+  # homogeneity identity to exploit, so it takes the rebuild route while
+  # `stem_P50` beside it takes the rescale. Having both means a transcription that
+  # dropped the explicit `collar` assignment, or differenced two identical numbers
+  # instead, shows up on a column whose neighbour is computed another way.
+  pars <- c("vcmax_25", "stem_P50", "TF24_cost_scale", "stem_c")
   rows <- expand.grid(layers = c(1L, 3L, 5L), psi_soil = c(0.5, 2.0, 3.0, 4.0,
                                                           6.0),
                       KEEP.OUT.ATTRS = FALSE)
@@ -141,12 +142,12 @@ test_that("the batch matches leaf_gradient() on the single-potential path", {
   # so a perturbation can push a bound past psi* more readily than a trait
   # perturbation can, and the clamp detector has to be reached through this route
   # too.
-  pars <- c("vcmax_25", "stem_b", "leaf_specific_conductance_max", "resistance")
+  pars <- c("vcmax_25", "stem_P50", "leaf_specific_conductance_max", "resistance")
   for (psi_soil in c(0.5, 1.5, 3.5, 5.5, 6.5)) {
     for (resistance in c(1e3, 1e4)) {
       for (method in c("auto", "ift", "fd")) {
         args <- list(psi_soil = psi_soil, PPFD = 900, atm_vpd = 3.0,
-                     supply = leaf_supply_single(),
+                     supply = leaf_supply_singlelayer(),
                      root_network = series_resistance(resistance))
         expect_batch_matches_r(
           args, pars, method,
@@ -158,16 +159,16 @@ test_that("the batch matches leaf_gradient() on the single-potential path", {
 
 test_that("the batch matches leaf_gradient() with the stem curve rebuilt", {
   # `fast_stem_curve = FALSE` rebuilds the vulnerability spline instead of
-  # rescaling it (PLAN 11f), so it is a different code path through `apply()` and
+  # rescaling it, so it is a different code path through `apply()` and
   # not merely a slower one. It has to be transcribed too.
   for (psi_soil in c(1.5, 2.0, 4.0)) {
     for (method in c("auto", "fd")) {
       args <- batch_drivers(psi_soil)
       ref <- do.call(leaf_gradient, c(grid_drivers(psi_soil),
-                                      list(pars = "stem_b", method = method,
+                                      list(pars = "stem_P50", method = method,
                                            fast_stem_curve = FALSE)))
       b <- do.call(leaf_batch, args)
-      got <- leaf_gradient_batch(b, pars = "stem_b", method = method,
+      got <- leaf_gradient_batch(b, pars = "stem_P50", method = method,
                                  fast_stem_curve = FALSE)
       expect_identical(as.vector(got$gradient[1, , ]),
                        as.vector(ref$gradient),
@@ -187,7 +188,7 @@ test_that("the recorded gradients have not moved", {
   # back one ULP out (#13).
   gold <- utils::read.delim(test_path("gradient_golden.tsv"),
                            stringsAsFactors = FALSE)
-  pars_grid <- c("vcmax_25", "stem_b", "psi_crit", "R_d_25")
+  pars_grid <- c("vcmax_25", "stem_P50", "stem_c", "R_d_25")
   cases <- list(
     "interior-1layer" = list(args = batch_drivers(2.0), pars = pars_grid),
     "interior-5layer" = list(args = batch_drivers(0.5, vpd = 0.5, layers = 5L),
@@ -198,7 +199,7 @@ test_that("the recorded gradients have not moved", {
     "shutdown-1layer" = list(args = batch_drivers(6.0), pars = pars_grid),
     "single-potential" = list(
       args = list(psi_soil = 1.5, PPFD = 900, atm_vpd = 2.0,
-                  supply = leaf_supply_single(),
+                  supply = leaf_supply_singlelayer(),
                   root_network = series_resistance(1e4)),
       pars = c("vcmax_25", "leaf_specific_conductance_max", "resistance",
                "R_d_25")))
@@ -243,14 +244,32 @@ test_that("the recorded gradients have not moved", {
               worst,
               if (golden_bit_exact_platform()) "bit-exact platform" else
                 "compared with tolerance"))
-  # And the two claims the choice of rows exists to make, stated rather than left
-  # implicit in the hex: `psi_crit` is exactly zero at an interior optimum
-  # because it is not in the profit function, and it carries the gradient at a
-  # dry-pinned one because there it IS the binding constraint.
-  interior <- gold[gold$case == "interior-1layer" & gold$par == "psi_crit", ]
-  expect_identical(as.numeric(interior$A), 0)
-  pinned <- gold[gold$case == "pinned-dry-3layer" & gold$par == "psi_crit", ]
-  expect_gt(as.numeric(pinned$A), 1)
+  # And the claim the choice of rows exists to make, stated rather than left
+  # implicit in the hex. Where the optimum is pinned at the dry bound, psi_stem IS
+  # psi_crit -- and psi_crit is a quantile of the stem curve, so it moves with
+  # stem_P50 by a factor that depends only on stem_c:
+  #
+  #     dpsi_crit/dstem_P50 = (log2(1/0.05))^(1/stem_c)
+  #
+  # That is the term a derived psi_crit adds to every stem gradient, and the one a
+  # hand-written chain rule would be most likely to drop. It is exact, it is the
+  # SAME number at the pinned and shut-down rows because both sit on that bound,
+  # and it is NOT the number at an interior optimum -- which is what makes the
+  # comparison a test of the routes rather than of the algebra.
+  ratio <- (log(1 / 0.05) / log(2))^(1 / leaf_traits()$stem_c)
+  for (case in c("pinned-dry-3layer", "shutdown-1layer")) {
+    row <- gold[gold$case == case & gold$par == "stem_P50", ]
+    expect_equal(as.numeric(row$psi_stem), ratio, tolerance = 1e-6,
+                 label = paste("dpsi_stem/dstem_P50 at", case))
+  }
+  interior <- gold[gold$case == "interior-1layer" & gold$par == "stem_P50", ]
+  expect_false(isTRUE(all.equal(as.numeric(interior$psi_stem), ratio,
+                                tolerance = 1e-3)))
+
+  # The shut-down row carries that term and nothing else: no flow, so no
+  # assimilation gradient, but the bound still moves with the trait.
+  shut <- gold[gold$case == "shutdown-1layer" & gold$par == "stem_P50", ]
+  expect_identical(as.numeric(shut$A), 0)
 })
 
 test_that("an unsolvable row costs that row and not the batch", {
@@ -258,7 +277,7 @@ test_that("an unsolvable row costs that row and not the batch", {
   # during a fit will reach operating points the solve cannot handle -- that is
   # what a proposal distribution does -- and taking out the whole likelihood
   # evaluation for one observation would take out the draw.
-  pars <- c("vcmax_25", "stem_b")
+  pars <- c("vcmax_25", "stem_P50")
   ok <- c(1.5, 2.0, 2.5)
   b <- leaf_batch(psi_soil = c(ok[[1]], 6.5, ok[[2]], 7.5, ok[[3]]), PPFD = 900)
   g <- leaf_gradient_batch(b, pars = pars, method = "ift")
@@ -267,7 +286,7 @@ test_that("an unsolvable row costs that row and not the batch", {
                                "interior"))
   # BIT-IDENTICAL to being differentiated alone, which is the real claim: a
   # failed row must not leave the leaf carrying state into its neighbours. The
-  # displaced stem-vulnerability spline `perturb_stem_b()` leaves behind is
+  # displaced stem-vulnerability spline `perturb_stem_P50()` leaves behind is
   # exactly the kind of thing that would show up here and nowhere else.
   solo <- vapply(ok, function(p) {
     as.vector(leaf_gradient_batch(leaf_batch(psi_soil = p, PPFD = 900),
@@ -293,16 +312,16 @@ test_that("an unsolvable row costs that row and not the batch", {
 })
 
 test_that("a batch that failed on the fast stem_b path leaves a usable leaf", {
-  # ⚠️ `perturb_stem_b()` leaves the splines built at a different stem_b ON
+  # ⚠️ `perturb_stem_P50()` leaves the splines built at a different stem_b ON
   # PURPOSE, and `set_traits()` is the way back. A row that threw between the two
   # skipped the restore, so the batch does it in the handler -- and the LAST row
   # is the case that needs it, because there is no next row whose own
   # `set_traits()` would have covered for it (hazard 8).
   b <- leaf_batch(psi_soil = c(2.0, 7.5), PPFD = 900)
-  invisible(leaf_gradient_batch(b, pars = "stem_b", method = "ift"))
-  after <- leaf_gradient_batch(b, pars = "stem_b")
+  invisible(leaf_gradient_batch(b, pars = "stem_P50", method = "ift"))
+  after <- leaf_gradient_batch(b, pars = "stem_P50")
   fresh <- leaf_gradient_batch(leaf_batch(psi_soil = c(2.0, 7.5), PPFD = 900),
-                               pars = "stem_b")
+                               pars = "stem_P50")
   expect_identical(after$gradient, fresh$gradient)
   expect_identical(after$value, fresh$value)
 
@@ -317,23 +336,23 @@ test_that("a batch that failed on the fast stem_b path leaves a usable leaf", {
 })
 
 test_that("per-observation theta differentiates each row at its own parameters", {
-  # THE HIERARCHICAL CASE, which is what the batch is for: `leaf-calibration` maps
+  # THE HIERARCHICAL CASE, which is what the batch is for: a calibration study maps
   # 40 fitted parameters onto 4 model ones, so the model parameters differ per
   # observation and a shared `theta` would be the wrong shape entirely.
-  pars <- c("vcmax_25", "stem_b")
+  pars <- c("vcmax_25", "stem_P50")
   psv <- c(1.0, 1.5, 2.0)
-  # ⚠️ stem_b raised, not lowered. #38: the vulnerability spline is built over
-  # [0, b*log(100)^(1/c)] and never consults psi_crit, so a stem_b below ~3.4 at
-  # the default psi_crit puts the solve outside its own domain and dies naming
-  # neither.
+  # A non-default stem curve, to keep this off the path every other test takes.
+  # The direction no longer matters: psi_crit is a quantile of the same curve, so
+  # it scales with stem_P50 and the solve cannot be walked outside its own domain.
   traits <- lapply(c(96, 110, 120), function(v) {
-    leaf_traits(vcmax_25 = v, stem_b = 4.2)
+    leaf_traits(vcmax_25 = v, stem_P50 = 3.7)
   })
 
   b <- leaf_batch(psi_soil = psv, PPFD = 900)
   theta <- t(vapply(traits, function(tr) {
-    unname(c(unlist(tr)[gradient_par_names()[1:14]], 3.14e-5, NA_real_))
-  }, numeric(16)))
+    unname(c(unlist(tr)[gradient_par_names()[1:15]], 3.14e-5, NA_real_,
+             NA_real_))
+  }, numeric(18)))
   g <- leaf_gradient_batch(b, theta = theta, pars = pars)
 
   for (i in seq_along(psv)) {
@@ -388,7 +407,7 @@ test_that("the result is shaped and named for a caller applying a Jacobian", {
   # The layering: C++ returns dY/dtheta for the model parameters and R applies the
   # parameterisation chain rule, vectorised over observations. That only works if
   # the array's dimensions are labelled, so it is asserted rather than assumed.
-  pars <- c("vcmax_25", "stem_b", "cost_scale_TF24")
+  pars <- c("vcmax_25", "stem_P50", "TF24_cost_scale")
   b <- leaf_batch(psi_soil = c(1.0, 1.5, 2.0, 2.5), PPFD = 900)
   g <- leaf_gradient_batch(b, pars = pars)
   expect_identical(dim(g$gradient), c(4L, 3L, 5L))
@@ -420,7 +439,7 @@ test_that("`pars` order does not change any gradient (#72)", {
   # exact everywhere and needs no tolerance at all.
   #
   # What went wrong, because the shape of it is what this asserts: the `stem_b`
-  # shortcut calls `perturb_stem_b()`, which rescales the spline and touches
+  # shortcut calls `perturb_stem_P50()`, which rescales the spline and touches
   # nothing else, while the loops only restore base AFTER the whole parameter
   # loop. So a `stem_b` that was not first was differentiated at a point
   # displaced by one step in whichever parameter preceded it.
@@ -430,7 +449,7 @@ test_that("`pars` order does not change any gradient (#72)", {
   # homogeneity identity and would get the same shortcut, and a stem_b-shaped
   # test would silently stop covering the case it was written for.
   b <- leaf_batch(psi_soil = 1.5, PPFD = 900)
-  pars <- c("vcmax_25", "stem_c", "a", "stem_b", "cost_scale_TF24", "root_b")
+  pars <- c("vcmax_25", "stem_c", "a", "stem_P50", "TF24_cost_scale", "root_P50")
 
   for (method in c("auto", "fd")) {
     for (fast in c(TRUE, FALSE)) {
@@ -439,7 +458,7 @@ test_that("`pars` order does not change any gradient (#72)", {
                                  fast_stem_curve = fast)$gradient[1, , ]
       # Reversed, and rotated, so the claim is not "one other ordering agrees".
       for (perm in list(rev(pars), pars[c(4, 1, 6, 2, 5, 3)],
-                        c("stem_b", setdiff(pars, "stem_b")))) {
+                        c("stem_P50", setdiff(pars, "stem_P50")))) {
         got <- leaf_gradient_batch(b, pars = perm, method = method,
                                    fast_stem_curve = fast)$gradient[1, , ]
         expect_identical(got[pars, ], ref[pars, ],
@@ -453,9 +472,9 @@ test_that("`pars` order does not change any gradient (#72)", {
   # 1e-6 step floor rather than a relative step, and `stem_c`'s perturbation
   # REBUILDS the very curve the `stem_b` shortcut then rescales. Every trait is
   # checked as a predecessor rather than a sample of them.
-  solo <- leaf_gradient_batch(b, pars = "stem_b")$gradient[1, "stem_b", ]
-  for (p in setdiff(names(leaf_traits()), "stem_b")) {
-    got <- leaf_gradient_batch(b, pars = c(p, "stem_b"))$gradient[1, "stem_b", ]
+  solo <- leaf_gradient_batch(b, pars = "stem_P50")$gradient[1, "stem_P50", ]
+  for (p in setdiff(names(leaf_traits()), "stem_P50")) {
+    got <- leaf_gradient_batch(b, pars = c(p, "stem_P50"))$gradient[1, "stem_P50", ]
     expect_identical(got, solo, label = paste("after", p))
   }
 
@@ -463,8 +482,8 @@ test_that("`pars` order does not change any gradient (#72)", {
   # which is the point of fixing them together in one change rather than letting
   # them drift.
   r_ref <- leaf_gradient(psi_soil = 1.5, PPFD = 900,
-                         pars = c("cost_scale_TF24", "stem_b"))
-  batch <- leaf_gradient_batch(b, pars = c("cost_scale_TF24", "stem_b"))
+                         pars = c("TF24_cost_scale", "stem_P50"))
+  batch <- leaf_gradient_batch(b, pars = c("TF24_cost_scale", "stem_P50"))
   expect_identical(as.vector(batch$gradient[1, , ]), as.vector(r_ref$gradient))
 })
 
@@ -490,7 +509,7 @@ test_that("leaf_batch() recycles its drivers the way leaf_solve() does", {
 
 test_that("leaf_gradient_batch() rejects what it cannot do", {
   b <- leaf_batch(psi_soil = 1.5, PPFD = 900)
-  s <- leaf_batch(psi_soil = 1.5, supply = leaf_supply_single())
+  s <- leaf_batch(psi_soil = 1.5, supply = leaf_supply_singlelayer())
 
   expect_error(leaf_gradient_batch(b, pars = "not_a_trait"),
                "cannot differentiate")
@@ -510,11 +529,11 @@ test_that("leaf_gradient_batch() rejects what it cannot do", {
 
   # `traits` and `theta` both say where the gradient is taken, so passing both is
   # refused rather than resolved in favour of one of them.
-  th <- matrix(1, nrow = 1, ncol = 16)
+  th <- matrix(1, nrow = 1, ncol = 18)
   expect_error(leaf_gradient_batch(b, traits = leaf_traits(), theta = th),
                "pass one")
-  expect_error(leaf_gradient_batch(b, theta = matrix(1, 1, 15)), "16 columns")
-  expect_error(leaf_gradient_batch(b, theta = matrix(1, 3, 16)),
+  expect_error(leaf_gradient_batch(b, theta = matrix(1, 1, 13)), "18 columns")
+  expect_error(leaf_gradient_batch(b, theta = matrix(1, 3, 18)),
                "1 row or one per observation")
   expect_error(leaf_gradient_batch(b, theta = as.data.frame(th)),
                "numeric matrix")
@@ -557,7 +576,7 @@ test_that("the batch's prescribed psi agrees with leaf_gradient(), bit-for-bit",
   # to a tolerance. Both routes of the new path are covered -- the collar it
   # solved for handed back (which must reproduce the solve), and a collar
   # deliberately off it.
-  pars <- c("vcmax_25", "stem_b", "cost_scale_TF24")
+  pars <- c("vcmax_25", "stem_P50", "TF24_cost_scale")
   soils <- c(1.0, 2.0, 3.0)
   b <- leaf_batch(psi_soil = soils, PPFD = 900)
   a <- leaf_gradient_batch(b, pars = pars)
@@ -590,7 +609,7 @@ test_that("a clamped row costs that row and not the batch", {
   # an error: a tracking model will hand over collar potentials that have drifted
   # outside the feasible interval, and taking out the whole likelihood evaluation
   # for one of them would take out the draw.
-  pars <- c("vcmax_25", "stem_b")
+  pars <- c("vcmax_25", "stem_P50")
   soils <- c(1.0, 2.0, 3.0)
   b <- leaf_batch(psi_soil = soils, PPFD = 900)
   a <- leaf_gradient_batch(b, pars = pars)
@@ -614,7 +633,7 @@ test_that("a clamped row costs that row and not the batch", {
 })
 
 test_that("the batch validates psi and dpsi_dtheta by shape", {
-  pars <- c("vcmax_25", "stem_b")
+  pars <- c("vcmax_25", "stem_P50")
   b <- leaf_batch(psi_soil = c(1.0, 2.0, 3.0), PPFD = 900)
   expect_error(leaf_gradient_batch(b, pars = pars, psi = 2.0),
                "one collar potential per observation")
@@ -642,4 +661,32 @@ test_that("the batch validates psi and dpsi_dtheta by shape", {
   expect_identical(shared$gradient, spelt$gradient)
   expect_identical(unname(shared$gradient[, , "collar"]),
                    matrix(c(0.1, 0.1, 0.1, 0.2, 0.2, 0.2), 3, 2))
+})
+
+test_that("the batch reproduces leaf_gradient() on every model, bit-for-bit", {
+  # ⚠️ BIT-FOR-BIT, not close, and for the reason this file's header gives: the
+  # two reach the same C++ model by different routes -- one `leaf_gradient()` per
+  # observation against one `gradient_batch_run()` for all of them -- so they share
+  # no code between the entry point and the residuals. A tolerance would let a
+  # transcription slip hide inside the solver's own ~1e-09 floor.
+  tr <- leaf_traits()
+  net <- series_resistance(1e4)
+  psv <- c(1.0, 1.5, 2.0)
+  own <- c(collar = "TF24_cost_scale", TF24 = "TF24_cost_scale",
+           CF77 = "CF77_lambda_", JS22 = "JS22_gamma", CMax = "CMax_a",
+           SOX = "vcmax_25", JW26 = "vcmax_25", ProfitMax = "vcmax_25")
+  for (m in names(own)) {
+    p <- own[[m]]
+    b <- leaf_batch(psi_soil = psv, PPFD = 1500, root_network = net,
+                    supply = leaf_supply_singlelayer(), traits = tr,
+                    CF77_lambda = 1.5e5)
+    gb <- leaf_gradient_batch(b, pars = p, model = m)
+    one <- vapply(psv, function(ps) {
+      l <- leaf_model(tr, leaf_control(), leaf_supply_singlelayer())
+      l$CF77_lambda_ <- 1.5e5
+      leaf_gradient(psi_soil = ps, PPFD = 1500, root_network = net, x = l,
+                    traits = tr, pars = p, model = m)$gradient[1, "A"]
+    }, numeric(1))
+    expect_identical(unname(gb$gradient[, 1, "A"]), unname(one), label = m)
+  }
 })

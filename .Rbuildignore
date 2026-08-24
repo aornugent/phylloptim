@@ -14,7 +14,6 @@
 ^\.vscode$
 ^.*\.Rproj$
 ^\.Rproj\.user$
-^PLAN\.md$
 ^COMPARISON\.md$
 ^agents\.md$
 
@@ -42,8 +41,8 @@
 ^Makefile$
 ^tests/cpp/Makefile$
 
-# Built by make -C tests/cpp. The sources and BOTH golden files must ship -- the
-# check in tests/cpp.R compiles and runs them -- but the binaries must not.
+# Built by make -C tests/cpp. The sources and ALL THREE golden files must ship --
+# the check in tests/cpp.R compiles and runs them -- but the binaries must not.
 ^tests/cpp/test_leaf$
 ^tests/cpp/test_golden$
 ^tests/cpp/test_primitives$

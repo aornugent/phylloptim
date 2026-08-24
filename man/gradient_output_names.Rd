@@ -10,19 +10,19 @@ gradient_output_names()
 A character vector of five names.
 }
 \description{
-`A`, `gc`, `psi_stem`, `collar` and `profit`. Unlike [gradient_par_names()],
-which R holds its own copy of and a test compares, R **reads** this one — so
+\code{A}, \code{gc}, \code{psi_stem}, \code{collar} and \code{profit}. Unlike \code{\link[=gradient_par_names]{gradient_par_names()}},
+which R holds its own copy of and a test compares, R \strong{reads} this one — so
 the list exists once and adding an output is one edit rather than two that
 can disagree.
 }
 \details{
-The first four are what a gas-exchange calibration observes; `profit` is what
+The first four are what a gas-exchange calibration observes; \code{profit} is what
 a demographic consumer bills, and it is the one output the envelope theorem
-reaches. See [leaf_gradient()].
+reaches. See \code{\link[=leaf_gradient]{leaf_gradient()}}.
 }
 \examples{
 gradient_output_names()
 }
 \seealso{
-[leaf_gradient()], [leaf_gradient_batch()]
+\code{\link[=leaf_gradient]{leaf_gradient()}}, \code{\link[=leaf_gradient_batch]{leaf_gradient_batch()}}
 }

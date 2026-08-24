@@ -4,7 +4,7 @@
 //
 // Written to settle issue #2's open question -- whether the soil/root supply
 // path has to be a *template* policy so its calls inline, or whether a plain
-// composed class is fine. The answer is recorded in PLAN.md 7b; the harness is
+// composed class is fine. A plain composed class is; the harness is
 // kept because the question recurs (issue #3 asks the same thing about lambda,
 // and gets a different answer).
 //
@@ -88,7 +88,7 @@ std::vector<Point> grid() {
 }
 
 // One pass over the grid. A separate Leaf per point, as test_golden.cpp does --
-// the shutdown-state leak (PLAN.md item 2) makes a reused Leaf order-dependent,
+// the shutdown-state leak makes a reused Leaf order-dependent,
 // and this harness should measure what the golden file pins.
 //
 // Spline setup is hoisted out of the timed region: setup_transpiration and
@@ -125,6 +125,70 @@ double pass(std::vector<phylloptim::Leaf> &leaves, const std::vector<Point> &pts
   return checksum;
 }
 
+// ---------------------------------------------------------------------------
+// The single-layer optimisers
+// ---------------------------------------------------------------------------
+//
+// A SECOND workload rather than a bigger one, which is what the warning at the
+// top of this file asks for: the collar arm's 288 points and its `us/solve` line
+// are a history (tools/cost-baseline.tsv), and growing them would end that
+// history to measure something else.
+//
+// It runs on the 1-LAYER subset of the same grid, because every one of these
+// refuses a multi-layer supply. Same drivers, same traits, so the arms are
+// directly comparable per call, and against the collar line above.
+//
+// ⚠️ THESE LINES MUST NOT PRINT `us/solve`. tools/bench_history.sh greps every
+// occurrence of that exact string out of this program's whole output and assigns
+// the result to ONE TSV field, so a second matching line silently corrupts the
+// history file it is building. Hence `us/call` here, and hence this comment
+// rather than a tidier-looking unit.
+
+enum class Arm { TF, ProfitMax, CF77 };
+
+const char *arm_label(Arm a) {
+  switch (a) {
+    case Arm::TF:            return "psi_stem:TF";
+    case Arm::ProfitMax:     return "psi_stem:ProfitMax";
+    case Arm::CF77: return "psi_stem:CF77";
+  }
+  return "psi_stem:?";
+}
+
+// Cowan-Farquhar consumes a PRESCRIBED lambda and throws without one. Fixed here
+// rather than taken from a preceding solve, which would time two solves and call
+// it one.
+const double kLambdaCF77 = 1.5e5;
+
+double pass_optimiser(Arm arm, std::vector<phylloptim::Leaf> &leaves,
+                      const std::vector<Point> &pts) {
+  double checksum = 0.0;
+  phylloptim::RootNetwork net;
+  for (size_t i = 0; i < pts.size(); ++i) {
+    const Point &pt = pts[i];
+    phylloptim::Leaf &l = leaves[i];
+    phylloptim::root_network_from_carbon(pt.root,
+                                        phylloptim::layer_thickness(pt.depth),
+                                        fixture::beta_R_H, fixture::beta_R_V, net);
+    l.set_physiology(net, pt.ppfd, pt.ps, pt.depth, kKs * kTheta / kH,
+                     pt.vpd, kCa, kTleaf, kO2, kPatm);
+    switch (arm) {
+      case Arm::TF:        l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::TF24>();        break;
+      case Arm::ProfitMax: l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::ProfitMax>(); break;
+      case Arm::CF77:
+                           l.CF77_lambda_ = kLambdaCF77;
+                           l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::CF77>(); break;
+    }
+    for (double v : {l.opt_psi_stem_, l.ci_, l.assim_colimited_,
+                     l.transpiration_, l.stom_cond_CO2_, l.profit_}) {
+      if (std::isfinite(v)) {
+        checksum += v;
+      }
+    }
+  }
+  return checksum;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -146,7 +210,33 @@ int main(int argc, char **argv) {
     best = std::min(best, std::chrono::duration<double>(t1 - t0).count());
   }
 
-  printf("%-14s  %8.2f us/solve   (%zu points, best of %d)   checksum %.17g\n",
+  printf("%-22s  %8.2f us/solve   (%zu points, best of %d)   checksum %.17g\n",
          PHYLLOPTIM_BENCH_LABEL, best / pts.size() * 1e6, pts.size(), reps, checksum);
+
+  // --- the single-layer optimisers, on the 1-layer subset -------------------
+  std::vector<Point> one;
+  for (const Point &pt : pts) {
+    if (pt.layers == 1) {
+      one.push_back(pt);
+    }
+  }
+  std::vector<phylloptim::Leaf> one_leaves(one.size());
+  for (phylloptim::Leaf &l : one_leaves) {
+    l.setup_transpiration(100);
+    l.setup_root_vulnerability(100);
+  }
+  for (Arm arm : {Arm::TF, Arm::ProfitMax, Arm::CF77}) {
+    double arm_checksum = 0.0;
+    double arm_best = 1e300;
+    for (int r = 0; r < reps; ++r) {
+      const auto t0 = std::chrono::steady_clock::now();
+      arm_checksum = pass_optimiser(arm, one_leaves, one);
+      const auto t1 = std::chrono::steady_clock::now();
+      arm_best = std::min(arm_best, std::chrono::duration<double>(t1 - t0).count());
+    }
+    printf("%-22s  %8.2f us/call    (%zu points, best of %d)   checksum %.17g\n",
+           arm_label(arm), arm_best / one.size() * 1e6, one.size(), reps,
+           arm_checksum);
+  }
   return 0;
 }

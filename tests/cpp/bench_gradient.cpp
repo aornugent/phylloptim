@@ -2,18 +2,18 @@
 //
 //   make -C tests/cpp bench_gradient && ./bench_gradient [reps]
 //
-// Written to settle a question PLAN 11d asserted and 11e half-answered. 11d
-// projected 12x for computing dA/dtheta by the implicit function theorem -- one
-// solve plus 2N cheap gradient evaluations -- instead of 2N re-solves. 11e then
-// measured the composite in the R layer and found it 6% SLOWER, because an R
-// call costs ~1.8 us against the 0.26 us of C++ work it wraps.
+// Written because a projection and a measurement disagreed. Computing dA/dtheta
+// by the implicit function theorem -- one solve plus 2N cheap gradient
+// evaluations instead of 2N re-solves -- projects 12x. Measured in the R layer
+// the composite came out 6% SLOWER, because an R call costs ~1.8 us against the
+// 0.26 us of C++ work it wraps.
 //
 // That is a statement about the R boundary and NOT about the composite, and the
 // distinction matters because **plant links these headers directly**. So the
 // arithmetic has to be done again with the boundary removed, which is what this
-// measures. PLAN 11e records the answer; the short version is that the composite
-// does win here, by rather less than 12x, and for four of the traits by almost
-// nothing at all -- for a reason neither 11d nor 11e anticipated.
+// measures. The composite does win here, by rather less than 12x, and for four
+// of the traits by almost nothing at all -- for a reason neither the projection
+// nor the R measurement anticipated.
 //
 // WHAT THE TWO ARMS ARE. Both perturb one trait by a relative 1e-6 either side
 // and both pay set_traits + set_physiology per perturbation, because a trait
@@ -56,37 +56,62 @@ namespace {
 
 // The default trait vector, in set_traits' argument order.
 //
-// Thirteen of the fourteen traits: `R_d_25` is left at its default because it needs
-// no spline rebuild and so lands in the cheap bucket, which the split below already
-// has twelve examples of. `beta_R_H` and `beta_R_V` are not here at all -- they left
+// Eleven of the fifteen traits. `R_d_25`, `JS22_gamma`, `CMax_a` and `CMax_b` are
+// left at their defaults because none needs a spline rebuild, so all four land in
+// the cheap bucket this table already has examples of -- adding them would lengthen
+// the output without changing the finding. `beta_R_H` and `beta_R_V` are not here at all -- they left
 // with the root-architecture model in #33, and a gradient in either is now taken
 // where the network is built, exactly, because root_network_from_carbon is
 // homogeneous of degree 1 in each.
+//
+// ⚠️ ONE COUNT FOR ALL THREE USERS OF IT, and that is the fix for a real bug
+// rather than a tidy-up. `Traits::v`, `kNames` and the timing loop each carried
+// the number separately, and the loop's copy was a literal `13` against an
+// 11-element array. So it read `kBase.v[11..12]` and `kNames[11..12]` out of
+// bounds and handed the latter to `printf("%s")`.
+//
+// It survived every trait-count change since -- the vector has been 14, then 12,
+// now 15 -- because nothing compared the three numbers. And it was invisible in
+// the ordinary way: the read is only fatal when the address space happens to put
+// something unmapped after the globals, so it ran clean under `lldb` (which
+// disables ASLR) and segfaulted when run directly. It also *looked* like a crash
+// during initialisation, because a piped stdout is block-buffered and the whole
+// report was still sitting in the buffer when the process died.
+//
+// `-fsanitize=address` names it in one line: "global-buffer-overflow ... 0 bytes
+// after global variable 'kBase'". Reach for that before reading a stack trace.
+constexpr int kNTraits = 11;
+
 struct Traits {
-  double v[13];
+  double v[kNTraits];
 };
 
-const Traits kBase{{96.0, 2.680147, 3.898245, 5.870283, 2.680147, 3.898245,
-                    5.870283, 1.5, 157.44, 0.30, 0.7, 0.99, 7.5}};
+const Traits kBase{{96.0, 2.680147, 3.4, 2.680147, 3.4, 1.5,
+                    157.44, 0.30, 0.7, 0.99, 7.5}};
 
-const char *kNames[13] = {"vcmax_25",  "stem_c",     "stem_b",
-                          "psi_crit",  "root_c",     "root_b",
-                          "root_psi_crit", "beta2",  "jmax_25",
-                          "a",         "curv_elec",  "curv_colim",
-                          "cost_scale"};
+const char *kNames[kNTraits] = {"vcmax_25",  "stem_c",     "stem_P50",
+                          "root_c",    "root_P50",   "TF24_beta2",
+                          "jmax_25",   "a",          "curv_elec",
+                          "curv_colim", "cost_scale"};
+
+static_assert(sizeof(kBase.v) / sizeof(kBase.v[0]) == kNTraits,
+              "kBase must have exactly kNTraits entries");
+static_assert(sizeof(kNames) / sizeof(kNames[0]) == kNTraits,
+              "kNames must have exactly kNTraits entries");
 
 // Whether perturbing this trait forces a vulnerability spline to be rebuilt:
-// stem_c/stem_b own the transpiration pair, root_c/root_b own the root curve.
+// stem_c/stem_P50 own the transpiration pair, root_c/root_P50 own the root curve.
 // This turns out to be the single most important fact about the results.
 bool rebuilds_a_spline(int i) {
-  return i == 1 || i == 2 || i == 4 || i == 5;
+  return i == 1 || i == 2 || i == 3 || i == 4;
 }
 
 void apply_traits(phylloptim::Leaf &l, const Traits &t) {
   // R_d_25 last, at the class default, so the benchmark measures the default
   // configuration.
-  l.set_traits(t.v[0], t.v[1], t.v[2], t.v[3], t.v[4], t.v[5], t.v[6], t.v[7],
-               t.v[8], t.v[9], t.v[10], t.v[11], t.v[12], 1.44);
+  l.set_traits(t.v[0], t.v[1], t.v[2], t.v[3], t.v[4], t.v[5],
+               t.v[6], t.v[7], t.v[8], t.v[9], t.v[10], 1.44,
+               /*JS22_gamma=*/1.0, /*CMax_a=*/0.6, /*CMax_b=*/0.0);
 }
 
 // One interior operating point. Drivers from plant's tests/testthat/test-leaf.r,
@@ -146,15 +171,15 @@ double ift_arm(phylloptim::Leaf &l, int idx, double psi_star, long reps,
   return us_per(t0, clock_type::now(), reps);
 }
 
-// The same composite, but moving stem_b by the homogeneity rescale instead of
-// through set_traits -- so no spline is rebuilt and set_physiology is not needed
-// either, since nothing it derives depends on stem_b. PLAN 11f.
-double ift_arm_rescaled_stem_b(phylloptim::Leaf &l, double psi_star, long reps,
-                               double &sink) {
+// The same composite, but moving the stem curve by the homogeneity rescale
+// instead of through set_traits -- so no spline is rebuilt and set_physiology is
+// not needed either, since nothing it derives depends on stem_b.
+double ift_arm_rescaled_stem_curve(phylloptim::Leaf &l, double psi_star,
+                                   long reps, double &sink) {
   const auto t0 = clock_type::now();
   for (long r = 0; r < reps; ++r) {
     for (int sign = -1; sign <= 1; sign += 2) {
-      l.perturb_stem_b(perturbed(kBase, 2, sign, r));
+      l.perturb_stem_P50(perturbed(kBase, 2, sign, r));
       sink += l.dprofit_droot_collar_psi(psi_star);
       sink += l.evaluate_root_collar_psi(psi_star);
       sink += l.assim_colimited_;
@@ -227,15 +252,15 @@ int main(int argc, char **argv) {
     printf("  set_traits, spline rebuild %8.3f us   <-- the finding\n",
            us_per(t0, clock_type::now(), reps));
 
-    // And the way round it, for stem_b only: the curve is homogeneous of degree
-    // 1 in stem_b, so the spline for a perturbed stem_b is this one with its
-    // argument rescaled. PLAN 11f.
+    // And the way round it, for the stem curve only: it is homogeneous of degree
+    // 1 in stem_b, which is a fixed multiple of stem_P50, so the spline for a
+    // perturbed trait is this one with its argument rescaled.
     t0 = clock_type::now();
     for (long r = 0; r < reps; ++r) {
-      l.perturb_stem_b(kBase.v[2] + double(r) * 1e-9);
+      l.perturb_stem_P50(kBase.v[2] + double(r) * 1e-9);
       sink += l.stem_b;
     }
-    printf("  perturb_stem_b, no rebuild %8.3f us   <-- and the way round it\n",
+    printf("  perturb_stem_P50, no rebuild %8.3f us  <-- and the way round it\n",
            us_per(t0, clock_type::now(), reps));
     apply_traits(l, kBase);
     set_drivers(l);
@@ -246,7 +271,7 @@ int main(int argc, char **argv) {
          "rebuilds a spline");
   double fd_all = 0.0, ift_all = 0.0, fd_cheap = 0.0, ift_cheap = 0.0;
   int n_cheap = 0;
-  for (int i = 0; i < 13; ++i) {
+  for (int i = 0; i < kNTraits; ++i) {
     double fd = 1e300, ift = 1e300;
     for (int round = 0; round < 3; ++round) {
       // Reset to the base state before each arm so neither inherits the other's
@@ -278,7 +303,8 @@ int main(int argc, char **argv) {
     }
   }
 
-  printf("\n  13 of the 14 traits  FD %8.1f us   IFT %8.1f us   %.2fx\n",
+  printf("\n  %d of the %d traits  FD %8.1f us   IFT %8.1f us   %.2fx\n",
+         kNTraits, phylloptim::gradient::n_traits,
          fd_all, ift_all, fd_all / ift_all);
   printf("  the %2d with no rebuild  FD %8.1f us   IFT %8.1f us   %.2fx\n",
          n_cheap, fd_cheap, ift_cheap, fd_cheap / ift_cheap);
@@ -291,7 +317,7 @@ int main(int argc, char **argv) {
   double reb = 0.0, resc = 0.0;
   for (int round = 0; round < 3; ++round) {
     const double a = ift_arm(l, 2, psi_star, per_round, sink);
-    const double b = ift_arm_rescaled_stem_b(l, psi_star, per_round, sink);
+    const double b = ift_arm_rescaled_stem_curve(l, psi_star, per_round, sink);
     reb = round == 0 ? a : std::min(reb, a);
     resc = round == 0 ? b : std::min(resc, b);
   }
@@ -310,7 +336,10 @@ int main(int argc, char **argv) {
     double theta[phylloptim::gradient::n_pars] = {
         kBase.v[0], kBase.v[1], kBase.v[2],  kBase.v[3], kBase.v[4],
         kBase.v[5], kBase.v[6], kBase.v[7],  kBase.v[8], kBase.v[9],
-        kBase.v[10], kBase.v[11], kBase.v[12], 1.44,     kmax,      0.0};
+        // ⚠️ POSITIONAL and silently short-fillable -- see test_leaf.cpp's copy of
+        // this array for what adding a trait did to it. Count against `n_pars`.
+        kBase.v[10], 1.44,      /*JS22_gamma=*/1.0,
+        /*CMax_a=*/0.6, /*CMax_b=*/0.0, kmax, 0.0};
 
     std::vector<double> root{1.0 / kAreaLeaf}, psi_soil{2.0}, depth{1.0};
     phylloptim::gradient::Drivers gd;
@@ -333,8 +362,8 @@ int main(int argc, char **argv) {
     };
     const Arm arms[] = {
         {"vcmax_25 (no spline anywhere)", 0, true},
-        {"stem_b, fast_stem_curve on", phylloptim::gradient::par_stem_b, true},
-        {"stem_b, fast_stem_curve off", phylloptim::gradient::par_stem_b, false},
+        {"stem_P50, fast_stem_curve on", phylloptim::gradient::par_stem_P50, true},
+        {"stem_P50, fast_stem_curve off", phylloptim::gradient::par_stem_P50, false},
         {"stem_c (no identity to use)", phylloptim::gradient::par_stem_c, true}};
 
     printf("\n%-32s %10s %12s\n", "pars", "us/obs", "rebuilds/obs");
@@ -353,12 +382,12 @@ int main(int argc, char **argv) {
         const auto t0 = clock_type::now();
         for (long r = 0; r < batch_reps; ++r) {
           // Vary theta per rep for the reason `perturbed()` documents -- but in
-          // `beta2`, NOT in the parameter being differentiated. Moving the base
+          // `TF24_beta2`, NOT in the parameter being differentiated. Moving the base
           // `stem_b` per rep moves it off `stem_b_spline_`, which is a rebuild the
           // model genuinely owes and which showed up as 0.05 rebuilds/obs (one per
           // rep over 20 observations) while reading like a leftover of the bug
-          // this arm exists to measure. `beta2` owns no spline.
-          theta[phylloptim::gradient::par_beta2] =
+          // this arm exists to measure. `TF24_beta2` owns no spline.
+          theta[phylloptim::gradient::par_TF24_beta2] =
               kBase.v[7] * (1.0 + double(r) * 1e-12);
           const std::vector<phylloptim::gradient::Result> g =
               phylloptim::gradient::batch(l, theta, 1, obs, false, pars, 1, s);
@@ -385,10 +414,10 @@ int main(int argc, char **argv) {
       "\nThe four that rebuild a spline are stem_b, stem_c, root_b and root_c --\n"
       "and they are exactly the traits for which the argmax-mediated term is\n"
       "100%% of the gradient. So the composite's advantage is smallest precisely\n"
-      "where the composite is most necessary. PLAN 11e has what follows from that.\n"
+      "where the composite is most necessary.\n"
       "\nstem_b escapes it: G is homogeneous of degree 1 in stem_b, so the spline\n"
       "for a perturbed stem_b is this one with its argument rescaled and no\n"
-      "rebuild is needed. stem_c has no such identity. PLAN 11f.\n");
+      "rebuild is needed. stem_c has no such identity.\n");
   printf("\nchecksum %.6f\n", sink);
   return 0;
 }

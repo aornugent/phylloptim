@@ -1,4 +1,4 @@
-# Run the C++ suite under `R CMD check` (issue #12, PLAN item 15).
+# Run the C++ suite under `R CMD check` (#12).
 #
 # This package ships headers and nothing else -- no R code, no compiled code --
 # so without this file `R CMD check` validates essentially nothing. The point is

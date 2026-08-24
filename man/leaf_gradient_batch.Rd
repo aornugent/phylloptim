@@ -14,18 +14,19 @@ leaf_gradient_batch(
   step = 1e-06,
   stationarity_tol = 1e-08,
   method = c("auto", "ift", "fd"),
-  fast_stem_curve = TRUE
+  fast_stem_curve = TRUE,
+  model = "collar"
 )
 }
 \arguments{
-\item{batch}{a [leaf_batch()]}
+\item{batch}{a \code{\link[=leaf_batch]{leaf_batch()}}}
 
-\item{traits}{a [leaf_traits()] object: the point in trait space to
-differentiate at. Defaults to the one `batch` was built with. Ignored when
-`theta` is given.}
+\item{traits}{a \code{\link[=leaf_traits]{leaf_traits()}} object: the point in trait space to
+differentiate at. Defaults to the one \code{batch} was built with. Ignored when
+\code{theta} is given.}
 
-\item{pars}{what to differentiate with respect to, as in [leaf_gradient()].
-⚠️ **Always pass it.** It is `P_model`, so the default — all of them — is
+\item{pars}{what to differentiate with respect to, as in \code{\link[=leaf_gradient]{leaf_gradient()}}.
+⚠️ \strong{Always pass it.} It is \code{P_model}, so the default — all of them — is
 the most expensive thing you can ask for.}
 
 \item{theta}{the model parameters as a matrix, for the case where they vary
@@ -33,83 +34,86 @@ by observation. See the section above.}
 
 \item{psi}{one collar water potential per observation to evaluate at
 (positive magnitudes, MPa) instead of solving for the profit-maximising
-one. See [leaf_gradient()]'s section on it. Recycling a single value across
+one. See \code{\link[=leaf_gradient]{leaf_gradient()}}'s section on it. Recycling a single value across
 the batch is deliberately not offered — rows sharing an imposed collar is a
 coincidence rather than a design, and broadcasting one would make a length
 mismatch look intentional.}
 
-\item{dpsi_dtheta}{how each prescribed `psi` responds to each parameter:
-an `n` × `length(pars)` matrix, or one vector of `length(pars)` shared by
+\item{dpsi_dtheta}{how each prescribed \code{psi} responds to each parameter:
+an \code{n} × \code{length(pars)} matrix, or one vector of \code{length(pars)} shared by
 every observation. Defaults to zero. Must be finite, for the reason
-[leaf_gradient()] records. Only meaningful with `psi`.}
+\code{\link[=leaf_gradient]{leaf_gradient()}} records. Only meaningful with \code{psi}.}
 
-\item{step}{relative step for the trait difference. The default `1e-06` is
+\item{step}{relative step for the trait difference. The default \code{1e-06} is
 near the middle of the five decades over which the mixed partial was
 measured stable; it is also used, relative to the collar potential, for the
-two differences in `psi`.}
+two differences in \code{psi}.}
 
 \item{stationarity_tol}{how far from stationary, as an implied Newton step in
 MPa, the solved point may be before the optimum is called pinned and the
-finite-difference fallback is used. The default `1e-08` sits in the empty
+finite-difference fallback is used. The default \code{1e-08} sits in the empty
 band between the two measured populations; there is no operating point in
 this package's grid within four orders of magnitude of it.}
 
-\item{method}{which route to take: `"auto"` (the default) uses the
+\item{method}{which route to take: \code{"auto"} (the default) uses the
 implicit-function composite where its premise holds and the finite
-difference where it does not. `"ift"` and `"fd"` force one route, for
-checking one against the other. Forcing `"ift"` at a pinned optimum returns
-a confidently wrong number -- that is the whole reason `"auto"` exists --
-and `status` still reports the truth about the point.}
+difference where it does not. \code{"ift"} and \code{"fd"} force one route, for
+checking one against the other. Forcing \code{"ift"} at a pinned optimum returns
+a confidently wrong number -- that is the whole reason \code{"auto"} exists --
+and \code{status} still reports the truth about the point.}
 
-\item{fast_stem_curve}{perturb `stem_b` without rebuilding the stem
-vulnerability spline (`TRUE`, the default). The curve is homogeneous of
-degree 1 in `stem_b`, so the spline for a perturbed `stem_b` is the existing
+\item{fast_stem_curve}{perturb \code{stem_b} without rebuilding the stem
+vulnerability spline (\code{TRUE}, the default). The curve is homogeneous of
+degree 1 in \code{stem_b}, so the spline for a perturbed \code{stem_b} is the existing
 one with its argument rescaled — which makes the rebuild, otherwise most of
-the cost of that gradient, unnecessary. `FALSE` rebuilds, and exists so the
+the cost of that gradient, unnecessary. \code{FALSE} rebuilds, and exists so the
 equivalence is checkable rather than assumed; the package's tests require
-the two routes to agree. `stem_c` has no such identity and always rebuilds.}
+the two routes to agree. \code{stem_c} has no such identity and always rebuilds.}
+
+\item{model}{which optimality model to differentiate, as in
+\code{\link[=leaf_gradient]{leaf_gradient()}}: \code{"collar"} by default, or any \code{\link[=cost_curve_names]{cost_curve_names()}} entry.}
 }
 \value{
 A list with
-  \describe{
-    \item{`gradient`}{an `n` × `length(pars)` × 5 array, the last dimension
-      being `A`, `gc`, `psi_stem`, `collar` and `profit`}
-    \item{`value`}{an `n` × 5 matrix of the solved outputs}
-    \item{`method`}{`"ift"`, `"fd"` or `"prescribed"` per observation}
-    \item{`status`}{`"interior"`, `"pinned"`, `"no-gradient"`, `"error"`,
-      or with `psi` one of `"prescribed"`, `"clamped"`, `"no-gradient"`}
-    \item{`H`, `stationarity`}{the curvature and the implied Newton step
-      `method` was decided on, per observation}
-    \item{`M`}{an `n` × `length(pars)` matrix of mixed partials
-      `d2profit/dpsi dtheta`}
-    \item{`dY_dpsi`}{an `n` × 5 matrix of `dY/dpsi` at fixed traits}
-    \item{`psi`}{the collar each row was evaluated at}
-    \item{`message`}{`""`, or why that row failed}
-  }
+\describe{
+\item{\code{gradient}}{an \code{n} × \code{length(pars)} × 5 array, the last dimension
+being \code{A}, \code{gc}, \code{psi_stem}, \code{collar} and \code{profit}}
+\item{\code{value}}{an \code{n} × 5 matrix of the solved outputs}
+\item{\code{method}}{\code{"ift"}, \code{"fd"} or \code{"prescribed"} per observation}
+\item{\code{status}}{\code{"interior"}, \code{"pinned"}, \code{"no-gradient"}, \code{"error"},
+or with \code{psi} one of \code{"prescribed"}, \code{"clamped"}, \code{"no-gradient"}}
+\item{\code{H}, \code{stationarity}}{the curvature and the implied Newton step
+\code{method} was decided on, per observation}
+\item{\code{M}}{an \code{n} × \code{length(pars)} matrix of mixed partials
+\verb{d2profit/dpsi dtheta}}
+\item{\code{dY_dpsi}}{an \code{n} × 5 matrix of \code{dY/dpsi} at fixed traits}
+\item{\code{psi}}{the collar each row was evaluated at}
+\item{\code{message}}{\code{""}, or why that row failed}
+}
 }
 \description{
-[leaf_gradient()], composed in C++ and vectorised over the observations of a
-[leaf_batch()]. One crossing of the R boundary per call, in place of 112 per
+\code{\link[=leaf_gradient]{leaf_gradient()}}, composed in C++ and vectorised over the observations of a
+\code{\link[=leaf_batch]{leaf_batch()}}. One crossing of the R boundary per call, in place of 112 per
 observation.
 }
 \section{What it computes, and where the maths is written down}{
 
 The same five derivatives at the same solved operating point, by the same two
-routes, with the same active-set test deciding between them. **Read
-[leaf_gradient()]'s documentation for all of it** — the implicit function
+routes, with the same active-set test deciding between them. \strong{Read
+\code{\link[=leaf_gradient]{leaf_gradient()}}'s documentation for all of it} — the implicit function
 theorem, why the second term is not a correction, why the premise is tested
-rather than assumed, and what `status` means. Nothing here differs; this is a
+rather than assumed, and what \code{status} means. Nothing here differs; this is a
 transcription, and it is required to agree with the R version bit-for-bit.
 }
 
 \section{Speed, and which side of the boundary the figure belongs to}{
 
 A four-parameter gradient costs ~237 µs per observation through
-[leaf_gradient()], of which the model work — two solves — is 6 µs, or 1.5%.
+\code{\link[=leaf_gradient]{leaf_gradient()}}, of which the model work — two solves — is 6 µs, or 1.5\%.
 Everything else is dispatch and the R interpreter. The C++ composite runs at
 ~1.8 µs per trait, so the same gradient is order 10 µs here.
 
-⚠️ **That is a per-observation figure and it needs a batch to be realised.**
+⚠️ \strong{That is a per-observation figure and it needs a batch to be realised.}
 Calling this with one observation pays the whole R-side call overhead for one
 row's worth of work and will not be 20× anything. The number of observations
 is the lever.
@@ -117,35 +121,35 @@ is the lever.
 
 \section{Per-row status, not an error}{
 
-A proposal during a fit **will** reach operating points the solve cannot
+A proposal during a fit \strong{will} reach operating points the solve cannot
 handle. That has to cost those rows rather than the whole dataset, so every
-row reports its own `status` and a failure is `"error"` with a `message`
-rather than a condition. A failed row's gradient is all `NA`, not partially
+row reports its own \code{status} and a failure is \code{"error"} with a \code{message}
+rather than a condition. A failed row's gradient is all \code{NA}, not partially
 filled: a parameter loop that failed halfway has valid entries before the
-failure, and returning them next to `status == "error"` would invite a caller
-who checks the status per row to read a gradient with a hole in it. `value`,
-`H` and `stationarity` are kept where they were determined, because they
+failure, and returning them next to \code{status == "error"} would invite a caller
+who checks the status per row to read a gradient with a hole in it. \code{value},
+\code{H} and \code{stationarity} are kept where they were determined, because they
 describe the point rather than the derivative.
 }
 
-\section{Supplying `theta` directly}{
+\section{Supplying \code{theta} directly}{
 
-By default the parameters are `traits` — the batch's, or the ones passed here
-— with `leaf_specific_conductance_max` and `resistance` taken from the
-batch's own drivers. Pass `theta` instead when they vary by observation, which
+By default the parameters are \code{traits} — the batch's, or the ones passed here
+— with \code{leaf_specific_conductance_max} and \code{resistance} taken from the
+batch's own drivers. Pass \code{theta} instead when they vary by observation, which
 is what a hierarchical fit needs: a matrix with one row per observation (or one
-row shared by all of them) and one column per [gradient_par_names()] entry, in
-that order. `resistance` is ignored on the multi-layer path and may be `NA`
+row shared by all of them) and one column per \code{\link[=gradient_par_names]{gradient_par_names()}} entry, in
+that order. \code{resistance} is ignored on the multi-layer path and may be \code{NA}
 there.
 }
 
 \examples{
 b <- leaf_batch(psi_soil = seq(0.5, 4, length.out = 6), PPFD = 900)
-g <- leaf_gradient_batch(b, pars = c("vcmax_25", "stem_b"))
+g <- leaf_gradient_batch(b, pars = c("vcmax_25", "stem_P50"))
 g$status
 g$gradient[, "vcmax_25", "A"]
 }
 \seealso{
-[leaf_batch()], [leaf_gradient()] for one observation and for the
-  derivation.
+\code{\link[=leaf_batch]{leaf_batch()}}, \code{\link[=leaf_gradient]{leaf_gradient()}} for one observation and for the
+derivation.
 }

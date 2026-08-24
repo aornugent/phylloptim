@@ -14,14 +14,14 @@ variadic arguments, or as a list, but not both).}
 Root hydraulic resistances, per layer and per unit leaf area
 }
 \details{
-What `set_physiology()` takes in place of a root carbon profile (#33). Which
+What \code{set_physiology()} takes in place of a root carbon profile (#33). Which
 root-architecture model turned carbon into these resistances is not this
 package's business, exactly as which conductance-versus-height model produced
-`leaf_specific_conductance_max` never was. If you do have a carbon profile,
-[root_network_from_carbon()] is the model that used to run inside the leaf.
+\code{leaf_specific_conductance_max} never was. If you do have a carbon profile,
+\code{\link[=root_network_from_carbon]{root_network_from_carbon()}} is the model that used to run inside the leaf.
 
-`r_R_H_min` and `r_R_V_sum` are the two fields the solve reads. Their common
+\code{r_R_H_min} and \code{r_R_V_sum} are the two fields the solve reads. Their common
 length is the number of ROOTED layers, which may be fewer than the number of
-soil layers but never more. `c_r_V`, `c_r_H` and `r_R_V` are diagnostics and
+soil layers but never more. \code{c_r_V}, \code{c_r_H} and \code{r_R_V} are diagnostics and
 may be left empty.
 }

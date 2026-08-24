@@ -47,17 +47,17 @@
 ##' should be loud.
 ##'
 ##' @section Three judgement calls left ordinary, and why:
-##' Of the roughly fifty `stop` sites in the headers, seventeen are classified. Three
+##' Of the 64 `stop` sites in the headers, nineteen are classified. Three
 ##' of the rest are genuinely arguable, and all three were left ordinary because that
 ##' is the direction whose failure mode is a loud error rather than a quiet wrong
 ##' answer. They are listed here so the decision can be overruled on purpose rather
 ##' than rediscovered:
 ##'
-##' * **`psi_crit` past the stem curve's P99** (`check_psi_crit_domain`, #38). An
-##'   unconstrained optimiser proposing `stem_b` really can walk into this, which
-##'   argues for infeasible. Against: it is also precisely what #38 exists to make
-##'   *loud* for someone who fitted a vulnerability curve and carried over a
-##'   `psi_crit` from the defaults, and making it swallowable would put that back.
+##' * ~~**`psi_crit` past the stem curve's P99.**~~ No longer reachable, and so no
+##'   longer a decision: `psi_crit` is the 5%-conductivity quantile of the stem
+##'   curve rather than a trait beside it, so it scales with the curve and lands
+##'   inside the domain for every shape parameter. An optimiser moving `stem_P50`
+##'   cannot walk out of it.
 ##'   Constrain the pair instead — `vignette("fitting")` derives both from a P50/P88.
 ##' * **`method = "ift"` requested at a point where the IFT does not hold**
 ##'   (`leaf_gradient`). The default `method = "auto"` never reaches it, so getting
@@ -87,7 +87,7 @@ leaf_infeasible_codes <- function() {
             "shut-down (which is an answer, not an error)"),
     stem_curve_domain =
       paste("a vulnerability spline was asked for a potential outside the domain",
-            "its traits give it -- usually psi_crit past the curve's P99 (#38)"),
+            "its traits give it"),
     uptake =
       paste("the soil-to-root-collar flux is non-finite, or a layer's",
             "vulnerability weighting is unusable, at this candidate collar"),

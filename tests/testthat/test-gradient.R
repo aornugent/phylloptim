@@ -1,4 +1,4 @@
-# Trait gradients: set_traits() and leaf_gradient() (issue #4, PLAN 11d stage 1).
+# Trait gradients: set_traits() and leaf_gradient() (#4).
 #
 # Two things are being pinned here, and they are not equally hard.
 #
@@ -7,7 +7,7 @@
 #      a least-squares slope of the solved output over a +-2% trait span at
 #      n = 41, and the composite agrees to about four digits.
 #   2. That it is NOT used where its premise fails. This is the half that took
-#      the work. At a wet-pinned optimum the bare composite returns O(1) where
+#      the work. At a boundary-soil optimum the bare composite returns O(1) where
 #      the truth is ~1e-08 -- plausible-looking and wrong by seven orders of
 #      magnitude -- so the test that matters is the one asserting the guard
 #      fires. `method = "ift"` exists so that failure can be provoked on demand
@@ -24,8 +24,8 @@ test_that("set_traits() on a used leaf equals a leaf built with those traits", {
   # the two routes share no code: any derived state set_traits fails to refresh
   # -- the two vulnerability splines, or vcmax_/jmax_/R_d_ behind
   # set_physiology's temperature cache -- shows up as a difference.
-  traits <- leaf_traits(vcmax_25 = 110, stem_b = 4.2, root_b = 3.5,
-                        cost_scale_TF24 = 8.0)
+  traits <- leaf_traits(vcmax_25 = 110, stem_P50 = 4.2, root_P50 = 3.5,
+                        TF24_cost_scale = 8.0)
   d <- grid_drivers(2.0)
 
   fresh <- leaf_model(traits)
@@ -63,7 +63,7 @@ test_that("set_traits() enforces the one representation for psi (#25)", {
   # A bare field write would bypass this, which is one of the four reasons the
   # traits are not bound as settable fields.
   l <- leaf_model()
-  for (p in c("psi_crit", "stem_b", "root_b", "root_psi_crit")) {
+  for (p in c("stem_P50", "root_P50")) {
     tr <- leaf_traits()
     tr[[p]] <- -tr[[p]]
     expect_error(set_traits(l, structure(tr, class = class(leaf_traits()))),
@@ -76,14 +76,32 @@ test_that("the composite reproduces the arbitrated reference gradients", {
   # Ratios against a least-squares slope over +-2% at n = 41 were 0.9979-1.0000
   # when these were established; the tolerance below is that agreement, not the
   # composite's own precision, which is finer.
+  # ⚠️ THE CURVE ROWS ARE NOT RE-ARBITRATED NUMBERS -- they are the arbitrated
+  # b-gradients carried through the reparameterisation by its own chain rule, so
+  # this table asserts the chain rule as well as the gradient. With
+  # b = P50 / (ln 2)^(1/c),
+  #
+  #     d/dP50 |_c = (ln 2)^(-1/c) . d/db
+  #     d/dc |_P50 = d/dc |_b  +  (db/dc) . d/db,   db/dc = b.ln(ln 2)/c^2
+  #
+  # and the derived psi_crit contributes NOTHING at this row because it is an
+  # INTERIOR optimum, where dY/dpsi_crit is exactly zero. That is why the identity
+  # is clean here and is not at a pinned optimum -- see the pinned test below,
+  # which asserts the other half.
+  tr <- leaf_traits()
+  stem_b <- tr$stem_P50 / log(2)^(1 / tr$stem_c)
+  d_dP50 <- log(2)^(-1 / tr$stem_c)
+  d_dc   <- stem_b * log(log(2)) / tr$stem_c^2
+  b_stem <- c(collar = 5.5247e-01, A = 2.8465e+00)   # arbitrated d/dstem_b
+  b_root <- c(collar = 2.6656e-04, A = 2.3895e-02)   # arbitrated d/droot_b
   ref <- rbind(
     vcmax_25        = c(collar =  1.7459e-03, A =  1.7209e-02),
     jmax_25         = c(collar =  1.0862e-04, A =  9.1320e-04),
-    cost_scale_TF24 = c(collar = -7.6704e-02, A = -3.9520e-01),
-    beta2           = c(collar = -4.2610e-02, A = -2.1954e-01),
-    stem_b          = c(collar =  5.5247e-01, A =  2.8465e+00),
-    stem_c          = c(collar = -1.6390e-01, A = -8.4448e-01),
-    root_b          = c(collar =  2.6656e-04, A =  2.3895e-02))
+    TF24_cost_scale = c(collar = -7.6704e-02, A = -3.9520e-01),
+    TF24_beta2           = c(collar = -4.2610e-02, A = -2.1954e-01),
+    stem_P50        = d_dP50 * b_stem,
+    stem_c          = c(collar = -1.6390e-01, A = -8.4448e-01) + d_dc * b_stem,
+    root_P50        = (log(2)^(-1 / tr$root_c)) * b_root)
   # beta_R_H used to be an eighth row here (collar 8.1973e-06, A -2.8802e-04).
   # #33 removed it from the trait vector along with the root-architecture model,
   # so there is no longer a `pars` name for it. The recorded values are kept in
@@ -104,7 +122,7 @@ test_that("the composite and the finite difference agree at interior points", {
   # The cross-check that needs no external reference: two routes to the same
   # derivative, sharing only the model. They are checked across soil moisture
   # because the indirect term's share of the answer varies with it.
-  pars <- c("vcmax_25", "jmax_25", "stem_b", "cost_scale_TF24", "root_b")
+  pars <- c("vcmax_25", "jmax_25", "stem_P50", "TF24_cost_scale", "root_P50")
   for (psi_soil in c(0.5, 1.0, 2.0, 3.0)) {
     ift <- grid_gradient(psi_soil, pars = pars, method = "ift")
     fd <- grid_gradient(psi_soil, pars = pars, method = "fd")
@@ -122,7 +140,7 @@ test_that("dcollar/dtheta is dpsi*/dtheta, computed two ways", {
   # The `collar` column is psi* itself, so the composite reports -M/H there while
   # the fallback differences the solved argmax. They are different computations of
   # the same quantity, which is why the column is worth reporting at all.
-  pars <- c("vcmax_25", "stem_b", "beta2")
+  pars <- c("vcmax_25", "stem_P50", "TF24_beta2")
   ift <- grid_gradient(2.0, pars = pars, method = "ift")
   fd <- grid_gradient(2.0, pars = pars, method = "fd")
   expect_equal(ift$gradient[, "collar"], fd$gradient[, "collar"],
@@ -131,9 +149,9 @@ test_that("dcollar/dtheta is dpsi*/dtheta, computed two ways", {
 
 test_that("a pinned optimum takes the fallback, and the composite would be wrong", {
   # The hazard, pinned to specific operating points. These three are rows of the
-  # golden grid; the wet-pinned pair are where the bare composite is worst.
+  # golden grid; the boundary-soil pair are where the bare composite is worst.
   #
-  # ⚠️ The truth at a wet-pinned point is ~1e-07 or smaller -- the leaf is stuck
+  # ⚠️ The truth at a boundary-soil point is ~1e-07 or smaller -- the leaf is stuck
   # at the wettest feasible collar and barely responds -- so the ASSERTION IS
   # ABSOLUTE, not relative. A ratio test here would be meaningless in both
   # directions: the fallback's relative error is large and does not matter, and
@@ -144,13 +162,13 @@ test_that("a pinned optimum takes the fallback, and the composite would be wrong
   for (w in wet) {
     lab <- sprintf("psi_soil=%g vpd=%g layers=%d", w$psi_soil, w$vpd, w$layers)
     auto <- grid_gradient(w$psi_soil, vpd = w$vpd, layers = w$layers,
-                          pars = c("stem_b", "vcmax_25"))
+                          pars = c("stem_P50", "vcmax_25"))
     expect_identical(auto$status, "pinned", label = lab)
     expect_identical(auto$method, "fd", label = lab)
     # The guard fired with room to spare: measured stationarity at these points
     # is ~6e-06 to ~9e-06 against a 1e-08 threshold.
     expect_gt(auto$stationarity, 1e-7)
-    expect_lt(abs(auto$gradient["stem_b", "A"]), 1e-3)
+    expect_lt(abs(auto$gradient["stem_P50", "A"]), 1e-3)
 
     # Forcing the composite here does not produce the wrong number -- it fails.
     # That was not the design and is worth stating as a measurement: psi* sits
@@ -159,7 +177,7 @@ test_that("a pinned optimum takes the fallback, and the composite would be wrong
     # below shows it holds at all 42 pinned rows, which means the composite's
     # O(1) answer is not reachable through this function.
     expect_error(grid_gradient(w$psi_soil, vpd = w$vpd, layers = w$layers,
-                               pars = "stem_b", method = "ift"),
+                               pars = "stem_P50", method = "ift"),
                  "narrower than one step", label = lab)
   }
 
@@ -167,10 +185,24 @@ test_that("a pinned optimum takes the fallback, and the composite would be wrong
   # a factor of 1.6 out for vcmax_25 there rather than seven orders, so a test
   # that only looked at the wet rows would let a threshold drift past it.
   dry <- grid_gradient(4, vpd = 0.5, layers = 3L,
-                       pars = c("stem_b", "vcmax_25", "R_d_25"))
+                       pars = c("stem_P50", "vcmax_25", "R_d_25"))
   expect_identical(dry$status, "pinned")
   expect_equal(dry$gradient["vcmax_25", "A"], 0.017548, tolerance = 1e-3)
-  expect_equal(dry$gradient["stem_b", "A"], 4.6991, tolerance = 1e-3)
+  # ⚠️ NOT the interior identity. At a boundary-crit optimum the derived psi_crit is
+  # the binding constraint, so dA/dstem_P50 picks up a second term through it --
+  # and both halves are independently arbitrated numbers from before the
+  # reparameterisation (4.6991 for d/dstem_b, 1.2605 for d/dpsi_crit):
+  #
+  #     dA/dP50 = (db/dP50).dA/db + (dpsi_crit/dP50).dA/dpsi_crit
+  #
+  # Dropping the second term is the plausible-looking mistake this catches: it
+  # would give 5.39 rather than 7.56, a 29% error with nothing about it that looks
+  # wrong.
+  tr <- leaf_traits()
+  d_dP50 <- log(2)^(-1 / tr$stem_c)
+  bound  <- (log(1 / 0.05) / log(2))^(1 / tr$stem_c)
+  expect_equal(dry$gradient["stem_P50", "A"],
+               d_dP50 * 4.6991 + bound * 1.2605, tolerance = 2e-3)
 
   # `dA/dvcmax_25` is a PARTIAL at fixed respiration, since `R_d_25` is its own
   # trait. A fit that wants respiration to follow Vcmax adds the two columns, so
@@ -180,33 +212,42 @@ test_that("a pinned optimum takes the fallback, and the composite would be wrong
                0.014357, tolerance = 1e-3)
 })
 
-test_that("at a pinned optimum the BOUND's own trait carries the gradient", {
+test_that("at a pinned optimum the moving BOUND carries part of the gradient", {
   # The sharpest statement of why the fallback is not merely a fallback, and it
   # is a stronger claim than "the composite is inaccurate there".
   #
-  # `psi_crit` does not appear in the profit function at all -- it only sets the
-  # dry end of the feasible collar interval. So at an INTERIOR optimum it has no
-  # effect and its gradient is exactly zero, which is right. At a DRY-PINNED
-  # optimum it IS the binding constraint, so moving it moves the answer directly.
+  # `psi_crit` sets the dry end of the feasible collar interval and appears in the
+  # profit function nowhere else. It is no longer a trait -- it is the
+  # 5%-conductivity quantile of the stem curve -- so moving `stem_P50` moves it,
+  # and the effect that used to be a column of its own is now a TERM inside the
+  # stem gradient. Where the optimum is interior that term is exactly zero; where
+  # it is pinned at the dry bound the term is what the answer is made of.
   #
-  # ⚠️ The composite cannot see that, and not by a small margin: psi* enters
-  # `dprofit` nowhere, so M = 0, dpsi*/dtheta = 0, the direct term is 0, and the
-  # composite returns EXACTLY ZERO where the truth is 1.26. A silent zero is
-  # arguably a worse failure than the wet-pinned 3.5e+07 -- it tells an optimiser
-  # the parameter does nothing, and nothing about it looks wrong.
-  interior <- grid_gradient(2.0, pars = c("psi_crit", "root_psi_crit"))
-  expect_identical(interior$status, "interior")
-  expect_equal(interior$gradient["psi_crit", "A"], 0)
-  expect_equal(interior$gradient["root_psi_crit", "A"], 0)
+  # ⚠️ The composite cannot see it, and not by a small margin: psi* enters
+  # `dprofit` nowhere, so M = 0, dpsi*/dtheta = 0 and the direct term through the
+  # bound is 0. A composite forced through here understates the pinned gradient by
+  # the whole bound term, and nothing about the number looks wrong.
+  tr <- leaf_traits()
+  d_dP50 <- log(2)^(-1 / tr$stem_c)
+  bound  <- (log(1 / 0.05) / log(2))^(1 / tr$stem_c)
 
-  pinned <- grid_gradient(4, vpd = 0.5, layers = 3L, pars = "psi_crit")
+  # Interior: the bound term drops out, so the gradient is the b-gradient scaled.
+  interior <- grid_gradient(2.0, pars = "stem_P50")
+  expect_identical(interior$status, "interior")
+  expect_equal(interior$gradient["stem_P50", "A"], d_dP50 * 2.8465,
+               tolerance = 5e-3)
+
+  # Pinned: the bound term is present and is 40% of the total.
+  pinned <- grid_gradient(4, vpd = 0.5, layers = 3L, pars = "stem_P50")
   expect_identical(pinned$status, "pinned")
   expect_identical(pinned$method, "fd")
-  # Arbitrated against a least-squares slope of the solved A over +-2% of
-  # psi_crit at n = 41, which gives 1.2605 (R^2 = 0.998; the fit is imperfect
-  # because the response has a kink in it, which is the whole point).
-  expect_equal(pinned$gradient["psi_crit", "A"], 1.2605, tolerance = 5e-3)
-  expect_gt(pinned$gradient["psi_crit", "collar"], 0)
+  # Both halves were arbitrated separately against least-squares slopes over +-2%
+  # at n = 41, before the reparameterisation: 4.6991 for dA/dstem_b and 1.2605 for
+  # dA/dpsi_crit (R^2 = 0.998; the fit is imperfect because the response has a
+  # kink in it, which is the whole point).
+  expect_equal(pinned$gradient["stem_P50", "A"],
+               d_dP50 * 4.6991 + bound * 1.2605, tolerance = 2e-3)
+  expect_gt(pinned$gradient["stem_P50", "collar"], 0)
 })
 
 test_that("a shut-down operating point reports no gradient and still differences", {
@@ -220,13 +261,12 @@ test_that("a shut-down operating point reports no gradient and still differences
   # exactly here, so `dA/dR_d_25` is -1 and `dA/dvcmax_25` is EXACTLY zero --
   # vcmax_25 does not reach A at all at a shut-down point, so both perturbed solves
   # return the same bits. The -1 is a central difference and lands within ~6e-11.
-  g <- grid_gradient(6.0, pars = c("vcmax_25", "stem_b", "R_d_25", "psi_crit"))
+  g <- grid_gradient(6.0, pars = c("vcmax_25", "stem_P50", "R_d_25"))
   expect_identical(g$status, "no-gradient")
   expect_identical(g$method, "fd")
   expect_equal(g$value[["A"]], -leaf_traits()$R_d_25)
   expect_equal(g$gradient["R_d_25", "A"], -1, tolerance = 1e-8)
   expect_identical(g$gradient["vcmax_25", "A"], 0)
-  expect_equal(g$gradient["stem_b", "A"], 0)
 
   # ⚠️ `profit` NEEDS ITS OWN CLOSED FORM HERE, AND HAS ONE. This is the single
   # regime where `profit_` is written by a branch that leaves the other outputs
@@ -246,15 +286,29 @@ test_that("a shut-down operating point reports no gradient and still differences
   expect_equal(g$gradient["R_d_25", "profit"], g$gradient["R_d_25", "A"],
                tolerance = 1e-8)
 
-  #   The shut-down collar is PINNED AT psi_crit, so dcollar/dpsi_crit is exactly
-  #   1 -- which is why psi_crit, alone among the four, carries a non-zero profit
-  #   gradient here: it moves the collar, and the collar sets the hydraulic cost.
-  #   That is the whole explanation of a column that would otherwise look like
-  #   noise, and it is asserted rather than described.
-  expect_equal(g$gradient["psi_crit", "collar"], 1, tolerance = 1e-8)
-  expect_equal(g$gradient["psi_crit", "psi_stem"], 1, tolerance = 1e-8)
-  expect_lt(g$gradient["psi_crit", "profit"], 0)
-  expect_identical(g$gradient["psi_crit", "A"], 0)
+  #   The shut-down collar is PINNED AT psi_crit, and psi_crit is the
+  #   5%-conductivity quantile of the stem curve -- so dcollar/dstem_P50 is
+  #   exactly (log2(1/0.05))^(1/stem_c), a constant at fixed stem_c.
+  bound <- (log(1 / 0.05) / log(2))^(1 / leaf_traits()$stem_c)
+  expect_equal(g$gradient["stem_P50", "collar"], bound, tolerance = 1e-6)
+  expect_equal(g$gradient["stem_P50", "psi_stem"], bound, tolerance = 1e-6)
+  expect_equal(g$gradient["stem_P50", "A"], 0)
+
+  #   And PROFIT does not move either, which is a stronger claim than it looks and
+  #   is the reparameterisation's doing. The collar moves with the trait, but it
+  #   moves TO the same place on the curve: psi_crit is defined as the potential at
+  #   5% remaining conductivity, so f(psi_crit) is exactly 0.05 whatever stem_P50
+  #   is, and the hydraulic cost of a shut-down leaf is therefore scale-free.
+  #   Asserted as bit-identical across three curves rather than as a gradient,
+  #   because that is what it actually is.
+  costs <- vapply(c(3.0, 3.4, 4.0), function(P50) {
+    ll <- leaf_model(leaf_traits(stem_P50 = P50))
+    do.call(set_drivers, c(list(ll), grid_drivers(6.0)))
+    ll$find_root_collar_psi()
+    ll$hydraulic_cost_
+  }, numeric(1))
+  expect_identical(costs[2:3], costs[c(1L, 1L)])
+  expect_equal(g$gradient["stem_P50", "profit"], 0, tolerance = 1e-6)
 
   # Forcing the composite here is an error rather than a wrong number: unlike a
   # pinned point, there is no curvature to divide by at all.
@@ -320,14 +374,14 @@ test_that("the active-set classification splits the golden grid as measured", {
 
 test_that("leaf_gradient() works on the single-potential supply path", {
   g <- leaf_gradient(psi_soil = 1.5, PPFD = 900,
-                     supply = leaf_supply_single(),
+                     supply = leaf_supply_singlelayer(),
                      root_network = series_resistance(1e3),
-                     pars = c("vcmax_25", "stem_b"))
+                     pars = c("vcmax_25", "stem_P50"))
   expect_identical(g$status, "interior")
   fd <- leaf_gradient(psi_soil = 1.5, PPFD = 900,
-                      supply = leaf_supply_single(),
+                      supply = leaf_supply_singlelayer(),
                       root_network = series_resistance(1e3),
-                      pars = c("vcmax_25", "stem_b"), method = "fd")
+                      pars = c("vcmax_25", "stem_P50"), method = "fd")
   expect_equal(g$gradient, fd$gradient, tolerance = 1e-3)
 })
 
@@ -343,7 +397,7 @@ test_that("leaf_gradient() leaves the traits it was given", {
 
 test_that("GSS_tol_abs does not reach the production path", {
   # Not a gradient test, but it belongs with the ones above: it is the claim that
-  # makes them possible. Since PLAN 11a the collar solve solves dprofit == 0 at
+  # makes them possible. The collar solve solves dprofit == 0 at
   # 1e-12 instead of searching profit to GSS_tol_abs, so this control has no
   # effect on the answer -- and an argmax determined only to 1e-3 could not be
   # differentiated at all.
@@ -374,7 +428,7 @@ test_that("the documented examples classify the way their comments claim", {
 })
 
 test_that("the two non-trait parameters agree with a resolved reference", {
-  # #44. Half of leaf-calibration's free parameters are not traits: `K_total` and
+  # #44. Half of a companion study's free parameters are not traits: `K_total` and
   # `f_plant` reach the leaf as leaf_specific_conductance_max (a driver) and the
   # single-potential resistance. Nothing in the derivation cares -- the implicit
   # function theorem is applied to dprofit/dpsi = 0, and any parameter profit
@@ -384,7 +438,7 @@ test_that("the two non-trait parameters agree with a resolved reference", {
   # Arbitrated the way 11c arbitrated the traits: against a central difference of
   # the WHOLE SOLVE, read where the step sweep plateaus rather than at one step.
   d <- list(psi_soil = 1.5, PPFD = 900, atm_vpd = 2.0,
-            supply = leaf_supply_single(),
+            supply = leaf_supply_singlelayer(),
             root_network = series_resistance(1e4))
 
   solve_at <- function(par, value) {
@@ -429,7 +483,7 @@ test_that("the non-trait gradients are stable across decades of step", {
   # leaf_specific_conductance_max defaults to 3.14e-05, so the traits' rule of
   # flooring the step at 1 would perturb it by 3% and measure a secant.
   d <- list(psi_soil = 1.5, PPFD = 900, atm_vpd = 2.0,
-            supply = leaf_supply_single(),
+            supply = leaf_supply_singlelayer(),
             root_network = series_resistance(1e4))
   for (p in c("leaf_specific_conductance_max", "resistance")) {
     vals <- vapply(10^-(4:7), function(st) {
@@ -446,7 +500,7 @@ test_that("the active-set guard covers the non-trait parameters too", {
   # perturbation can push a bound past psi* more readily than a trait
   # perturbation can. The guard must not be trait-specific.
   dry <- list(psi_soil = 5.5, PPFD = 900, atm_vpd = 3.0,
-              supply = leaf_supply_single(),
+              supply = leaf_supply_singlelayer(),
               root_network = series_resistance(1e4))
   auto <- do.call(leaf_gradient,
                   c(dry, list(pars = c("leaf_specific_conductance_max",
@@ -462,7 +516,7 @@ test_that("the active-set guard covers the non-trait parameters too", {
 })
 
 test_that("perturbing stem_b by rescaling equals perturbing it by a rebuild", {
-  # PLAN 11f. The stem cumulative-vulnerability integral is homogeneous of degree
+  # The stem cumulative-vulnerability integral is homogeneous of degree
   # 1 in stem_b -- G(psi; s*b, c) = s*G(psi/s; b, c) -- so the spline for a
   # perturbed stem_b is the existing one with its argument rescaled, and the
   # 11.9 us of incomplete gammas a rebuild spends is unnecessary. Worth 24x on
@@ -474,9 +528,9 @@ test_that("perturbing stem_b by rescaling equals perturbing it by a rebuild", {
   for (psi_soil in c(1.0, 1.5, 2.0, 3.0)) {
     for (m in c("ift", "fd")) {
       d <- list(psi_soil = psi_soil, PPFD = 900, atm_vpd = 2.0)
-      fast <- do.call(leaf_gradient, c(d, list(pars = "stem_b", method = m,
+      fast <- do.call(leaf_gradient, c(d, list(pars = "stem_P50", method = m,
                                                fast_stem_curve = TRUE)))
-      slow <- do.call(leaf_gradient, c(d, list(pars = "stem_b", method = m,
+      slow <- do.call(leaf_gradient, c(d, list(pars = "stem_P50", method = m,
                                                fast_stem_curve = FALSE)))
       # 1e-3 rather than tighter, and the reason is worth knowing: a rebuild
       # reseeds 101 incomplete gammas per side, so the two sides of the central
@@ -492,7 +546,7 @@ test_that("perturbing stem_b by rescaling equals perturbing it by a rebuild", {
 })
 
 test_that("a gradient leaves the leaf's stem curve as it found it", {
-  # ⚠️ perturb_stem_b() leaves the splines built at a different stem_b on
+  # ⚠️ perturb_stem_P50() leaves the splines built at a different stem_b on
   # purpose, so the thing that could go wrong is a gradient call that does not
   # put it back -- after which every later solve is quietly on a rescaled curve.
   # set_traits() forces the rebuild for exactly this reason, and BIT-identity is
@@ -500,11 +554,11 @@ test_that("a gradient leaves the leaf's stem curve as it found it", {
   d <- list(psi_soil = 1.5, PPFD = 900, atm_vpd = 2.0)
   before <- do.call(leaf_solve, d)
 
-  invisible(do.call(leaf_gradient, c(d, list(pars = "stem_b"))))
-  invisible(do.call(leaf_gradient, c(d, list(pars = c("stem_b", "vcmax_25")))))
+  invisible(do.call(leaf_gradient, c(d, list(pars = "stem_P50"))))
+  invisible(do.call(leaf_gradient, c(d, list(pars = c("stem_P50", "vcmax_25")))))
   # ...and one that ends on the fast path, which is the ordering that would leave
   # it displaced if the restore at the end of the loop were missing.
-  invisible(do.call(leaf_gradient, c(d, list(pars = c("vcmax_25", "stem_b")))))
+  invisible(do.call(leaf_gradient, c(d, list(pars = c("vcmax_25", "stem_P50")))))
 
   expect_identical(do.call(leaf_solve, d), before)
 })
@@ -523,7 +577,7 @@ test_that("leaf_gradient() rejects bad arguments", {
 })
 
 test_that("the gradient is reported for every output the fit needs", {
-  # leaf-calibration fits three responses -- A, gs and psi_leaf -- so all three
+  # a companion study fits three responses -- A, gs and psi_leaf -- so all three
   # are differentiated, not just A. `collar` comes along because it is psi*, and
   # `profit` because it is what a DEMOGRAPHIC consumer bills: plant's carbon is
   # `leaf.profit_`, not `assim_colimited_`, so without it the four columns above
@@ -639,10 +693,18 @@ test_that("profit's gradient is the direct term alone at an interior optimum", {
   # it tighter pins which side of its own tolerance the collar root-find lands on,
   # which moves for reasons unrelated to this feature.
   #
-  # What carries the test is the GAP, not either bound: `exact` 7.8e-16 against `fd`
-  # 2.7e-04 is a factor of 3.5e+11, so both bounds sit orders inside it.
+  # What carries the test is the GAP, and it is asserted as a RATIO rather than as
+  # a magnitude on `fd`.
+  #
+  # ⚠️ `fd`'s absolute size is not a property of the feature -- it is where the
+  # collar root-find happened to land inside its own tolerance, divided by the
+  # step. The (P50, c) reparameterisation moved every parameter by ~5e-08 and
+  # `fd` at this point went from 2.7e-04 to 3.6e-10, four orders, with nothing
+  # about the model changed. A bound on `fd` therefore pins a coincidence; the
+  # ratio is the claim. Measured across eight operating points it runs 1e+04 to
+  # 1e+09, so 1e+03 is inside every one of them.
   expect_lt(abs(exact), 1e-9)
-  expect_gt(abs(fd), 1e-5)
+  expect_gt(abs(fd) / abs(exact), 1e3)
 })
 
 # ---------------------------------------------------------------------------
@@ -657,9 +719,9 @@ test_that("leaf_gradient(x =) matches building a leaf per call", {
   # [0, b*log(100)^(1/c)] and never consults psi_crit, so shrinking stem_b below
   # ~3.4 at the default psi_crit = 5.87 puts the solve outside its own domain and it
   # dies naming neither. stem_b = 3.1 does exactly that; 4.2 gives a domain of 7.4.
-  tr <- leaf_traits(vcmax_25 = 105, stem_b = 4.2)
+  tr <- leaf_traits(vcmax_25 = 105, stem_P50 = 4.2)
   args <- list(psi_soil = 2.0, PPFD = 900, atm_vpd = 1.5, traits = tr,
-               pars = c("vcmax_25", "stem_b", "cost_scale_TF24"))
+               pars = c("vcmax_25", "stem_P50", "TF24_cost_scale"))
   fresh <- do.call(leaf_gradient, args)
 
   l <- leaf_model(traits = tr)
@@ -682,14 +744,14 @@ test_that("a reused leaf is differentiated at `traits`, not at its own state", {
   # did not, `value` and `psi_star` -- and so the whole composite -- would describe
   # the wrong point, plausibly and with no symptom. This is the failure mode that
   # made seating the leaf with reset() rather than set_drivers() load-bearing.
-  tr <- leaf_traits(vcmax_25 = 105, stem_b = 4.2)
+  tr <- leaf_traits(vcmax_25 = 105, stem_P50 = 4.2)
   args <- list(psi_soil = 2.0, PPFD = 900, traits = tr, pars = "vcmax_25")
   fresh <- do.call(leaf_gradient, args)
 
   # Deliberately different, and deliberately still inside the #38 domain -- the
   # vessel's traits are overwritten before any solve, but leaf_model() does build
   # its splines, and an invalid vessel would confuse the diagnosis if this failed.
-  wrong <- leaf_model(traits = leaf_traits(vcmax_25 = 60, stem_b = 4.6))
+  wrong <- leaf_model(traits = leaf_traits(vcmax_25 = 60, stem_P50 = 4.6))
   reused <- do.call(leaf_gradient, c(args, list(x = wrong)))
   expect_identical(reused$gradient, fresh$gradient)
   expect_identical(reused$value, fresh$value)
@@ -732,7 +794,7 @@ test_that("leaf_gradient() refuses the combinations that would disagree", {
   # The supply path is read off the object, so `resistance` is differentiable when
   # `x` is on the single-potential path and not when it is not -- without the caller
   # naming the path twice.
-  s <- leaf_model(supply = leaf_supply_single())
+  s <- leaf_model(supply = leaf_supply_singlelayer())
   g <- leaf_gradient(psi_soil = 1.5, x = s, traits = tr,
                      root_network = series_resistance(1e3), pars = "resistance")
   expect_true(is.finite(g$gradient["resistance", "A"]))
@@ -742,13 +804,13 @@ test_that("leaf_gradient() refuses the combinations that would disagree", {
 
 test_that("the setter's positional trait call cannot drift in arity", {
   # `.gradient_setter()` applies traits POSITIONALLY, straight onto the object, to
-  # skip rebuilding a leaf_traits per perturbation. That is a hard-coded FOURTEEN. If
+  # skip rebuilding a leaf_traits per perturbation. That is a hard-coded THIRTEEN. If
   # a trait is added to leaf_traits() and to the C++ setter, nothing about that call
   # fails to compile -- it would silently pass the wrong value for every argument
   # after the new one. So the arity is asserted here rather than trusted.
   #
-  expect_length(leaf_traits(), 14L)
-  expect_length(formals(leaf_model()$set_traits), 14L)
+  expect_length(leaf_traits(), 15L)
+  expect_length(formals(leaf_model()$set_traits), 15L)
   expect_identical(names(leaf_traits()), names(formals(leaf_model()$set_traits)))
 })
 
@@ -762,7 +824,7 @@ test_that("a prescribed psi at psi* reproduces the solving path bit-for-bit", {
   # a tolerance. Anything that made the prescribed path a second implementation
   # would show up here as a last-bit difference rather than as a design note.
   d <- grid_drivers(2.0)
-  pars <- c("vcmax_25", "stem_b", "cost_scale_TF24")
+  pars <- c("vcmax_25", "stem_P50", "TF24_cost_scale")
   a <- do.call(leaf_gradient, c(d, list(pars = pars)))
   expect_identical(a$status, "interior")
 
@@ -832,7 +894,7 @@ test_that("a clamped psi reports itself and returns no gradient", {
   # a tracking model reaches these points routinely, so it is reported and not
   # thrown.
   d <- grid_drivers(2.0)
-  pars <- c("vcmax_25", "stem_b")
+  pars <- c("vcmax_25", "stem_P50")
 
   g <- do.call(leaf_gradient, c(d, list(pars = pars, psi = 99)))
   expect_identical(g$status, "clamped")
@@ -967,11 +1029,270 @@ test_that("psi and dpsi_dtheta are validated together", {
 
   # Named is matched by name, not by position -- the same discipline `pars` has,
   # for the same reason.
-  pars <- c("vcmax_25", "stem_b")
+  pars <- c("vcmax_25", "stem_P50")
   by_name <- do.call(leaf_gradient,
                      c(d, list(pars = pars, psi = 3.0,
-                               dpsi_dtheta = c(stem_b = 2, vcmax_25 = 1))))
+                               dpsi_dtheta = c(stem_P50 = 2, vcmax_25 = 1))))
   by_pos <- do.call(leaf_gradient,
                     c(d, list(pars = pars, psi = 3.0, dpsi_dtheta = c(1, 2))))
   expect_identical(by_name$gradient, by_pos$gradient)
+})
+
+# --- per-model parameter availability (plan item 4) --------------------------
+
+test_that("CF77_lambda_ is in the enumeration and refused by other models", {
+  # It is Cowan & Farquhar's only parameter. Every other curve's lambda is
+  # EMERGENT -- derived from that curve's own parameters rather than set -- so the
+  # slot exists once in the enumeration and is available for one model.
+  expect_true("CF77_lambda_" %in% gradient_par_names())
+  expect_identical(gradient_par_names()[[length(gradient_par_names())]],
+                   "CF77_lambda_")
+
+  # ⚠️ REFUSED, not returned as a zero. A zero means "in this objective but
+  # inactive at this operating point", which is the psi_crit case and is
+  # information. Structurally absent from the objective is a different statement,
+  # and an optimiser handed a zero would read the parameter as inert and converge.
+  expect_error(leaf_gradient(psi_soil = 2.0, PPFD = 900,
+                             pars = "CF77_lambda_"),
+               "not a parameter of the collar model")
+  # And the message names the axis that ruled it out, so a caller is not left
+  # looking at the supply path.
+  expect_error(leaf_gradient(psi_soil = 2.0, PPFD = 900,
+                             pars = "CF77_lambda_"),
+               "emergent")
+
+  # The default must not offer what it would then refuse.
+  expect_false("CF77_lambda_" %in%
+                 phylloptim:::.gradient_available_pars(TRUE, "collar"))
+  expect_true("CF77_lambda_" %in%
+                phylloptim:::.gradient_available_pars(TRUE, "CF77"))
+
+  # The two axes are independent: the supply path still rules out `resistance`.
+  multi <- phylloptim:::.gradient_available_pars(FALSE, "CF77")
+  expect_false("resistance" %in% multi)
+  expect_true("CF77_lambda_" %in% multi)
+
+  # An unknown model is refused rather than silently offering everything.
+  expect_error(phylloptim:::.gradient_available_pars(TRUE, "Medlyn"),
+               "no gradient route")
+})
+
+test_that("the curve registry is read from C++, not restated in R", {
+  # R selects a curve by POSITION in this vector, so it is compared rather than
+  # trusted -- the same discipline gradient_par_names() gets.
+  nms <- cost_curve_names()
+  expect_identical(nms, c("TF24", "CF77", "JS22", "CMax", "SOX", "JW26",
+                          "ProfitMax"))
+
+  # ⚠️ THERE IS NO `cost_curve_has_derivative()` ANY MORE, and its absence is the
+  # statement. Every curve is `h(A) - C(psi)` and every derivative is
+  # `h'(A)*dA/dpsi - dC/dpsi`, so the predicate returned TRUE for all seven and
+  # nothing read it -- a constant dressed as a query. Product objectives are the
+  # `log` link and ProfitMax the `A/|A|max` one; neither is a special case.
+  expect_false(exists("cost_curve_has_derivative",
+                      where = asNamespace("phylloptim"), inherits = FALSE))
+
+  # ⚠️ AND THERE IS NO SECOND LIST OF MODEL NAMES EITHER. `.gradient_link_verified`
+  # / `.GRADIENT_VERIFIED_LINKS` recorded which routes had been checked against a
+  # finite difference of their own solve; once every route was, the predicate was
+  # a constant and the `stop()` behind it unreachable -- and that dead branch still
+  # named `$optimise_psi_stem_<curve>()`, which no longer exists. Deleted. What
+  # replaces it is derived, so a curve added in C++ arrives here on its own.
+  expect_identical(phylloptim:::.gradient_models(), c("collar", nms))
+  expect_false(exists(".gradient_link_verified",
+                      where = asNamespace("phylloptim"), inherits = FALSE))
+
+  # Exactly one curve owns `CF77_lambda_`; every other model refuses it, and
+  # nothing else is refused on the single-potential path.
+  for (m in phylloptim:::.gradient_models()) {
+    got <- phylloptim:::.gradient_available_pars(TRUE, m)
+    expect_identical("CF77_lambda_" %in% got, identical(m, "CF77"),
+                     info = m)
+  }
+
+  # The C++ derivative itself answers for a product curve rather than refusing --
+  # that is the point of the link -- and it is reached by NAME, through the model
+  # the leaf is seated on, with no curve index anywhere.
+  l <- leaf_model(supply = leaf_supply_singlelayer())
+  set_drivers(l, psi_soil = 1.5, PPFD = 900)
+  l$set_model("SOX", "stem"); l$optimise()
+  expect_identical(l$model_curve(), "SOX")
+  expect_identical(l$model_route(), "stem")
+  d <- l$dprofit_dpsi_stem_checked(l$opt_psi_stem_)
+  expect_length(d, 2L)
+  expect_true(is.finite(d[[1]]))
+
+  # ⚠️ AND A STEM METHOD REFUSES ON THE COLLAR ROUTE rather than answering about a
+  # model the leaf is not seated on. This is what the integer argument used to
+  # make unrepresentable-by-accident: an index said which curve, and nothing said
+  # which route.
+  l$set_model("SOX", "collar")
+  expect_error(l$dprofit_dpsi_stem_checked(l$opt_psi_stem_), "STEM-route")
+  expect_error(l$evaluate_psi_stem_at(2.0), "STEM-route")
+})
+
+# --- differentiating a stem model's optimum (plan item 5) --------------------
+
+test_that("every additive curve's IFT gradient matches differencing its solve", {
+  # ⚠️ The IFT is the EXACT one and the finite difference is the noisy one -- a
+  # difference of a solve divides that solve's ~1e-09 floor by the step -- so this
+  # bounds the FD's error rather than the composite's. What it establishes is that
+  # the composite is differentiating the same model the optimiser solved.
+  tr <- leaf_traits()
+  net <- series_resistance(1e4)
+  mk <- function() {
+    l <- leaf_model(tr, leaf_control(), leaf_supply_singlelayer())
+    l$CF77_lambda_ <- 1.5e5   # in band: marginal_cost_water runs 9e4-3e5
+    l
+  }
+  cases <- list(c("TF24", "TF24_cost_scale"), c("CF77", "CF77_lambda_"),
+                c("JS22", "JS22_gamma"), c("CMax", "CMax_a"))
+  n_checked <- 0L
+  for (case in cases) {
+    m <- case[[1]]
+    p <- case[[2]]
+    g <- function(meth) {
+      leaf_gradient(psi_soil = 1.5, PPFD = 1500, root_network = net, x = mk(),
+                    traits = tr, pars = p, model = m, method = meth)
+    }
+    ift <- g("ift")
+    fd <- g("fd")
+    expect_identical(ift$model, m)
+    # ⚠️ THIS ASSERTED `"pinned"` AND A RESIDUAL ABOVE 1e-09, AND IT FAILED ON
+    # PURPOSE. It was written to fail the day a stem route gained a
+    # first-order-condition polish, and that is what happened: the stem entry
+    # points now root-find dJ/dpsi == 0 through the same solver the collar route
+    # uses, so an interior point is CLASSIFIED interior instead of being read as a
+    # bound by its own solver residual.
+    expect_identical(ift$status, "interior")
+    expect_lt(ift$stationarity, 1e-9)
+    # And `method = "auto"` therefore reaches the composite on a stem route rather
+    # than falling back to differencing the solve. Still forced here so the arm
+    # under test cannot change silently.
+    expect_identical(ift$method, "ift")
+    for (out in c("A", "gc", "psi_stem")) {
+      expect_equal(ift$gradient[p, out], fd$gradient[p, out],
+                   tolerance = 5e-3, label = paste(m, out))
+    }
+    n_checked <- n_checked + 1L
+  }
+  expect_identical(n_checked, 4L)
+})
+
+test_that("the decision variable follows the route", {
+  tr <- leaf_traits()
+  net <- series_resistance(1e4)
+  l <- leaf_model(tr, leaf_control(), leaf_supply_singlelayer())
+
+  collar <- leaf_gradient(psi_soil = 1.5, PPFD = 1500, pars = "TF24_cost_scale")
+  stem <- leaf_gradient(psi_soil = 1.5, PPFD = 1500, root_network = net, x = l,
+                        traits = tr, pars = "TF24_cost_scale", model = "TF24")
+
+  # On the collar route `collar` IS psi*, so its derivative is assigned.
+  expect_identical(collar$model, "collar")
+  expect_true(is.finite(collar$gradient[1, "collar"]))
+  # On a stem route the collar is never solved for, so NOT finite is the truthful
+  # answer -- reading a number there would be reading stale or absent state.
+  expect_false(is.finite(stem$gradient[1, "collar"]))
+  expect_true(is.finite(stem$gradient[1, "psi_stem"]))
+
+  # ⚠️ And they are DIFFERENT MODELS, not one restricted to the other: same
+  # drivers, same cost curve, different optimum.
+  expect_false(isTRUE(all.equal(collar$psi, stem$psi)))
+})
+
+test_that("a product objective's gradient survives an h-sweep", {
+  # ⚠️ THE SWEEP IS THE TEST, not a single step. A finite difference of a
+  # SCAN-resolved argmax is quantisation noise at a small step: psi* moves ~3e-06
+  # MPa under a 1e-06 relative perturbation while the scan resolves it to ~4e-06
+  # over a 4.4 MPa bracket. At that step the FD reported 0.1855 against a true
+  # 0.0551 for SOX, and got the SIGN wrong for JW26 -- which is what a false bug
+  # report is made of. The composite is flat across six decades; the FD is not.
+  tr <- leaf_traits()
+  net <- series_resistance(1e4)
+  mk <- function(v, p50) {
+    l <- leaf_model(leaf_traits(vcmax_25 = v, stem_P50 = p50), leaf_control(),
+                    leaf_supply_singlelayer())
+    set_drivers(l, psi_soil = 1.5, PPFD = 1500, root_network = net)
+    l
+  }
+  n_checked <- 0L
+  for (m in c("SOX", "JW26")) {
+    for (par in c("vcmax_25", "stem_P50")) {
+      base <- if (par == "vcmax_25") 96 else 3.4
+      solve_at <- function(x) {
+        l <- if (par == "vcmax_25") mk(x, 3.4) else mk(96, x)
+        l$set_model(if (m == "TF") "TF24" else m, "stem")
+        l$optimise()
+        l$assim_colimited_
+      }
+      h <- base * 1e-2               # the floor of the V, not the toe
+      fd <- (solve_at(base + h) - solve_at(base - h)) / (2 * h)
+      g <- leaf_gradient(psi_soil = 1.5, PPFD = 1500, root_network = net,
+                         x = mk(96, 3.4), traits = tr, pars = par, model = m,
+                         method = "ift")
+      expect_equal(g$gradient[par, "A"], fd, tolerance = 1e-2,
+                   label = paste(m, par))
+      n_checked <- n_checked + 1L
+    }
+  }
+  expect_identical(n_checked, 4L)
+})
+
+test_that("the remaining route restrictions are the topological ones", {
+  tr <- leaf_traits()
+  # A stem route needs the single-potential path, and says so rather than
+  # returning a number from the wrong topology.
+  expect_error(leaf_gradient(psi_soil = 1.5, PPFD = 1500,
+                             pars = "TF24_cost_scale", model = "TF24"),
+               "single-potential supply path")
+  expect_error(leaf_gradient(psi_soil = 1.5, PPFD = 1500,
+                             pars = "TF24_cost_scale", model = "Medlyn"),
+               "no gradient route")
+})
+
+test_that("ProfitMax's normaliser follows the traits, so the composite is a total", {
+  net <- series_resistance(1e4)
+  mkv <- function(v) {
+    l <- leaf_model(leaf_traits(vcmax_25 = v), leaf_control(),
+                    leaf_supply_singlelayer())
+    set_drivers(l, psi_soil = 1.5, PPFD = 1500, root_network = net)
+    l
+  }
+  g <- function(meth) {
+    leaf_gradient(psi_soil = 1.5, PPFD = 1500, root_network = net, x = mkv(96),
+                  traits = leaf_traits(), pars = "vcmax_25", model = "ProfitMax",
+                  method = meth)
+  }
+  # ⚠️ IT USED TO BE NaN, THEN A PARTIAL, AND IS NOW A TOTAL -- three states, and
+  # the middle one is worth knowing about. `|A|max` is state a perturbation
+  # destroys (`set_traits` + `set_physiology` clears it: 16.757 -> NaN), so
+  # something must restore it. Pinning it at the base point fixed the NaN but froze
+  # the normaliser, which made the composite a PARTIAL: 0.0766 against a true
+  # 0.0579, the omitted term 32% of the answer. That was the right call only while
+  # `|A|max` was the argmax of a 500-point scan and so piecewise constant in the
+  # traits. It is a root-find now, so it is RE-SOLVED per perturbation and follows
+  # the traits.
+  expect_true(is.finite(g("ift")$gradient[1, "A"]))
+
+  # The composite and a difference of the solve now agree, which is the statement
+  # that the split is gone. Loose because the FD is the noisy side.
+  expect_equal(g("ift")$gradient[1, "A"], g("fd")$gradient[1, "A"],
+               tolerance = 1e-3)
+
+  # And a step-swept difference of the solve, which is what a fit sees.
+  h <- 96 * 1e-2
+  solve_A <- function(v) {
+    l <- mkv(v)
+    l$set_model("ProfitMax", "stem"); l$optimise()
+    l$assim_colimited_
+  }
+  swept <- (solve_A(96 + h) - solve_A(96 - h)) / (2 * h)
+  expect_equal(g("ift")$gradient[1, "A"], swept, tolerance = 1e-3)
+
+  # ⚠️ `auto` NO LONGER SPECIAL-CASES THIS CURVE. It used to be forced onto the
+  # finite difference because the composite returned the partial; now every route
+  # reaches the composite at an interior optimum.
+  expect_identical(g("auto")$method, "ift")
+  expect_identical(g("auto")$status, "interior")
 })
