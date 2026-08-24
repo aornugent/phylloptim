@@ -64,7 +64,8 @@ grad::Drivers drivers(double psi_soil, double ppfd, int layers) {
 // produce, seeded in the direction their ratio gives.
 template <typename T>
 struct carbon_inputs {
-  T vcmax, transport_jmax, quantum_yield, curv_elec, curv_colim, ppfd;
+  T vcmax, transport_jmax, quantum_yield, curv_elec, curv_colim, ppfd,
+      respiration;
 };
 
 // The condition that places the intercellular concentration: assimilation demand
@@ -74,7 +75,8 @@ T ci_residual(const Leaf& l, T ci, const carbon_inputs<T>& p, double gc,
               double ca, double atm_kpa) {
   const T J = l.electron_transport_kernel(p.ppfd, p.quantum_yield, p.curv_elec,
                                           p.transport_jmax);
-  const T A = l.assim_colimited_kernel(ci, p.vcmax, J, p.curv_colim);
+  const T A =
+      l.assim_colimited_kernel(ci, p.vcmax, J, p.curv_colim, p.respiration);
   return A * phylloptim::umol_to_mol -
          gc * (T(ca) - ci) / (atm_kpa * phylloptim::kPa_to_Pa);
 }
@@ -92,7 +94,8 @@ double dprofit_generic(const Leaf& l, int which) {
                              tangent(l.a),
                              tangent(l.curv_fact_elec_trans),
                              tangent(l.curv_fact_colim),
-                             tangent(l.PPFD_)};
+                             tangent(l.PPFD_),
+                             tangent(l.R_d_)};
     // The chain from a _25 trait to its temperature-adjusted value is their
     // ratio, so seeding the adjusted value in that direction seeds the trait.
     switch (at) {
@@ -102,6 +105,12 @@ double dprofit_generic(const Leaf& l, int which) {
     case 3: seed_direction(p.curv_elec, 1.0); break;
     case 4: seed_direction(p.curv_colim, 1.0); break;
     case 5: seed_direction(p.ppfd, 1.0); break;
+    // Dark respiration is the fourth trait the kernel now carries. The hand
+    // assembly reaches it by a special case -- "it shifts A by exactly -1 per
+    // unit and leaves A' untouched. No pass needed" -- which is a derivation
+    // rather than a reading, and is what a parameter the kernel does not take
+    // costs. Seeded like any other here.
+    case 6: seed_direction(p.respiration, l.R_d_ / l.R_d_25); break;
     default: break;
     }
     return p;
@@ -137,14 +146,16 @@ double dprofit_generic(const Leaf& l, int which) {
   seed_direction(ci_ad, dci);
   const tangent J = l.electron_transport_kernel(p.ppfd, p.quantum_yield,
                                                 p.curv_elec, p.transport_jmax);
-  const tangent A = l.assim_colimited_kernel(ci_ad, p.vcmax, J, p.curv_colim);
+  const tangent A =
+      l.assim_colimited_kernel(ci_ad, p.vcmax, J, p.curv_colim, p.respiration);
   return derivative_along(A);
 }
 
 }  // namespace
 
 const char* kName[] = {"vcmax_25", "jmax_25", "a", "curv_fact_elec_trans",
-                       "curv_fact_colim", "PPFD"};
+                       "curv_fact_colim", "PPFD", "R_d_25"};
+inline constexpr int kInputs = 7;
 
 // One state: the six rows both ways, and the worst relative disagreement. A row
 // that is exactly zero both ways is reported and not scored -- there is nothing
@@ -168,7 +179,8 @@ double one_state(double psi_soil, double ppfd, int layers, int& compared,
   const Leaf::PhotoTraitRows ref = l.photo_trait_rows(0.0);
   const double hand[] = {ref.dprofit_dvcmax_25,   ref.dprofit_djmax_25,
                          ref.dprofit_da,          ref.dprofit_dcurv_elec,
-                         ref.dprofit_dcurv_colim, ref.dprofit_dPPFD};
+                         ref.dprofit_dcurv_colim, ref.dprofit_dPPFD,
+                         ref.dprofit_dR_d_25};
 
   // ⚠️ SCORED AGAINST THE ROW SET'S OWN SCALE, not each row's own magnitude.
   // At a wet pin the conductance is ~1e-08 and vcmax_25's row is ~1e-10 while
@@ -176,14 +188,14 @@ double one_state(double psi_soil, double ppfd, int layers, int& compared,
   // 2e-08 disagreement that is 2e-18 in absolute terms. What a consumer sums is
   // the set, so the set's largest entry is what a term in it is small against.
   double scale = 0.0;
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < kInputs; ++i) {
     if (util_finite(hand[i]) && std::abs(hand[i]) > scale) {
       scale = std::abs(hand[i]);
     }
   }
   double worst = 0.0;
   int at = -1;
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < kInputs; ++i) {
     if (!util_finite(hand[i])) {
       continue;
     }
@@ -206,7 +218,7 @@ double one_state(double psi_soil, double ppfd, int layers, int& compared,
                 " collar %.6e\n",
                 l.stom_cond_CO2_, l.ci_, int(l.ci_at_compensation_point_),
                 l.opt_psi_stem_, l.opt_root_psi_);
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < kInputs; ++i) {
       std::printf("      %-22s hand %18.10e  tangent %18.10e\n", kName[i],
                   hand[i], dprofit_generic(l, i));
     }

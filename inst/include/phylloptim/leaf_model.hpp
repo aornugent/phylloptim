@@ -1609,12 +1609,13 @@ public:
   template <typename T> T assim_electron_limited_kernel(T ci, T transport) const;
   template <typename T> T assim_colimited_kernel(T ci) const;
   template <typename T> T assim_colimited_kernel(T ci, T vcmax, T transport,
-                                                 T curvature) const;
+                                                 T curvature,
+                                                 T respiration) const;
   template <typename T> T colimit_kernel(T assim_rubisco_limited_,
                                          T assim_electron_limited_) const;
   template <typename T> T colimit_kernel(T assim_rubisco_limited_,
                                          T assim_electron_limited_,
-                                         T curvature) const;
+                                         T curvature, T respiration) const;
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
   template <typename T>
   T hydraulic_cost_TF_kernel(T psi_stem, T b, T c, T beta, T scale) const;
@@ -4036,7 +4037,8 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows(double dpsistem_dp) const {
     x.value().derivative() = 1.0;
     x.derivative().value() = 1.0;
     const tangent2 A = assim_colimited_kernel(x, tangent2(vcmax_), tangent2(J),
-                                         tangent2(curv_fact_colim));
+                                         tangent2(curv_fact_colim),
+                                         tangent2(R_d_));
     A_ci = A.value().derivative();
     A_cici = A.derivative().derivative();
   }
@@ -4044,21 +4046,25 @@ inline Leaf::PhotoTraitRows Leaf::photo_trait_rows(double dpsistem_dp) const {
     tangent2 x = ci;   x.value().derivative() = 1.0;
     tangent2 t = J;    t.derivative().value() = 1.0;
     const tangent2 A = assim_colimited_kernel(x, tangent2(vcmax_), t,
-                                         tangent2(curv_fact_colim));
+                                         tangent2(curv_fact_colim),
+                                         tangent2(R_d_));
     A_J = A.derivative().value();
     A_J_ci = A.derivative().derivative();
   }
   {
     tangent2 x = ci;   x.value().derivative() = 1.0;
     tangent2 v = curv_fact_colim;  v.derivative().value() = 1.0;
-    const tangent2 A = assim_colimited_kernel(x, tangent2(vcmax_), tangent2(J), v);
+    const tangent2 A = assim_colimited_kernel(x, tangent2(vcmax_), tangent2(J), v,
+                                              tangent2(R_d_));
     A_cv = A.derivative().value();
     A_cv_ci = A.derivative().derivative();
   }
   {
     tangent2 x = ci;   x.value().derivative() = 1.0;
     tangent2 w = vcmax_;  w.derivative().value() = 1.0;
-    const tangent2 A = assim_colimited_kernel(x, w, tangent2(J), tangent2(curv_fact_colim));
+    const tangent2 A = assim_colimited_kernel(x, w, tangent2(J),
+                                              tangent2(curv_fact_colim),
+                                              tangent2(R_d_));
     A_vc = A.derivative().value();
     A_vc_ci = A.derivative().derivative();
   }
@@ -4677,32 +4683,32 @@ inline T Leaf::assim_electron_limited_kernel(T ci) const {
 template <typename T>
 inline T Leaf::colimit_kernel(T assim_rubisco_limited_,
                               T assim_electron_limited_,
-                              T curvature) const {
+                              T curvature, T respiration) const {
   return (assim_rubisco_limited_ + assim_electron_limited_ - sqrt(pow(assim_rubisco_limited_ + assim_electron_limited_, 2) - 4 * curvature * assim_rubisco_limited_ * assim_electron_limited_)) /
-             (2 * curvature)- R_d_;
+             (2 * curvature)- respiration;
 }
 
 template <typename T>
 inline T Leaf::colimit_kernel(T assim_rubisco_limited_,
                               T assim_electron_limited_) const {
   return colimit_kernel(assim_rubisco_limited_, assim_electron_limited_,
-                        T(curv_fact_colim));
+                        T(curv_fact_colim), T(R_d_));
 }
 
 template <typename T>
 inline T Leaf::assim_colimited_kernel(T ci, T vcmax, T transport,
-                                      T curvature) const {
+                                      T curvature, T respiration) const {
   T assim_rubisco_limited_ = assim_rubisco_limited_kernel(ci, vcmax);
   T assim_electron_limited_ = assim_electron_limited_kernel(ci, transport);
 
   return colimit_kernel(assim_rubisco_limited_, assim_electron_limited_,
-                        curvature);
+                        curvature, respiration);
 }
 
 template <typename T>
 inline T Leaf::assim_colimited_kernel(T ci) const {
   return assim_colimited_kernel(ci, T(vcmax_), T(electron_transport_),
-                                T(curv_fact_colim));
+                                T(curv_fact_colim), T(R_d_));
 }
 
 inline double Leaf::assim_rubisco_limited(double ci_) {
