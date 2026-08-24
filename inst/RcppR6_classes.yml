@@ -203,6 +203,26 @@ Leaf:
     profit_: {type: double, access: field}
     psi_stem: {type: double, access: field}
     CF77_lambda_: {type: double, access: field}
+    # Turns the Medlyn (2011) soil-moisture factor on for the CF77 price, so the
+    # marginal value of water becomes `CF77_lambda_ / beta(theta_)` instead of the
+    # bare constant. Default FALSE, and false is bit-identical to the constant.
+    #
+    # It exists because Cowan-Farquhar is the one curve here whose PRICE of water
+    # does not respond to soil state -- soil reaches its optimum only through the
+    # feasible bracket -- so it has no soil-moisture shutdown. Set `theta_`,
+    # `theta_w_` and `theta_fc_` (all fields) to drive it. beta is clamped at 1, so
+    # at any `theta_ >= theta_fc_` this is plain CF77 exactly.
+    CF77_soil_beta_: {type: bool, access: field}
+    # --- soil-moisture inputs for the Medlyn beta factor ----------------------
+    # ⚠️ SET THESE, NOT the trailing-underscore ones. `theta_`, `theta_fc_` and
+    # `theta_w_` below are WORKING COPIES: set_physiology overwrites all three from
+    # these on every driver set, so a bare `l$theta_ <- 0.25` is silently undone by
+    # the next set_drivers() -- the same shape of bug as #96. These three are inputs
+    # and survive re-driving, which is what makes the soil-beta option usable in a
+    # sweep. Volumetric water content, m^3 m^-3.
+    theta: {type: double, access: field}
+    theta_fc: {type: double, access: field}
+    theta_w: {type: double, access: field}
     # --- Sperry (2017) ProfitMax, all unitless -------------------------------
     # Written ONLY by the ProfitMax path. `hydraulic_cost_` is deliberately NOT
     # reused: it holds carbon units on the TF24 path and conductance units on the

@@ -1,3 +1,55 @@
+# phylloptim (development version)
+
+## Cowan-Farquhar can have a soil-moisture shutdown
+
+`CF77` is the one cost curve here whose **price** of water does not respond to
+soil state. That is the model, not an oversight: `cost_deriv<CF77>` discards
+`psi_upstream` and `lambda_for<CF77>` returns the bare constant, so soil water
+reaches the optimum only through the feasible bracket and the cost's *value*. The
+consequence is that it has no soil-moisture shutdown, which is the one behaviour a
+Medlyn-style model is usually reached for.
+
+A new field supplies one, dividing the price by the Medlyn (2011) beta factor:
+
+```r
+l$CF77_lambda_ <- 1.5e5
+l$CF77_soil_beta_ <- TRUE       # default FALSE
+l$theta <- 0.35                 # with l$theta_fc, l$theta_w
+l$set_model("CF77", "stem"); l$optimise()
+```
+
+`price = CF77_lambda_ / beta`, `beta = (theta - theta_w)/(theta_fc - theta_w)`.
+Drying the soil then closes stomata monotonically and shuts the leaf as `theta`
+approaches the wilting point; with the option off the same sweep does nothing.
+
+**A field rather than an eighth `CostCurve`.** The enum is append-only with its
+ordering propagating into `gradient.hpp`'s parameter indices, `RcppR6_classes.yml`,
+R's mirror enumeration and a 4608-row golden file. A field defaulting to the
+current behaviour avoids all of it: **all 4608 golden rows, 576 operating points
+and 544 primitives are bit-identical**, and `cf77_price()` returns the member
+untouched on the off path rather than dividing it by a computed 1.0 — do not
+"simplify" that into one expression.
+
+Two decisions worth knowing when reading output:
+
+- **beta is clamped at 1**, so `theta` above field capacity does not price water
+  *below* `CF77_lambda_`. That makes the prescribed value a floor rather than
+  something the wet end can undercut, and it means that for any
+  `theta >= theta_fc` this curve is plain CF77 exactly, not approximately.
+- **beta <= 0 is refused rather than optimised.** At or below the wilting point the
+  price is infinite or negative, and a negative price pays the leaf to transpire —
+  which the optimiser takes to the wet bound and reports as an operating point.
+  The check fires only when the option is on.
+
+## `theta`, `theta_fc` and `theta_w` are now settable
+
+⚠️ **Set these, not the trailing-underscore ones.** `theta_`, `theta_fc_` and
+`theta_w_` are working copies that `set_physiology` overwrites from the inputs on
+every driver set, so a bare `l$theta_ <- 0.25` was silently undone by the next
+`set_drivers()` — the same shape as #96, and it would have made the soil-beta
+option run every point of a sweep at the default. The three inputs survive
+re-driving.
+
 # phylloptim 0.6.0
 
 ## Seven optimality models, one optimiser

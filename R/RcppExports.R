@@ -381,6 +381,38 @@ Leaf__CF77_lambda___set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__CF77_lambda___set', PACKAGE = 'phylloptim', obj_, value))
 }
 
+Leaf__CF77_soil_beta___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__CF77_soil_beta___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__CF77_soil_beta___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__CF77_soil_beta___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__theta__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__theta__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__theta__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__theta__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__theta_fc__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__theta_fc__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__theta_fc__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__theta_fc__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__theta_w__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__theta_w__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__theta_w__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__theta_w__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
 Leaf__carbon_gain___get <- function(obj_) {
     .Call('_phylloptim_Leaf__carbon_gain___get', PACKAGE = 'phylloptim', obj_)
 }

@@ -407,6 +407,42 @@ void Leaf__CF77_lambda___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, 
 }
 
 // [[Rcpp::export]]
+bool Leaf__CF77_soil_beta___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->CF77_soil_beta_;
+}
+// [[Rcpp::export]]
+void Leaf__CF77_soil_beta___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, bool value) {
+  obj_->CF77_soil_beta_ = value;
+}
+
+// [[Rcpp::export]]
+double Leaf__theta__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->theta;
+}
+// [[Rcpp::export]]
+void Leaf__theta__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value) {
+  obj_->theta = value;
+}
+
+// [[Rcpp::export]]
+double Leaf__theta_fc__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->theta_fc;
+}
+// [[Rcpp::export]]
+void Leaf__theta_fc__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value) {
+  obj_->theta_fc = value;
+}
+
+// [[Rcpp::export]]
+double Leaf__theta_w__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->theta_w;
+}
+// [[Rcpp::export]]
+void Leaf__theta_w__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value) {
+  obj_->theta_w = value;
+}
+
+// [[Rcpp::export]]
 double Leaf__carbon_gain___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
   return obj_->carbon_gain_;
 }

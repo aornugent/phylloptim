@@ -1161,6 +1161,94 @@ BEGIN_RCPP
     return R_NilValue;
 END_RCPP
 }
+// Leaf__CF77_soil_beta___get
+bool Leaf__CF77_soil_beta___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__CF77_soil_beta___get(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__CF77_soil_beta___get(obj_));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__CF77_soil_beta___set
+void Leaf__CF77_soil_beta___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, bool value);
+RcppExport SEXP _phylloptim_Leaf__CF77_soil_beta___set(SEXP obj_SEXP, SEXP valueSEXP) {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Rcpp::traits::input_parameter< bool >::type value(valueSEXP);
+    Leaf__CF77_soil_beta___set(obj_, value);
+    return R_NilValue;
+END_RCPP
+}
+// Leaf__theta__get
+double Leaf__theta__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__theta__get(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__theta__get(obj_));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__theta__set
+void Leaf__theta__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value);
+RcppExport SEXP _phylloptim_Leaf__theta__set(SEXP obj_SEXP, SEXP valueSEXP) {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Rcpp::traits::input_parameter< double >::type value(valueSEXP);
+    Leaf__theta__set(obj_, value);
+    return R_NilValue;
+END_RCPP
+}
+// Leaf__theta_fc__get
+double Leaf__theta_fc__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__theta_fc__get(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__theta_fc__get(obj_));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__theta_fc__set
+void Leaf__theta_fc__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value);
+RcppExport SEXP _phylloptim_Leaf__theta_fc__set(SEXP obj_SEXP, SEXP valueSEXP) {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Rcpp::traits::input_parameter< double >::type value(valueSEXP);
+    Leaf__theta_fc__set(obj_, value);
+    return R_NilValue;
+END_RCPP
+}
+// Leaf__theta_w__get
+double Leaf__theta_w__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__theta_w__get(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__theta_w__get(obj_));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__theta_w__set
+void Leaf__theta_w__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value);
+RcppExport SEXP _phylloptim_Leaf__theta_w__set(SEXP obj_SEXP, SEXP valueSEXP) {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Rcpp::traits::input_parameter< double >::type value(valueSEXP);
+    Leaf__theta_w__set(obj_, value);
+    return R_NilValue;
+END_RCPP
+}
 // Leaf__carbon_gain___get
 double Leaf__carbon_gain___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
 RcppExport SEXP _phylloptim_Leaf__carbon_gain___get(SEXP obj_SEXP) {
@@ -3114,6 +3202,14 @@ static const R_CallMethodDef CallEntries[] = {
     {"_phylloptim_Leaf__psi_stem__set", (DL_FUNC) &_phylloptim_Leaf__psi_stem__set, 2},
     {"_phylloptim_Leaf__CF77_lambda___get", (DL_FUNC) &_phylloptim_Leaf__CF77_lambda___get, 1},
     {"_phylloptim_Leaf__CF77_lambda___set", (DL_FUNC) &_phylloptim_Leaf__CF77_lambda___set, 2},
+    {"_phylloptim_Leaf__CF77_soil_beta___get", (DL_FUNC) &_phylloptim_Leaf__CF77_soil_beta___get, 1},
+    {"_phylloptim_Leaf__CF77_soil_beta___set", (DL_FUNC) &_phylloptim_Leaf__CF77_soil_beta___set, 2},
+    {"_phylloptim_Leaf__theta__get", (DL_FUNC) &_phylloptim_Leaf__theta__get, 1},
+    {"_phylloptim_Leaf__theta__set", (DL_FUNC) &_phylloptim_Leaf__theta__set, 2},
+    {"_phylloptim_Leaf__theta_fc__get", (DL_FUNC) &_phylloptim_Leaf__theta_fc__get, 1},
+    {"_phylloptim_Leaf__theta_fc__set", (DL_FUNC) &_phylloptim_Leaf__theta_fc__set, 2},
+    {"_phylloptim_Leaf__theta_w__get", (DL_FUNC) &_phylloptim_Leaf__theta_w__get, 1},
+    {"_phylloptim_Leaf__theta_w__set", (DL_FUNC) &_phylloptim_Leaf__theta_w__set, 2},
     {"_phylloptim_Leaf__carbon_gain___get", (DL_FUNC) &_phylloptim_Leaf__carbon_gain___get, 1},
     {"_phylloptim_Leaf__carbon_gain___set", (DL_FUNC) &_phylloptim_Leaf__carbon_gain___set, 2},
     {"_phylloptim_Leaf__hydraulic_cost_norm___get", (DL_FUNC) &_phylloptim_Leaf__hydraulic_cost_norm___get, 1},

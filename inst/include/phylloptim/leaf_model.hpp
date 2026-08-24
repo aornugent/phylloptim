@@ -312,6 +312,21 @@ public:
   // water and the convention the lambda literature uses -- NOT the same quantity
   // as ProfitMax's normaliser ratio, which is per unit CONDUCTANCE.
   double CF77_lambda_ = util::na_value;         // umol C (kg H2O)^-1
+  // Optional Medlyn (2011) soil-moisture factor on the CF77 price: with this on,
+  // the marginal value of water becomes `CF77_lambda_ / beta(theta)` rather than
+  // the bare constant, where beta is the same expression medlyn_model_gs uses.
+  //
+  // WHY THIS EXISTS. Cowan-Farquhar prices water at a rate that is invariant to
+  // soil state BY CONSTRUCTION -- cost_deriv<CF77> discards psi_upstream, and
+  // lambda_for<CF77> returns the bare constant -- so soil water reaches the
+  // optimum only through the feasible bracket and the cost's VALUE, never through
+  // its price. That makes CF77 the one curve here with no soil-moisture shutdown,
+  // and this field is what supplies one without a second CostCurve enumerator.
+  //
+  // ⚠️ DEFAULT off, and off must stay BIT-IDENTICAL to the bare constant: the
+  // golden files pin CF77 rows, so cf77_price() returns CF77_lambda_ itself on
+  // this path rather than dividing it by a computed 1.0.
+  bool CF77_soil_beta_ = false;
   double hydraulic_cost_;
   
   double electron_transport_;
@@ -1585,6 +1600,12 @@ public:
   // `marginal_cost_water()` reports the same quantity for the OTHER cost curves,
   // which is what puts them all on one axis.
   double hydraulic_cost_CF77(double psi_stem, double psi_upstream);
+
+  // THE CF77 PRICE, and the only place the soil-beta option is applied. All three
+  // CF77 arms read it -- the cost, its derivative, and lambda_for -- so the value,
+  // the marginal value, and the reported lambda cannot disagree about whether the
+  // option is on. Same units as `CF77_lambda_`: umol C (kg H2O)^-1.
+  double cf77_price() const;
 
   // Joshi & Stocker (2022)'s hydraulic term, `gamma*(dpsi)^2`, quadratic in the
   // soil-to-leaf DROP where the other two curves are functions of the absolute
@@ -3265,7 +3286,7 @@ inline double Leaf::cost_deriv(double psi_stem, double psi_upstream) {
     // lambda * E. E is kmax times the integral of the conductivity fraction over
     // [psi_upstream, psi_stem], so its derivative in psi_stem is kmax times that
     // fraction, which is what stem_curve_integral_deriv returns. No AD needed.
-    C_prime = CF77_lambda_ * leaf_specific_conductance_max_ *
+    C_prime = cf77_price() * leaf_specific_conductance_max_ *
               stem_curve_integral_deriv(psi_stem);
   } else if constexpr (K == CostCurve::JS22) {
     // C = gamma*(psi - psi_up)^2, so dC/dpsi = 2*gamma*(psi - psi_up). Analytic,
@@ -4452,8 +4473,32 @@ double benefit_ = assim_colimited_;
 // exactly zero.
 inline double Leaf::hydraulic_cost_CF77(double psi_stem,
                                                 double psi_upstream) {
-  hydraulic_cost_ = CF77_lambda_ * transpiration(psi_stem, psi_upstream);
+  hydraulic_cost_ = cf77_price() * transpiration(psi_stem, psi_upstream);
   return hydraulic_cost_;
+}
+
+
+// The CF77 price, with the optional Medlyn soil-moisture factor.
+//
+//   beta = (theta - theta_w) / (theta_fc - theta_w),   price = lambda / beta
+//
+// so the price is `CF77_lambda_` in soil at or above field capacity and rises
+// without bound as theta approaches the wilting point. That direction is the whole
+// point: it gives Cowan-Farquhar the soil-moisture shutdown it structurally lacks.
+//
+// ⚠️ BETA IS CLAMPED AT 1, so theta above field capacity does not price water
+// BELOW `CF77_lambda_`. Two reasons. It matches the convention the beta-factor
+// literature uses, and it makes `CF77_lambda_` a floor rather than a value the
+// wet end can undercut -- which is what the parameter is for. The consequence
+// worth knowing when reading output: for any theta >= theta_fc this curve is
+// plain CF77, exactly, not approximately.
+//
+// The off path returns the member untouched rather than dividing by a computed
+// 1.0, so every existing CF77 number is bit-identical. Do not "simplify" that.
+inline double Leaf::cf77_price() const {
+  if (!CF77_soil_beta_) { return CF77_lambda_; }
+  const double beta = (theta_ - theta_w_) / (theta_fc_ - theta_w_);
+  return CF77_lambda_ / (beta > 1.0 ? 1.0 : beta);
 }
 
 
@@ -4967,6 +5012,28 @@ inline void Leaf::check_cost_parameters() {
                  "until you assign one, and never set by set_physiology or "
                  "set_traits.");
     }
+    // ⚠️ Only when the option is ON, so a caller who never touches it cannot be
+    // refused for soil-moisture values the bare constant never reads. beta <= 0
+    // means theta at or below the wilting point: the price is infinite or
+    // negative, and a negative price PAYS the leaf to transpire, which the
+    // optimiser will happily take to the wet bound. Refuse rather than return a
+    // bracket property that looks like an operating point.
+    if (CF77_soil_beta_) {
+      if (!(theta_fc_ > theta_w_)) {
+        util::stop("CF77_soil_beta_ needs theta_fc_ > theta_w_; got theta_fc_ = " +
+                   util::to_string(theta_fc_) + ", theta_w_ = " +
+                   util::to_string(theta_w_));
+      }
+      const double beta = (theta_ - theta_w_) / (theta_fc_ - theta_w_);
+      if (!std::isfinite(beta) || beta <= 0.0) {
+        util::stop("CF77_soil_beta_ is on and the soil-moisture factor beta = "
+                   "(theta_ - theta_w_)/(theta_fc_ - theta_w_) is " +
+                   util::to_string(beta) + ", which prices water at infinity or "
+                   "below zero. theta_ must exceed theta_w_; got theta_ = " +
+                   util::to_string(theta_) + ", theta_w_ = " +
+                   util::to_string(theta_w_));
+      }
+    }
   } else if constexpr (K == CostCurve::JS22) {
     // A trait with a default, so an unset one is a programming error rather than
     // a caller omission -- but still checked, because a NaN here maximises a NaN
@@ -5031,9 +5098,11 @@ inline double Leaf::lambda_for(double psi_stem, double psi_upstream) {
     (void)psi_upstream;
     return lambda_TF24(psi_stem);
   } else if constexpr (K == CostCurve::CF77) {
+    // Still independent of BOTH potentials -- the soil-beta option keys on theta,
+    // a driver, not on where in the bracket the optimiser is.
     (void)psi_stem;
     (void)psi_upstream;
-    return CF77_lambda_;
+    return cf77_price();
   } else if constexpr (K == CostCurve::JS22) {
     return lambda_JS22(psi_stem, psi_upstream);
   } else if constexpr (K == CostCurve::CMax) {
