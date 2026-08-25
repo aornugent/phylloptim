@@ -36,6 +36,45 @@ struct SupplyAt {
   const T& root_c;
 };
 
+// The same, owned. The active path builds one of these and hands the view; a
+// gradient in the supply has this shape too, which is what lets a caller read it
+// by name rather than by position.
+template <typename T>
+struct SupplyValues {
+  using value_type = T;
+  std::vector<T> psi_soil, r_R_H_min, r_R_V_sum;
+  T root_b{}, root_c{};
+
+  SupplyAt<T> at() const {
+    return {psi_soil, r_R_H_min, r_R_V_sum, root_b, root_c};
+  }
+
+  template <class U>
+  SupplyValues<U> rebind_from() const {
+    using odelia::util::to_passive;
+    SupplyValues<U> out;
+    for (const T& v : psi_soil) out.psi_soil.push_back(U(to_passive(v)));
+    for (const T& v : r_R_H_min) out.r_R_H_min.push_back(U(to_passive(v)));
+    for (const T& v : r_R_V_sum) out.r_R_V_sum.push_back(U(to_passive(v)));
+    out.root_b = U(to_passive(root_b));
+    out.root_c = U(to_passive(root_c));
+    return out;
+  }
+
+  // The entries a caller can seed, in one order, so a gradient over them cannot
+  // be matched to them by hand. The layer arrays come first, layer-major.
+  std::vector<T*> field_ptrs() {
+    std::vector<T*> out;
+    out.reserve(psi_soil.size() + r_R_H_min.size() + r_R_V_sum.size() + 2);
+    for (T& v : psi_soil) out.push_back(&v);
+    for (T& v : r_R_H_min) out.push_back(&v);
+    for (T& v : r_R_V_sum) out.push_back(&v);
+    out.push_back(&root_b);
+    out.push_back(&root_c);
+    return out;
+  }
+};
+
 struct RootNetwork {
   // Minimum (fully-hydrated) horizontal, intra-layer soil->root resistance.
   // Divided by the vulnerability-weighted mean conductivity at the operating

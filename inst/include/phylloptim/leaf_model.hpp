@@ -56,6 +56,18 @@ struct ProfitInputs {
   // beside the collar it came from so the quadrature runs once for the pair.
   T collar, flux;
 
+  // The entries a caller can seed, in one order, so a gradient over them cannot
+  // be matched to them by hand. `flux` is not among them: it is derived from the
+  // collar and the supply, and seeding it would answer a question the model does
+  // not ask. The collar IS among them, and its own entry is the slope the
+  // theorem divides by.
+  std::vector<T*> field_ptrs() {
+    return {&vcmax,  &transport_jmax, &quantum_yield, &curv_elec,
+            &curv_colim, &ppfd,       &respiration,   &kmax,
+            &stem_b, &stem_c,         &beta2,         &cost_scale,
+            &collar};
+  }
+
   // The same inputs with the derivatives taken off, which is what an implicit
   // node asks for to take a slope with the parameters held still.
   template <class U>
@@ -1690,6 +1702,24 @@ public:
 
   // This leaf's own supply state, as the view the quadrature takes. No copies.
   SupplyAt<double> held_supply() const { return roots_.held_supply(); }
+
+  // The condition that places an interior collar, and its gradient in everything
+  // the leaf answers for. `slope` is dM/dp, what the theorem divides by; the two
+  // gradients carry dM/d(input) in the shape of the inputs themselves.
+  //
+  // ⚠️ THIS IS THE ONE DERIVATIVE THAT CROSSES A BOUNDARY AS A NUMBER, and it
+  // crosses because reverse mode cannot nest a tangent above its own scalar --
+  // XAD offers no lift into one -- where forward mode can. So the second
+  // derivative is taken here, in forward mode, and everything else composes on
+  // the caller's tape.
+  struct CollarCondition {
+    double slope = util::na_value;
+    ProfitInputs<double> gradient{};
+    SupplyValues<double> supply_gradient{};
+  };
+  CollarCondition collar_condition(double sigma_star, double ci_star,
+                                   const ProfitInputs<double>& in,
+                                   const SupplyValues<double>& supply) const;
 
   // Profit at a collar the solve already placed, differentiable in every input
   // that reaches it AND in the collar itself. `sigma_star` and `ci_star` are the
@@ -5406,6 +5436,52 @@ inline S Leaf::profit_at(double sigma_star, double ci_star,
   const S cost = hydraulic_cost_TF_kernel<S>(sigma, at.stem_b, at.stem_c,
                                              at.beta2, at.cost_scale);
   return A - cost;
+}
+
+// One pass over profit_at per input, at a tangent above a tangent: the collar in
+// the inner layer and the input in the outer, so the cross term IS the row. The
+// collar's own entry seeds both layers, which makes it dM/dp.
+//
+// Nothing here derives anything. Every number is a direction read off the same
+// evaluation the forward model runs.
+inline Leaf::CollarCondition Leaf::collar_condition(
+    double sigma_star, double ci_star, const ProfitInputs<double>& in,
+    const SupplyValues<double>& supply) const {
+  CollarCondition out;
+  out.gradient = in;                  // the shape; every entry is overwritten
+  out.supply_gradient = supply;
+
+  // dM/d(one entry), with that entry seeded in the outer layer. `collar_too`
+  // seeds the collar in the outer layer as well, which is the one case where
+  // this returns the slope rather than a row.
+  auto cross = [&](ProfitInputs<tangent2>& p, SupplyValues<tangent2>& s) -> double {
+    p.collar.value().derivative() = 1.0;
+    return profit_at<tangent2>(sigma_star, ci_star, p, s.at())
+        .derivative()
+        .derivative();
+  };
+
+  std::vector<double*> rows = out.gradient.field_ptrs();
+  for (std::size_t k = 0; k < rows.size(); ++k) {
+    ProfitInputs<tangent2> p = in.template rebind_from<tangent2>();
+    SupplyValues<tangent2> s = supply.template rebind_from<tangent2>();
+    odelia::ode::seed_direction(*p.field_ptrs()[k], 1.0);
+    *rows[k] = cross(p, s);
+  }
+  // The collar is the last entry, and seeded in both layers its cross term is
+  // the curvature rather than a row -- so it is read out and not left standing
+  // where a caller would read it as one.
+  out.slope = out.gradient.collar;
+  out.gradient.collar = 0.0;
+
+  std::vector<double*> supply_rows = out.supply_gradient.field_ptrs();
+  for (std::size_t k = 0; k < supply_rows.size(); ++k) {
+    ProfitInputs<tangent2> p = in.template rebind_from<tangent2>();
+    SupplyValues<tangent2> s = supply.template rebind_from<tangent2>();
+    odelia::ode::seed_direction(*s.field_ptrs()[k], 1.0);
+    *supply_rows[k] = cross(p, s);
+  }
+  return out;
 }
 
 } // namespace phylloptim

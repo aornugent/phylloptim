@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <type_traits>
 #include <vector>
 
 namespace grad = phylloptim::gradient;
@@ -85,18 +86,22 @@ struct SupplyStore {
 template <class T>
 SupplyStore<T> supply_of(const Leaf& l, int par, int n_layers) {
   const phylloptim::SupplyAt<double> held = l.held_supply();
+  auto seed = [](T& x, double v) {
+    if constexpr (!std::is_same_v<T, double>) seed_direction(x, v);
+    else { (void)x; (void)v; }
+  };
   SupplyStore<T> out;
   for (double v : held.psi_soil) out.psi_soil.push_back(T(v));
   for (double v : held.r_R_H_min) out.r_R_H_min.push_back(T(v));
   for (double v : held.r_R_V_sum) out.r_R_V_sum.push_back(T(v));
   out.root_b = T(held.root_b);
   out.root_c = T(held.root_c);
-  if (par == grad::par_root_b) seed_direction(out.root_b, 1.0);
-  if (par == grad::par_root_c) seed_direction(out.root_c, 1.0);
+  if (par == grad::par_root_b) seed(out.root_b, 1.0);
+  if (par == grad::par_root_c) seed(out.root_c, 1.0);
   const int layer = par - grad::par_psi_soil_first;
   if (layer >= 0 && layer < n_layers &&
       layer < static_cast<int>(out.psi_soil.size())) {
-    seed_direction(out.psi_soil[std::size_t(layer)], 1.0);
+    seed(out.psi_soil[std::size_t(layer)], 1.0);
   }
   return out;
 }
@@ -116,24 +121,30 @@ const Named kInputs[] = {
 // is what separates dM/dtheta from dM/dp.
 template <class T>
 ProfitInputs<T> inputs_at(const Leaf& l, const T& collar, int seed_par) {
+  // A seed on a plain double is not a thing, and this is called at one to build
+  // the passive inputs collar_condition takes.
+  auto seed = [](T& x, double v) {
+    if constexpr (!std::is_same_v<T, double>) seed_direction(x, v);
+    else { (void)x; (void)v; }
+  };
   ProfitInputs<T> p{
       T(l.vcmax_),   T(l.jmax_),   T(l.a),      T(l.curv_fact_elec_trans),
       T(l.curv_fact_colim), T(l.PPFD_), T(l.R_d_),
       T(l.leaf_specific_conductance_max_), T(l.stem_b), T(l.stem_c),
       T(l.beta2),    T(l.cost_scale_TF24),  collar,     T(0.0)};
   switch (seed_par) {
-    case grad::par_vcmax_25: seed_direction(p.vcmax, l.vcmax_ / l.vcmax_25); break;
-    case grad::par_jmax_25: seed_direction(p.transport_jmax, l.jmax_ / l.jmax_25); break;
-    case grad::par_a: seed_direction(p.quantum_yield, 1.0); break;
-    case grad::par_curv_fact_elec_trans: seed_direction(p.curv_elec, 1.0); break;
-    case grad::par_curv_fact_colim: seed_direction(p.curv_colim, 1.0); break;
-    case grad::par_R_d_25: seed_direction(p.respiration, l.R_d_ / l.R_d_25); break;
-    case grad::par_PPFD: seed_direction(p.ppfd, 1.0); break;
-    case grad::par_stem_b: seed_direction(p.stem_b, 1.0); break;
-    case grad::par_stem_c: seed_direction(p.stem_c, 1.0); break;
-    case grad::par_beta2: seed_direction(p.beta2, 1.0); break;
-    case grad::par_cost_scale_TF24: seed_direction(p.cost_scale, 1.0); break;
-    case grad::par_kmax: seed_direction(p.kmax, 1.0); break;
+    case grad::par_vcmax_25: seed(p.vcmax, l.vcmax_ / l.vcmax_25); break;
+    case grad::par_jmax_25: seed(p.transport_jmax, l.jmax_ / l.jmax_25); break;
+    case grad::par_a: seed(p.quantum_yield, 1.0); break;
+    case grad::par_curv_fact_elec_trans: seed(p.curv_elec, 1.0); break;
+    case grad::par_curv_fact_colim: seed(p.curv_colim, 1.0); break;
+    case grad::par_R_d_25: seed(p.respiration, l.R_d_ / l.R_d_25); break;
+    case grad::par_PPFD: seed(p.ppfd, 1.0); break;
+    case grad::par_stem_b: seed(p.stem_b, 1.0); break;
+    case grad::par_stem_c: seed(p.stem_c, 1.0); break;
+    case grad::par_beta2: seed(p.beta2, 1.0); break;
+    case grad::par_cost_scale_TF24: seed(p.cost_scale, 1.0); break;
+    case grad::par_kmax: seed(p.kmax, 1.0); break;
     default: break;
   }
   return p;
@@ -285,5 +296,88 @@ int main() {
   std::printf("\n\n   %d condition rows.\n", grad_compared);
   std::printf("   dM/dp     worst %.3e\n", worst_curv);
   std::printf("   dM/dtheta worst %.3e\n", worst_grad);
+
+  // --- the same, assembled by collar_condition ------------------------------
+  // The arithmetic above is proven; this asks whether the table that carries it
+  // across a boundary is wired to the right entries. A transposed field and a
+  // wrong derivative are the same number to everything else.
+  std::printf("\n  collar_condition, entry by entry against the row layer\n");
+  double worst_table = 0.0, worst_slope = 0.0;
+  int table_rows = 0, table_states = 0;
+
+  for (double psi_soil : {0.2, 0.8, 1.5, 2.5, 3.5, 4.5}) {
+    for (double ppfd : {30.0, 300.0, 1000.0, 2000.0}) {
+      for (int layers : {1, 3}) {
+        const grad::Drivers d = drivers(psi_soil, ppfd, layers);
+        Leaf l;
+        const grad::Settings s;
+        grad::apply(l, kTheta, d, false, -1, s.fast_stem_curve);
+        try { l.find_root_collar_psi(); } catch (const std::exception&) { continue; }
+        if (l.operating_point_kind() != Leaf::OperatingPointKind::Interior) continue;
+
+        std::vector<int> want;
+        for (const Named& in : kInputs) want.push_back(in.par);
+        for (int j = 0; j < layers; ++j) want.push_back(grad::par_psi_soil_first + j);
+        std::vector<int> out{grad::out_profit};
+        const grad::RowRequest req{out.data(), out.size(), want.data(), want.size()};
+        grad::Rows rows;
+        try { rows = grad::rows_differenced(l, kTheta, d, req, s); }
+        catch (const std::exception&) { continue; }
+        l.find_root_collar_psi();
+        const double p = l.opt_root_psi_;
+        if (!l.profit_at_fixed_collar(p).feasible) continue;
+        ++table_states;
+
+        const ProfitInputs<double> in = inputs_at<double>(l, p, -1);
+        const SupplyStore<double> st = supply_of<double>(l, -1, layers);
+        phylloptim::SupplyValues<double> sv;
+        sv.psi_soil = st.psi_soil; sv.r_R_H_min = st.r_R_H_min;
+        sv.r_R_V_sum = st.r_R_V_sum; sv.root_b = st.root_b; sv.root_c = st.root_c;
+        const Leaf::CollarCondition cond =
+            l.collar_condition(l.opt_psi_stem_, l.ci_, in, sv);
+
+        const double srel =
+            std::abs(rows.residual_slope) > 0.0
+                ? std::abs(cond.slope - rows.residual_slope) /
+                      std::abs(rows.residual_slope)
+                : std::abs(cond.slope);
+        if (srel > worst_slope) worst_slope = srel;
+
+        double scale = 0.0;
+        for (std::size_t i = 0; i < want.size(); ++i) {
+          const double v = rows.dresidual[i];
+          if (std::isfinite(v) && std::abs(v) > scale) scale = std::abs(v);
+        }
+        if (!(scale > 0.0)) continue;
+
+        // The row layer reports the two _25 traits and dark respiration against
+        // the trait; the table carries them against the temperature-adjusted
+        // value the kernels take, so the comparison applies the ratio between
+        // them. A caller on a tape needs no such step -- the chain is recorded.
+        ProfitInputs<double> g = cond.gradient;
+        g.vcmax *= l.vcmax_ / l.vcmax_25;
+        g.transport_jmax *= l.jmax_ / l.jmax_25;
+        g.respiration *= l.R_d_ / l.R_d_25;
+        const double named[] = {g.vcmax, g.transport_jmax, g.quantum_yield,
+                                g.curv_elec, g.curv_colim, g.respiration, g.ppfd,
+                                g.stem_b, g.stem_c, g.beta2, g.cost_scale,
+                                g.kmax, cond.supply_gradient.root_b,
+                                cond.supply_gradient.root_c};
+        for (std::size_t i = 0; i < want.size(); ++i) {
+          const double hand = rows.dresidual[i];
+          if (!std::isfinite(hand)) continue;
+          const double got =
+              i < 14 ? named[i]
+                     : cond.supply_gradient.psi_soil[std::size_t(i - 14)];
+          ++table_rows;
+          const double rel = std::abs(got - hand) / scale;
+          if (rel > worst_table) worst_table = rel;
+        }
+      }
+    }
+  }
+  std::printf("   %d rows over %d states.\n", table_rows, table_states);
+  std::printf("   slope   worst %.3e\n", worst_slope);
+  std::printf("   entries worst %.3e\n", worst_table);
   return 0;
 }
