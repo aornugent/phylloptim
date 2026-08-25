@@ -1636,7 +1636,11 @@ public:
   HydraulicCostRow hydraulic_cost_row(double psi_stem) const;
   double assim_minus_stom_cond_CO2(double x, double psi_stem, double psi_upstream);
   double psi_stem_to_ci(double psi_stem, double psi_upstream);
-  void set_leaf_states_rates_from_psi_stem(double psi_stem, double psi_upstream);
+  // `ci_known` is the intercellular CO2 an earlier solve found at this same
+  // state. Every no-flux branch fixes ci itself, so it is read at the one place a
+  // root-find would otherwise run, and NA there means solve for it.
+  void set_leaf_states_rates_from_psi_stem(double psi_stem, double psi_upstream,
+                                           double ci_known = util::na_value);
 
 
 // --- Marginal cost of water ------------------------------------------------
@@ -1792,7 +1796,8 @@ public:
   double hydraulic_cost_TF(double psi_stem);
 
   double profit_psi_stem_Sperry(double psi_stem, double psi_upstream);
-  double profit_psi_stem_TF(double psi_stem, double psi_upstream);
+  double profit_psi_stem_TF(double psi_stem, double psi_upstream,
+                            double ci_known = util::na_value);
 
 // optimiser functions
   void optimise_psi_stem_Sperry();
@@ -1926,9 +1931,16 @@ public:
            operating_point_kind_ == OperatingPointKind::ShadeDeath;
   }
 
-  // What a search for the operating point found, in the form the placement below
-  // takes it back in: the collar it returned, the branch it found it on, and which
-  // limit won the dry bound.
+  // The whole point a search for the operating point found, in the form the
+  // placement below takes it back in: the collar it returned, the two quantities
+  // the collar determines, the branch it was found on, and which limit won the dry
+  // bound.
+  //
+  // ⚠️ THE STEM POTENTIAL AND THE CONCENTRATION ARE HERE BECAUSE RE-DERIVING THEM
+  // IS THE COST. The collar alone leaves a placement inverting the stem curve and
+  // running psi_stem_to_ci -- a bracketing root-find to 1e-10 -- to reach numbers
+  // the search already had. Two doubles per entry against ~9 evaluations of the
+  // colimited assimilation.
   //
   // Only Leaf writes one. A caller can carry one and hand it back and cannot make
   // one up, which is what keeps the branch an output of the solve rather than
@@ -1944,6 +1956,8 @@ public:
   private:
     friend class Leaf;
     double collar = util::na_value;
+    double sigma = util::na_value;  // the stem potential the collar determines
+    double ci = util::na_value;     // the intercellular CO2 that goes with it
     OperatingPointKind kind = OperatingPointKind::Unsolved;
     DryBoundArm arm = DryBoundArm::None;
   };
@@ -1958,6 +1972,8 @@ public:
       case OperatingPointKind::PinnedDryRootCrit:
       case OperatingPointKind::PinnedDryRootPsiCrit:
         out.collar = opt_root_psi_;
+        out.sigma = opt_psi_stem_;
+        out.ci = ci_;
         out.kind = operating_point_kind_;
         out.arm = dry_bound_arm_;
         break;
@@ -2991,10 +3007,9 @@ inline bool Leaf::place_solved_point(const SolvedPoint& point) {
 
     collar_resid_ = dprofit_at_collar_psi(point.collar, &collar_resid_placed_);
 
-    opt_psi_stem_ = find_psi_stem_from_psi_root(point.collar, supply_psi_soil());
-
+    opt_psi_stem_ = point.sigma;
     opt_root_psi_ = point.collar;
-    profit_ = profit_psi_stem_TF(opt_psi_stem_, point.collar);
+    profit_ = profit_psi_stem_TF(point.sigma, point.collar, point.ci);
 
     if(!std::isfinite(profit_)){
         util::stop("Error: non-finite profit at a placed operating point; "
@@ -4850,7 +4865,9 @@ inline double Leaf::psi_stem_to_ci(double psi_stem, double psi_upstream) {
 }
 
 // given psi_stem, find assimilation, transpiration and stomal conductance to c02
-inline void Leaf::set_leaf_states_rates_from_psi_stem(double psi_stem, double psi_upstream) {
+inline void Leaf::set_leaf_states_rates_from_psi_stem(double psi_stem,
+                                                     double psi_upstream,
+                                                     double ci_known) {
 
   if (psi_upstream >= psi_stem){
     ci_ = gamma_*umol_per_mol_to_Pa_;
@@ -4875,7 +4892,8 @@ inline void Leaf::set_leaf_states_rates_from_psi_stem(double psi_stem, double ps
         // cache by design -- Tleaf varies per operating point.
         update_temperature_dependent_params(leaf_temp_from_E(transpiration_));
       }
-      ci_ = psi_stem_to_ci(psi_stem, psi_upstream);
+      ci_ = util::is_finite(ci_known) ? ci_known
+                                     : psi_stem_to_ci(psi_stem, psi_upstream);
       stom_cond_CO2_ = atm_kpa_ * transpiration_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
       }
     }
@@ -5053,8 +5071,9 @@ set_leaf_states_rates_from_psi_stem(psi_stem, psi_upstream);
 }
 
 
-inline double Leaf::profit_psi_stem_TF(double psi_stem, double psi_upstream) {
-set_leaf_states_rates_from_psi_stem(psi_stem, psi_upstream);
+inline double Leaf::profit_psi_stem_TF(double psi_stem, double psi_upstream,
+                                       double ci_known) {
+  set_leaf_states_rates_from_psi_stem(psi_stem, psi_upstream, ci_known);
 
 double benefit_ = assim_colimited_;
   double cost = hydraulic_cost_TF(psi_stem);
