@@ -1754,6 +1754,27 @@ public:
   CollarCondition collar_condition(double sigma_star, double ci_star,
                                    const LeafInputs<double>& in) const;
 
+  // Everything a consumer asks the leaf for, at one scalar. `point` says whether
+  // the collar could be put on the tape; where it could not, the outputs that
+  // read it carry their value and no rows, which is the consumer's to act on.
+  template <class S>
+  struct LeafOutputs {
+    S profit{};
+    std::vector<S> uptake;
+    odelia::record_report point{};
+  };
+
+  // The outputs at the point this solve left, at whatever scalar the caller
+  // wants. The kind chooses which condition closes the system and nothing else:
+  // underneath it is one composition.
+  //
+  // `cond` is the interior condition's gradient, which the caller has already
+  // seen -- its slope is the curvature, and whether that is usable is a policy
+  // the caller owns. It is ignored at every other kind.
+  template <typename S>
+  LeafOutputs<S> outputs_at(const LeafInputs<S>& in,
+                            const CollarCondition& cond) const;
+
   // Profit at a collar the solve already placed, differentiable in every input
   // that reaches it AND in the collar itself. `sigma_star` and `ci_star` are the
   // two the solve found there, so nothing here searches: they enter the two
@@ -5509,6 +5530,22 @@ inline Leaf::CollarCondition Leaf::collar_condition(
   return out;
 }
 
+// Every input paired with its own entry in a gradient over the same struct. One
+// order, from one table, so the two cannot be matched up by hand.
+template <class S>
+inline std::vector<odelia::input_and_derivative<S>> against(
+    LeafInputs<S>& in, LeafInputs<double>& gradient) {
+  std::vector<S*> active = in.field_ptrs();
+  std::vector<double*> rows = gradient.field_ptrs();
+  odelia::util::check_length(active.size(), rows.size());
+  std::vector<odelia::input_and_derivative<S>> out;
+  out.reserve(active.size());
+  for (std::size_t k = 0; k < active.size(); ++k) {
+    out.push_back({*active[k], *rows[k]});
+  }
+  return out;
+}
+
 // The three conditions that pin a collar. None is a second derivative, so each
 // is an ordinary implicit value: the residual at a tangent for its own slope,
 // and at S for the rest.
@@ -5539,6 +5576,80 @@ inline S Leaf::bound_at(WhichBound which, double bound_x,
                     leaf.template stem_integral_at<T>(x, p.profit)) -
                flux;
       });
+}
+
+template <typename S>
+inline Leaf::LeafOutputs<S> Leaf::outputs_at(const LeafInputs<S>& in,
+                                             const CollarCondition& cond) const {
+  LeafOutputs<S> out;
+  LeafInputs<S> at = in;
+
+  // The collar, from whatever pins it. An interior point is the only kind whose
+  // condition is a second derivative, so it is the only one whose gradient had
+  // to be taken in forward mode and handed over; every other kind's condition
+  // composes here.
+  S collar = S(opt_root_psi_);
+  switch (operating_point_kind_) {
+    case OperatingPointKind::Interior: {
+      LeafInputs<double> gradient = cond.gradient;
+      std::vector<odelia::input_and_derivative<S>> terms = against<S>(at, gradient);
+      out.point = odelia::implicit_root<S>(opt_root_psi_, cond.slope, terms, collar);
+      break;
+    }
+    case OperatingPointKind::PinnedWet:
+    // Shade death sits ON the wet bound: both potentials at the collar where
+    // uptake vanishes, so the bound is the point and it moves with the soil.
+    case OperatingPointKind::ShadeDeath:
+      collar = bound_at<S>(WhichBound::Wet, opt_root_psi_, at);
+      break;
+    case OperatingPointKind::PinnedDryRootCrit:
+      collar = bound_at<S>(WhichBound::DryRootCrit, opt_root_psi_, at);
+      break;
+    case OperatingPointKind::PinnedDryRootPsiCrit:
+      collar = bound_at<S>(WhichBound::DryRootPsiCrit, opt_root_psi_, at);
+      break;
+    case OperatingPointKind::HydraulicShutdown:
+      // The stem holds at its critical potential and nothing defines the collar
+      // at all, so it does not move.
+      break;
+    default:
+      util::stop(std::string("Leaf::outputs_at: no outputs at an operating "
+                             "point that is ") +
+                 operating_point_kind_name(operating_point_kind_));
+  }
+  // ⚠️ PROFIT READS THE HELD COLLAR AT AN INTERIOR POINT, and that is the
+  // envelope theorem written as an omission rather than as a term that has to
+  // come out to zero. The marginal is zero there by the condition the solve
+  // drove to nothing, so carrying the collar's movement through profit would add
+  // M * dp/dtheta -- a term whose size is the solve's tolerance rather than the
+  // model's. It is also why a collar that cannot be recorded costs the water
+  // rows and not the objective.
+  at.profit.collar =
+      operating_point_kind_ == OperatingPointKind::Interior ? S(opt_root_psi_)
+                                                            : collar;
+
+  if (zero_flux_operating_point()) {
+    // No water moves, so no carbon is fixed: assimilation is minus the dark
+    // respiration, and the cost is the one at the potential being held.
+    const S& held = operating_point_kind_ == OperatingPointKind::HydraulicShutdown
+                        ? at.psi_crit
+                        : collar;
+    out.profit = -at.profit.respiration -
+                 hydraulic_cost_TF_kernel<S>(held, at.profit.stem_b,
+                                             at.profit.stem_c, at.profit.beta2,
+                                             at.profit.cost_scale);
+  } else {
+    out.profit = profit_at<S>(opt_psi_stem_, ci_, at);
+  }
+
+  if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown) {
+    // Every flux is zero and stays zero: nothing the soil holds reaches a leaf
+    // that has stopped drawing on it.
+    out.uptake.assign(static_cast<std::size_t>(supply_n_layers()), S(0.0));
+  } else {
+    E_from_soil_at<S>(collar, at.supply.at(), out.uptake);
+  }
+  return out;
 }
 
 } // namespace phylloptim

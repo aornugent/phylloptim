@@ -659,11 +659,11 @@ public:
     // Layer thickness is soil geometry, not root architecture, so it is set here
     // rather than alongside the resistance network that consumes it.
     //
-    // ⚠️ Since #33 nothing in this package READS dz_: the only thing that did was
-    // the carbon -> resistance map, which is now the caller's. It is kept because
-    // it is a property of the soil profile this object is given, and because the
-    // caller needs the same number -- see layer_thickness, which is the shared
-    // definition. It is a removal candidate with the diagnostics (item 6).
+    // ⚠️ Nothing in this package READS dz_: the carbon -> resistance map is the
+    // caller's, and so is the thickness it scales by. It is here so that caller
+    // can read the number THIS soil profile was built with rather than deriving
+    // its own -- the vertical resistance scales with dz^2, so two definitions
+    // drifting apart would be a silent squared factor neither side could see.
     dz_ = layer_thickness(soil_depth_);
   }
 
