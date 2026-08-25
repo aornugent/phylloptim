@@ -631,14 +631,15 @@ BEGIN_RCPP
 END_RCPP
 }
 // Leaf__set_model
-void Leaf__set_model(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, std::string curve, std::string route);
-RcppExport SEXP _phylloptim_Leaf__set_model(SEXP obj_SEXP, SEXP curveSEXP, SEXP routeSEXP) {
+void Leaf__set_model(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, std::string curve, std::string route, std::string method);
+RcppExport SEXP _phylloptim_Leaf__set_model(SEXP obj_SEXP, SEXP curveSEXP, SEXP routeSEXP, SEXP methodSEXP) {
 BEGIN_RCPP
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
     Rcpp::traits::input_parameter< std::string >::type curve(curveSEXP);
     Rcpp::traits::input_parameter< std::string >::type route(routeSEXP);
-    Leaf__set_model(obj_, curve, route);
+    Rcpp::traits::input_parameter< std::string >::type method(methodSEXP);
+    Leaf__set_model(obj_, curve, route, method);
     return R_NilValue;
 END_RCPP
 }
@@ -662,6 +663,38 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
     rcpp_result_gen = Rcpp::wrap(Leaf__model_route(obj_));
     return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__model_method
+std::string Leaf__model_method(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__model_method(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__model_method(obj_));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__closed_form_fallback_fraction
+double Leaf__closed_form_fallback_fraction(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__closed_form_fallback_fraction(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__closed_form_fallback_fraction(obj_));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__reset_closed_form_counters
+void Leaf__reset_closed_form_counters(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__reset_closed_form_counters(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Leaf__reset_closed_form_counters(obj_);
+    return R_NilValue;
 END_RCPP
 }
 // Leaf__optimise
@@ -2481,6 +2514,72 @@ BEGIN_RCPP
     return R_NilValue;
 END_RCPP
 }
+// Leaf__last_solve_fell_back___get
+bool Leaf__last_solve_fell_back___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__last_solve_fell_back___get(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__last_solve_fell_back___get(obj_));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__last_solve_fell_back___set
+void Leaf__last_solve_fell_back___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, bool value);
+RcppExport SEXP _phylloptim_Leaf__last_solve_fell_back___set(SEXP obj_SEXP, SEXP valueSEXP) {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Rcpp::traits::input_parameter< bool >::type value(valueSEXP);
+    Leaf__last_solve_fell_back___set(obj_, value);
+    return R_NilValue;
+END_RCPP
+}
+// Leaf__closed_form_calls___get
+int Leaf__closed_form_calls___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__closed_form_calls___get(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__closed_form_calls___get(obj_));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__closed_form_calls___set
+void Leaf__closed_form_calls___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, int value);
+RcppExport SEXP _phylloptim_Leaf__closed_form_calls___set(SEXP obj_SEXP, SEXP valueSEXP) {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Rcpp::traits::input_parameter< int >::type value(valueSEXP);
+    Leaf__closed_form_calls___set(obj_, value);
+    return R_NilValue;
+END_RCPP
+}
+// Leaf__closed_form_fallbacks___get
+int Leaf__closed_form_fallbacks___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__closed_form_fallbacks___get(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__closed_form_fallbacks___get(obj_));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__closed_form_fallbacks___set
+void Leaf__closed_form_fallbacks___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, int value);
+RcppExport SEXP _phylloptim_Leaf__closed_form_fallbacks___set(SEXP obj_SEXP, SEXP valueSEXP) {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Rcpp::traits::input_parameter< int >::type value(valueSEXP);
+    Leaf__closed_form_fallbacks___set(obj_, value);
+    return R_NilValue;
+END_RCPP
+}
 // Leaf__use_energy_balance___get
 bool Leaf__use_energy_balance___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
 RcppExport SEXP _phylloptim_Leaf__use_energy_balance___get(SEXP obj_SEXP) {
@@ -3154,9 +3253,12 @@ static const R_CallMethodDef CallEntries[] = {
     {"_phylloptim_Leaf__lambda_JW26", (DL_FUNC) &_phylloptim_Leaf__lambda_JW26, 3},
     {"_phylloptim_Leaf__lambda_TF24", (DL_FUNC) &_phylloptim_Leaf__lambda_TF24, 2},
     {"_phylloptim_Leaf__prepare_profitmax_at", (DL_FUNC) &_phylloptim_Leaf__prepare_profitmax_at, 2},
-    {"_phylloptim_Leaf__set_model", (DL_FUNC) &_phylloptim_Leaf__set_model, 3},
+    {"_phylloptim_Leaf__set_model", (DL_FUNC) &_phylloptim_Leaf__set_model, 4},
     {"_phylloptim_Leaf__model_curve", (DL_FUNC) &_phylloptim_Leaf__model_curve, 1},
     {"_phylloptim_Leaf__model_route", (DL_FUNC) &_phylloptim_Leaf__model_route, 1},
+    {"_phylloptim_Leaf__model_method", (DL_FUNC) &_phylloptim_Leaf__model_method, 1},
+    {"_phylloptim_Leaf__closed_form_fallback_fraction", (DL_FUNC) &_phylloptim_Leaf__closed_form_fallback_fraction, 1},
+    {"_phylloptim_Leaf__reset_closed_form_counters", (DL_FUNC) &_phylloptim_Leaf__reset_closed_form_counters, 1},
     {"_phylloptim_Leaf__optimise", (DL_FUNC) &_phylloptim_Leaf__optimise, 1},
     {"_phylloptim_Leaf__evaluate_psi_stem_at", (DL_FUNC) &_phylloptim_Leaf__evaluate_psi_stem_at, 2},
     {"_phylloptim_Leaf__dprofit_dpsi_stem_checked", (DL_FUNC) &_phylloptim_Leaf__dprofit_dpsi_stem_checked, 2},
@@ -3322,6 +3424,12 @@ static const R_CallMethodDef CallEntries[] = {
     {"_phylloptim_Leaf__r_R_V_sum__set", (DL_FUNC) &_phylloptim_Leaf__r_R_V_sum__set, 2},
     {"_phylloptim_Leaf__f_r__get", (DL_FUNC) &_phylloptim_Leaf__f_r__get, 1},
     {"_phylloptim_Leaf__f_r__set", (DL_FUNC) &_phylloptim_Leaf__f_r__set, 2},
+    {"_phylloptim_Leaf__last_solve_fell_back___get", (DL_FUNC) &_phylloptim_Leaf__last_solve_fell_back___get, 1},
+    {"_phylloptim_Leaf__last_solve_fell_back___set", (DL_FUNC) &_phylloptim_Leaf__last_solve_fell_back___set, 2},
+    {"_phylloptim_Leaf__closed_form_calls___get", (DL_FUNC) &_phylloptim_Leaf__closed_form_calls___get, 1},
+    {"_phylloptim_Leaf__closed_form_calls___set", (DL_FUNC) &_phylloptim_Leaf__closed_form_calls___set, 2},
+    {"_phylloptim_Leaf__closed_form_fallbacks___get", (DL_FUNC) &_phylloptim_Leaf__closed_form_fallbacks___get, 1},
+    {"_phylloptim_Leaf__closed_form_fallbacks___set", (DL_FUNC) &_phylloptim_Leaf__closed_form_fallbacks___set, 2},
     {"_phylloptim_Leaf__use_energy_balance___get", (DL_FUNC) &_phylloptim_Leaf__use_energy_balance___get, 1},
     {"_phylloptim_Leaf__use_energy_balance___set", (DL_FUNC) &_phylloptim_Leaf__use_energy_balance___set, 2},
     {"_phylloptim_Leaf__vpd_leaf___get", (DL_FUNC) &_phylloptim_Leaf__vpd_leaf___get, 1},

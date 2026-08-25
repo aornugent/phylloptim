@@ -1055,6 +1055,44 @@ public:
   // caller that never sets a model gets the production path unchanged.
   CostCurve cost_curve_ = CostCurve::TF24;
   bool route_is_collar_ = true;
+  // THE THIRD AXIS: which METHOD reaches the operating point the seated curve and
+  // route define. `false` is the exact solve -- the root-find of the first-order
+  // condition over the closed interval -- and `true` is the closed form in
+  // `closed_form.hpp`, which inverts the Medlyn USO form given a wet-end power law
+  // for lambda(psi).
+  //
+  // ⚠️ IT IS A METHOD, NOT A MODEL, and that is the whole reason it is a third axis
+  // rather than an eighth curve: the objective is identical and only the route to
+  // its argmax differs. So the two must agree wherever the closed form is valid,
+  // which is what `tests/testthat/test-closed-form.R` measures, and a disagreement
+  // is an error in the approximation rather than a different answer to a different
+  // question.
+  //
+  // Defaults to the exact solve. Every existing caller therefore gets a
+  // bit-identical answer, and that is asserted rather than asserted-in-a-comment:
+  // `optimise()` returns to its previous body untouched when this is false.
+  bool method_is_closed_ = false;
+
+  // Whether the LAST `optimise()` fell back from the closed form to the exact
+  // solve, and the running counts that make the fallback fraction phi measurable.
+  //
+  // ⚠️ WHY THIS IS INSTRUMENTED RATHER THAN INFERRED. The closed form's validity
+  // guard tests an OUTPUT (ci/ca > 0.5), so it can only be applied after solving
+  // and the fallback cannot be predicted from the drivers. The realised speedup is
+  // therefore not the ceiling but `1 / [phi + (1-phi)/speedup]` -- 3.6x at
+  // phi = 0.2 against a 10.8x ceiling -- and quoting the ceiling for a
+  // water-limited scenario is the mistake these three fields exist to prevent.
+  // `closed_form.hpp`'s open item 3 was that phi had never been measured on a real
+  // scenario; it is measurable now.
+  //
+  // ⚠️ `last_solve_fell_back_` IS WRITTEN BY EVERY `optimise()`, INCLUDING THE
+  // EXACT ONE (hazard 8: an output a branch declines to write becomes the previous
+  // solve's value, and plant reuses one Leaf per individual). It is a bool, so
+  // writing it on the exact path costs nothing numeric and every golden baseline
+  // is untouched.
+  bool last_solve_fell_back_ = false;
+  int closed_form_calls_ = 0;
+  int closed_form_fallbacks_ = 0;
 
   void find_root_collar_psi();
   // The same solve for ANY cost curve. `find_root_collar_psi()` is the TF24
@@ -1070,14 +1108,58 @@ public:
   // `route` is "collar" (the production formulation: the full soil-to-collar path,
   // any supply) or "stem" (psi_stem with the upstream potential pinned at psi_soil,
   // the form the literature is written in, single soil potential only).
-  void set_model(const std::string& curve, const std::string& route);
+  //
+  // `method` is "exact" (the root-find of the first-order condition, the default and
+  // the only thing any existing caller gets) or "closed" (the closed form in
+  // `closed_form.hpp`). The third argument is DEFAULTED rather than required so that
+  // every two-argument call site -- and the R binding, which carries the same
+  // default -- is untouched.
+  void set_model(const std::string& curve, const std::string& route,
+                 const std::string& method = "exact");
   // The same, pre-parsed, for a C++ caller. See the definition.
-  void set_model(CostCurve curve, bool collar_route);
-  // The curve and route currently seated, by name.
+  //
+  // ⚠️ THE THIRD ARGUMENT DEFAULTS TO THE EXACT SOLVE, WHICH MEANS SEATING RESETS
+  // IT. `gradient::route_seat` seats once per observation through this overload, so
+  // a gradient always differentiates the exact solve even on a leaf the caller had
+  // put on the closed form. That is deliberate -- the implicit-function-theorem
+  // composite is derived from the exact first-order condition and says nothing
+  // about an approximation to its root -- but it is silent, so it is stated here.
+  void set_model(CostCurve curve, bool collar_route, bool closed_method = false);
+  // The curve, route and method currently seated, by name.
   std::string model_curve() const { return curve_name(static_cast<int>(cost_curve_)); }
   std::string model_route() const { return route_is_collar_ ? "collar" : "stem"; }
+  std::string model_method() const { return method_is_closed_ ? "closed" : "exact"; }
   // Solve for the operating point under the seated model. THE entry point.
   void optimise();
+  // The closed-form arm of `optimise()`, with every refusal the closed form needs.
+  //
+  // ⚠️ DEFINED IN `closed_form.hpp`, NOT HERE, and the include order is what makes
+  // that legal: `closed_form.hpp` includes this header (it needs the complete
+  // `Leaf`), and `<phylloptim.hpp>` includes `closed_form.hpp`, so in any
+  // translation unit that takes the umbrella the definition follows this
+  // declaration. It is a plain `inline` member rather than a template, so there is
+  // no instantiation subtlety: a translation unit that includes only
+  // `leaf_model.hpp` and calls this gets a link error, which is a legible failure
+  // rather than a silent one.
+  //
+  // Not called directly. `optimise()` reaches it when the seated method is
+  // "closed"; the fallback to the exact solve is inside it, because the validity
+  // guard tests an output.
+  void optimise_closed();
+  // Fraction of closed-form `optimise()` calls that fell back to the exact solve
+  // since the counters were last reset -- the phi in `1/[phi + (1-phi)/speedup]`.
+  // NaN before any closed-form call, so a caller cannot mistake "never asked" for
+  // "never fell back".
+  double closed_form_fallback_fraction() const {
+    return closed_form_calls_ > 0
+               ? static_cast<double>(closed_form_fallbacks_) /
+                     static_cast<double>(closed_form_calls_)
+               : util::na_value;
+  }
+  void reset_closed_form_counters() {
+    closed_form_calls_ = 0;
+    closed_form_fallbacks_ = 0;
+  }
   // Shared setup for the root-collar solve: builds the soil-side caches, handles
   // every feasibility early-exit (shutdown / assim<0 / collapsed interval) by
   // setting the final operating point itself, and otherwise returns the feasible
@@ -2914,7 +2996,8 @@ inline void Leaf::find_root_collar_psi() {
 // is what actually assigns, so R and C++ cannot end up with two ideas of what
 // seating means.
 inline void Leaf::set_model(const std::string& curve,
-                           const std::string& route) {
+                           const std::string& route,
+                           const std::string& method) {
   int k = -1;
   for (int i = 0; i < n_cost_curves; ++i) {
     if (curve_name(i) == curve) { k = i; break; }
@@ -2931,25 +3014,49 @@ inline void Leaf::set_model(const std::string& curve,
                "soil-to-collar path or \"stem\" for psi_stem with the upstream "
                "potential pinned at psi_soil.");
   }
-  set_model(static_cast<CostCurve>(k), route == "collar");
+  // ⚠️ THE METHOD IS PARSED HERE AND VALIDATED NOWHERE ELSE, deliberately: what a
+  // given method can and cannot do depends on the curve, the route and the energy
+  // balance, and all three are settable after this call. So the name is checked now
+  // and the CONFIGURATION is checked at solve time, exactly as the curve's own
+  // constants are (see the typed overload).
+  if (method != "exact" && method != "closed") {
+    util::stop("unknown method \"" + method + "\": use \"exact\" for the "
+               "first-order-condition root-find over the closed interval, or "
+               "\"closed\" for the closed form. Available: exact, closed.");
+  }
+  set_model(static_cast<CostCurve>(k), route == "collar", method == "closed");
 }
 
 // The same, already parsed. For a C++ caller that has a `CostCurve` in hand --
 // notably `gradient::route_seat`, which seats once per observation and would
 // otherwise pay seven `std::string` constructions per gradient to look up a name
 // it started from.
-inline void Leaf::set_model(CostCurve curve, bool collar_route) {
+inline void Leaf::set_model(CostCurve curve, bool collar_route,
+                           bool closed_method) {
   cost_curve_ = curve;
   route_is_collar_ = collar_route;
+  method_is_closed_ = closed_method;
   // ⚠️ THE CURVE'S OWN CONSTANTS ARE NOT CHECKED HERE, deliberately: a caller may
   // reasonably seat the model and then set `CF77_lambda_`. They are checked at
-  // solve time, where the ordering cannot be got wrong.
+  // solve time, where the ordering cannot be got wrong. The same goes for whether
+  // the seated METHOD can serve the seated curve, route and energy-balance gate --
+  // all of which are settable after this returns.
 }
 
 
 // The seated model, solved. Both routes in one expression, because the curve is
 // the only thing `with_curve` has to choose and the route is a plain bool.
+//
+// ⚠️ THE CLOSED-FORM ARM RETURNS BEFORE THE ORIGINAL BODY, WHICH IS WHY THE EXACT
+// PATH IS BIT-IDENTICAL BY CONSTRUCTION RATHER THAN BY TESTING. Everything below
+// the early return is the function as it stood; the one thing the exact path
+// gained is the bool write, which no golden baseline reads.
 inline void Leaf::optimise() {
+  last_solve_fell_back_ = false;
+  if (method_is_closed_) {
+    optimise_closed();
+    return;
+  }
   const bool collar = route_is_collar_;
   with_curve(cost_curve_, [&](auto tag) {
     constexpr CostCurve K = tag.value;

@@ -48,6 +48,7 @@ conductance.
 | *Water potentials are positive magnitudes* | the one convention that will break a ported script |
 | *A bare leaf* | the simpler supply path, for a leaf with no root profile |
 | *Trait gradients* | exact derivatives, and when they are worth using |
+| *A faster method* | the closed form: what it costs in accuracy, and when it refuses |
 
 `vignette("the-models")` is the reference for what is being solved.
 `vignette("fitting")` works through a calibration.
@@ -499,6 +500,176 @@ a corner, and no amount of care in the derivative changes that. What
 `leaf_gradient()` can do is tell you when you are there, which a naive finite
 difference cannot: `status` marks these points, and `g$stationarity` reports the
 measured distance from stationarity that the classification rests on.
+
+## A faster method: the closed form
+
+Everything above reaches the operating point the same way: a root-find of the
+first-order condition over the feasible interval. That is the `method = "exact"`
+path, and it is the default. `set_model()` takes a third argument, and
+`"closed"` selects a different route to the same optimum.
+
+The idea is the one `vignette("the-models")` builds the whole comparison on. Every
+model here satisfies `dA/dE = lambda` at its optimum, and *given* `lambda` the
+answer collapses to the Medlyn relation `ci/ca = xi/(xi + sqrt(D))` with
+`xi = sqrt(Q/lambda)`. The difficulty is that `lambda` depends on the `psi` you are
+solving for — but where it is a power law in `psi` at the wet end, that
+circularity inverts explicitly. One Newton step on the supply-minus-demand
+residual finishes the job, and a search over the bracket is not needed at all.
+
+```{r}
+cf <- leaf_model(supply = leaf_supply_singlelayer())
+set_drivers(cf, psi_soil = 0.5, PPFD = 1500, atm_vpd = 1,
+            root_network = series_resistance(1500))
+
+cf$set_model("TF24", "stem", "closed")
+cf$optimise()
+tibble(method = cf$model_method(), psi_stem = cf$opt_psi_stem_,
+       A = cf$assim_colimited_, fell_back = cf$last_solve_fell_back_)
+```
+
+### When it applies, and when it refuses
+
+It is refused rather than approximated wherever it does not hold, and the
+refusals carry their reasons:
+
+- **`TF24` and `CF77` only, of the seven cost curves.** The three-way split is
+  worth knowing, because only one part of it is a gap in the code. A closed form
+  exists exactly when `h'(A)`, the derivative of the benefit link, does not depend
+  on the solution. For `JS22`, `CMax` and `ProfitMax` it does not — so the
+  inversion *exists* for them and is simply not written yet. For `SOX` and `JW26`
+  it does: their link is `log`, so `h'(A) = 1/A`, and `lambda` therefore carries
+  the assimilation the solve is for. Given `lambda -> xi -> ci -> A` the
+  dependency closes into a fixed point, which can be iterated but not inverted.
+  Those two **cannot** have a closed form.
+- **The stem route only, and one soil layer only.** The inversion is against a
+  supply measured from `psi_soil`; it says nothing about the soil-to-collar path,
+  and the multi-layer closed form does not exist.
+- **Not with the energy balance on.** Fick's law divides by the leaf-to-air
+  deficit, which depends on leaf temperature, which depends on transpiration —
+  which is what the inversion solves for. So `D` is not known at the moment of
+  inversion and the form is not closed. This is a statement about the form rather
+  than about its accuracy: measured with the refusal bypassed, the error reaches
+  2.3 MPa in `psi_stem` even in the wettest bin, against 0.04 MPa on the
+  prescribed-temperature path.
+
+```{r, error = TRUE}
+cf$set_model("SOX", "stem", "closed")
+cf$optimise()
+```
+
+### What it costs, and what it buys
+
+The guard on validity tests an **output** — `ci/ca` at the answer — so it can only
+be applied after solving, and a rejected row falls back to the exact solve. That
+makes the fallback fraction `phi` part of the price: the realised speedup is
+`1/[phi + (1 - phi)/s]` rather than the ceiling `s`.
+
+Measured in `tests/cpp/bench_solve`, with both arms in one process on a 96-point
+single-layer driver grid:
+
+| curve | exact | closed | realised | `phi` | ceiling at `phi = 0` |
+|---|---|---|---|---|---|
+| `TF24` | 2.65 µs | 1.16 µs | **2.3×** | 0.27 | 4.4× |
+| `CF77` | 2.74 µs | 1.37 µs | **2.0×** | 0.39 | 5.2× |
+
+Two-fold, in other words — not the order of magnitude an earlier version of this
+code advertised. Those figures predated the current solver, which root-finds the
+first-order condition where it used to search the objective, and they also priced
+the inversion alone rather than a solve a caller can read outputs from.
+
+`phi` is reported per leaf, so you can measure it on your own drivers rather than
+taking the grid's:
+
+```{r}
+sweep_leaf <- leaf_model(supply = leaf_supply_singlelayer())
+sweep_leaf$set_model("TF24", "stem", "closed")
+for (p in seq(0.25, 5, length.out = 20)) {
+  set_drivers(sweep_leaf, psi_soil = p, PPFD = 1500, atm_vpd = 1,
+              root_network = series_resistance(1500))
+  sweep_leaf$optimise()
+}
+tibble(calls = sweep_leaf$closed_form_calls_,
+       fell_back = sweep_leaf$closed_form_fallbacks_,
+       phi = sweep_leaf$closed_form_fallback_fraction())
+```
+
+### Accuracy, and one failure that is not a tolerance
+
+Three approximations sit inside the closed form: the power law for `lambda`, the
+single Newton step, and the Medlyn collapse itself — whose `3*Gstar` group is the
+electron-transport-limited `dA/dci`, so it is not exact under colimitation. The
+last of those is the binding one, and the error is organised by `ci/ca`:
+
+```{r}
+grid <- expand.grid(psi_soil = c(0.25, 0.5, 1, 2, 3, 4, 5),
+                    PPFD = c(100, 500, 1500),
+                    atm_vpd = c(0.5, 1, 2, 4))
+
+solve_both <- function(psi_soil, PPFD, atm_vpd) {
+  one <- function(method) {
+    l <- leaf_model(supply = leaf_supply_singlelayer())
+    set_drivers(l, psi_soil = psi_soil, PPFD = PPFD, atm_vpd = atm_vpd,
+                root_network = series_resistance(1500))
+    l$set_model("TF24", "stem", method)
+    l$optimise()
+    l
+  }
+  ex <- one("exact")
+  cl <- one("closed")
+  tibble(ci_ca = ex$ci_ / ex$ca_, fell_back = cl$last_solve_fell_back_,
+         err_A = abs(cl$assim_colimited_ - ex$assim_colimited_) /
+           max(1, abs(ex$assim_colimited_)),
+         err_psi = abs(cl$opt_psi_stem_ - ex$opt_psi_stem_))
+}
+
+res <- Map(solve_both, grid$psi_soil, grid$PPFD, grid$atm_vpd) |>
+  bind_rows() |>
+  filter(is.finite(ci_ca))
+
+res |>
+  mutate(bin = cut(ci_ca, c(0, 0.25, 0.4, 0.5, 0.6, 0.8, 1))) |>
+  group_by(bin) |>
+  summarise(n = n(), fell_back = sum(fell_back),
+            mean_err_A = mean(err_A), worst_err_A = max(err_A),
+            worst_err_psi = max(err_psi), .groups = "drop")
+```
+
+Read it as three regimes. Above `ci/ca` about 0.6 the closed form agrees with the
+exact solve to well under a percent in assimilation on average, and a few percent
+at worst. Between 0.5 and 0.6 the mean is a couple of percent. And below about 0.4
+the guard has fired on nearly every row, so the tabulated error collapses to the
+solver's own floor — those rows *are* the exact solve.
+
+⚠️ **The failure below `ci/ca` about 0.3 is topological, not a matter of
+tolerance.** There the exact optimum turns back toward shutdown while the
+inversion runs on to `psi_crit`: the fixed point the closed form is looking for
+has ceased to exist, so the answer is wrong rather than imprecise, and no amount
+of refinement recovers it. That is why there is a guard and a fallback at all
+rather than a tighter convergence criterion — and it is why `$last_solve_fell_back_`
+is worth reading if you are going to trust an individual row.
+
+### The caveat that would stop you using this in a demographic model
+
+`plant` differentiates the operating point with respect to plant state, and that
+needs the argmax to vary *smoothly* with its inputs. Sweeping `kmax` — which is
+how height reaches the leaf — over ±30% and taking the mean absolute second
+difference of `opt_psi_stem_`:
+
+| the sweep | exact | closed |
+|---|---|---|
+| never crosses the guard | 6.1e-06 | 7.2e-06 |
+| crosses the guard | 1.0e-05 | 1.0e-03 |
+
+The closed form's own arithmetic is barely rougher than the solve, at about 1.2×.
+What costs two orders of magnitude is the **fallback boundary**: the guard tests an
+output, so the set of drivers on which the method switches is a surface in driver
+space, and the argmax jumps as a smooth input carries the leaf across it. A
+mixture of two methods is discontinuous even where both are individually smooth.
+
+So this is usable for a large batch of independent operating points, and it is
+**not** usable underneath a derivative. `leaf_gradient()` reflects that: seating a
+model resets the method to `"exact"`, so a gradient always differentiates the
+exact solve whatever was seated before.
 
 ## What the model assumes
 

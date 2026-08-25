@@ -292,18 +292,35 @@ l$lambda             # marginal cost of water, dA/dE
 ```
 
 **Which model is configuration, not a call argument.** `$set_model()` seats a cost
-curve and a route; `$optimise()` takes nothing, because the curves' constants are
-already on the object. The defaults are `"TF24"` and `"collar"`, the production
-path, so an existing caller that never sets a model is unaffected —
-`$find_root_collar_psi()` is that solve under its own name, which is what plant's
-sources spell.
+curve, a route and a method; `$optimise()` takes nothing, because the curves'
+constants are already on the object. The defaults are `"TF24"`, `"collar"` and
+`"exact"`, the production path, so an existing caller that never sets a model is
+unaffected — `$find_root_collar_psi()` is that solve under its own name, which is
+what plant's sources spell.
 
 ```r
 l <- leaf_model(supply = leaf_supply_singlelayer())
 set_drivers(l, psi_soil = 1.5, PPFD = 900)
 l$set_model("SOX", "stem")     # any of cost_curve_names(); "collar" or "stem"
 l$optimise()
-l$model_curve(); l$model_route()
+l$model_curve(); l$model_route(); l$model_method()
+```
+
+The third axis chooses *how* the operating point is reached rather than *what* is
+optimised. `"exact"` root-finds the first-order condition; `"closed"` inverts the
+Medlyn USO relation given the marginal cost of water, which is explicit where that
+cost is a wet-end power law in `psi`. It exists for `TF24` and `CF77` on the stem
+route only, is refused outright with the energy balance on, and falls back to the
+exact solve where its validity guard fails — about 2x realised on a mixed driver
+grid, at a few percent error in wet soil and none at all on a fallback row.
+
+```r
+c <- leaf_model(supply = leaf_supply_singlelayer())
+c$CF77_lambda_ <- 1.5e5
+set_drivers(c, psi_soil = 0.5, PPFD = 1500, atm_vpd = 1)
+c$set_model("CF77", "stem", "closed")
+c$optimise()
+c$closed_form_fallback_fraction()   # phi, which sets the realised speedup
 ```
 
 `Leaf()` is also exported: it is the raw C++ constructor, fifteen positional

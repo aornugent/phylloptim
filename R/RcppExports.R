@@ -189,8 +189,8 @@ Leaf__prepare_profitmax_at <- function(obj_, A_max) {
     invisible(.Call('_phylloptim_Leaf__prepare_profitmax_at', PACKAGE = 'phylloptim', obj_, A_max))
 }
 
-Leaf__set_model <- function(obj_, curve, route) {
-    invisible(.Call('_phylloptim_Leaf__set_model', PACKAGE = 'phylloptim', obj_, curve, route))
+Leaf__set_model <- function(obj_, curve, route, method) {
+    invisible(.Call('_phylloptim_Leaf__set_model', PACKAGE = 'phylloptim', obj_, curve, route, method))
 }
 
 Leaf__model_curve <- function(obj_) {
@@ -199,6 +199,18 @@ Leaf__model_curve <- function(obj_) {
 
 Leaf__model_route <- function(obj_) {
     .Call('_phylloptim_Leaf__model_route', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__model_method <- function(obj_) {
+    .Call('_phylloptim_Leaf__model_method', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__closed_form_fallback_fraction <- function(obj_) {
+    .Call('_phylloptim_Leaf__closed_form_fallback_fraction', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__reset_closed_form_counters <- function(obj_) {
+    invisible(.Call('_phylloptim_Leaf__reset_closed_form_counters', PACKAGE = 'phylloptim', obj_))
 }
 
 Leaf__optimise <- function(obj_) {
@@ -859,6 +871,30 @@ Leaf__f_r__get <- function(obj_) {
 
 Leaf__f_r__set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__f_r__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__last_solve_fell_back___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__last_solve_fell_back___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__last_solve_fell_back___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__last_solve_fell_back___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__closed_form_calls___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__closed_form_calls___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__closed_form_calls___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__closed_form_calls___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__closed_form_fallbacks___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__closed_form_fallbacks___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__closed_form_fallbacks___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__closed_form_fallbacks___set', PACKAGE = 'phylloptim', obj_, value))
 }
 
 Leaf__use_energy_balance___get <- function(obj_) {

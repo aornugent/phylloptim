@@ -144,13 +144,21 @@ double pass(std::vector<phylloptim::Leaf> &leaves, const std::vector<Point> &pts
 // history file it is building. Hence `us/call` here, and hence this comment
 // rather than a tidier-looking unit.
 
-enum class Arm { TF, ProfitMax, CF77 };
+// ⚠️ THE `Closed` ARMS ARE IN THE SAME BINARY AS THEIR OWN BASELINES, WHICH IS
+// WHAT MAKES THE COMPARISON LEGITIMATE. Hazard 5: between processes the noise on
+// this harness is ~+/-0.1 us against +/-0.01 us within one, so timing the exact
+// solve in one build and the closed form in another is not good enough to price a
+// method against the solve it replaces. Both run in one process, on one grid, in
+// one loop -- so the ratio of two printed lines is a controlled A/B.
+enum class Arm { TF, ProfitMax, CF77, TFClosed, CF77Closed };
 
 const char *arm_label(Arm a) {
   switch (a) {
     case Arm::TF:            return "psi_stem:TF";
     case Arm::ProfitMax:     return "psi_stem:ProfitMax";
     case Arm::CF77: return "psi_stem:CF77";
+    case Arm::TFClosed:      return "psi_stem:TF-closed";
+    case Arm::CF77Closed:    return "psi_stem:CF77-closed";
   }
   return "psi_stem:?";
 }
@@ -178,6 +186,18 @@ double pass_optimiser(Arm arm, std::vector<phylloptim::Leaf> &leaves,
       case Arm::CF77:
                            l.CF77_lambda_ = kLambdaCF77;
                            l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::CF77>(); break;
+      // ⚠️ THROUGH `optimise()`, NOT THE FREE FUNCTION, deliberately: what a caller
+      // pays for the closed form INCLUDES the fallback to the exact solve on the
+      // rows its guard rejects, and pricing the fast path alone would quote the
+      // ceiling rather than the realised cost. The printed fallback fraction is
+      // what makes the two readable apart.
+      case Arm::TFClosed:
+                           l.set_model(phylloptim::Leaf::CostCurve::TF24, false, true);
+                           l.optimise(); break;
+      case Arm::CF77Closed:
+                           l.CF77_lambda_ = kLambdaCF77;
+                           l.set_model(phylloptim::Leaf::CostCurve::CF77, false, true);
+                           l.optimise(); break;
     }
     for (double v : {l.opt_psi_stem_, l.ci_, l.assim_colimited_,
                      l.transpiration_, l.stom_cond_CO2_, l.profit_}) {
@@ -225,18 +245,35 @@ int main(int argc, char **argv) {
     l.setup_transpiration(100);
     l.setup_root_vulnerability(100);
   }
-  for (Arm arm : {Arm::TF, Arm::ProfitMax, Arm::CF77}) {
+  for (Arm arm : {Arm::TF, Arm::ProfitMax, Arm::CF77, Arm::TFClosed,
+                  Arm::CF77Closed}) {
     double arm_checksum = 0.0;
     double arm_best = 1e300;
     for (int r = 0; r < reps; ++r) {
+      for (phylloptim::Leaf &l : one_leaves) {
+        l.reset_closed_form_counters();
+      }
       const auto t0 = std::chrono::steady_clock::now();
       arm_checksum = pass_optimiser(arm, one_leaves, one);
       const auto t1 = std::chrono::steady_clock::now();
       arm_best = std::min(arm_best, std::chrono::duration<double>(t1 - t0).count());
     }
-    printf("%-22s  %8.2f us/call    (%zu points, best of %d)   checksum %.17g\n",
+    // The fallback fraction phi, summed over the grid's leaves, because the
+    // realised speedup is 1/[phi + (1-phi)/ceiling] and the ceiling on its own is
+    // not a number anyone should quote (closed_form.hpp note 3).
+    int calls = 0, backs = 0;
+    for (const phylloptim::Leaf &l : one_leaves) {
+      calls += l.closed_form_calls_;
+      backs += l.closed_form_fallbacks_;
+    }
+    char phi[48] = "";
+    if (calls > 0) {
+      snprintf(phi, sizeof phi, "   phi %.3f (%d/%d)",
+               double(backs) / double(calls), backs, calls);
+    }
+    printf("%-22s  %8.2f us/call    (%zu points, best of %d)   checksum %.17g%s\n",
            arm_label(arm), arm_best / one.size() * 1e6, one.size(), reps,
-           arm_checksum);
+           arm_checksum, phi);
   }
   return 0;
 }

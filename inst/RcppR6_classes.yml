@@ -87,9 +87,12 @@ Leaf:
       `JS22_gamma`, `CMax_a` and `CMax_b` are traits. `curve` is any name from
       [cost_curve_names()]; `route` is `"collar"` (the full soil-to-collar path,
       any supply) or `"stem"` (psi_stem with the upstream potential pinned at
-      `psi_soil`, single soil layer only). `$model_curve()` and `$model_route()`
-      report what is seated. The defaults are `"TF24"` and `"collar"`, which is
-      the production path.
+      `psi_soil`, single soil layer only). A third argument, `method`, chooses HOW
+      the operating point is reached: `"exact"` (the default, a root-find of the
+      first-order condition) or `"closed"` (the closed form, for `TF24` and `CF77`
+      on the stem route only). `$model_curve()`, `$model_route()` and
+      `$model_method()` report what is seated. The defaults are `"TF24"`,
+      `"collar"` and `"exact"`, which is the production path.
 
       ```r
       l$set_model("ProfitMax", "stem")
@@ -329,6 +332,14 @@ Leaf:
     r_R_V: {type: "std::vector<double>", access: field, name_cpp: "roots_.network_.r_R_V"}
     r_R_V_sum: {type: "std::vector<double>", access: field, name_cpp: "roots_.network_.r_R_V_sum"}
     f_r: {type: "std::vector<double>", access: field}
+
+    # --- the closed-form method's instrumentation -----------------------------
+    # Whether the LAST optimise() fell back from the closed form to the exact
+    # solve. Written by every optimise(), including the exact one, so it can never
+    # report a previous solve's answer (hazard 8).
+    last_solve_fell_back_: {type: bool, access: field}
+    closed_form_calls_: {type: int, access: field}
+    closed_form_fallbacks_: {type: int, access: field}
 
     # --- energy balance (#523) ------------------------------------------------
     use_energy_balance_: {type: bool, access: field}
@@ -663,17 +674,58 @@ Leaf:
         `psi_stem` with the upstream potential pinned at `psi_soil`, the form the
         published models are written in, and needs a single soil potential.
 
-        Defaults to `"TF24"` and `"collar"`, so a caller that never sets a model
-        gets the production path.
+        `method` is the third axis, and it selects HOW the operating point is
+        reached rather than WHAT is being optimised. `"exact"` root-finds the
+        first-order condition over the closed interval and is the default and the
+        production path. `"closed"` uses the closed form: given the marginal cost
+        of water, the optimum collapses to the Medlyn USO relation
+        `ci/ca = xi/(xi + sqrt(D))`, and where `lambda` is a power law in `psi` at
+        the wet end that inverts explicitly.
+
+        ⚠️ **`"closed"` is an approximation with a guard and a fallback, and it is
+        refused rather than approximated where it does not apply.** It exists for
+        `TF24` and `CF77` only; `SOX` and `JW26` cannot have one at all (their
+        benefit link makes `lambda` carry the assimilation the solve is for); it
+        needs the stem route and a single soil layer; and it is refused with
+        `use_energy_balance_` on, because the deficit then depends on the
+        transpiration being solved for. Where its validity guard fails it falls
+        back to the exact solve — see `$closed_form_fallback_fraction()`.
+
+        Defaults to `"TF24"`, `"collar"` and `"exact"`, so a caller that never sets
+        a model gets the production path.
         @param curve cost curve name, from \code{\link{cost_curve_names}}
         @param route `"collar"` or `"stem"`
+        @param method `"exact"` (default) or `"closed"`
         @export
       return_type: void
-      args: [curve: "std::string", route: "std::string"]
+      args: [curve: "std::string", route: "std::string", method: 'std::string = "exact"']
     model_curve:
       return_type: "std::string"
     model_route:
       return_type: "std::string"
+    model_method:
+      return_type: "std::string"
+    closed_form_fallback_fraction:
+      roxygen: |
+        Fraction of closed-form solves that fell back to the exact solve.
+
+        The closed form's validity guard tests an OUTPUT (`ci/ca > 0.5`, plus
+        being strictly inside the feasible bracket), so it can only be applied
+        after solving and the fallback cannot be predicted from the drivers. That
+        makes the realised speedup `1 / [phi + (1 - phi)/S]` rather than `S`, and
+        this is `phi`.
+
+        `NA` before any closed-form solve, so "never asked" is distinguishable
+        from "never fell back". Counts accumulate across `optimise()` calls;
+        `$reset_closed_form_counters()` clears them. `$last_solve_fell_back_`
+        answers the same question for the most recent solve alone.
+        @export
+      return_type: double
+    reset_closed_form_counters:
+      roxygen: |
+        Zero the closed-form call and fallback counters.
+        @export
+      return_type: void
     optimise:
       roxygen: |
         Solve for the operating point under the model this leaf is set to.

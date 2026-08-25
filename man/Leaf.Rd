@@ -77,9 +77,12 @@ constants already live on the object -- \verb{$CF77_lambda_} is a field, and
 \code{JS22_gamma}, \code{CMax_a} and \code{CMax_b} are traits. \code{curve} is any name from
 \code{\link[=cost_curve_names]{cost_curve_names()}}; \code{route} is \code{"collar"} (the full soil-to-collar path,
 any supply) or \code{"stem"} (psi_stem with the upstream potential pinned at
-\code{psi_soil}, single soil layer only). \verb{$model_curve()} and \verb{$model_route()}
-report what is seated. The defaults are \code{"TF24"} and \code{"collar"}, which is
-the production path.
+\code{psi_soil}, single soil layer only). A third argument, \code{method}, chooses HOW
+the operating point is reached: \code{"exact"} (the default, a root-find of the
+first-order condition) or \code{"closed"} (the closed form, for \code{TF24} and \code{CF77}
+on the stem route only). \verb{$model_curve()}, \verb{$model_route()} and
+\verb{$model_method()} report what is seated. The defaults are \code{"TF24"},
+\code{"collar"} and \code{"exact"}, which is the production path.
 
 \if{html}{\out{<div class="sourceCode r">}}\preformatted{l$set_model("ProfitMax", "stem")
 l$optimise()

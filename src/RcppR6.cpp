@@ -192,8 +192,8 @@ void Leaf__prepare_profitmax_at(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj
   obj_->prepare_profitmax_at(A_max);
 }
 // [[Rcpp::export]]
-void Leaf__set_model(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, std::string curve, std::string route) {
-  obj_->set_model(curve, route);
+void Leaf__set_model(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, std::string curve, std::string route, std::string method) {
+  obj_->set_model(curve, route, method);
 }
 // [[Rcpp::export]]
 std::string Leaf__model_curve(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
@@ -202,6 +202,18 @@ std::string Leaf__model_curve(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_)
 // [[Rcpp::export]]
 std::string Leaf__model_route(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
   return obj_->model_route();
+}
+// [[Rcpp::export]]
+std::string Leaf__model_method(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->model_method();
+}
+// [[Rcpp::export]]
+double Leaf__closed_form_fallback_fraction(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->closed_form_fallback_fraction();
+}
+// [[Rcpp::export]]
+void Leaf__reset_closed_form_counters(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  obj_->reset_closed_form_counters();
 }
 // [[Rcpp::export]]
 void Leaf__optimise(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
@@ -944,6 +956,33 @@ std::vector<double> Leaf__f_r__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> 
 // [[Rcpp::export]]
 void Leaf__f_r__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, std::vector<double> value) {
   obj_->f_r = value;
+}
+
+// [[Rcpp::export]]
+bool Leaf__last_solve_fell_back___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->last_solve_fell_back_;
+}
+// [[Rcpp::export]]
+void Leaf__last_solve_fell_back___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, bool value) {
+  obj_->last_solve_fell_back_ = value;
+}
+
+// [[Rcpp::export]]
+int Leaf__closed_form_calls___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->closed_form_calls_;
+}
+// [[Rcpp::export]]
+void Leaf__closed_form_calls___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, int value) {
+  obj_->closed_form_calls_ = value;
+}
+
+// [[Rcpp::export]]
+int Leaf__closed_form_fallbacks___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->closed_form_fallbacks_;
+}
+// [[Rcpp::export]]
+void Leaf__closed_form_fallbacks___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, int value) {
+  obj_->closed_form_fallbacks_ = value;
 }
 
 // [[Rcpp::export]]

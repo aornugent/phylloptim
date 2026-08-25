@@ -36,6 +36,21 @@ void ok(bool pass, const std::string &what) {
   }
 }
 
+// A refusal, checked for its REASON and not only for throwing. The message is
+// half the point of every `util::stop` in this package -- several of them exist to
+// tell the caller which of two similar-looking configurations they are in -- so a
+// bare "it threw" would pass on a refusal that had drifted onto the wrong branch.
+// Returns rather than asserting, so the call site names the case.
+template <typename F>
+bool throws_with(F &&f, const std::string &fragment) {
+  try {
+    f();
+  } catch (const std::exception &e) {
+    return std::string(e.what()).find(fragment) != std::string::npos;
+  }
+  return false;
+}
+
 void near(double got, double want, double tol, const std::string &what) {
   ++checks;
   const double err = std::abs(got - want);
@@ -2477,7 +2492,13 @@ void test_closed_form() {
   l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::TF24>();
   const double A_wet = l.assim_colimited_;
   setp(l, 1.0, 2.0);
-  const phylloptim::closed_form::Solution wet = phylloptim::closed_form::solve(l, 1);
+  // ⚠️ `solve` TAKES psi_upstream NOW, and the 0.0 is the reference geometry's
+  // collar-at-zero rather than a placeholder. It used to take only the Newton
+  // count, so `solve(l, 1)` compiled and meant something else entirely -- one
+  // Newton step became a 1 MPa upstream potential. That is the whole reason the
+  // upstream potential is an explicit argument instead of being read off the leaf.
+  const phylloptim::closed_form::Solution wet =
+      phylloptim::closed_form::solve(l, 0.0, 1);
   ok(std::abs(wet.assim / A_wet - 1.0) < 2e-3,
      "closed form is within 0.2% of the exact solve at h=1 m");
   ok(phylloptim::closed_form::within_guard(l, wet), "h=1 m passes the guard");
@@ -2493,7 +2514,7 @@ void test_closed_form() {
     l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::TF24>();
     const double A_ex = l.assim_colimited_;
     setp(l, cs.h, 2.0);
-    const double A_cf = phylloptim::closed_form::solve(l, 1).assim;
+    const double A_cf = phylloptim::closed_form::solve(l, 0.0, 1).assim;
     ok(std::abs(A_cf / A_ex - 1.0) < cs.max_err,
        "closed-form error is bounded at h=" + std::to_string(cs.h) + " m");
   }
@@ -2506,7 +2527,8 @@ void test_closed_form() {
   l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::TF24>();
   const double A_tall = l.assim_colimited_;
   setp(l, 20.0, 2.0);
-  const phylloptim::closed_form::Solution tall = phylloptim::closed_form::solve(l, 1);
+  const phylloptim::closed_form::Solution tall =
+      phylloptim::closed_form::solve(l, 0.0, 1);
   ok(!phylloptim::closed_form::within_guard(l, tall), "h=20 m is rejected by the guard");
   ok(std::abs(tall.assim / A_tall - 1.0) > 3e-2,
      "and it is rejected because the error really is large there");
@@ -2522,9 +2544,16 @@ void test_closed_form() {
   const double A_ref = exact_leaf.assim_colimited_;
   setp(exact_leaf, 5.0, 1.5);
   const phylloptim::closed_form::Solution ex =
-      phylloptim::closed_form::solve_exact_beta2(exact_leaf);
-  ok(std::isnan(ex.psi_stem),
-     "the explicit form reports no psi_stem -- it never solves for one");
+      phylloptim::closed_form::solve_exact_beta2(exact_leaf, 0.0);
+  // ⚠️ IT USED TO REPORT NaN HERE, and this assertion used to pin that. A NaN
+  // argmax is not usable once the method is wired into `optimise()`, so the
+  // potential is recovered from the supply -- and the check is the round trip,
+  // which is the only statement about it that does not restate the code.
+  ok(std::isfinite(ex.psi_stem),
+     "the explicit form now recovers a psi_stem rather than reporting NaN");
+  ok(std::abs(exact_leaf.transpiration(ex.psi_stem, 0.0) / ex.transpiration -
+              1.0) < 1e-6,
+     "and it is the potential whose hydraulic supply carries that E");
   ok(std::abs(ex.assim / A_ref - 1.0) < 4e-2,
      "the explicit form is within a few percent of the exact solve");
 
@@ -2548,9 +2577,10 @@ void test_closed_form() {
     return l.assim_colimited_;
   });
   const double t_cf =
-      time_it(l, [&] { return phylloptim::closed_form::solve(l, 1).assim; });
-  const double t_expl = time_it(
-      exact_leaf, [&] { return phylloptim::closed_form::solve_exact_beta2(exact_leaf).assim; });
+      time_it(l, [&] { return phylloptim::closed_form::solve(l, 0.0, 1).assim; });
+  const double t_expl = time_it(exact_leaf, [&] {
+    return phylloptim::closed_form::solve_exact_beta2(exact_leaf, 0.0).assim;
+  });
   printf("    set_physiology %.3f us | exact %.3f us | 1-Newton %.3f us (%.1fx) |"
          " explicit %.3f us (%.1fx)\n",
          t_setp, t_exact, t_cf, t_exact / t_cf, t_expl, t_exact / t_expl);
@@ -4064,6 +4094,179 @@ void test_profitmax_thermal_cost() {
   near(on.thermal_cost_at(on.T50_), 0.5, 1e-12, "and is exactly 0.5 at T50");
 }
 
+// ===========================================================================
+// The closed form as a SELECTABLE METHOD -- the third axis of set_model()
+// ---------------------------------------------------------------------------
+// Three things this has to get right, and none of them is about accuracy (which
+// tests/testthat/test-closed-form.R measures against a driver grid):
+//
+//  1. the exact arm is untouched -- bit-identical, not close;
+//  2. every output the exact solve writes is written here too (hazard 8: `Leaf` is
+//     a value member plant reuses per individual, so a field this path declined to
+//     write would report the PREVIOUS solve's value);
+//  3. everything the closed form cannot do is refused rather than approximated,
+//     and the two refusals say different things -- one names a missing derivative,
+//     the other names a fixed point that cannot be inverted.
+void test_closed_form_is_a_selectable_method() {
+  printf("closed form as a set_model() method\n");
+  Drivers d;
+  d.PPFD = 1500.0;
+
+  // --- 1. the exact arm is bit-identical ----------------------------------
+  // The one assertion that makes the whole change safe: `optimise()` returns to
+  // its previous body when the method is exact, so an explicit "exact" and a
+  // two-argument seat must produce the SAME BITS, not merely the same answer.
+  {
+    phylloptim::Leaf a = make_single_leaf(d, 0.5);
+    a.set_model(phylloptim::Leaf::CostCurve::TF24, false);
+    a.optimise();
+    phylloptim::Leaf b = make_single_leaf(d, 0.5);
+    b.set_model("TF24", "stem", "exact");
+    b.optimise();
+    ok(a.opt_psi_stem_ == b.opt_psi_stem_ && a.ci_ == b.ci_ &&
+           a.assim_colimited_ == b.assim_colimited_ && a.profit_ == b.profit_,
+       "seating \"exact\" is bit-identical to the two-argument seat");
+    ok(b.model_method() == "exact" && a.model_method() == "exact",
+       "and both report the exact method");
+    ok(!b.last_solve_fell_back_ &&
+           !std::isfinite(b.closed_form_fallback_fraction()),
+       "an exact solve counts no closed-form call, so phi is NA");
+  }
+
+  // --- 2. every output is written, on a REUSED leaf ------------------------
+  // The golden files cannot see this class of defect (they build a fresh Leaf per
+  // point), so the leaf is reused and the outputs are poisoned first. A field the
+  // closed form declined to write would come back as the poison.
+  {
+    phylloptim::Leaf l = make_single_leaf(d, 0.5);
+    l.find_root_collar_psi();          // seat a collar solve's outputs
+    const double poison = -12345.0;
+    l.ci_ = poison; l.assim_colimited_ = poison; l.transpiration_ = poison;
+    l.stom_cond_CO2_ = poison; l.hydraulic_cost_ = poison; l.profit_ = poison;
+    l.opt_psi_stem_ = poison;
+    l.set_model("TF24", "stem", "closed");
+    l.optimise();
+    ok(!l.last_solve_fell_back_, "the default operating point uses the fast path");
+    ok(l.ci_ != poison && l.assim_colimited_ != poison &&
+           l.transpiration_ != poison && l.stom_cond_CO2_ != poison &&
+           l.hydraulic_cost_ != poison && l.profit_ != poison &&
+           l.opt_psi_stem_ != poison,
+       "the closed form writes every rate the exact solve writes");
+    // And it clears the collar-route outputs, exactly as the exact stem route
+    // does -- those describe a different solve and would otherwise persist.
+    ok(!std::isfinite(l.opt_root_psi_) && !std::isfinite(l.E_up_),
+       "and clears the collar solve's outputs");
+    // The identity that ties the written fields together: profit is the objective
+    // evaluated at the reported potential. A path that wrote psi_stem from the
+    // closed form and the rates from somewhere else would fail this.
+    ok(std::abs(l.profit_ - (l.assim_colimited_ - l.hydraulic_cost_)) < 1e-12,
+       "profit_ == assim_colimited_ - hydraulic_cost_ at the reported point");
+    ok(l.closed_form_calls_ == 1 && l.closed_form_fallbacks_ == 0 &&
+           l.closed_form_fallback_fraction() == 0.0,
+       "and the counters record one call and no fallback");
+    l.reset_closed_form_counters();
+    ok(l.closed_form_calls_ == 0, "the counters are resettable");
+  }
+
+  // --- the fallback, and that it lands on the exact answer -----------------
+  // Dry soil takes ci/ca below the guard, so the row is handed back. The point of
+  // the assertion is that a fallback is not "approximately the exact solve" but
+  // IS it, bit for bit: the guard's whole value is that a rejected row costs
+  // accuracy nothing.
+  {
+    phylloptim::Leaf a = make_single_leaf(d, 4.5);
+    a.set_model("TF24", "stem", "exact");
+    a.optimise();
+    phylloptim::Leaf b = make_single_leaf(d, 4.5);
+    b.set_model("TF24", "stem", "closed");
+    b.optimise();
+    ok(b.last_solve_fell_back_, "a dry leaf falls back");
+    ok(b.opt_psi_stem_ == a.opt_psi_stem_ && b.assim_colimited_ == a.assim_colimited_,
+       "and a fallback IS the exact solve, bit for bit");
+    ok(b.closed_form_fallback_fraction() == 1.0, "phi is 1 after one fallback");
+  }
+
+  // --- CF77: n = 0, so lambda is the prescribed price exactly --------------
+  // The analytical identity for the n = 0 arm: with a constant lambda there is no
+  // power law to approximate, so the reported marginal cost must be the price
+  // itself. This is exact by construction and is the check that the closed arm
+  // reads `cf77_price()` rather than reconstructing a lambda of its own.
+  {
+    phylloptim::Leaf l = make_single_leaf(d, 0.5);
+    l.CF77_lambda_ = 1.5e5;
+    l.set_model("CF77", "stem", "closed");
+    l.optimise();
+    ok(l.lambda_emergent() == 1.5e5,
+       "the closed CF77 arm reports the prescribed price exactly");
+    // And it composes with the soil-moisture option (#128), which is why the
+    // closed form reads cf77_price() and not CF77_lambda_.
+    phylloptim::Leaf m = make_single_leaf(d, 0.5);
+    m.CF77_lambda_ = 1.5e5;
+    m.CF77_soil_beta_ = true;
+    m.theta_ = 0.35;
+    m.set_model("CF77", "stem", "closed");
+    m.optimise();
+    const double beta = (0.35 - m.theta_w_) / (m.theta_fc_ - m.theta_w_);
+    ok(std::abs(m.lambda_emergent() / (1.5e5 / beta) - 1.0) < 1e-12,
+       "and divides it by the Medlyn soil-moisture factor when that is on");
+    ok(m.opt_psi_stem_ < l.opt_psi_stem_,
+       "so a drier soil closes the stomata on the closed path too");
+  }
+
+  // --- 3. the refusals ----------------------------------------------------
+  {
+    // The collar route: a different model, not a restriction of this one.
+    phylloptim::Leaf l = make_single_leaf(d, 0.5);
+    l.set_model("TF24", "collar", "closed");
+    ok(throws_with([&] { l.optimise(); }, "STEM-route method"),
+       "the collar route is refused");
+
+    // Multi-layer: the closed form for it does not exist.
+    phylloptim::Leaf m;
+    m.setup_transpiration(100);
+    m.setup_root_vulnerability(100);
+    const std::vector<double> depths{1.0, 2.0, 3.0};
+    m.set_physiology(fixture::root_network({0.33, 0.33, 0.33}, depths), 1500.0,
+                     {0.5, 0.75, 1.0}, depths, 1.0 * 0.000157 / 5.0, 1.0, 40.0,
+                     25.0, 21.0, 101.3);
+    m.set_model("TF24", "stem", "closed");
+    ok(throws_with([&] { m.optimise(); }, "single-layer only"),
+       "a layered soil is refused");
+
+    // The energy balance -- #116, and the refusal states the reason rather than
+    // the symptom: D depends on Tleaf depends on E, and E is the unknown.
+    phylloptim::Leaf e = make_single_leaf(d, 0.5, true);
+    e.set_model("TF24", "stem", "closed");
+    ok(throws_with([&] { e.optimise(); }, "not closed"),
+       "the energy balance is refused, because the form is then not closed");
+
+    // ⚠️ THE TWO CURVE REFUSALS ARE DIFFERENT CLAIMS. JS22, CMax and ProfitMax
+    // all have an h'(A) that does not depend on the solution, so the inversion
+    // EXISTS for them and only a dlambda/dpsi is missing. SOX and JW26 have the
+    // log link, where h' = 1/A, so lambda carries the assimilation the solve is
+    // for: that is a fixed point, and there is nothing to write.
+    for (const char *curve : {"JS22", "CMax", "ProfitMax"}) {
+      phylloptim::Leaf c = make_single_leaf(d, 0.5);
+      c.CF77_lambda_ = 1.5e5;
+      c.set_model(curve, "stem", "closed");
+      ok(throws_with([&] { c.optimise(); }, "not implemented"),
+         std::string("the closed form is unimplemented for ") + curve);
+    }
+    for (const char *curve : {"SOX", "JW26"}) {
+      phylloptim::Leaf c = make_single_leaf(d, 0.5);
+      c.set_model(curve, "stem", "closed");
+      ok(throws_with([&] { c.optimise(); }, "does not exist"),
+         std::string("and cannot exist for ") + curve);
+    }
+
+    // An unknown method name is caught at seating, where the caller can still see
+    // what they typed.
+    phylloptim::Leaf u = make_single_leaf(d, 0.5);
+    ok(throws_with([&] { u.set_model("TF24", "stem", "fast"); }, "unknown method"),
+       "an unknown method name is refused at set_model");
+  }
+}
+
 void test_single_layer_optimisers_clear_collar_state() {
   printf("single-layer optimisers do not inherit a collar solve's outputs\n");
   Drivers d;
@@ -4823,6 +5026,7 @@ int main() {
   test_profitmax_is_a_constant_lambda_objective();
   test_profitmax_normalisation();
   test_profitmax_thermal_cost();
+  test_closed_form_is_a_selectable_method();
   test_single_layer_optimisers_clear_collar_state();
   test_transpiration_survives_negative_assim();
   test_profitmax_finds_a_closed_optimum();

@@ -1,5 +1,65 @@
 # phylloptim (development version)
 
+## A third axis on `set_model()`: the closed form as a selectable method
+
+`set_model()` took a cost curve and a route. It now takes a **method** as well,
+and `"closed"` reaches the same optimum by a different route:
+
+```r
+l$set_model("TF24", "stem", "closed")
+l$optimise()
+l$closed_form_fallback_fraction()   # phi, which sets the realised speedup
+```
+
+Given `lambda`, every model here collapses to the Medlyn relation
+`ci/ca = xi/(xi + sqrt(D))`; where `lambda` is a wet-end power law in `psi` that
+inverts explicitly, so a leading-order potential plus one Newton step on the
+supply-minus-demand residual replaces the search over the bracket. `closed_form.hpp`
+has existed for a while and nothing called it; it is reachable now, through the same
+infrastructure as everything else.
+
+**`method = "exact"` is the default and is bit-identical.** `optimise()` returns
+to its previous body before anything new runs: all 4608 golden `psi_stem` optima,
+576 operating points and 544 primitives are unchanged.
+
+**Implemented for `TF24` and `CF77`; refused, with reasons, everywhere else.** The
+existence criterion is that `h'(A)` — the benefit link's derivative — must not
+depend on the solution. `JS22`, `CMax` and `ProfitMax` satisfy it, so a closed
+form *exists* for them and only an analytic `dlambda/dpsi` is unwritten. `SOX` and
+`JW26` do not: their link is `log`, `h'(A) = 1/A`, so `lambda` carries the
+assimilation the solve is for and the dependency closes into a fixed point. Those
+two **cannot** have one. Also refused on the collar route, on a layered soil, and
+with `use_energy_balance_` on — the last being the resolution of #116, since the
+deficit then depends on the transpiration being solved for.
+
+Three things worth knowing before using it:
+
+- **It buys about 2x, not an order of magnitude.** 2.65 -> 1.16 µs for `TF24` and
+  2.74 -> 1.37 for `CF77`, both arms in one process. The header's old 10.8x and 47x
+  predated the current solver and priced the inversion without the evaluation that
+  writes a caller's outputs. The validity guard tests an OUTPUT, so a rejected row
+  falls back and the realised figure is `1/[phi + (1-phi)/s]`; `phi` is measurable
+  now (`$closed_form_fallback_fraction()`), which it was not before.
+- **Accuracy is set by the Medlyn collapse, not by the power law.** The Newton step
+  converges — 2, 3 and 5 steps agree — and the residual's fixed point is still not
+  the optimum, because `3*Gstar` is the electron-transport-limited `dA/dci`. At
+  25 C the error in `A` runs 0.2 % above `ci/ca` 0.9 and 2 % at 0.5-0.6; below
+  `ci/ca` about 0.3 the fixed point ceases to exist and the guard is what handles
+  it. A fallback row is the exact answer bit for bit.
+- ⚠️ **The argmax is discontinuous across the guard boundary, so this must not sit
+  under a derivative.** Sweeping `kmax`, the mean second difference of
+  `opt_psi_stem_` is 1.2x the exact solve's where the sweep stays on one method and
+  **100x** where it crosses. Seating a model resets the method to `"exact"`, so
+  `leaf_gradient()` always differentiates the exact solve.
+
+`stem_c` is 2.680147 here, so the no-iteration special case `TF24_beta2 = 1/stem_c`
+sits at **0.373**, not the 0.917 the header used to quote. That figure came from a
+stem curve built with *E. saligna*'s measured P12 in the P50 slot, and with it goes
+the claim that `beta2 = 1/stem_c` was biologically preferred: reaching `beta2 ~ 1`
+that way needs `stem_c ~ 1`, a non-threshold vulnerability curve the eucalypt
+literature does not support. The case is kept as a valid special case at an
+unmotivated parameter value.
+
 ## Cowan-Farquhar can have a soil-moisture shutdown
 
 `CF77` is the one cost curve here whose **price** of water does not respond to
