@@ -27,6 +27,7 @@
 
 #include <phylloptim.hpp>
 
+#include "leaf_inputs.hpp"
 #include "root_network.hpp"
 
 #include <cmath>
@@ -37,7 +38,7 @@
 
 namespace grad = phylloptim::gradient;
 using phylloptim::Leaf;
-using phylloptim::ProfitInputs;
+using phylloptim::LeafInputs;
 using phylloptim::tangent;
 using phylloptim::tangent2;
 using phylloptim::seed_direction;
@@ -71,40 +72,9 @@ grad::Drivers drivers(double psi_soil, double ppfd, int layers) {
   return d;
 }
 
+
+
 struct Named { int par; const char* name; };
-
-// The supply at one scalar, owned so the view has something to point at.
-template <class T>
-struct SupplyStore {
-  std::vector<T> psi_soil, r_R_H_min, r_R_V_sum;
-  T root_b, root_c;
-  phylloptim::SupplyAt<T> view() const {
-    return {psi_soil, r_R_H_min, r_R_V_sum, root_b, root_c};
-  }
-};
-
-template <class T>
-SupplyStore<T> supply_of(const Leaf& l, int par, int n_layers) {
-  const phylloptim::SupplyAt<double> held = l.held_supply();
-  auto seed = [](T& x, double v) {
-    if constexpr (!std::is_same_v<T, double>) seed_direction(x, v);
-    else { (void)x; (void)v; }
-  };
-  SupplyStore<T> out;
-  for (double v : held.psi_soil) out.psi_soil.push_back(T(v));
-  for (double v : held.r_R_H_min) out.r_R_H_min.push_back(T(v));
-  for (double v : held.r_R_V_sum) out.r_R_V_sum.push_back(T(v));
-  out.root_b = T(held.root_b);
-  out.root_c = T(held.root_c);
-  if (par == grad::par_root_b) seed(out.root_b, 1.0);
-  if (par == grad::par_root_c) seed(out.root_c, 1.0);
-  const int layer = par - grad::par_psi_soil_first;
-  if (layer >= 0 && layer < n_layers &&
-      layer < static_cast<int>(out.psi_soil.size())) {
-    seed(out.psi_soil[std::size_t(layer)], 1.0);
-  }
-  return out;
-}
 
 const Named kInputs[] = {
     {grad::par_vcmax_25, "vcmax_25"}, {grad::par_jmax_25, "jmax_25"},
@@ -115,40 +85,6 @@ const Named kInputs[] = {
     {grad::par_cost_scale_TF24, "cost_scale"}, {grad::par_kmax, "kmax"},
     {grad::par_root_b, "root_b"},     {grad::par_root_c, "root_c"},
 };
-
-// The inputs at the leaf's current state and a given collar, at whatever scalar.
-// `seed` names the outer direction; the collar's own is set by the caller, which
-// is what separates dM/dtheta from dM/dp.
-template <class T>
-ProfitInputs<T> inputs_at(const Leaf& l, const T& collar, int seed_par) {
-  // A seed on a plain double is not a thing, and this is called at one to build
-  // the passive inputs collar_condition takes.
-  auto seed = [](T& x, double v) {
-    if constexpr (!std::is_same_v<T, double>) seed_direction(x, v);
-    else { (void)x; (void)v; }
-  };
-  ProfitInputs<T> p{
-      T(l.vcmax_),   T(l.jmax_),   T(l.a),      T(l.curv_fact_elec_trans),
-      T(l.curv_fact_colim), T(l.PPFD_), T(l.R_d_),
-      T(l.leaf_specific_conductance_max_), T(l.stem_b), T(l.stem_c),
-      T(l.beta2),    T(l.cost_scale_TF24),  collar,     T(0.0)};
-  switch (seed_par) {
-    case grad::par_vcmax_25: seed(p.vcmax, l.vcmax_ / l.vcmax_25); break;
-    case grad::par_jmax_25: seed(p.transport_jmax, l.jmax_ / l.jmax_25); break;
-    case grad::par_a: seed(p.quantum_yield, 1.0); break;
-    case grad::par_curv_fact_elec_trans: seed(p.curv_elec, 1.0); break;
-    case grad::par_curv_fact_colim: seed(p.curv_colim, 1.0); break;
-    case grad::par_R_d_25: seed(p.respiration, l.R_d_ / l.R_d_25); break;
-    case grad::par_PPFD: seed(p.ppfd, 1.0); break;
-    case grad::par_stem_b: seed(p.stem_b, 1.0); break;
-    case grad::par_stem_c: seed(p.stem_c, 1.0); break;
-    case grad::par_beta2: seed(p.beta2, 1.0); break;
-    case grad::par_cost_scale_TF24: seed(p.cost_scale, 1.0); break;
-    case grad::par_kmax: seed(p.kmax, 1.0); break;
-    default: break;
-  }
-  return p;
-}
 
 }  // namespace
 
@@ -185,10 +121,9 @@ int main() {
           const double sigma = l.opt_psi_stem_, ci = l.ci_;
           tangent pc = p;
           seed_direction(pc, 1.0);
-          const ProfitInputs<tangent> in = inputs_at<tangent>(l, pc, -1);
-          const SupplyStore<tangent> sup = supply_of<tangent>(l, -1, layers);
-          const double got = derivative_along(
-              l.profit_at<tangent>(sigma, ci, in, sup.view()));
+          const LeafInputs<tangent> in = fixture::leaf_inputs<tangent>(l, pc, -1);
+          const double got =
+              derivative_along(l.profit_at<tangent>(sigma, ci, in));
           ++M_compared; ++at;
           const double rel = std::abs(hand) > 0.0
                                  ? std::abs(got - hand) / std::abs(hand)
@@ -244,9 +179,8 @@ int main() {
         tangent2 pc2 = p;
         pc2.value().derivative() = 1.0;
         pc2.derivative().value() = 1.0;
-        const SupplyStore<tangent2> sup2 = supply_of<tangent2>(l, -1, layers);
         const tangent2 rr = l.profit_at<tangent2>(
-            sigma, ci, inputs_at<tangent2>(l, pc2, -1), sup2.view());
+            sigma, ci, fixture::leaf_inputs<tangent2>(l, pc2, -1));
         const double curv = rr.derivative().derivative();
         const double curv_rel =
             std::abs(rows.residual_slope) > 0.0
@@ -267,10 +201,8 @@ int main() {
             if (!std::isfinite(hand)) continue;
             tangent2 pin = p;
             pin.value().derivative() = 1.0;   // inner: d/dp
-            const SupplyStore<tangent2> sp =
-                supply_of<tangent2>(l, want[i], layers);
             const tangent2 r = l.profit_at<tangent2>(
-                sigma, ci, inputs_at<tangent2>(l, pin, want[i]), sp.view());
+                sigma, ci, fixture::leaf_inputs<tangent2>(l, pin, want[i]));
             const double got = r.derivative().derivative();
             ++grad_compared;
             if (hand != 0.0) ++live[i];
@@ -328,13 +260,9 @@ int main() {
         if (!l.profit_at_fixed_collar(p).feasible) continue;
         ++table_states;
 
-        const ProfitInputs<double> in = inputs_at<double>(l, p, -1);
-        const SupplyStore<double> st = supply_of<double>(l, -1, layers);
-        phylloptim::SupplyValues<double> sv;
-        sv.psi_soil = st.psi_soil; sv.r_R_H_min = st.r_R_H_min;
-        sv.r_R_V_sum = st.r_R_V_sum; sv.root_b = st.root_b; sv.root_c = st.root_c;
+        const LeafInputs<double> in = fixture::leaf_inputs<double>(l, p, -1);
         const Leaf::CollarCondition cond =
-            l.collar_condition(l.opt_psi_stem_, l.ci_, in, sv);
+            l.collar_condition(l.opt_psi_stem_, l.ci_, in);
 
         const double srel =
             std::abs(rows.residual_slope) > 0.0
@@ -354,21 +282,21 @@ int main() {
         // the trait; the table carries them against the temperature-adjusted
         // value the kernels take, so the comparison applies the ratio between
         // them. A caller on a tape needs no such step -- the chain is recorded.
-        ProfitInputs<double> g = cond.gradient;
+        phylloptim::ProfitInputs<double> g = cond.gradient.profit;
         g.vcmax *= l.vcmax_ / l.vcmax_25;
         g.transport_jmax *= l.jmax_ / l.jmax_25;
         g.respiration *= l.R_d_ / l.R_d_25;
         const double named[] = {g.vcmax, g.transport_jmax, g.quantum_yield,
                                 g.curv_elec, g.curv_colim, g.respiration, g.ppfd,
                                 g.stem_b, g.stem_c, g.beta2, g.cost_scale,
-                                g.kmax, cond.supply_gradient.root_b,
-                                cond.supply_gradient.root_c};
+                                g.kmax, cond.gradient.supply.root_b,
+                                cond.gradient.supply.root_c};
         for (std::size_t i = 0; i < want.size(); ++i) {
           const double hand = rows.dresidual[i];
           if (!std::isfinite(hand)) continue;
           const double got =
               i < 14 ? named[i]
-                     : cond.supply_gradient.psi_soil[std::size_t(i - 14)];
+                     : cond.gradient.supply.psi_soil[std::size_t(i - 14)];
           ++table_rows;
           const double rel = std::abs(got - hand) / scale;
           if (rel > worst_table) worst_table = rel;

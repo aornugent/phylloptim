@@ -20,6 +20,7 @@
 
 #include <phylloptim.hpp>
 
+#include "leaf_inputs.hpp"
 #include "root_network.hpp"
 
 #include <cmath>
@@ -29,7 +30,7 @@
 
 namespace grad = phylloptim::gradient;
 using phylloptim::Leaf;
-using phylloptim::ProfitInputs;
+using phylloptim::LeafInputs;
 using phylloptim::tangent;
 using phylloptim::seed_direction;
 using phylloptim::derivative_along;
@@ -110,37 +111,6 @@ const Named kInputs[] = {
     {grad::par_root_c, "root_c"},
 };
 
-// The inputs at the leaf's current state, with one of them seeded. The two _25
-// traits and dark respiration are carried as the temperature-adjusted value the
-// kernels take, so the chain from the trait is the ratio.
-ProfitInputs<tangent> inputs_at(const Leaf& l, int par) {
-  ProfitInputs<tangent> p{
-      tangent(l.vcmax_),        tangent(l.jmax_),
-      tangent(l.a),             tangent(l.curv_fact_elec_trans),
-      tangent(l.curv_fact_colim), tangent(l.PPFD_),
-      tangent(l.R_d_),          tangent(l.leaf_specific_conductance_max_),
-      tangent(l.stem_b),        tangent(l.stem_c),
-      tangent(l.beta2),         tangent(l.cost_scale_TF24),
-      tangent(l.opt_root_psi_),  tangent(0.0)};
-  switch (par) {
-    case grad::par_vcmax_25: seed_direction(p.vcmax, l.vcmax_ / l.vcmax_25); break;
-    case grad::par_jmax_25:
-      seed_direction(p.transport_jmax, l.jmax_ / l.jmax_25); break;
-    case grad::par_a: seed_direction(p.quantum_yield, 1.0); break;
-    case grad::par_curv_fact_elec_trans: seed_direction(p.curv_elec, 1.0); break;
-    case grad::par_curv_fact_colim: seed_direction(p.curv_colim, 1.0); break;
-    case grad::par_R_d_25: seed_direction(p.respiration, l.R_d_ / l.R_d_25); break;
-    case grad::par_PPFD: seed_direction(p.ppfd, 1.0); break;
-    case grad::par_stem_b: seed_direction(p.stem_b, 1.0); break;
-    case grad::par_stem_c: seed_direction(p.stem_c, 1.0); break;
-    case grad::par_beta2: seed_direction(p.beta2, 1.0); break;
-    case grad::par_cost_scale_TF24: seed_direction(p.cost_scale, 1.0); break;
-    case grad::par_kmax: seed_direction(p.kmax, 1.0); break;
-    default: break;
-  }
-  return p;
-}
-
 }  // namespace
 
 int main() {
@@ -209,10 +179,10 @@ int main() {
           const double hand = rows.held[i];
           if (!std::isfinite(hand)) continue;
           if (hand != 0.0) ++live[i];
-          const ProfitInputs<tangent> p = inputs_at(l, want[i]);
-          const SupplyStore store = supply_of(l, want[i], layers);
-          const double got = derivative_along(l.profit_at<tangent>(
-              l.opt_psi_stem_, l.ci_, p, store.view()));
+          const LeafInputs<tangent> p =
+              fixture::leaf_inputs<tangent>(l, tangent(l.opt_root_psi_), want[i]);
+          const double got = derivative_along(
+              l.profit_at<tangent>(l.opt_psi_stem_, l.ci_, p));
           ++compared;
           ++at;
           const double rel = std::abs(got - hand) / scale;

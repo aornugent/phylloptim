@@ -1485,7 +1485,14 @@ private:
       E_up += E_i;
 
     }
-    else if(std::abs((collar_at - soil_at) - grav_head_z_[i]) < 1e-8){
+    // ⚠️ A SNAP, NOT A GUARD, AND IT IS TAKEN ONLY AT DOUBLE. The general branch
+    // below is well defined here -- the span is the gravitational head and the
+    // integral is positive -- so this is a convenience that writes a flux the
+    // model calls zero. Its derivative is NOT zero: it is 1/r_R, and a scalar
+    // that carries one takes the general branch to get it. Left in place at
+    // double because the forward model's numbers are the snapped ones.
+    else if(std::is_same_v<T, double> &&
+            std::abs((collar_at - soil_at) - grav_head_z_[i]) < 1e-8){
       // If pressure difference perfectly balances gravity transpiration is equal to zero
       const T E_i = T(0.0); // [mol H2O / m^2 / s]
 

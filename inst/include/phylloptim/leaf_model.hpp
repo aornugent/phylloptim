@@ -83,6 +83,41 @@ struct ProfitInputs {
   }
 };
 
+// Everything the leaf answers for, at one scalar. Two halves because the supply
+// is per layer and the rest is not, and one struct because a caller holding two
+// would have to keep them in step.
+//
+// `psi_crit` and `root_psi_crit` sit here rather than in either half: profit
+// does not read them at all, and the bounds are the only thing that does.
+template <typename T>
+struct LeafInputs {
+  using value_type = T;
+  ProfitInputs<T> profit;
+  SupplyValues<T> supply;
+  T psi_crit{}, root_psi_crit{};
+
+  template <class U>
+  LeafInputs<U> rebind_from() const {
+    using odelia::util::to_passive;
+    LeafInputs<U> out;
+    out.profit = profit.template rebind_from<U>();
+    out.supply = supply.template rebind_from<U>();
+    out.psi_crit = U(to_passive(psi_crit));
+    out.root_psi_crit = U(to_passive(root_psi_crit));
+    return out;
+  }
+
+  // Every entry a caller can seed, in one order, so a gradient over them cannot
+  // be matched to them by hand.
+  std::vector<T*> field_ptrs() {
+    std::vector<T*> out = profit.field_ptrs();
+    for (T* q : supply.field_ptrs()) out.push_back(q);
+    out.push_back(&psi_crit);
+    out.push_back(&root_psi_crit);
+    return out;
+  }
+};
+
 class Leaf {
 public:
   //anonymous Leaf function as in canopy.h
@@ -1714,12 +1749,10 @@ public:
   // the caller's tape.
   struct CollarCondition {
     double slope = util::na_value;
-    ProfitInputs<double> gradient{};
-    SupplyValues<double> supply_gradient{};
+    LeafInputs<double> gradient{};
   };
   CollarCondition collar_condition(double sigma_star, double ci_star,
-                                   const ProfitInputs<double>& in,
-                                   const SupplyValues<double>& supply) const;
+                                   const LeafInputs<double>& in) const;
 
   // Profit at a collar the solve already placed, differentiable in every input
   // that reaches it AND in the collar itself. `sigma_star` and `ci_star` are the
@@ -1734,8 +1767,20 @@ public:
   // the envelope theorem -- but the marginal itself is what places the collar,
   // and every water output reads that.
   template <typename S>
-  S profit_at(double sigma_star, double ci_star, const ProfitInputs<S>& in,
-              const SupplyAt<S>& supply) const;
+  S profit_at(double sigma_star, double ci_star, const LeafInputs<S>& in) const;
+
+  // The collar where a pinned point sits, at one scalar, from the condition that
+  // pins it. Three arms because the dry end is a `min` of two limits that are
+  // different functions of the inputs -- and none of them needs a second
+  // derivative, so unlike the interior condition this composes on the caller's
+  // tape with nothing handed over.
+  //
+  //   Wet           E_up(x) = 0                       uptake vanishes
+  //   DryRootCrit   kmax*(G(psi_crit) - G(x)) - E_up(x) = 0
+  //                                                   T1 with the stem at its limit
+  //   DryRootPsiCrit  x = root_psi_crit                a registered constant
+  template <typename S>
+  S bound_at(WhichBound which, double bound_x, const LeafInputs<S>& in) const;
 
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
   template <typename T>
@@ -5396,8 +5441,8 @@ inline T Leaf::stem_integral_at(const T& psi, const ProfitInputs<T>& in) const {
 // than passed: two spellings of one fact is a place they can disagree.
 template <typename S>
 inline S Leaf::profit_at(double sigma_star, double ci_star,
-                         const ProfitInputs<S>& in,
-                         const SupplyAt<S>& supply) const {
+                         const LeafInputs<S>& whole) const {
+  const ProfitInputs<S>& in = whole.profit;
   const double gc_per_flux =
       atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
   const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
@@ -5408,7 +5453,7 @@ inline S Leaf::profit_at(double sigma_star, double ci_star,
   // could set it is a caller that could set it wrong.
   std::vector<S> per_layer;
   ProfitInputs<S> at = in;
-  at.flux = E_from_soil_at<S>(in.collar, supply, per_layer);
+  at.flux = E_from_soil_at<S>(in.collar, whole.supply.at(), per_layer);
 
   const S sigma = odelia::implicit_value<S>(
       sigma_star, at,
@@ -5445,43 +5490,55 @@ inline S Leaf::profit_at(double sigma_star, double ci_star,
 // Nothing here derives anything. Every number is a direction read off the same
 // evaluation the forward model runs.
 inline Leaf::CollarCondition Leaf::collar_condition(
-    double sigma_star, double ci_star, const ProfitInputs<double>& in,
-    const SupplyValues<double>& supply) const {
+    double sigma_star, double ci_star, const LeafInputs<double>& in) const {
   CollarCondition out;
-  out.gradient = in;                  // the shape; every entry is overwritten
-  out.supply_gradient = supply;
-
-  // dM/d(one entry), with that entry seeded in the outer layer. `collar_too`
-  // seeds the collar in the outer layer as well, which is the one case where
-  // this returns the slope rather than a row.
-  auto cross = [&](ProfitInputs<tangent2>& p, SupplyValues<tangent2>& s) -> double {
-    p.collar.value().derivative() = 1.0;
-    return profit_at<tangent2>(sigma_star, ci_star, p, s.at())
-        .derivative()
-        .derivative();
-  };
+  out.gradient = in;   // the shape; every entry below is overwritten
 
   std::vector<double*> rows = out.gradient.field_ptrs();
   for (std::size_t k = 0; k < rows.size(); ++k) {
-    ProfitInputs<tangent2> p = in.template rebind_from<tangent2>();
-    SupplyValues<tangent2> s = supply.template rebind_from<tangent2>();
-    odelia::ode::seed_direction(*p.field_ptrs()[k], 1.0);
-    *rows[k] = cross(p, s);
+    LeafInputs<tangent2> at = in.template rebind_from<tangent2>();
+    odelia::ode::seed_direction(*at.field_ptrs()[k], 1.0);
+    at.profit.collar.value().derivative() = 1.0;
+    *rows[k] =
+        profit_at<tangent2>(sigma_star, ci_star, at).derivative().derivative();
   }
-  // The collar is the last entry, and seeded in both layers its cross term is
-  // the curvature rather than a row -- so it is read out and not left standing
-  // where a caller would read it as one.
-  out.slope = out.gradient.collar;
-  out.gradient.collar = 0.0;
-
-  std::vector<double*> supply_rows = out.supply_gradient.field_ptrs();
-  for (std::size_t k = 0; k < supply_rows.size(); ++k) {
-    ProfitInputs<tangent2> p = in.template rebind_from<tangent2>();
-    SupplyValues<tangent2> s = supply.template rebind_from<tangent2>();
-    odelia::ode::seed_direction(*s.field_ptrs()[k], 1.0);
-    *supply_rows[k] = cross(p, s);
-  }
+  // The collar's own entry seeds both layers, so its cross term is the curvature
+  // rather than a row. Read out and cleared, so no caller reads it as one.
+  out.slope = out.gradient.profit.collar;
+  out.gradient.profit.collar = 0.0;
   return out;
+}
+
+// The three conditions that pin a collar. None is a second derivative, so each
+// is an ordinary implicit value: the residual at a tangent for its own slope,
+// and at S for the rest.
+template <typename S>
+inline S Leaf::bound_at(WhichBound which, double bound_x,
+                        const LeafInputs<S>& in) const {
+  const Leaf& leaf = *this;
+  if (which == WhichBound::DryRootPsiCrit) {
+    // The bound IS the trait, so it moves with that and with nothing else. No
+    // theorem to apply and none applied.
+    return in.root_psi_crit;
+  }
+  if (which == WhichBound::Wet) {
+    return odelia::implicit_value<S>(
+        bound_x, in, [&]<class T>(const T& x, const LeafInputs<T>& p) -> T {
+          std::vector<T> per_layer;
+          return leaf.template E_from_soil_at<T>(x, p.supply.at(), per_layer);
+        });
+  }
+  // The dry end is T1 with the stem held at its critical potential: the collar
+  // at which the soil delivers exactly what the column can still carry.
+  return odelia::implicit_value<S>(
+      bound_x, in, [&]<class T>(const T& x, const LeafInputs<T>& p) -> T {
+        std::vector<T> per_layer;
+        const T flux = leaf.template E_from_soil_at<T>(x, p.supply.at(), per_layer);
+        return p.profit.kmax *
+                   (leaf.template stem_integral_at<T>(p.psi_crit, p.profit) -
+                    leaf.template stem_integral_at<T>(x, p.profit)) -
+               flux;
+      });
 }
 
 } // namespace phylloptim
