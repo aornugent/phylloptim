@@ -12,6 +12,7 @@
 #include <phylloptim/single_potential.hpp>
 #include <phylloptim/vulnerability.hpp>
 
+#include <odelia/implicit_node.hpp>
 #include <odelia/interpolator.hpp>
 #include <odelia/tangent.hpp>
 
@@ -37,6 +38,39 @@ using tangent = odelia::ode::tangent_scalar<double>;
 using tangent2 = odelia::ode::tangent_scalar<tangent>;
 using odelia::ode::derivative_along;
 using odelia::ode::seed_direction;
+
+// The active inputs profit answers for at a held collar, at one scalar.
+//
+// The two _25 traits enter as the temperature-adjusted values the kernels take,
+// so a caller seeds them in the direction their ratio gives and the chain from
+// the trait is one factor rather than a pass of its own.
+//
+// `uptake` is the water the roots deliver at this collar, and it is an input
+// rather than something derived here because it is the roots model's output --
+// and it is the ONLY route the soil state reaches profit by: the stomatal
+// conductance is proportional to it and the stem potential is what carries it.
+template <typename T>
+struct ProfitInputs {
+  using value_type = T;
+  T vcmax, transport_jmax, quantum_yield, curv_elec, curv_colim, ppfd,
+      respiration;
+  T kmax, stem_b, stem_c, beta2, cost_scale;
+  T uptake;
+
+  // The same inputs with the derivatives taken off, which is what an implicit
+  // node asks for to take a slope with the parameters held still.
+  template <class U>
+  ProfitInputs<U> rebind_from() const {
+    using odelia::util::to_passive;
+    return {U(to_passive(vcmax)),         U(to_passive(transport_jmax)),
+            U(to_passive(quantum_yield)), U(to_passive(curv_elec)),
+            U(to_passive(curv_colim)),    U(to_passive(ppfd)),
+            U(to_passive(respiration)),   U(to_passive(kmax)),
+            U(to_passive(stem_b)),        U(to_passive(stem_c)),
+            U(to_passive(beta2)),         U(to_passive(cost_scale)),
+            U(to_passive(uptake))};
+  }
+};
 
 class Leaf {
 public:
@@ -1616,6 +1650,29 @@ public:
   template <typename T> T colimit_kernel(T assim_rubisco_limited_,
                                          T assim_electron_limited_,
                                          T curvature, T respiration) const;
+  // G(psi) at one scalar: the value the table holds, carrying the three slopes
+  // the closed form gives exactly.
+  //
+  // ⚠️ THE VALUE IS THE TABLE'S AND EVERY SLOPE IS THE CURVE'S. The solve ran on
+  // the table, so a value from the closed form would move the operating point;
+  // the table's own slope is a fit of the curve and differs from it by 1.15e-11,
+  // so a derivative taken from the table is a derivative of the fit.
+  template <typename T>
+  T stem_integral_at(const T& psi, const ProfitInputs<T>& in) const;
+
+  // Profit at a collar the solve already placed, differentiable in every input
+  // that reaches it. `sigma_star` and `ci_star` are the two the solve found
+  // there, so nothing here searches: they enter the two residuals that define
+  // them and come back carrying the implicit function theorem's quotient.
+  //
+  // The collar is HELD. At an interior point that is the whole answer, because
+  // the collar is where the marginal profit is zero and profit's response to it
+  // therefore is -- the envelope theorem, written as a collar that does not move
+  // rather than as a term that has to come out to zero.
+  template <typename S>
+  S profit_at(double collar, double sigma_star, double ci_star,
+              const ProfitInputs<S>& in) const;
+
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
   template <typename T>
   T hydraulic_cost_TF_kernel(T psi_stem, T b, T c, T beta, T scale) const;
@@ -5233,6 +5290,69 @@ inline void Leaf::solve_medlyn_ci_analytical(){
   assim_colimited_ = assim_colimited(ci_);
   stom_cond_CO2_ = medlyn_model_gs(assim_colimited_);
   return;
+}
+
+// G(psi) at one scalar. Every slope comes from the same series evaluation the
+// value's own table was built out of, so the three are one read rather than
+// three.
+template <typename T>
+inline T Leaf::stem_integral_at(const T& psi, const ProfitInputs<T>& in) const {
+  using odelia::util::to_passive;
+  const double at = to_passive(psi);
+  const double b = to_passive(in.stem_b);
+  const double c = to_passive(in.stem_c);
+  const VulnerabilityIntegralDerivatives d =
+      cumulative_vulnerability_integral_derivatives_at(at, b, c);
+  return T(stem_curve_integral(at, "Leaf::stem_integral_at")) +
+         T(d.dpsi) * (psi - T(at)) + T(d.db) * (in.stem_b - T(b)) +
+         T(d.dc) * (in.stem_c - T(c));
+}
+
+// The two residuals that place the operating point at a held collar, and the
+// profit that follows from them. Written as free templates taking their
+// parameters explicitly, because the theorem's denominator is taken with those
+// parameters held still and a closure over active values cannot be asked for
+// that.
+//
+//   T1  kmax * (G(sigma) - G(collar)) - E_up = 0     places the stem potential
+//   T2  A(ci) * k1 - gc * (ca - ci) * k2   = 0       places the intercellular CO2
+//
+// gc is proportional to the flux, so it is derived from the uptake here rather
+// than passed: two spellings of one fact is a place they can disagree.
+template <typename S>
+inline S Leaf::profit_at(double collar, double sigma_star, double ci_star,
+                         const ProfitInputs<S>& in) const {
+  const double gc_per_uptake =
+      atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
+  const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
+  const Leaf& leaf = *this;
+
+  const S sigma = odelia::implicit_value<S>(
+      sigma_star, in,
+      [&]<class T>(const T& s, const ProfitInputs<T>& p) -> T {
+        return p.kmax * (leaf.template stem_integral_at<T>(s, p) -
+                         leaf.template stem_integral_at<T>(T(collar), p)) -
+               p.uptake;
+      });
+
+  const S ci = odelia::implicit_value<S>(
+      ci_star, in,
+      [&]<class T>(const T& c, const ProfitInputs<T>& p) -> T {
+        const T J = leaf.template electron_transport_kernel<T>(
+            p.ppfd, p.quantum_yield, p.curv_elec, p.transport_jmax);
+        const T A = leaf.template assim_colimited_kernel<T>(
+            c, p.vcmax, J, p.curv_colim, p.respiration);
+        return A * umol_to_mol -
+               T(gc_per_uptake) * p.uptake * (T(leaf.ca_) - c) * T(inv_atm);
+      });
+
+  const S J = electron_transport_kernel<S>(in.ppfd, in.quantum_yield,
+                                           in.curv_elec, in.transport_jmax);
+  const S A = assim_colimited_kernel<S>(ci, in.vcmax, J, in.curv_colim,
+                                        in.respiration);
+  const S cost = hydraulic_cost_TF_kernel<S>(sigma, in.stem_b, in.stem_c,
+                                             in.beta2, in.cost_scale);
+  return A - cost;
 }
 
 } // namespace phylloptim
