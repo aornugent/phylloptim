@@ -21,6 +21,21 @@ namespace phylloptim {
 // The per-layer root hydraulic resistances the supply solve actually consumes.
 // Two of the five fields are load-bearing; see set_root_network on why the other
 // three are here at all.
+// The supply state one uptake reads, at one scalar. References rather than
+// values because the double path runs it ~10^3 times per collar solve and owns
+// the arrays already; the active path builds its own and hands them the same way.
+//
+// The layer geometry is not here. Depths belong to the architecture model rather
+// than to anything plant differentiates, so they stay where they are.
+template <typename T>
+struct SupplyAt {
+  const std::vector<T>& psi_soil;
+  const std::vector<T>& r_R_H_min;   // per layer, fully hydrated
+  const std::vector<T>& r_R_V_sum;   // per layer, cumulative from the surface
+  const T& root_b;
+  const T& root_c;
+};
+
 struct RootNetwork {
   // Minimum (fully-hydrated) horizontal, intra-layer soil->root resistance.
   // Divided by the vulnerability-weighted mean conductivity at the operating
@@ -670,13 +685,26 @@ public:
 
   // Uptake at a collar suction, against the soil state begin_solve() cached.
   // This is the hot path: ~10^3 calls per collar solve.
+  // At the soil state and the network this object holds, all in double.
+  void uptake(double T_collar, std::vector<double>& soil_consumption,
+              double& E_up) const {
+    uptake(T_collar, held_supply(), soil_consumption, E_up);
+  }
+
+  // At a supply the caller owns, which is how the active path reaches it: the
+  // resistances come from root carbon, and that arithmetic is the caller's.
   template <typename T>
-  void uptake(const T& T_collar, std::vector<T>& soil_consumption,
-              T& E_up) const {
-    uptake_impl<T>(T_collar, psi_soil_,
+  void uptake(const T& T_collar, const SupplyAt<T>& at_scalar,
+              std::vector<T>& soil_consumption, T& E_up) const {
+    uptake_impl<T>(T_collar, at_scalar,
                    root_vuln_integral_soil_.size() ==
                        static_cast<size_t>(max_soil_layer),
                    soil_consumption, E_up);
+  }
+
+  // This object's own state, as the view above. No copies: the arrays are here.
+  SupplyAt<double> held_supply() const {
+    return {psi_soil_, network_.r_R_H_min, network_.r_R_V_sum, root_b, root_c};
   }
 
   // Uptake against an arbitrary vector of layer suctions, for callers that
@@ -690,11 +718,13 @@ public:
   // address identity to be fast. PLAN 7b-ii trap 3.
   void uptake_at(double T_collar, const std::vector<double>& psi_soil,
                  std::vector<double>& soil_consumption, double& E_up) const {
-    uptake_impl(T_collar, psi_soil,
-                (&psi_soil == &psi_soil_) &&
-                    root_vuln_integral_soil_.size() ==
-                        static_cast<size_t>(max_soil_layer),
-                soil_consumption, E_up);
+    const SupplyAt<double> at_scalar{psi_soil, network_.r_R_H_min,
+                                     network_.r_R_V_sum, root_b, root_c};
+    uptake_impl<double>(T_collar, at_scalar,
+                        (&psi_soil == &psi_soil_) &&
+                            root_vuln_integral_soil_.size() ==
+                                static_cast<size_t>(max_soil_layer),
+                        soil_consumption, E_up);
   }
 
   // Analytic d(E_up)/d(T_collar): the collar-suction derivative of the uptake,
@@ -1289,11 +1319,14 @@ private:
   // The soil state and the network are held. The collar is what moves, which is
   // what the marginal profit reads.
   template <typename T>
-  void uptake_impl(const T& T_collar, const std::vector<double>& psi_soil,
+  void uptake_impl(const T& T_collar, const SupplyAt<T>& at_scalar,
                    bool use_integral_cache,
                    std::vector<T>& soil_consumption, T& E_up) const {
     using odelia::util::to_passive;
+    const std::vector<T>& psi_soil = at_scalar.psi_soil;
     const double collar_at = to_passive(T_collar);
+    const double root_b0 = to_passive(at_scalar.root_b);
+    const double root_c0 = to_passive(at_scalar.root_c);
 
     if (!std::isfinite(collar_at)) {
       util::stop("E_from_Soil_to_Root_Collar invalid input; T_collar=" + util::to_string(collar_at));
@@ -1335,11 +1368,12 @@ private:
     // the SMALLER suction, where the signed convention took a minimum. Written as
     // the select std::min compiles to, so the collar can carry a derivative
     // through whichever end it is.
-    const double soil_at = psi_soil[std::size_t(i)];
-    const T T_src_min = (collar_at < soil_at) ? T_collar : T(soil_at);
+    const T& psi_i = psi_soil[std::size_t(i)];
+    const double soil_at = to_passive(psi_i);
+    const T T_src_min = (collar_at < soil_at) ? T_collar : psi_i;
 
     // The drier end: the LARGER suction.
-    const T T_src_max = (soil_at < collar_at) ? T_collar : T(soil_at);
+    const T T_src_max = (soil_at < collar_at) ? T_collar : psi_i;
 
      // If root collar soil water potential equals the soil water potential in a given layer
     if(std::abs(collar_at - soil_at) < 1e-8){
@@ -1358,15 +1392,16 @@ private:
       }
 
       // Fraction of conductance in roots in a given layer at the driest suction
-      const double r_R_H = network_.r_R_H_min[i] / f_ri; // [MPa * s * (mol H2O)^-1]
+      const T r_R_H = at_scalar.r_R_H_min[std::size_t(i)] / f_ri; // [MPa * s * (mol H2O)^-1]
 
       // Total root resistance (horizantal plus vertical)
-      const double r_R = r_R_H + network_.r_R_V_sum[i];
+      const T r_R = r_R_H + at_scalar.r_R_V_sum[std::size_t(i)];
 
       // Transpiration is equivalent to gravitational water loss (i.e. layer gains
-      // water). The collar does not appear, so this branch carries none of its
-      // derivative -- which is what the model says about it.
-      const T E_i = T(-grav_head_z_[i] / r_R);
+      // water). The collar does not appear, so this branch carries the
+      // resistances' derivative and none of the collar's -- which is what the
+      // model says about it.
+      const T E_i = T(-grav_head_z_[i]) / r_R;
 
       soil_consumption[i] = E_i;
       E_up += E_i;
@@ -1398,6 +1433,11 @@ private:
       // The cumulative curve, carrying its own integrand as the slope: the value
       // is the table's, because the solve ran on the table, and the derivative is
       // the curve's, which is what root_vuln_integral_deriv_at is.
+      // The cumulative root curve, carrying every slope the same curve gives:
+      // its own integrand in the query, the integrand's slope for the second
+      // order the collar's condition takes, and the two trait derivatives with
+      // their cross terms in the query. Five reads of one curve, none of them a
+      // hand-kept mirror of it.
       auto G_integral = [&](const T& arg) -> T {
         const double q = to_passive(arg);
         if constexpr (std::is_same_v<T, double>) {
@@ -1407,13 +1447,17 @@ private:
           }
           return root_vuln_integral_at(q);
         } else {
-          // Second order in the query, because the collar's own condition is a
-          // second derivative of the profit this feeds. root_vuln_integral_deriv_at
-          // is the curve and root_vuln_integrand_deriv_at is its slope.
           const T step = arg - T(q);
-          return T(root_vuln_integral_at(q)) +
-                 T(root_vuln_integral_deriv_at(q)) * step +
-                 T(0.5 * root_vuln_integrand_deriv_at(q)) * step * step;
+          const T db = at_scalar.root_b - T(root_b0);
+          const T dc = at_scalar.root_c - T(root_c0);
+          const T slope =
+              T(root_vuln_integral_deriv_at(q)) +
+              T(root_vuln_integrand_dtrait(q, CurveTrait::Position)) * db +
+              T(root_vuln_integrand_dtrait(q, CurveTrait::Steepness)) * dc;
+          return T(root_vuln_integral_at(q)) + slope * step +
+                 T(0.5 * root_vuln_integrand_deriv_at(q)) * step * step +
+                 T(root_vuln_integral_dtrait(q, CurveTrait::Position)) * db +
+                 T(root_vuln_integral_dtrait(q, CurveTrait::Steepness)) * dc;
         }
       };
 
@@ -1441,16 +1485,17 @@ private:
     const T span = T_src_max - T_src_min;
 
     // Find the horizantal resistance in a given layer by dividing the minimum resistance (i.e. maximum conductivity) by the fractional loss of conductivity
-    const T r_R_H = network_.r_R_H_min[i] * span / integral; // [MPa * s * (mol H2O)^-1]
+    const T r_R_H =
+        at_scalar.r_R_H_min[std::size_t(i)] * span / integral; // [MPa * s * (mol H2O)^-1]
 
     // Find the total resistance in a given layer by adding the vertical resistance in that layer
-    const T r_R = r_R_H + network_.r_R_V_sum[i]; // [MPa * s * (mol H2O)^-1]
+    const T r_R = r_R_H + at_scalar.r_R_V_sum[std::size_t(i)]; // [MPa * s * (mol H2O)^-1]
 
     // Transpiration is equal to the potential gradient between the root collar
     // and the soil, accounting for gravitational potential. In magnitudes the
     // collar has to pull HARDER than the soil holds, plus enough to lift the
     // water -- hence the subtraction order. E_i < 0 still means the layer gains.
-    const T E_i = (T_collar - soil_at - grav_head_z_[i]) / r_R; // [mol H2O / m^2 / s]
+    const T E_i = (T_collar - psi_i - T(grav_head_z_[i])) / r_R; // [mol H2O / m^2 / s]
 
     soil_consumption[i] = E_i;
     E_up += E_i;

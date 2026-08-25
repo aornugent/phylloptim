@@ -72,6 +72,35 @@ grad::Drivers drivers(double psi_soil, double ppfd, int layers) {
 
 struct Named { int par; const char* name; };
 
+// The supply at one scalar, owned so the view has something to point at.
+template <class T>
+struct SupplyStore {
+  std::vector<T> psi_soil, r_R_H_min, r_R_V_sum;
+  T root_b, root_c;
+  phylloptim::SupplyAt<T> view() const {
+    return {psi_soil, r_R_H_min, r_R_V_sum, root_b, root_c};
+  }
+};
+
+template <class T>
+SupplyStore<T> supply_of(const Leaf& l, int par, int n_layers) {
+  const phylloptim::SupplyAt<double> held = l.held_supply();
+  SupplyStore<T> out;
+  for (double v : held.psi_soil) out.psi_soil.push_back(T(v));
+  for (double v : held.r_R_H_min) out.r_R_H_min.push_back(T(v));
+  for (double v : held.r_R_V_sum) out.r_R_V_sum.push_back(T(v));
+  out.root_b = T(held.root_b);
+  out.root_c = T(held.root_c);
+  if (par == grad::par_root_b) seed_direction(out.root_b, 1.0);
+  if (par == grad::par_root_c) seed_direction(out.root_c, 1.0);
+  const int layer = par - grad::par_psi_soil_first;
+  if (layer >= 0 && layer < n_layers &&
+      layer < static_cast<int>(out.psi_soil.size())) {
+    seed_direction(out.psi_soil[std::size_t(layer)], 1.0);
+  }
+  return out;
+}
+
 const Named kInputs[] = {
     {grad::par_vcmax_25, "vcmax_25"}, {grad::par_jmax_25, "jmax_25"},
     {grad::par_a, "a"},               {grad::par_curv_fact_elec_trans, "curv_elec"},
@@ -79,6 +108,7 @@ const Named kInputs[] = {
     {grad::par_PPFD, "PPFD"},         {grad::par_stem_b, "stem_b"},
     {grad::par_stem_c, "stem_c"},     {grad::par_beta2, "beta2"},
     {grad::par_cost_scale_TF24, "cost_scale"}, {grad::par_kmax, "kmax"},
+    {grad::par_root_b, "root_b"},     {grad::par_root_c, "root_c"},
 };
 
 // The inputs at the leaf's current state and a given collar, at whatever scalar.
@@ -86,7 +116,6 @@ const Named kInputs[] = {
 // is what separates dM/dtheta from dM/dp.
 template <class T>
 ProfitInputs<T> inputs_at(const Leaf& l, const T& collar, int seed_par) {
-  std::vector<T> per_layer;
   ProfitInputs<T> p{
       T(l.vcmax_),   T(l.jmax_),   T(l.a),      T(l.curv_fact_elec_trans),
       T(l.curv_fact_colim), T(l.PPFD_), T(l.R_d_),
@@ -107,9 +136,6 @@ ProfitInputs<T> inputs_at(const Leaf& l, const T& collar, int seed_par) {
     case grad::par_kmax: seed_direction(p.kmax, 1.0); break;
     default: break;
   }
-  // The flux the soil delivers at this collar, carrying whatever the collar
-  // carries. Taken after the seeding so it inherits it.
-  p.flux = l.E_from_soil_at<T>(p.collar, per_layer);
   return p;
 }
 
@@ -149,7 +175,9 @@ int main() {
           tangent pc = p;
           seed_direction(pc, 1.0);
           const ProfitInputs<tangent> in = inputs_at<tangent>(l, pc, -1);
-          const double got = derivative_along(l.profit_at<tangent>(sigma, ci, in));
+          const SupplyStore<tangent> sup = supply_of<tangent>(l, -1, layers);
+          const double got = derivative_along(
+              l.profit_at<tangent>(sigma, ci, in, sup.view()));
           ++M_compared; ++at;
           const double rel = std::abs(hand) > 0.0
                                  ? std::abs(got - hand) / std::abs(hand)
@@ -171,6 +199,9 @@ int main() {
               "point", "curvature", "worst input", "worst rel");
   double worst_curv = 0.0, worst_grad = 0.0;
   int grad_compared = 0;
+  // An input whose reference row is zero everywhere agrees perfectly and proves
+  // nothing, so each one's live count is reported beside the worst.
+  std::vector<int> live(sizeof(kInputs) / sizeof(kInputs[0]) + 1, 0);
 
   for (double psi_soil : {0.2, 0.8, 1.5, 2.5, 3.5, 4.5}) {
     for (double ppfd : {30.0, 300.0, 1000.0, 2000.0}) {
@@ -184,6 +215,10 @@ int main() {
 
         std::vector<int> want;
         for (const Named& in : kInputs) want.push_back(in.par);
+        want.push_back(grad::par_psi_soil_first);
+        std::vector<const char*> names;
+        for (const Named& in : kInputs) names.push_back(in.name);
+        names.push_back("psi_soil_1");
         std::vector<int> out{grad::out_profit};
         const grad::RowRequest req{out.data(), out.size(), want.data(), want.size()};
         grad::Rows rows;
@@ -198,8 +233,9 @@ int main() {
         tangent2 pc2 = p;
         pc2.value().derivative() = 1.0;
         pc2.derivative().value() = 1.0;
-        const tangent2 rr = l.profit_at<tangent2>(sigma, ci,
-                                                  inputs_at<tangent2>(l, pc2, -1));
+        const SupplyStore<tangent2> sup2 = supply_of<tangent2>(l, -1, layers);
+        const tangent2 rr = l.profit_at<tangent2>(
+            sigma, ci, inputs_at<tangent2>(l, pc2, -1), sup2.view());
         const double curv = rr.derivative().derivative();
         const double curv_rel =
             std::abs(rows.residual_slope) > 0.0
@@ -220,12 +256,15 @@ int main() {
             if (!std::isfinite(hand)) continue;
             tangent2 pin = p;
             pin.value().derivative() = 1.0;   // inner: d/dp
+            const SupplyStore<tangent2> sp =
+                supply_of<tangent2>(l, want[i], layers);
             const tangent2 r = l.profit_at<tangent2>(
-                sigma, ci, inputs_at<tangent2>(l, pin, kInputs[i].par));
+                sigma, ci, inputs_at<tangent2>(l, pin, want[i]), sp.view());
             const double got = r.derivative().derivative();
             ++grad_compared;
+            if (hand != 0.0) ++live[i];
             const double rel = std::abs(got - hand) / scale;
-            if (rel > worst) { worst = rel; wn = kInputs[i].name; }
+            if (rel > worst) { worst = rel; wn = names[i]; }
           }
         }
         if (worst > worst_grad) worst_grad = worst;
@@ -236,7 +275,14 @@ int main() {
       }
     }
   }
-  std::printf("\n   %d condition rows.\n", grad_compared);
+  std::printf("\n   states in which each condition row is non-zero:\n    ");
+  {
+    std::vector<const char*> nm;
+    for (const Named& in : kInputs) nm.push_back(in.name);
+    nm.push_back("psi_soil_1");
+    for (std::size_t i = 0; i < nm.size(); ++i) std::printf("%s=%d ", nm[i], live[i]);
+  }
+  std::printf("\n\n   %d condition rows.\n", grad_compared);
   std::printf("   dM/dp     worst %.3e\n", worst_curv);
   std::printf("   dM/dtheta worst %.3e\n", worst_grad);
   return 0;

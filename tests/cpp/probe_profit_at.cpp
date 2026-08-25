@@ -64,6 +64,35 @@ grad::Drivers drivers(double psi_soil, double ppfd, int layers) {
 
 struct Named { int par; const char* name; };
 
+// The supply at one scalar, owned so the view has something to point at. This is
+// the shape plant builds: the resistances come from root carbon, which is the
+// caller's arithmetic, so they arrive as values rather than being derived here.
+struct SupplyStore {
+  std::vector<tangent> psi_soil, r_R_H_min, r_R_V_sum;
+  tangent root_b, root_c;
+  phylloptim::SupplyAt<tangent> view() const {
+    return {psi_soil, r_R_H_min, r_R_V_sum, root_b, root_c};
+  }
+};
+
+SupplyStore supply_of(const Leaf& l, int par, int n_layers) {
+  const phylloptim::SupplyAt<double> held = l.held_supply();
+  SupplyStore out;
+  for (double v : held.psi_soil) out.psi_soil.push_back(tangent(v));
+  for (double v : held.r_R_H_min) out.r_R_H_min.push_back(tangent(v));
+  for (double v : held.r_R_V_sum) out.r_R_V_sum.push_back(tangent(v));
+  out.root_b = tangent(held.root_b);
+  out.root_c = tangent(held.root_c);
+  if (par == grad::par_root_b) seed_direction(out.root_b, 1.0);
+  if (par == grad::par_root_c) seed_direction(out.root_c, 1.0);
+  const int layer = par - grad::par_psi_soil_first;
+  if (layer >= 0 && layer < n_layers &&
+      layer < static_cast<int>(out.psi_soil.size())) {
+    seed_direction(out.psi_soil[std::size_t(layer)], 1.0);
+  }
+  return out;
+}
+
 const Named kInputs[] = {
     {grad::par_vcmax_25, "vcmax_25"},
     {grad::par_jmax_25, "jmax_25"},
@@ -77,6 +106,8 @@ const Named kInputs[] = {
     {grad::par_beta2, "beta2"},
     {grad::par_cost_scale_TF24, "cost_scale"},
     {grad::par_kmax, "kmax"},
+    {grad::par_root_b, "root_b"},
+    {grad::par_root_c, "root_c"},
 };
 
 // The inputs at the leaf's current state, with one of them seeded. The two _25
@@ -107,10 +138,6 @@ ProfitInputs<tangent> inputs_at(const Leaf& l, int par) {
     case grad::par_kmax: seed_direction(p.kmax, 1.0); break;
     default: break;
   }
-  // The flux the soil delivers at this collar. Held, like the collar: this
-  // measures profit's rows at a point that does not move.
-  std::vector<tangent> per_layer;
-  p.flux = l.E_from_soil_at<tangent>(p.collar, per_layer);
   return p;
 }
 
@@ -124,6 +151,10 @@ int main() {
 
   double worst_interior = 0.0, worst_pinned = 0.0;
   int compared = 0, states = 0;
+  // ⚠️ AN INPUT WHOSE REFERENCE ROW IS ZERO EVERYWHERE AGREES PERFECTLY AND
+  // PROVES NOTHING. Counted per input, and reported, so a row that never fires
+  // is visible rather than folded into the worst.
+  std::vector<int> live(sizeof(kInputs) / sizeof(kInputs[0]) + 1, 0);
 
   for (double psi_soil : {0.2, 0.8, 1.5, 2.5, 3.5, 4.5}) {
     for (double ppfd : {30.0, 300.0, 1000.0, 2000.0}) {
@@ -143,6 +174,11 @@ int main() {
 
         std::vector<int> want;
         for (const Named& in : kInputs) want.push_back(in.par);
+        // One soil potential too, so the widening is scored rather than assumed.
+        want.push_back(grad::par_psi_soil_first);
+        std::vector<const char*> names;
+        for (const Named& in : kInputs) names.push_back(in.name);
+        names.push_back("psi_soil_1");
         std::vector<int> out{grad::out_profit};
         const grad::RowRequest req{out.data(), out.size(), want.data(),
                                    want.size()};
@@ -172,14 +208,16 @@ int main() {
         for (std::size_t i = 0; i < want.size(); ++i) {
           const double hand = rows.held[i];
           if (!std::isfinite(hand)) continue;
-          const ProfitInputs<tangent> p = inputs_at(l, kInputs[i].par);
-          const double got = derivative_along(
-              l.profit_at<tangent>(l.opt_psi_stem_, l.ci_, p));
+          if (hand != 0.0) ++live[i];
+          const ProfitInputs<tangent> p = inputs_at(l, want[i]);
+          const SupplyStore store = supply_of(l, want[i], layers);
+          const double got = derivative_along(l.profit_at<tangent>(
+              l.opt_psi_stem_, l.ci_, p, store.view()));
           ++compared;
           ++at;
           const double rel = std::abs(got - hand) / scale;
           if (rel > worst) {
-            worst = rel; worst_name = kInputs[i].name;
+            worst = rel; worst_name = names[i];
             worst_rows = hand; worst_got = got;
           }
         }
@@ -192,7 +230,16 @@ int main() {
       }
     }
   }
-  std::printf("\n   %d rows over %d states.\n", compared, states);
+  std::printf("\n   states in which each input's reference row is non-zero:\n    ");
+  {
+    std::vector<const char*> nm;
+    for (const Named& in : kInputs) nm.push_back(in.name);
+    nm.push_back("psi_soil_1");
+    for (std::size_t i = 0; i < nm.size(); ++i) {
+      std::printf("%s=%d ", nm[i], live[i]);
+    }
+  }
+  std::printf("\n\n   %d rows over %d states.\n", compared, states);
   std::printf("   interior: worst %.3e\n", worst_interior);
   std::printf("   pinned  : worst %.3e   (the collar moves there; profit_at holds it)\n",
               worst_pinned);

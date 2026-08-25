@@ -1667,15 +1667,29 @@ public:
   // conductance is proportional to the flux and the stem potential is what
   // carries it.
   template <typename T>
-  T E_from_soil_at(const T& collar, std::vector<T>& per_layer) const {
+  T E_from_soil_at(const T& collar, const SupplyAt<T>& supply,
+                   std::vector<T>& per_layer) const {
     per_layer.assign(static_cast<std::size_t>(supply_n_layers()), T(0.0));
     T out = T(0.0);
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer: roots_.uptake(collar, per_layer, out); break;
-      default:                     single_.uptake(collar, per_layer, out); break;
+    if (supply_kind_ == SupplyKind::MultiLayer) {
+      roots_.uptake(collar, supply, per_layer, out);
+      return out;
     }
-    return out;
+    if constexpr (std::is_same_v<T, double>) {
+      single_.uptake_at(collar, supply.psi_soil, per_layer, out);
+      return out;
+    } else {
+      // Refused rather than answered with zeros. The single-potential path's
+      // resistance is a parameter of its own and no differentiated caller is on
+      // that path; a silent zero row here would read as an insensitivity.
+      util::stop("E_from_soil_at: the single-potential supply path has no "
+                 "differentiated form; the multi-layer one is what a gradient "
+                 "runs on");
+    }
   }
+
+  // This leaf's own supply state, as the view the quadrature takes. No copies.
+  SupplyAt<double> held_supply() const { return roots_.held_supply(); }
 
   // Profit at a collar the solve already placed, differentiable in every input
   // that reaches it AND in the collar itself. `sigma_star` and `ci_star` are the
@@ -1690,8 +1704,8 @@ public:
   // the envelope theorem -- but the marginal itself is what places the collar,
   // and every water output reads that.
   template <typename S>
-  S profit_at(double sigma_star, double ci_star,
-              const ProfitInputs<S>& in) const;
+  S profit_at(double sigma_star, double ci_star, const ProfitInputs<S>& in,
+              const SupplyAt<S>& supply) const;
 
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
   template <typename T>
@@ -5352,14 +5366,22 @@ inline T Leaf::stem_integral_at(const T& psi, const ProfitInputs<T>& in) const {
 // than passed: two spellings of one fact is a place they can disagree.
 template <typename S>
 inline S Leaf::profit_at(double sigma_star, double ci_star,
-                         const ProfitInputs<S>& in) const {
+                         const ProfitInputs<S>& in,
+                         const SupplyAt<S>& supply) const {
   const double gc_per_flux =
       atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
   const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
   const Leaf& leaf = *this;
 
+  // The flux the soil delivers at this collar, filled HERE rather than by the
+  // caller: it is a function of the collar and the supply, so a caller that
+  // could set it is a caller that could set it wrong.
+  std::vector<S> per_layer;
+  ProfitInputs<S> at = in;
+  at.flux = E_from_soil_at<S>(in.collar, supply, per_layer);
+
   const S sigma = odelia::implicit_value<S>(
-      sigma_star, in,
+      sigma_star, at,
       [&]<class T>(const T& s, const ProfitInputs<T>& p) -> T {
         return p.kmax * (leaf.template stem_integral_at<T>(s, p) -
                          leaf.template stem_integral_at<T>(p.collar, p)) -
@@ -5367,7 +5389,7 @@ inline S Leaf::profit_at(double sigma_star, double ci_star,
       });
 
   const S ci = odelia::implicit_value<S>(
-      ci_star, in,
+      ci_star, at,
       [&]<class T>(const T& c, const ProfitInputs<T>& p) -> T {
         const T J = leaf.template electron_transport_kernel<T>(
             p.ppfd, p.quantum_yield, p.curv_elec, p.transport_jmax);
@@ -5377,12 +5399,12 @@ inline S Leaf::profit_at(double sigma_star, double ci_star,
                T(gc_per_flux) * p.flux * (T(leaf.ca_) - c) * T(inv_atm);
       });
 
-  const S J = electron_transport_kernel<S>(in.ppfd, in.quantum_yield,
-                                           in.curv_elec, in.transport_jmax);
-  const S A = assim_colimited_kernel<S>(ci, in.vcmax, J, in.curv_colim,
-                                        in.respiration);
-  const S cost = hydraulic_cost_TF_kernel<S>(sigma, in.stem_b, in.stem_c,
-                                             in.beta2, in.cost_scale);
+  const S J = electron_transport_kernel<S>(at.ppfd, at.quantum_yield,
+                                           at.curv_elec, at.transport_jmax);
+  const S A = assim_colimited_kernel<S>(ci, at.vcmax, J, at.curv_colim,
+                                        at.respiration);
+  const S cost = hydraulic_cost_TF_kernel<S>(sigma, at.stem_b, at.stem_c,
+                                             at.beta2, at.cost_scale);
   return A - cost;
 }
 
