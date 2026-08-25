@@ -88,6 +88,45 @@ struct RootNetwork {
   std::vector<double> c_r_V, c_r_H, r_R_V;
 };
 
+// The two resistances the supply reads, from the carbon invested in each layer,
+// at one scalar. This is the whole of the architecture model that a derivative
+// travels through: the three other fields the double form fills are diagnostics
+// with no reader on that path.
+//
+// Templated so the caller that owns the model -- the one that decides how much
+// carbon goes where -- can run it at its own scalar and keep the chain on its own
+// tape, rather than asking for a hand-written d(uptake)/d(carbon).
+template <typename T>
+inline void root_resistances_from_carbon(
+    const std::vector<T>& root_carbon_per_layer, double dz, double beta_R_H,
+    double beta_R_V, std::vector<T>& r_R_H_min, std::vector<T>& r_R_V_sum) {
+  const std::size_t n = root_carbon_per_layer.size();
+  r_R_H_min.assign(n, T(0.0));
+  r_R_V_sum.assign(n, T(0.0));
+  const double dz_sq = dz * dz;
+  T vertical_resistance_sum = T(0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    const T& root_mass = root_carbon_per_layer[i];
+    const double at = odelia::util::to_passive(root_mass);
+    if (at < 0.0) {
+      util::stop("Root mass lower than 0");
+    }
+    // A layer with no carbon has no resistance to give and none to accumulate;
+    // the running sum passes through it unchanged.
+    if (at == 0.0) {
+      r_R_V_sum[i] = vertical_resistance_sum;
+      continue;
+    }
+    const T c_r_v = root_mass / 3.0;
+    const T c_r_h = root_mass * 2.0 / 3.0;
+    r_R_H_min[i] = T(beta_R_H) / c_r_h;
+    // The vertical conductivity is likely linearly proportional to the root area
+    // projected onto the horizontal plane, hence dz^2.
+    vertical_resistance_sum += T(beta_R_V * dz_sq) / c_r_v;
+    r_R_V_sum[i] = vertical_resistance_sum;
+  }
+}
+
 // The root-architecture model: how carbon invested in roots becomes hydraulic
 // resistance.
 //
