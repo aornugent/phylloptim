@@ -832,23 +832,6 @@ public:
     return total_mol * kg_per_mol_h2o;  // match E_up's kg units
   }
 
-  // The same, per layer rather than summed, in kg to match E_up.
-  //
-  // A stand adjoint needs this and the total will not do: uptake reaches the
-  // shared soil one layer at a time, so the operating point's movement has to be
-  // priced into each layer's flux separately. Diagonality is not the point here
-  // -- this is one column, d(E_i)/d(collar), and every layer has one.
-  //
-  // Summing this in layer order and multiplying once is what duptake_dpsi does,
-  // so the two cannot disagree.
-  void duptake_dpsi_by_layer(double T_collar,
-                             const std::vector<double>& psi_soil,
-                             std::vector<double>& out) const {
-    duptake_dpsi_impl(T_collar, psi_soil, out);
-    for (double& v : out) {
-      v *= kg_per_mol_h2o;
-    }
-  }
 
   // d2(E_up)/d(T_collar)2, in kg to match the conductance above. Mirrors
   // duptake_dpsi_impl term for term with one more derivative of each moving part:

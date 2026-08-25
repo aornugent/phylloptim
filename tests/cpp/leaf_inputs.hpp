@@ -70,6 +70,21 @@ void seed(T& x, double direction) {
   }
 }
 
+// The supply a solved leaf is holding, at one scalar and with nothing seeded.
+// Where a caller wants a seeded one it goes through leaf_inputs below, which
+// runs the carbon through the architecture model on its way.
+template <class T>
+phylloptim::SupplyValues<T> supply_of(const phylloptim::Leaf& l) {
+  const phylloptim::SupplyAt<double> held = l.held_supply();
+  phylloptim::SupplyValues<T> out;
+  for (double v : held.psi_soil) out.psi_soil.push_back(T(v));
+  for (double v : held.r_R_H_min) out.r_R_H_min.push_back(T(v));
+  for (double v : held.r_R_V_sum) out.r_R_V_sum.push_back(T(v));
+  out.root_b = T(held.root_b);
+  out.root_c = T(held.root_c);
+  return out;
+}
+
 // Everything the leaf answers for, read off a solved leaf, with `which` seeded.
 //
 // The two _25 traits and dark respiration enter as the temperature-adjusted

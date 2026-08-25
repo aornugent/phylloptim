@@ -1058,44 +1058,8 @@ public:
     double bound = 0.0;                   // where the row was taken
     bool finite = false;
   };
-  BoundRow bound_row(WhichBound which);
 
-  // Flattened for the R boundary, as operating_point_values is and for the same
-  // reason. `which` is 0 wet, 1 dry-root-crit, 2 dry-root-psi-crit. Layout:
-  // [finite, bound, residual_slope, d_dkappa, d_dpsi_crit, d_droot_psi_crit,
-  //  d_dstem_b, d_dstem_c, d_droot_b, d_droot_c, d_dpsi_soil...,
-  //  d_droot_carbon...]. The position of each is the interface, and the two
-  //  variable-length blocks come last so that an index means the same quantity
-  //  whatever the layer count is.
-  // Flattened for R: [finite, d_dpsi_stem, d_dstem_b, d_dstem_c, d_dbeta2,
-  // d_dcost_scale]. Position is the interface.
-  std::vector<double> hydraulic_cost_row_values(double psi_stem) const {
-    const HydraulicCostRow r = hydraulic_cost_row(psi_stem);
-    return {r.finite ? 1.0 : 0.0, r.d_dpsi_stem, r.d_dstem_b,
-            r.d_dstem_c, r.d_dbeta2, r.d_dcost_scale};
-  }
 
-  std::vector<double> bound_row_values(int which) {
-    const WhichBound w = which == 0   ? WhichBound::Wet
-                         : which == 1 ? WhichBound::DryRootCrit
-                                      : WhichBound::DryRootPsiCrit;
-    const BoundRow r = bound_row(w);
-    std::vector<double> out;
-    out.reserve(10 + r.d_dpsi_soil.size() + r.d_droot_carbon.size());
-    out.push_back(r.finite ? 1.0 : 0.0);
-    out.push_back(r.bound);
-    out.push_back(r.residual_slope);
-    out.push_back(r.d_dkappa);
-    out.push_back(r.d_dpsi_crit);
-    out.push_back(r.d_droot_psi_crit);
-    out.push_back(r.d_dstem_b);
-    out.push_back(r.d_dstem_c);
-    out.push_back(r.d_droot_b);
-    out.push_back(r.d_droot_c);
-    out.insert(out.end(), r.d_dpsi_soil.begin(), r.d_dpsi_soil.end());
-    out.insert(out.end(), r.d_droot_carbon.begin(), r.d_droot_carbon.end());
-    return out;
-  }
 
   // The same, flattened for the R boundary: [feasible, profit, uptake_1 ...].
   // Flat for operating_point_values' reason, and with the same obligation --
@@ -1176,24 +1140,6 @@ public:
     double dprofit_dbeta2, dprofit_dcost_scale;
     double dmarginal_dbeta2, dmarginal_dcost_scale;
   };
-  // Takes dpsi_stem/dp rather than re-forming it: it is one quantity, the
-  // marginal-profit evaluation forms it, and three copies of the same arithmetic
-  // is three places for it to drift.
-  // d(marginal profit)/dpsi_stem with the transport's collar response held: the
-  // one coefficient of the condition that no first-order quantity carries.
-  //
-  //   condition = dprofit_dpsistem_ * V + dprofit_dpsi_held_stem_
-  //   this      = d(dprofit_dpsistem_)/dpsi_stem * V
-  //                 + d(dprofit_dpsi_held_stem_)/dpsi_stem
-  //
-  // Both terms need a second derivative of each kernel and the concentration's
-  // own second derivatives, and the concentration's residual is algebraic, so its
-  // theorem applies twice. Nothing here reads a table, a fit or a step.
-  //
-  // False where the derivation does not describe the branch: with the energy
-  // balance on the collar reaches profit by two further routes, and where the
-  // concentration's residual has no slope there is nothing to divide by.
-  bool condition_slope(double& dcondition_dpsistem) const;
 
   // Profit's three second derivatives in the stem potential and the collar, which
   // is one derivation shared by the two readers below rather than two copies of
@@ -1211,30 +1157,8 @@ public:
     double dG_dpsi = util::na_value;
     double dH_dpsi = util::na_value;
   };
-  bool condition_curvature(ConditionCurvature& out) const;
 
-  // dV/dp, from the same flux balance V comes from. kappa (G(sigma) - G(p)) =
-  // E_up(p) places sigma, so
-  //
-  //   V = (E_up'(p)/kappa + f(p)) / f(sigma),
-  //   dV/dp = (E_up''(p)/kappa + f'(p)) / f(sigma) - V^2 f'(sigma) / f(sigma),
-  //
-  // with no inverse curve and no tabulated derivative anywhere in it: f is the
-  // vulnerability curve itself and E_up'' is the supply's own second collar
-  // derivative. Reading V off the inverse table instead would make this the
-  // interpolant's SECOND derivative, which is a property of the fit that no
-  // supplied first-order data corrects.
-  bool collar_response_slope(double& dV_dpsi) const;
 
-  // The curvature of profit at the collar -- the quantity the implicit function
-  // theorem divides by at an interior optimum. Analytic, and that is the point:
-  // differencing it was the last thing in this boundary that needed a step size,
-  // and a step in the marginal profit can straddle the no-flow arm where that
-  // function returns a sentinel rather than a derivative.
-  //
-  // False on the branches the closed forms do not describe, which is where the
-  // energy balance is on or the concentration sits at its compensation point.
-  bool condition_collar_slope(double& dcondition_dpsi) const;
 
   // What the soil state reaches, and it reaches all of it through total uptake:
   // at a frozen collar the stem potential is the transport read of
@@ -1269,7 +1193,6 @@ public:
     double dprofit = util::na_value;
     double dcondition = util::na_value;
   };
-  bool uptake_rows(UptakeRows& out) const;
 
   // Every output's response to the collar potential, at the traits and the
   // drivers the solve was given. Differencing the outputs across p* measures
@@ -1292,21 +1215,7 @@ public:
     double dprofit = util::na_value;
     std::vector<double> duptake;
   };
-  bool collar_rows(CollarRows& out) const;
 
-  // The same channel where the leaf places BOTH potentials at the collar of zero
-  // uptake. No marginal-profit evaluation records that point -- the stem sits at
-  // the collar, so it takes the no-flow exit and returns a sentinel -- and no
-  // difference can be centred on it either, because it is a bound. So this is
-  // stated from the branch: the stem follows the collar exactly, gross
-  // assimilation is zero and so is the conductance, profit is respiration plus
-  // the cost at the placement, and each layer's own draw still responds because the
-  // supply is a function of the collar whether or not the total vanishes.
-  //
-  // False anywhere else, read off the recorded classification rather than off the
-  // numbers, so a caller cannot get a plausible answer at a point this does not
-  // describe.
-  bool zero_uptake_collar_rows(CollarRows& out) const;
 
   // The three parameters of the TRANSPORT, whose rows were the last taken by
   // rebuilding a curve and differencing it.
@@ -1329,14 +1238,7 @@ public:
     double dprofit = util::na_value;
     double dmarginal = util::na_value;
   };
-  bool transport_trait_rows(TransportTrait trait, double dpsistem_dp,
-                            TransportTraitRows& out) const;
 
-  // ⚠️ NOT const, and the obstruction is a cache rather than the derivation:
-  // `transpiration` holds a one-entry memo and `hydraulic_cost_TF_kernel` is
-  // reached through it. Marking the memo mutable would buy the qualifier by
-  // making the mutation invisible, which is the wrong trade.
-  CostTraitRows cost_trait_rows(double dpsistem_dp) const;
 
   // The three photosynthesis traits, whose rows come off two second-order passes
   // rather than six re-solves.
@@ -1385,15 +1287,6 @@ public:
     // the pass already taken in that direction for the cost of one more seed.
     double dprofit_dPPFD, dmarginal_dPPFD;
   };
-  PhotoTraitRows photo_trait_rows(double dpsistem_dp) const;
-  // The energy-balance correction to the above, zero when the gate is off. Kept
-  // out of line so that adding it cannot change FMA contraction in the inlined
-  // gate-off path; the derivation and the two sign checks are at the definition.
-  double dprofit_energy_balance_term(double ci, double gc, double g_ci,
-                                     double inv_atm, double gc_const,
-                                     double dgc_dpsistem, double dgc_dpsi,
-                                     double dpsistem_dpsi, double dT_dE,
-                                     double Tleaf);
   // The profit-maximising collar potential within [bound_a, bound_b], by a
   // safeguarded root-find on dprofit == 0 (PLAN 11a). Returns a bound when the
   // optimum is pinned to it, which is the case on 42 of the 240 feasible
@@ -1429,23 +1322,6 @@ public:
         return roots_.d2uptake_dpsi2(T_collar, psi_soil);
       default:
         return single_.d2uptake_dpsi2(T_collar, psi_soil);
-    }
-  }
-  // The same conductance per layer rather than summed. A stand adjoint prices
-  // the operating point's movement into each layer's flux separately, because
-  // each layer is a separate write into the shared soil; the total cannot say
-  // which layer moved.
-  void dE_from_soil_dpsi_collar_by_layer(double T_collar,
-                                         const std::vector<double>& psi_soil,
-                                         std::vector<double>& out) const {
-    require_suction_vector(psi_soil, "dE_from_soil_dpsi_collar_by_layer");
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer:
-        roots_.duptake_dpsi_by_layer(T_collar, psi_soil, out);
-        return;
-      default:
-        out.assign(1, single_.duptake_dpsi(T_collar, psi_soil));
-        return;
     }
   }
   // Per-layer d(E_i)/d(psi_soil[i]), the soil counterpart of the conductance
@@ -1829,8 +1705,16 @@ public:
     double d_dcost_scale = 0.0;
     bool finite = false;
   };
-  HydraulicCostRow hydraulic_cost_row(double psi_stem) const;
   double assim_minus_stom_cond_CO2(double x, double psi_stem, double psi_upstream);
+  // The energy-balance correction to the above, zero when the gate is off. Kept
+  // out of line so that adding it cannot change FMA contraction in the inlined
+  // gate-off path; the derivation and the two sign checks are at the definition.
+  double dprofit_energy_balance_term(double ci, double gc, double g_ci,
+                                     double inv_atm, double gc_const,
+                                     double dgc_dpsistem, double dgc_dpsi,
+                                     double dpsistem_dpsi, double dT_dE,
+                                     double Tleaf);
+  BoundRow bound_row(WhichBound which);
   double psi_stem_to_ci(double psi_stem, double psi_upstream);
   // `ci_known` is the intercellular CO2 an earlier solve found at this same
   // state. Every no-flux branch fixes ci itself, so it is read at the one place a
@@ -1915,24 +1799,6 @@ public:
   // for the same reason: S unavailable at a branch kink, or non-positive.
   double marginal_price_water();
 
-  // d(profit)/d(absorbed light), at the solved operating point.
-  //
-  // STRUCTURALLY UNLIKE THE SOIL ROWS, which is why it is a separate function
-  // and not another layer of the same loop. A soil row is priced: it moves the
-  // water supply, and the marginal price of water converts that into carbon.
-  // Light moves no water at all. At a fixed collar the whole hydraulic side --
-  // uptake, psi_stem, the cost -- is untouched by PPFD, so this row is a direct
-  // partial of the assimilation kernel, closed by the ci root-find's own
-  // implicit-function term and nothing else:
-  //
-  //   dprofit/dPPFD = (dA/dPPFD)|_ci * (gc/P) / (A'(ci)*umol_to_mol + gc/P)
-  //
-  // The bracket is the ci residual's two partials. Writing this as a price times
-  // a supply derivative would have no supply derivative to use.
-  //
-  // Needs a solved operating point; returns the NA sentinel without one, or
-  // where the solve left no conductance to close the residual with.
-  double dprofit_dPPFD();
 
   // Equivalent Medlyn USO slope implied by the operating point, in kPa^0.5.
   // Defined operationally from the solved chi = ci/ca, by inverting the USO
@@ -3279,149 +3145,6 @@ inline double Leaf::evaluate_root_collar_psi(double target_opt_root_psi){
     return profit_at_collar_psi(target_opt_root_psi, bound_a, bound_b);
 }
 
-// Post-prepare body of evaluate_root_collar_psi (see header). Kept as a separate
-// entry point so callers that evaluate several collar potentials within one step
-// (the centred finite difference, #530) can run prepare_collar_solve once and
-// reuse the soil-side caches across every profit eval. The clamp into
-// [bound_a, bound_b] is identical to evaluate_root_collar_psi's, so near a
-// boundary a perturbed potential collapses onto the boundary -- which is exactly
-// how the FD path degrades gracefully to a one-sided difference.
-inline Leaf::BoundRow Leaf::bound_row(WhichBound which) {
-  const std::vector<double>& psi_soil = supply_psi_soil();
-  const std::size_t n = psi_soil.size();
-  BoundRow row;
-  row.d_dpsi_soil.assign(n, 0.0);
-  row.d_droot_carbon.assign(n, 0.0);
-
-  if (which == WhichBound::DryRootPsiCrit) {
-    // The bound is a registered constant, so it moves with nothing except
-    // itself. Exact, and the cheapest row here.
-    //
-    // ⚠️ THIS ARM RETURNS BEFORE THE SHARED CONVERSION at the end of the
-    // function, so the value stored here must ALREADY be the quotient
-    // -(dR/du)/(dR/dx) that every other field only becomes down there. The
-    // residual is R(x) = x - root_psi_crit, so the raw partial is -1 and the
-    // slope is 1, and the row is -(-1)/1 = +1. It read -1 -- the raw partial,
-    // never divided or negated -- for as long as nothing differenced it, which
-    // is the sign of this row backwards for every consumer. A future arm added
-    // above the conversion block has to do its own division here too, or return
-    // through it.
-    row.bound = supply_psi_crit();
-    row.d_droot_psi_crit = 1.0;
-    row.residual_slope = 1.0;
-    row.finite = true;
-    return row;
-  }
-
-  // find_root_psi probes collars, and every probe writes E_up_ and
-  // soil_consumption_ on its way past. Those describe the OPERATING POINT for
-  // whoever solved it, so this restores them: a row is a read, and a read that
-  // moves the outputs is the cross-plant channel hazard 8 is about.
-  const std::vector<double> saved_consumption = soil_consumption_;
-  const double saved_E_up = E_up_;
-  const double wettest = supply_begin_solve();
-  const double x =
-      find_root_psi(wettest, psi_soil, which == WhichBound::Wet ? 0 : 1);
-  row.bound = x;
-  auto restore = [&]() -> void {
-    soil_consumption_ = saved_consumption;
-    E_up_ = saved_E_up;
-  };
-  if (!std::isfinite(x)) {
-    restore();
-    return row;
-  }
-
-  // Common to both: the residual is total uptake, so its state partials are
-  // uptake's. dE_from_soil_dpsi_soil is diagonal, so entry j IS dE_up/dpsi_j.
-  const double dEup_dx = dE_from_soil_dpsi_collar(x, psi_soil);
-  // The root curve reaches total uptake through the layer mean-conductivity
-  // integral and nothing else, so each of these is the whole of that parameter's
-  // residual partial for either bound. The single path has no root curve.
-  const bool multi = supply_kind_ == SupplyKind::MultiLayer;
-  const double dEup_droot_b =
-      multi ? roots_.duptake_droot_curve(x, psi_soil,
-                                         MultiLayerRoots::CurveTrait::Position)
-            : 0.0;
-  const double dEup_droot_c =
-      multi ? roots_.duptake_droot_curve(x, psi_soil,
-                                         MultiLayerRoots::CurveTrait::Steepness)
-            : 0.0;
-  std::vector<double> dEup_dpsi;
-  dE_from_soil_dpsi_soil(x, psi_soil, dEup_dpsi);
-  // Root carbon is the multi-layer architecture's input; the single-potential
-  // path is given a series resistance and has no carbon profile to move.
-  std::vector<std::vector<double>> dE_drc, dD_drc;
-  const bool has_root_carbon = supply_kind_ == SupplyKind::MultiLayer;
-  if (has_root_carbon) {
-    roots_.duptake_droot_carbon(x, psi_soil, dE_drc, dD_drc);
-  }
-
-  double slope = dEup_dx;
-  if (which == WhichBound::DryRootCrit) {
-    // The stem's half of the residual. G'(x) is positive, so this can only make
-    // the denominator larger -- which is why the sign is safe and the magnitude
-    // is not.
-    slope += transport_slope(x);
-    row.d_dkappa =
-        -(stem_curve_integral(psi_crit, "Leaf::bound_row") -
-          stem_curve_integral(x, "Leaf::bound_row"));
-    row.d_dpsi_crit =
-        -transport_slope(psi_crit);
-    row.d_dstem_b =
-        -leaf_specific_conductance_max_ *
-        (stem_curve_integral_dstem_b(psi_crit, "Leaf::bound_row") -
-         stem_curve_integral_dstem_b(x, "Leaf::bound_row"));
-    // The steepness reaches the same difference of cumulative integrals, from
-    // the series rather than from Euler's identity. Taken at the traits the
-    // spline was built at, so it is the derivative of the value this residual
-    // reads and not of a nearby curve.
-    const VulnerabilityIntegralDerivatives G_crit =
-        cumulative_vulnerability_integral_derivatives_at(psi_crit, stem_b,
-                                                         stem_c);
-    const VulnerabilityIntegralDerivatives G_x =
-        cumulative_vulnerability_integral_derivatives_at(x, stem_b, stem_c);
-    row.d_dstem_c =
-        -leaf_specific_conductance_max_ * (G_crit.dc - G_x.dc);
-  }
-  row.residual_slope = slope;
-  if (!std::isfinite(slope) || slope == 0.0) {
-    restore();
-    return row;
-  }
-
-  // Every entry is the same quotient: minus the residual's partial over the
-  // residual's slope. The fields above still hold the raw partials at this
-  // point, so the conversion happens once, here.
-  row.d_droot_b = dEup_droot_b;
-  row.d_droot_c = dEup_droot_c;
-  bool ok = std::isfinite(row.d_dkappa) && std::isfinite(row.d_dpsi_crit) &&
-            std::isfinite(row.d_dstem_b) && std::isfinite(row.d_dstem_c) &&
-            std::isfinite(row.d_droot_b) && std::isfinite(row.d_droot_c);
-  for (std::size_t j = 0; j < n && ok; ++j) {
-    double dEup_drc = 0.0;
-    if (has_root_carbon) {
-      for (std::size_t i = 0; i < n; ++i) {
-        dEup_drc += dE_drc[i][j];
-      }
-    }
-    if (!std::isfinite(dEup_dpsi[j]) || !std::isfinite(dEup_drc)) {
-      ok = false;
-      break;
-    }
-    row.d_dpsi_soil[j] = -dEup_dpsi[j] / slope;
-    row.d_droot_carbon[j] = -dEup_drc / slope;
-  }
-  row.d_dkappa = -row.d_dkappa / slope;
-  row.d_dpsi_crit = -row.d_dpsi_crit / slope;
-  row.d_dstem_b = -row.d_dstem_b / slope;
-  row.d_dstem_c = -row.d_dstem_c / slope;
-  row.d_droot_b = -row.d_droot_b / slope;
-  row.d_droot_c = -row.d_droot_c / slope;
-  row.finite = ok;
-  restore();
-  return row;
-}
 
 inline Leaf::FixedCollarEval Leaf::profit_at_fixed_collar(double collar) {
   FixedCollarEval out;
@@ -3736,709 +3459,17 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
                                             dpsistem_dpsi, dT_dE, Tleaf_here);
 }
 
-// The condition's slope in the stem potential, at a held transport response.
-//
-// The concentration's residual is algebraic and given in closed form,
-//
-//   g(ci; sigma, p) = A(ci) m - gc(sigma, p) (ca - ci) v,
-//
-// so its theorem applies twice. Writing ci_s and ci_p for the first derivatives
-// the evaluation already recorded,
-//
-//   ci_ss = -(A'' m ci_s^2 + 2 gc_s v ci_s - gc_ss (ca - ci) v) / g_ci
-//   ci_sp = -(A'' m ci_s ci_p + gc_s v ci_p + gc_p v ci_s) / g_ci
-//
-// and the mixed term of the conductance is EXACTLY zero, because transpiration is
-// the vulnerability curve integrated BETWEEN the collar and the stem potential:
-// differentiating that in its upper limit leaves the integrand at the upper limit,
-// which the lower limit does not appear in. That is the one place this derivation
-// could have needed a second derivative of an integral and does not.
-//
-// Then, with G = A' ci_s - C' and H = A' ci_p,
-//
-//   dG/dsigma = A'' ci_s^2 + A' ci_ss - C''
-//   dH/dsigma = A'' ci_s ci_p + A' ci_sp
-//
-// Every second derivative above is a derivative of an INTEGRAND rather than of an
-// integral: A'' and C'' are one further seed of a kernel the evaluation already
-// seeds once, and gc_ss is the vulnerability curve's own slope.
-inline bool Leaf::condition_curvature(ConditionCurvature& out) const {
-  out = ConditionCurvature();
-  if (use_energy_balance_) {
-    return false;
-  }
-  const double ci = ci_at_collar_;
-  const double A_prime = assim_slope_;
-  const double ci_s = dci_dpsistem_;
-  const double ci_p = dci_dpsi_held_stem_;
-  const double V = dpsistem_dpsi_;
-  if (!util::is_finite(ci) || !util::is_finite(A_prime) ||
-      !util::is_finite(ci_s) || !util::is_finite(ci_p) || !util::is_finite(V)) {
-    return false;
-  }
-  const double psi_stem = opt_psi_stem_;
-  const double psi = opt_root_psi_;
-
-  // A'' and C'', from the kernels the evaluation seeds once each.
-  double A_cici;
-  {
-    tangent2 x = ci;
-    x.value().derivative() = 1.0;
-    x.derivative().value() = 1.0;
-    A_cici = assim_colimited_kernel(x).derivative().derivative();
-  }
-  double C_pp;
-  {
-    tangent2 x = psi_stem;
-    x.value().derivative() = 1.0;
-    x.derivative().value() = 1.0;
-    C_pp = hydraulic_cost_TF_kernel(x).derivative().derivative();
-  }
-
-  // The conductance's own derivatives. gc = gc_const * kappa * (the curve
-  // integrated from the collar to the stem potential), so its stem-potential
-  // derivatives are the curve and the curve's slope THERE.
-  const double gc_const =
-      atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
-  const double gc = gc_const * transpiration(psi_stem, psi);
-  const double gc_s = gc_const * transport_slope(psi_stem);
-  const double gc_p = -gc_const * transport_slope(psi);
-  double f_prime_sigma, f_prime_p;
-  {
-    tangent x = psi_stem;
-    seed_direction(x, 1.0);
-    f_prime_sigma = derivative_along(proportion_of_conductivity_kernel(x));
-  }
-  {
-    tangent x = psi;
-    seed_direction(x, 1.0);
-    f_prime_p = derivative_along(proportion_of_conductivity_kernel(x));
-  }
-  const double gc_ss = gc_const * leaf_specific_conductance_max_ * f_prime_sigma;
-
-  const double v = 1.0 / (atm_kpa_ * kPa_to_Pa);
-  const double m = umol_to_mol;
-  const double g_ci = A_prime * m + gc * v;
-  if (!util::is_finite(g_ci) || g_ci == 0.0) {
-    return false;
-  }
-
-  const double ci_ss =
-      -(A_cici * m * ci_s * ci_s + 2.0 * gc_s * v * ci_s - gc_ss * (ca_ - ci) * v) /
-      g_ci;
-  const double ci_sp =
-      -(A_cici * m * ci_s * ci_p + gc_s * v * ci_p + gc_p * v * ci_s) / g_ci;
-  // The collar's own second derivative, by the same theorem in the same shape.
-  // The conductance's is minus the curve's slope AT THE COLLAR, where the stem
-  // potential's is plus the slope there: transpiration is the curve integrated
-  // between the two, so the two limits enter with opposite signs and each one's
-  // second derivative reads only its own endpoint.
-  const double gc_pp = -gc_const * leaf_specific_conductance_max_ * f_prime_p;
-  const double ci_pp =
-      -(A_cici * m * ci_p * ci_p + 2.0 * gc_p * v * ci_p - gc_pp * (ca_ - ci) * v) /
-      g_ci;
-
-  out.dG_dpsistem = A_cici * ci_s * ci_s + A_prime * ci_ss - C_pp;
-  out.dG_dpsi = A_cici * ci_s * ci_p + A_prime * ci_sp;
-  out.dH_dpsi = A_cici * ci_p * ci_p + A_prime * ci_pp;
-  return util::is_finite(out.dG_dpsistem) && util::is_finite(out.dG_dpsi) &&
-         util::is_finite(out.dH_dpsi);
-}
-
-inline bool Leaf::condition_slope(double& dcondition_dpsistem) const {
-  dcondition_dpsistem = util::na_value;
-  ConditionCurvature c;
-  if (!condition_curvature(c)) {
-    return false;
-  }
-  const double V = dpsistem_dpsi_;
-  dcondition_dpsistem = c.dG_dpsistem * V + c.dG_dpsi;
-  return util::is_finite(dcondition_dpsistem);
-}
-
-inline bool Leaf::collar_response_slope(double& dV_dpsi) const {
-  dV_dpsi = util::na_value;
-  const double p = opt_root_psi_;
-  const double sigma = opt_psi_stem_;
-  const double V = dpsistem_dpsi_;
-  if (!util::is_finite(V)) {
-    return false;
-  }
-  const double d2Eup = d2E_from_soil_dpsi_collar2(p, supply_psi_soil());
-  if (!util::is_finite(d2Eup)) {
-    return false;
-  }
-  double f_sigma, f_prime_sigma, f_prime_p;
-  {
-    tangent x = sigma;  seed_direction(x, 1.0);
-    const tangent r = proportion_of_conductivity_kernel(x);
-    f_sigma = odelia::util::to_passive(r);
-    f_prime_sigma = derivative_along(r);
-  }
-  {
-    tangent x = p;  seed_direction(x, 1.0);
-    f_prime_p = derivative_along(proportion_of_conductivity_kernel(x));
-  }
-  if (!(f_sigma > 0.0)) {
-    return false;
-  }
-  dV_dpsi = (d2Eup / leaf_specific_conductance_max_ + f_prime_p) / f_sigma -
-            V * V * f_prime_sigma / f_sigma;
-  return util::is_finite(dV_dpsi);
-}
-
-inline bool Leaf::condition_collar_slope(double& dcondition_dpsi) const {
-  dcondition_dpsi = util::na_value;
-  ConditionCurvature c;
-  double dV_dpsi;
-  if (!condition_curvature(c) || !collar_response_slope(dV_dpsi)) {
-    return false;
-  }
-  const double V = dpsistem_dpsi_;
-  const double G = dprofit_dpsistem_;
-  if (!util::is_finite(G)) {
-    return false;
-  }
-  dcondition_dpsi = c.dG_dpsistem * V * V + 2.0 * c.dG_dpsi * V + c.dH_dpsi +
-                    G * dV_dpsi;
-  return util::is_finite(dcondition_dpsi);
-}
-
-inline bool Leaf::uptake_rows(UptakeRows& out) const {
-  out = UptakeRows();
-  const double kappa = leaf_specific_conductance_max_;
-  const double V = dpsistem_dpsi_;
-  const double sigma = opt_psi_stem_;
-  // f and f' at the stem potential, from one seeding of the curve itself. Both
-  // rows below are written in these and in nothing else, which is what keeps
-  // them derivatives of the flux balance the solve just used.
-  double f, f_prime;
-  {
-    tangent x = sigma;  seed_direction(x, 1.0);
-    const tangent r = proportion_of_conductivity_kernel(x);
-    f = odelia::util::to_passive(r);
-    f_prime = derivative_along(r);
-  }
-  if (!util::is_finite(V) || !(f > 0.0)) {
-    return false;
-  }
-  // The flux moves the stem potential through the balance and nothing else.
-  out.dpsistem = 1.0 / (kappa * f);
-
-  const double gc_const =
-      atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
-  out.dstom_cond = gc_const * kappa * f * out.dpsistem;
-
-  if (ci_at_compensation_point_) {
-    // Gross assimilation is identically zero there, so the stem reaches profit
-    // through the cost alone and the concentration does not respond at all.
-    tangent x = sigma;  seed_direction(x, 1.0);
-    const double C_prime = derivative_along(hydraulic_cost_TF_kernel(x));
-    out.dassim = 0.0;
-    out.dprofit = -C_prime * out.dpsistem;
-    return util::is_finite(out.dprofit);
-  }
-
-  const double G = dprofit_dpsistem_;
-  const double A_prime = assim_slope_;
-  const double ci_s = dci_dpsistem_;
-  if (!util::is_finite(G) || !util::is_finite(A_prime) || !util::is_finite(ci_s)) {
-    return false;
-  }
-  out.dassim = A_prime * ci_s * out.dpsistem;
-  out.dprofit = G * out.dpsistem;
-
-  double dR_dsigma;
-  if (condition_slope(dR_dsigma)) {
-    // dV/dE_up, from the same balance V comes from: the flux moves the stem
-    // potential, and the curve's own slope there is what turns that into a
-    // change in the response.
-    const double dV_duptake = -V * f_prime * out.dpsistem / f;
-    out.dcondition = dR_dsigma * out.dpsistem + G * dV_duptake;
-    if (!util::is_finite(out.dcondition)) {
-      out.dcondition = util::na_value;
-    }
-  }
-  return util::is_finite(out.dprofit);
-}
-
-// The collar channel, read rather than differenced (see the header).
-//
-// Every coefficient here was recorded by the marginal-profit evaluation that
-// placed the point, so this reads state and evaluates no kernel except the cost's
-// slope on the branch where assimilation has none.
-inline bool Leaf::collar_rows(CollarRows& out) const {
-  out = CollarRows();
-  if (use_energy_balance_) {
-    // With the gate on the collar reaches assimilation and the cost by two
-    // further routes through the leaf temperature, and none of the recorded
-    // coefficients below carries them.
-    return false;
-  }
-  const double p = opt_root_psi_;
-  const double sigma = opt_psi_stem_;
-  const double V = dpsistem_dpsi_;
-  if (!util::is_finite(V)) {
-    return false;
-  }
-  out.dpsistem = V;
-
-  // gc = gc_const * kappa * (G(sigma) - G(p)): transpiration is the stem
-  // integral BETWEEN the two potentials, so the collar moves the conductance
-  // directly as well as through the stem, and both terms are the curve itself.
-  const double gc_const =
-      atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
-  out.dstom_cond = gc_const * (transport_slope(sigma) * V - transport_slope(p));
-
-  // Per layer rather than summed: each layer is a separate write into the shared
-  // soil, and the total cannot say which one moved.
-  dE_from_soil_dpsi_collar_by_layer(p, supply_psi_soil(), out.duptake);
-  for (double v : out.duptake) {
-    if (!util::is_finite(v)) {
-      return false;
-    }
-  }
-
-  if (ci_at_compensation_point_) {
-    // Gross assimilation is identically zero there, so the collar reaches profit
-    // through the cost alone and the concentration does not respond at all.
-    tangent x = sigma;  seed_direction(x, 1.0);
-    const double C_prime = derivative_along(hydraulic_cost_TF_kernel(x));
-    out.dassim = 0.0;
-    out.dprofit = -C_prime * V;
-    return util::is_finite(out.dprofit) && util::is_finite(out.dstom_cond);
-  }
-
-  const double A_prime = assim_slope_;
-  const double ci_s = dci_dpsistem_;
-  const double ci_p = dci_dpsi_held_stem_;
-  if (!util::is_finite(A_prime) || !util::is_finite(ci_s) ||
-      !util::is_finite(ci_p) || !util::is_finite(dprofit_dpsistem_) ||
-      !util::is_finite(dprofit_dpsi_held_stem_)) {
-    return false;
-  }
-  out.dassim = A_prime * (ci_s * V + ci_p);
-  // The marginal profit itself, as the pair it was recorded as. At an interior
-  // point this is the zero the solve found; at a pin it is the constraint's
-  // shadow price, which is what makes it worth reading rather than assuming.
-  out.dprofit = dprofit_dpsistem_ * V + dprofit_dpsi_held_stem_;
-  return util::is_finite(out.dassim) && util::is_finite(out.dstom_cond) &&
-         util::is_finite(out.dprofit);
-}
-
-inline bool Leaf::zero_uptake_collar_rows(CollarRows& out) const {
-  out = CollarRows();
-  if (operating_point_kind_ != OperatingPointKind::ShadeDeath) {
-    return false;
-  }
-  const double p = opt_root_psi_;
-  // The branch ties the two potentials together, so the stem's response to the
-  // collar is one exactly rather than the flux balance's V -- there is no flux for
-  // a balance to place it by.
-  out.dpsistem = 1.0;
-  // Gross assimilation is identically zero here, which is what put the leaf on
-  // this branch, and the conductance is zero at every collar because
-  // transpiration is the curve integrated between two potentials that coincide.
-  out.dassim = 0.0;
-  out.dstom_cond = 0.0;
-  tangent x = opt_psi_stem_;  seed_direction(x, 1.0);
-  const double C_prime = derivative_along(hydraulic_cost_TF_kernel(x));
-  out.dprofit = -C_prime;
-  // Per layer, and not zero: the total vanishes at this collar by construction,
-  // and each layer's own draw is the supply's function of it either way.
-  dE_from_soil_dpsi_collar_by_layer(p, supply_psi_soil(), out.duptake);
-  for (double v : out.duptake) {
-    if (!util::is_finite(v)) {
-      return false;
-    }
-  }
-  return util::is_finite(out.dprofit);
-}
-
-// The stem steepness' two rows (see the header for why the held one is the cost
-// alone). Everything below is a derivative of the conductivity or of the cost, both
-// of which are kernels templated on their own traits, plus the cumulative
-// integral's closed-form trait derivative.
-inline bool Leaf::transport_trait_rows(TransportTrait trait, double dpsistem_dp,
-                                       TransportTraitRows& out) const {
-  out = TransportTraitRows();
-  if (use_energy_balance_) {
-    return false;
-  }
-  const double p = opt_root_psi_;
-  const double sigma = opt_psi_stem_;
-  const double V = dpsistem_dp;
-  const double kappa = leaf_specific_conductance_max_;
-  if (!util::is_finite(V)) {
-    return false;
-  }
-
-  // The conductivity at both ends, with its potential- and trait-derivatives,
-  // from one seeded kernel per end. Which parameter is seeded is the only thing
-  // that distinguishes the three, and the maximum conductance seeds neither: it
-  // does not shape the curve, it scales the flux the curve carries.
-  auto curve_at = [&](double psi, double& f, double& f_psi, double& f_t) {
-    tangent2 x = psi;  x.value().derivative() = 1.0;
-    tangent2 b = stem_b, c = stem_c;
-    if (trait == TransportTrait::Position) {
-      b.derivative().value() = 1.0;
-    } else if (trait == TransportTrait::Steepness) {
-      c.derivative().value() = 1.0;
-    }
-    const tangent2 r = proportion_of_conductivity_kernel(x, b, c);
-    f = r.value().value();
-    f_psi = r.value().derivative();
-    f_t = r.derivative().value();
-  };
-  double f_s, f_s_psi, f_s_t, f_p, f_p_psi, f_p_t;
-  curve_at(sigma, f_s, f_s_psi, f_s_t);
-  curve_at(p, f_p, f_p_psi, f_p_t);
-  if (!(f_s > 0.0)) {
-    return false;
-  }
-
-  // How sigma moves. The stem carries the flux the soil supplies and the soil
-  // reads no stem property, so the flux is FROZEN here and the balance
-  // kappa (G(sigma) - G(p)) = E_up gives the potential's motion directly.
-  double dsigma;
-  if (trait == TransportTrait::Conductance) {
-    // Only the scale moves: a wider stem carries the same flux at less tension.
-    // The flux is read off the balance rather than re-supplied from the soil --
-    // they are the same number at the point, and one of them is a write.
-    dsigma = -transpiration(sigma, p) / (kappa * kappa * f_s);
-  } else {
-    const VulnerabilityIntegralDerivatives G_s =
-        cumulative_vulnerability_integral_derivatives_at(sigma, stem_b, stem_c);
-    const VulnerabilityIntegralDerivatives G_p =
-        cumulative_vulnerability_integral_derivatives_at(p, stem_b, stem_c);
-    dsigma = trait == TransportTrait::Position ? (G_p.db - G_s.db) / f_s
-                                               : (G_p.dc - G_s.dc) / f_s;
-  }
-
-  // The cost, its slope, and both of their trait derivatives at the moved
-  // potential. The maximum conductance is not in the cost at all.
-  double C_psi = 0.0, C_psipsi = 0.0, C_t = 0.0, C_psi_t = 0.0;
-  {
-    tangent2 x = sigma;  x.value().derivative() = 1.0;
-    tangent2 b = stem_b, c = stem_c;
-    if (trait == TransportTrait::Position) {
-      b.derivative().value() = 1.0;
-    } else if (trait == TransportTrait::Steepness) {
-      c.derivative().value() = 1.0;
-    }
-    const tangent2 r = hydraulic_cost_TF_kernel(x, b, c, tangent2(beta2),
-                                           tangent2(cost_scale_TF24));
-    C_psi = r.value().derivative();
-    C_t = r.derivative().value();
-    C_psi_t = r.derivative().derivative();
-  }
-  {
-    tangent2 x = sigma;
-    x.value().derivative() = 1.0;
-    x.derivative().value() = 1.0;
-    C_psipsi = hydraulic_cost_TF_kernel(x, tangent2(stem_b), tangent2(stem_c), tangent2(beta2),
-                                        tangent2(cost_scale_TF24))
-                   .derivative()
-                   .derivative();
-  }
-
-  // ⚠️ THE CONDITION'S ASSIMILATION HALF IS IDENTICALLY ZERO, and it is worth
-  // saying why rather than carrying it. Write the condition as
-  //
-  //   R = (dA/dE_up) S  -  C'(sigma) V,
-  //
-  // the carbon bought by the water the collar's extra pull draws against the cost
-  // of the extra tension. The first factor reads the flux and nothing else -- the
-  // concentration is placed by the conductance, and the conductance IS the flux --
-  // and S is the soil's, which no stem property enters. So at a frozen collar and
-  // a frozen flux the whole carbon half of R is invariant under all three of
-  // these, and only the cost moves.
-  //
-  // Written in the conductance's two slopes instead, the same statement is a
-  // cancellation: the two slope terms sum to minus the concentration's own
-  // response times the transport's, and that is the third term. It was carried
-  // that way, in eight quantities that came to nothing, and dropping them changes
-  // no digit of a rebuilt difference at four states.
-  //
-  // V = (dE_up/dp / kappa + f(p)) / f(sigma), so its own trait derivative is the
-  // numerator's, less the potential's motion through f(sigma).
-  double dV = -V * (f_s_t + f_s_psi * dsigma) / f_s;
-  if (trait == TransportTrait::Conductance) {
-    const double S = dE_from_soil_dpsi_collar(p, supply_psi_soil());
-    dV += -S / (kappa * kappa * f_s);
-  } else {
-    dV += f_p_t / f_s;
-  }
-
-  out.dpsistem = dsigma;
-  out.dprofit = -(C_psi * dsigma + C_t);
-  out.dmarginal = -(C_psipsi * dsigma + C_psi_t) * V - C_psi * dV;
-  return util::is_finite(out.dpsistem) && util::is_finite(out.dprofit) &&
-         util::is_finite(out.dmarginal);
-}
 
 
-inline Leaf::CostTraitRows Leaf::cost_trait_rows(double dpsistem_dp) const {
-  if (use_energy_balance_) {
-    // photo_trait_rows' reason, and the same exposure: the marginal rows below
-    // carry no analogue of dprofit_at_collar_psi's temperature term, so with the
-    // gate on they would be short by it while a DRIVEN trait's row -- a
-    // difference of that same function -- would not.
-    const double nan = util::na_value;
-    return CostTraitRows{nan, nan, nan, nan};
-  }
-  const double psi_stem = opt_psi_stem_;
 
-  const double q = 1.0 - proportion_of_conductivity(psi_stem);
-  // The kernel, not the wrapper: `hydraulic_cost_TF` stores its answer in
-  // `hydraulic_cost_` on the way past, and a row is a read.
-  const double C = hydraulic_cost_TF_kernel(psi_stem);
-  tangent ps_ad = psi_stem;  seed_direction(ps_ad, 1.0);
-  const double C_prime = derivative_along(hydraulic_cost_TF_kernel(ps_ad));
 
-  const double log_q = std::log(q);
-  CostTraitRows out;
-  out.dprofit_dbeta2 = -C * log_q;
-  out.dprofit_dcost_scale = -C / cost_scale_TF24;
-  out.dmarginal_dbeta2 = -C_prime * (1.0 / beta2 + log_q) * dpsistem_dp;
-  out.dmarginal_dcost_scale = -(C_prime / cost_scale_TF24) * dpsistem_dp;
-  return out;
-}
 
-inline Leaf::PhotoTraitRows Leaf::photo_trait_rows(double dpsistem_dp) const {
-  PhotoTraitRows out{0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-  if (use_energy_balance_) {
-    // With the gate on, psi reaches profit by two further routes through the
-    // leaf temperature, and dprofit_at_collar_psi carries them as a term this
-    // assembly has no analogue of -- so a marginal row formed here would be
-    // short by it. Refuse rather than return the interior-branch number, which
-    // would be finite, plausible and missing a channel.
-    const double n = util::na_value;
-    return PhotoTraitRows{n, n, n, n, n, n, n, n, n, n, n, n, n, n};
-  }
 
-  // Each temperature-derived scalar is its _25 trait times a factor of
-  // temperature alone, so the chain from one to the other is their ratio.
-  const double dvcmax_dtrait = vcmax_ / vcmax_25;
-  const double djmax_dtrait = jmax_ / jmax_25;
-  const double dR_d_dtrait = R_d_ / R_d_25;
 
-  if (ci_at_compensation_point_) {
-    // Gross assimilation is identically zero, so nothing that scales it reaches
-    // profit. Dark respiration is not one of those: net assimilation is -R_d_
-    // there, so the profit row survives while the marginal row -- which is the
-    // hydraulic cost alone on that branch -- does not read it.
-    out.dprofit_dR_d_25 = -dR_d_dtrait;
-    return out;
-  }
 
-  const double psi = opt_root_psi_;
-  const double psi_stem = opt_psi_stem_;
-  const double ci = ci_;
-  const double J = electron_transport_;
 
-  // A', A'' and one direction per intermediate. Seeding the kernel twice is
-  // what gives the second derivatives without a second expression of the
-  // algebra.
-  double A_ci = 0.0, A_cici = 0.0, A_J = 0.0, A_J_ci = 0.0;
-  double A_cv = 0.0, A_cv_ci = 0.0, A_vc = 0.0, A_vc_ci = 0.0;
-  {
-    tangent2 x = ci;
-    x.value().derivative() = 1.0;
-    x.derivative().value() = 1.0;
-    const tangent2 A = assim_colimited_kernel(x, tangent2(vcmax_), tangent2(J),
-                                         tangent2(curv_fact_colim),
-                                         tangent2(R_d_));
-    A_ci = A.value().derivative();
-    A_cici = A.derivative().derivative();
-  }
-  {
-    tangent2 x = ci;   x.value().derivative() = 1.0;
-    tangent2 t = J;    t.derivative().value() = 1.0;
-    const tangent2 A = assim_colimited_kernel(x, tangent2(vcmax_), t,
-                                         tangent2(curv_fact_colim),
-                                         tangent2(R_d_));
-    A_J = A.derivative().value();
-    A_J_ci = A.derivative().derivative();
-  }
-  {
-    tangent2 x = ci;   x.value().derivative() = 1.0;
-    tangent2 v = curv_fact_colim;  v.derivative().value() = 1.0;
-    const tangent2 A = assim_colimited_kernel(x, tangent2(vcmax_), tangent2(J), v,
-                                              tangent2(R_d_));
-    A_cv = A.derivative().value();
-    A_cv_ci = A.derivative().derivative();
-  }
-  {
-    tangent2 x = ci;   x.value().derivative() = 1.0;
-    tangent2 w = vcmax_;  w.derivative().value() = 1.0;
-    const tangent2 A = assim_colimited_kernel(x, w, tangent2(J),
-                                              tangent2(curv_fact_colim),
-                                              tangent2(R_d_));
-    A_vc = A.derivative().value();
-    A_vc_ci = A.derivative().derivative();
-  }
-  // dJ/dtheta for the three that reach assimilation only through the transport.
-  double dJ_da = 0.0, dJ_dcurv = 0.0, dJ_djmax = 0.0, dJ_dPPFD = 0.0;
-  {
-    tangent q = a;  seed_direction(q, 1.0);
-    dJ_da = derivative_along(electron_transport_kernel(
-        tangent(PPFD_), q, tangent(curv_fact_elec_trans), tangent(jmax_)));
-    tangent v = curv_fact_elec_trans;  seed_direction(v, 1.0);
-    dJ_dcurv = derivative_along(electron_transport_kernel(
-        tangent(PPFD_), tangent(a), v, tangent(jmax_)));
-    tangent m = jmax_;  seed_direction(m, 1.0);
-    dJ_djmax = derivative_along(electron_transport_kernel(
-        tangent(PPFD_), tangent(a), tangent(curv_fact_elec_trans), m));
-    tangent p = PPFD_;  seed_direction(p, 1.0);
-    dJ_dPPFD = derivative_along(electron_transport_kernel(
-        p, tangent(a), tangent(curv_fact_elec_trans), tangent(jmax_)));
-  }
 
-  // The theta-free half of the marginal profit, formed as
-  // dprofit_at_collar_psi forms it, including its fallback near a branch kink.
-  const double gc_const =
-      atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
-  const double gc = gc_const * transpiration(psi_stem, psi);
-  const double dgc_dpsistem = gc_const * transport_slope(psi_stem);
-  const double dgc_dpsi = -gc_const * transport_slope(psi);
 
-  const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
-  const double g_ci = A_ci * umol_to_mol + gc * inv_atm;
-  const double D = dgc_dpsistem * dpsistem_dp + dgc_dpsi;
-  const double K = (ca_ - ci) * inv_atm / g_ci;
-
-  // One trait's pair of rows, given how it reaches A and A'.
-  auto rows = [&](double dA, double dA_ci, double& dprofit, double& dmarginal) {
-    const double dci = -dA * umol_to_mol / g_ci;
-    const double dA_prime = dA_ci + A_cici * dci;
-    const double dg_ci = umol_to_mol * dA_prime;
-    const double dK =
-        -(dci * inv_atm * g_ci + (ca_ - ci) * inv_atm * dg_ci) / (g_ci * g_ci);
-    dprofit = dA * gc * inv_atm / g_ci;
-    dmarginal = dA_prime * D * K + A_ci * D * dK;
-  };
-  rows(A_J * dJ_da, A_J_ci * dJ_da, out.dprofit_da, out.dmarginal_da);
-  rows(A_J * dJ_dcurv, A_J_ci * dJ_dcurv, out.dprofit_dcurv_elec,
-       out.dmarginal_dcurv_elec);
-  rows(A_cv, A_cv_ci, out.dprofit_dcurv_colim, out.dmarginal_dcurv_colim);
-  rows(A_vc * dvcmax_dtrait, A_vc_ci * dvcmax_dtrait, out.dprofit_dvcmax_25,
-       out.dmarginal_dvcmax_25);
-  rows(A_J * dJ_djmax * djmax_dtrait, A_J_ci * dJ_djmax * djmax_dtrait,
-       out.dprofit_djmax_25, out.dmarginal_djmax_25);
-  // Dark respiration is subtracted from the colimitation, so it shifts A by
-  // exactly -1 per unit and leaves A' untouched. No pass needed.
-  rows(-dR_d_dtrait, 0.0, out.dprofit_dR_d_25, out.dmarginal_dR_d_25);
-  rows(A_J * dJ_dPPFD, A_J_ci * dJ_dPPFD, out.dprofit_dPPFD,
-       out.dmarginal_dPPFD);
-  return out;
-}
-
-// The energy-balance correction to dprofit/dpsi, and zero when the gate is off.
-//
-// ⚠️ OUT OF LINE ON PURPOSE. Everything around it -- profit_psi_stem_TF,
-// hydraulic_cost_TF, assim_colimited -- is fully inlined with no out-of-line
-// symbol at all (hazard 5), and adding a branch inside such a body can change
-// which expressions land in one inlined block and therefore change FMA
-// contraction. That would move the GATE-OFF path, i.e. the golden file, for no
-// reason anyone could read from the diff. Keeping the block behind its own
-// symbol is what makes "bit-identical with the gate off" structural rather than
-// lucky. Check with `nm -C test_golden | grep dprofit` before and after.
-//
-// THE DERIVATION. When the gate is on, psi reaches profit by two further routes
-// beyond the two already accounted for:
-//
-//  * DIRECT:   psi -> psi_stem -> E -> Tleaf -> theta(Tleaf) -> A
-//  * INDIRECT: psi -> psi_stem -> E -> Tleaf -> the ci residual -> ci -> A
-//
-// The second is the subtle one. psi_stem_to_ci root-finds
-// g(ci; psi_stem, psi, T) = A(ci,T)*umol_to_mol - gc*(ca-ci)*inv_atm = 0, and the
-// demand side reads the temperature-dependent members, so g gains an EXPLICIT T
-// argument. Differentiating g = 0 totally in psi adds g_T * dT/dpsi to the
-// existing terms, with g_T = A_T * umol_to_mol, so `dci/dpsi` gains
-// `-(A_T * umol_to_mol * tau) / g_ci`.
-//
-// Adding that to the direct term `A_T * tau` and collecting gives
-// `Delta = A_T * tau * (1 - A_prime*umol_to_mol/g_ci)`, which since
-// `g_ci = A_prime*umol_to_mol + gc*inv_atm` is the same as
-// `Delta = A_T * tau * (gc*inv_atm) / g_ci`.
-//
-// Two consequences worth keeping, because each is a free check on the algebra:
-//
-//  * the damping factor (gc*inv_atm)/g_ci lies strictly in (0,1). The direct
-//    thermal effect on A is partly cancelled because ci re-equilibrates. If an
-//    implementation ever produces |Delta| > |A_T*tau|, it is wrong.
-//  * dE/dpsi > 0 and dT/dE < 0, so tau < 0. Above the thermal optimum A_T < 0
-//    and therefore Delta > 0: the corrected condition pushes the optimum DRIER,
-//    i.e. toward more transpiration, because the extra flux now buys evaporative
-//    cooling back toward the optimum. That is the decoupling mechanism, and its
-//    sign is the sharpest available test that this term is right.
-//
-// `dgc_dT` is a named zero rather than an omission: stom_cond_CO2 currently
-// divides by the prescribed AIR vpd, so gc does not depend on Tleaf. Wiring
-// leaf-to-air VPD (PLAN 13.1) makes it non-zero and this becomes a one-line
-// change instead of a re-derivation.
-inline double Leaf::dprofit_energy_balance_term(
-    double ci, double gc, double g_ci, double inv_atm, double gc_const,
-    double dgc_dpsistem, double dgc_dpsi, double dpsistem_dpsi, double dT_dE,
-    double Tleaf) {
-  if (!use_energy_balance_ || dT_dE == 0.0) {
-    return 0.0;
-  }
-
-  // dA/dTleaf by a CENTRAL DIFFERENCE over the temperature block only.
-  //
-  // Chosen over templating the Arrhenius block on the scalar type, and the
-  // reason is the golden file rather than accuracy. Re-expressing
-  // update_temperature_dependent_params as the T=double instantiation of a
-  // templated kernel changes which expressions share an inlined body, and
-  // PLAN 11b measured that exact move changing results even where the algebra
-  // was identical. That risks the gate-off path to buy precision nobody can
-  // observe: at h = 1e-3 K the truncation error is ~2e-9 relative against a
-  // model whose own floor (psi_stem_to_ci at 1e-10) is ~1e-9.
-  //
-  // ⚠️ h is FIXED and ABSOLUTE, not relative to T. A relative step would make
-  // the estimator itself a function of psi, which is exactly the kind of thing
-  // that puts a staircase back into the argmax (hazard 3).
-  //
-  // Differencing the model's own update + kernel means this cannot drift from
-  // the function actually evaluated, and it picks up all eight temperature
-  // parameters -- including R_d_ and electron_transport_, which a hand-derived
-  // expression is precisely the sort of thing to forget.
-  const double h = 1e-3;
-  const double vcmax0 = vcmax_, jmax0 = jmax_, gamma0 = gamma_, ko0 = ko_,
-               kc0 = kc_, Rd0 = R_d_, km0 = km_, J0 = electron_transport_;
-  // ⚠️ Tleaf, NOT leaf_temp_. On the energy-balance path set_physiology
-  // reinterprets leaf_temp_ as AIR temperature (Tair_ = leaf_temp_), so
-  // differencing around it evaluates dA/dT at the wrong point entirely. The
-  // first version of this did exactly that; the resulting A_T was wrong enough
-  // to flip the sign of dprofit at a bracket endpoint, and the collar solve
-  // aborted with "parameters a and b do not bracket the root".
-  const double T0 = Tleaf;
-
-  update_temperature_dependent_params(T0 + h);
-  const double A_up = assim_colimited(ci);
-  update_temperature_dependent_params(T0 - h);
-  const double A_dn = assim_colimited(ci);
-
-  // Restore by assignment rather than by a third update call: exact, and cheaper
-  // than re-running the Arrhenius block.
-  vcmax_ = vcmax0; jmax_ = jmax0; gamma_ = gamma0; ko_ = ko0; kc_ = kc0;
-  R_d_ = Rd0; km_ = km0; electron_transport_ = J0;
-
-  const double A_T = (A_up - A_dn) / (2.0 * h);
-
-  // dE/dpsi from the gc partials already in hand -- gc = gc_const * E, so
-  // dividing by gc_const recovers it with no new spline evaluation.
-  const double dE_dpsi = (dgc_dpsistem * dpsistem_dpsi + dgc_dpsi) / gc_const;
-  const double tau = dT_dE * dE_dpsi;
-
-  const double dgc_dT = 0.0;  // see the note above; non-zero once PLAN 13.1 lands
-  const double damping = (gc * inv_atm - dgc_dT * (ca_ - ci) * inv_atm) / g_ci;
-
-  return A_T * tau * damping;
-}
 
 inline double Leaf::arrh_curve(double Ea, double ref_value, double leaf_temp) const {
 
@@ -5153,48 +4184,6 @@ inline double Leaf::marginal_cost_water_multilayer() {
          (1.0 + leaf_specific_conductance_max_ * f_r / S);
 }
 
-inline double Leaf::dprofit_dPPFD() {
-  const double ci = ci_;
-  const double gc = stom_cond_CO2_;
-  // No solved point, or a shut-down one: gc is zero there and the residual this
-  // row is closed by does not exist.
-  if (!std::isfinite(ci) || !std::isfinite(gc) || gc <= 0.0 ||
-      !std::isfinite(electron_transport_) || electron_transport_ <= 0.0) {
-    return util::na_value;
-  }
-
-  // dA/dPPFD at FIXED ci. PPFD reaches assimilation only through the
-  // electron-limited rate, which is linear in the electron transport, so the
-  // linear coefficient is read off the kernel itself rather than rewritten here
-  // -- the one arrangement that cannot drift away from the function it
-  // differentiates.
-  tangent ppfd_ad = PPFD_;
-  seed_direction(ppfd_ad, 1.0);
-  const tangent J = electron_transport_kernel(ppfd_ad);
-  const double per_J = assim_electron_limited_kernel(ci) / electron_transport_;
-  // Materialised, not passed as the expression `J * per_J`: an XAD operator
-  // returns an expression template holding references to its operands, so a
-  // temporary handed straight on would be read after it died.
-  const tangent assim_electron = J * per_J;
-  const tangent assim_rubisco = assim_rubisco_limited_kernel(ci);
-  const tangent assim = colimit_kernel(assim_rubisco, assim_electron);
-  const double dA_dPPFD = derivative_along(assim);
-
-  // A'(ci), by the same forward-mode route dprofit_droot_collar_psi uses.
-  tangent ci_ad = ci;
-  seed_direction(ci_ad, 1.0);
-  const double A_prime = derivative_along(assim_colimited_kernel(ci_ad));
-
-  // The ci residual is A(ci)*umol_to_mol - gc*(ca - ci)/P, so its two partials
-  // are these. The supply slope is positive and the demand slope negative, so
-  // the denominator cannot vanish at a solved point.
-  const double supply = gc / (atm_kpa_ * kPa_to_Pa);
-  const double denom = A_prime * umol_to_mol + supply;
-  if (!std::isfinite(denom) || denom == 0.0) {
-    return util::na_value;
-  }
-  return dA_dPPFD * supply / denom;
-}
 
 inline double Leaf::marginal_price_water() {
   const double S = dE_from_soil_dpsi_collar(opt_root_psi_, supply_psi_soil());
@@ -5228,24 +4217,6 @@ inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem, T b, T c, T beta,
          pow((1 - proportion_of_conductivity_kernel(psi_stem, b, c)), beta);
 }
 
-inline Leaf::HydraulicCostRow Leaf::hydraulic_cost_row(double psi_stem) const {
-  HydraulicCostRow row;
-  // One seeded pass per direction. Five passes of a handful of operations each,
-  // against the alternative of five rebuilt differences of the curve.
-  double* out[5] = {&row.d_dpsi_stem, &row.d_dstem_b, &row.d_dstem_c,
-                    &row.d_dbeta2, &row.d_dcost_scale};
-  for (int k = 0; k < 5; ++k) {
-    tangent in[5] = {tangent(psi_stem), tangent(stem_b), tangent(stem_c), tangent(beta2),
-                tangent(cost_scale_TF24)};
-    seed_direction(in[k], 1.0);
-    *out[k] = derivative_along(
-        hydraulic_cost_TF_kernel(in[0], in[1], in[2], in[3], in[4]));
-  }
-  row.finite = std::isfinite(row.d_dpsi_stem) && std::isfinite(row.d_dstem_b) &&
-               std::isfinite(row.d_dstem_c) && std::isfinite(row.d_dbeta2) &&
-               std::isfinite(row.d_dcost_scale);
-  return row;
-}
 
 inline double Leaf::hydraulic_cost_TF(double psi_stem) {
 
@@ -5675,6 +4646,255 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
     E_from_soil_at<S>(collar, at.supply.at(), out.uptake);
   }
   return out;
+}
+
+// The energy-balance correction to dprofit/dpsi, and zero when the gate is off.
+//
+// ⚠️ OUT OF LINE ON PURPOSE. Everything around it -- profit_psi_stem_TF,
+// hydraulic_cost_TF, assim_colimited -- is fully inlined with no out-of-line
+// symbol at all (hazard 5), and adding a branch inside such a body can change
+// which expressions land in one inlined block and therefore change FMA
+// contraction. That would move the GATE-OFF path, i.e. the golden file, for no
+// reason anyone could read from the diff. Keeping the block behind its own
+// symbol is what makes "bit-identical with the gate off" structural rather than
+// lucky. Check with `nm -C test_golden | grep dprofit` before and after.
+//
+// THE DERIVATION. When the gate is on, psi reaches profit by two further routes
+// beyond the two already accounted for:
+//
+//  * DIRECT:   psi -> psi_stem -> E -> Tleaf -> theta(Tleaf) -> A
+//  * INDIRECT: psi -> psi_stem -> E -> Tleaf -> the ci residual -> ci -> A
+//
+// The second is the subtle one. psi_stem_to_ci root-finds
+// g(ci; psi_stem, psi, T) = A(ci,T)*umol_to_mol - gc*(ca-ci)*inv_atm = 0, and the
+// demand side reads the temperature-dependent members, so g gains an EXPLICIT T
+// argument. Differentiating g = 0 totally in psi adds g_T * dT/dpsi to the
+// existing terms, with g_T = A_T * umol_to_mol, so `dci/dpsi` gains
+// `-(A_T * umol_to_mol * tau) / g_ci`.
+//
+// Adding that to the direct term `A_T * tau` and collecting gives
+// `Delta = A_T * tau * (1 - A_prime*umol_to_mol/g_ci)`, which since
+// `g_ci = A_prime*umol_to_mol + gc*inv_atm` is the same as
+// `Delta = A_T * tau * (gc*inv_atm) / g_ci`.
+//
+// Two consequences worth keeping, because each is a free check on the algebra:
+//
+//  * the damping factor (gc*inv_atm)/g_ci lies strictly in (0,1). The direct
+//    thermal effect on A is partly cancelled because ci re-equilibrates. If an
+//    implementation ever produces |Delta| > |A_T*tau|, it is wrong.
+//  * dE/dpsi > 0 and dT/dE < 0, so tau < 0. Above the thermal optimum A_T < 0
+//    and therefore Delta > 0: the corrected condition pushes the optimum DRIER,
+//    i.e. toward more transpiration, because the extra flux now buys evaporative
+//    cooling back toward the optimum. That is the decoupling mechanism, and its
+//    sign is the sharpest available test that this term is right.
+//
+// `dgc_dT` is a named zero rather than an omission: stom_cond_CO2 currently
+// divides by the prescribed AIR vpd, so gc does not depend on Tleaf. Wiring
+// leaf-to-air VPD (PLAN 13.1) makes it non-zero and this becomes a one-line
+// change instead of a re-derivation.
+inline double Leaf::dprofit_energy_balance_term(
+    double ci, double gc, double g_ci, double inv_atm, double gc_const,
+    double dgc_dpsistem, double dgc_dpsi, double dpsistem_dpsi, double dT_dE,
+    double Tleaf) {
+  if (!use_energy_balance_ || dT_dE == 0.0) {
+    return 0.0;
+  }
+
+  // dA/dTleaf by a CENTRAL DIFFERENCE over the temperature block only.
+  //
+  // Chosen over templating the Arrhenius block on the scalar type, and the
+  // reason is the golden file rather than accuracy. Re-expressing
+  // update_temperature_dependent_params as the T=double instantiation of a
+  // templated kernel changes which expressions share an inlined body, and
+  // PLAN 11b measured that exact move changing results even where the algebra
+  // was identical. That risks the gate-off path to buy precision nobody can
+  // observe: at h = 1e-3 K the truncation error is ~2e-9 relative against a
+  // model whose own floor (psi_stem_to_ci at 1e-10) is ~1e-9.
+  //
+  // ⚠️ h is FIXED and ABSOLUTE, not relative to T. A relative step would make
+  // the estimator itself a function of psi, which is exactly the kind of thing
+  // that puts a staircase back into the argmax (hazard 3).
+  //
+  // Differencing the model's own update + kernel means this cannot drift from
+  // the function actually evaluated, and it picks up all eight temperature
+  // parameters -- including R_d_ and electron_transport_, which a hand-derived
+  // expression is precisely the sort of thing to forget.
+  const double h = 1e-3;
+  const double vcmax0 = vcmax_, jmax0 = jmax_, gamma0 = gamma_, ko0 = ko_,
+               kc0 = kc_, Rd0 = R_d_, km0 = km_, J0 = electron_transport_;
+  // ⚠️ Tleaf, NOT leaf_temp_. On the energy-balance path set_physiology
+  // reinterprets leaf_temp_ as AIR temperature (Tair_ = leaf_temp_), so
+  // differencing around it evaluates dA/dT at the wrong point entirely. The
+  // first version of this did exactly that; the resulting A_T was wrong enough
+  // to flip the sign of dprofit at a bracket endpoint, and the collar solve
+  // aborted with "parameters a and b do not bracket the root".
+  const double T0 = Tleaf;
+
+  update_temperature_dependent_params(T0 + h);
+  const double A_up = assim_colimited(ci);
+  update_temperature_dependent_params(T0 - h);
+  const double A_dn = assim_colimited(ci);
+
+  // Restore by assignment rather than by a third update call: exact, and cheaper
+  // than re-running the Arrhenius block.
+  vcmax_ = vcmax0; jmax_ = jmax0; gamma_ = gamma0; ko_ = ko0; kc_ = kc0;
+  R_d_ = Rd0; km_ = km0; electron_transport_ = J0;
+
+  const double A_T = (A_up - A_dn) / (2.0 * h);
+
+  // dE/dpsi from the gc partials already in hand -- gc = gc_const * E, so
+  // dividing by gc_const recovers it with no new spline evaluation.
+  const double dE_dpsi = (dgc_dpsistem * dpsistem_dpsi + dgc_dpsi) / gc_const;
+  const double tau = dT_dE * dE_dpsi;
+
+  const double dgc_dT = 0.0;  // see the note above; non-zero once PLAN 13.1 lands
+  const double damping = (gc * inv_atm - dgc_dT * (ca_ - ci) * inv_atm) / g_ci;
+
+  return A_T * tau * damping;
+}
+
+// Post-prepare body of evaluate_root_collar_psi (see header). Kept as a separate
+// entry point so callers that evaluate several collar potentials within one step
+// (the centred finite difference, #530) can run prepare_collar_solve once and
+// reuse the soil-side caches across every profit eval. The clamp into
+// [bound_a, bound_b] is identical to evaluate_root_collar_psi's, so near a
+// boundary a perturbed potential collapses onto the boundary -- which is exactly
+// how the FD path degrades gracefully to a one-sided difference.
+inline Leaf::BoundRow Leaf::bound_row(WhichBound which) {
+  const std::vector<double>& psi_soil = supply_psi_soil();
+  const std::size_t n = psi_soil.size();
+  BoundRow row;
+  row.d_dpsi_soil.assign(n, 0.0);
+  row.d_droot_carbon.assign(n, 0.0);
+
+  if (which == WhichBound::DryRootPsiCrit) {
+    // The bound is a registered constant, so it moves with nothing except
+    // itself. Exact, and the cheapest row here.
+    //
+    // ⚠️ THIS ARM RETURNS BEFORE THE SHARED CONVERSION at the end of the
+    // function, so the value stored here must ALREADY be the quotient
+    // -(dR/du)/(dR/dx) that every other field only becomes down there. The
+    // residual is R(x) = x - root_psi_crit, so the raw partial is -1 and the
+    // slope is 1, and the row is -(-1)/1 = +1. It read -1 -- the raw partial,
+    // never divided or negated -- for as long as nothing differenced it, which
+    // is the sign of this row backwards for every consumer. A future arm added
+    // above the conversion block has to do its own division here too, or return
+    // through it.
+    row.bound = supply_psi_crit();
+    row.d_droot_psi_crit = 1.0;
+    row.residual_slope = 1.0;
+    row.finite = true;
+    return row;
+  }
+
+  // find_root_psi probes collars, and every probe writes E_up_ and
+  // soil_consumption_ on its way past. Those describe the OPERATING POINT for
+  // whoever solved it, so this restores them: a row is a read, and a read that
+  // moves the outputs is the cross-plant channel hazard 8 is about.
+  const std::vector<double> saved_consumption = soil_consumption_;
+  const double saved_E_up = E_up_;
+  const double wettest = supply_begin_solve();
+  const double x =
+      find_root_psi(wettest, psi_soil, which == WhichBound::Wet ? 0 : 1);
+  row.bound = x;
+  auto restore = [&]() -> void {
+    soil_consumption_ = saved_consumption;
+    E_up_ = saved_E_up;
+  };
+  if (!std::isfinite(x)) {
+    restore();
+    return row;
+  }
+
+  // Common to both: the residual is total uptake, so its state partials are
+  // uptake's. dE_from_soil_dpsi_soil is diagonal, so entry j IS dE_up/dpsi_j.
+  const double dEup_dx = dE_from_soil_dpsi_collar(x, psi_soil);
+  // The root curve reaches total uptake through the layer mean-conductivity
+  // integral and nothing else, so each of these is the whole of that parameter's
+  // residual partial for either bound. The single path has no root curve.
+  const bool multi = supply_kind_ == SupplyKind::MultiLayer;
+  const double dEup_droot_b =
+      multi ? roots_.duptake_droot_curve(x, psi_soil,
+                                         MultiLayerRoots::CurveTrait::Position)
+            : 0.0;
+  const double dEup_droot_c =
+      multi ? roots_.duptake_droot_curve(x, psi_soil,
+                                         MultiLayerRoots::CurveTrait::Steepness)
+            : 0.0;
+  std::vector<double> dEup_dpsi;
+  dE_from_soil_dpsi_soil(x, psi_soil, dEup_dpsi);
+  // Root carbon is the multi-layer architecture's input; the single-potential
+  // path is given a series resistance and has no carbon profile to move.
+  std::vector<std::vector<double>> dE_drc, dD_drc;
+  const bool has_root_carbon = supply_kind_ == SupplyKind::MultiLayer;
+  if (has_root_carbon) {
+    roots_.duptake_droot_carbon(x, psi_soil, dE_drc, dD_drc);
+  }
+
+  double slope = dEup_dx;
+  if (which == WhichBound::DryRootCrit) {
+    // The stem's half of the residual. G'(x) is positive, so this can only make
+    // the denominator larger -- which is why the sign is safe and the magnitude
+    // is not.
+    slope += transport_slope(x);
+    row.d_dkappa =
+        -(stem_curve_integral(psi_crit, "Leaf::bound_row") -
+          stem_curve_integral(x, "Leaf::bound_row"));
+    row.d_dpsi_crit =
+        -transport_slope(psi_crit);
+    row.d_dstem_b =
+        -leaf_specific_conductance_max_ *
+        (stem_curve_integral_dstem_b(psi_crit, "Leaf::bound_row") -
+         stem_curve_integral_dstem_b(x, "Leaf::bound_row"));
+    // The steepness reaches the same difference of cumulative integrals, from
+    // the series rather than from Euler's identity. Taken at the traits the
+    // spline was built at, so it is the derivative of the value this residual
+    // reads and not of a nearby curve.
+    const VulnerabilityIntegralDerivatives G_crit =
+        cumulative_vulnerability_integral_derivatives_at(psi_crit, stem_b,
+                                                         stem_c);
+    const VulnerabilityIntegralDerivatives G_x =
+        cumulative_vulnerability_integral_derivatives_at(x, stem_b, stem_c);
+    row.d_dstem_c =
+        -leaf_specific_conductance_max_ * (G_crit.dc - G_x.dc);
+  }
+  row.residual_slope = slope;
+  if (!std::isfinite(slope) || slope == 0.0) {
+    restore();
+    return row;
+  }
+
+  // Every entry is the same quotient: minus the residual's partial over the
+  // residual's slope. The fields above still hold the raw partials at this
+  // point, so the conversion happens once, here.
+  row.d_droot_b = dEup_droot_b;
+  row.d_droot_c = dEup_droot_c;
+  bool ok = std::isfinite(row.d_dkappa) && std::isfinite(row.d_dpsi_crit) &&
+            std::isfinite(row.d_dstem_b) && std::isfinite(row.d_dstem_c) &&
+            std::isfinite(row.d_droot_b) && std::isfinite(row.d_droot_c);
+  for (std::size_t j = 0; j < n && ok; ++j) {
+    double dEup_drc = 0.0;
+    if (has_root_carbon) {
+      for (std::size_t i = 0; i < n; ++i) {
+        dEup_drc += dE_drc[i][j];
+      }
+    }
+    if (!std::isfinite(dEup_dpsi[j]) || !std::isfinite(dEup_drc)) {
+      ok = false;
+      break;
+    }
+    row.d_dpsi_soil[j] = -dEup_dpsi[j] / slope;
+    row.d_droot_carbon[j] = -dEup_drc / slope;
+  }
+  row.d_dkappa = -row.d_dkappa / slope;
+  row.d_dpsi_crit = -row.d_dpsi_crit / slope;
+  row.d_dstem_b = -row.d_dstem_b / slope;
+  row.d_dstem_c = -row.d_dstem_c / slope;
+  row.d_droot_b = -row.d_droot_b / slope;
+  row.d_droot_c = -row.d_droot_c / slope;
+  row.finite = ok;
+  restore();
+  return row;
 }
 
 } // namespace phylloptim

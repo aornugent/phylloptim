@@ -460,30 +460,6 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// Leaf__bound_row_values
-std::vector<double> Leaf__bound_row_values(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, int which);
-RcppExport SEXP _phylloptim_Leaf__bound_row_values(SEXP obj_SEXP, SEXP whichSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
-    Rcpp::traits::input_parameter< int >::type which(whichSEXP);
-    rcpp_result_gen = Rcpp::wrap(Leaf__bound_row_values(obj_, which));
-    return rcpp_result_gen;
-END_RCPP
-}
-// Leaf__hydraulic_cost_row_values
-std::vector<double> Leaf__hydraulic_cost_row_values(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double psi_stem);
-RcppExport SEXP _phylloptim_Leaf__hydraulic_cost_row_values(SEXP obj_SEXP, SEXP psi_stemSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
-    Rcpp::traits::input_parameter< double >::type psi_stem(psi_stemSEXP);
-    rcpp_result_gen = Rcpp::wrap(Leaf__hydraulic_cost_row_values(obj_, psi_stem));
-    return rcpp_result_gen;
-END_RCPP
-}
 // Leaf__dprofit_droot_collar_psi
 double Leaf__dprofit_droot_collar_psi(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double opt_root_psi);
 RcppExport SEXP _phylloptim_Leaf__dprofit_droot_collar_psi(SEXP obj_SEXP, SEXP opt_root_psiSEXP) {
@@ -2362,17 +2338,6 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// profit_env_row_values
-Rcpp::List profit_env_row_values(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
-RcppExport SEXP _phylloptim_profit_env_row_values(SEXP obj_SEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
-    rcpp_result_gen = Rcpp::wrap(profit_env_row_values(obj_));
-    return rcpp_result_gen;
-END_RCPP
-}
 // root_network_from_carbon
 phylloptim::RootNetwork root_network_from_carbon(const std::vector<double>& root_carbon_per_leaf_area, const std::vector<double>& soil_depth, double beta_R_H, double beta_R_V);
 RcppExport SEXP _phylloptim_root_network_from_carbon(SEXP root_carbon_per_leaf_areaSEXP, SEXP soil_depthSEXP, SEXP beta_R_HSEXP, SEXP beta_R_VSEXP) {
@@ -2423,8 +2388,6 @@ static const R_CallMethodDef CallEntries[] = {
     {"_phylloptim_Leaf__find_psi_stem_from_psi_root", (DL_FUNC) &_phylloptim_Leaf__find_psi_stem_from_psi_root, 3},
     {"_phylloptim_Leaf__evaluate_root_collar_psi", (DL_FUNC) &_phylloptim_Leaf__evaluate_root_collar_psi, 2},
     {"_phylloptim_Leaf__profit_at_fixed_collar_values", (DL_FUNC) &_phylloptim_Leaf__profit_at_fixed_collar_values, 2},
-    {"_phylloptim_Leaf__bound_row_values", (DL_FUNC) &_phylloptim_Leaf__bound_row_values, 2},
-    {"_phylloptim_Leaf__hydraulic_cost_row_values", (DL_FUNC) &_phylloptim_Leaf__hydraulic_cost_row_values, 2},
     {"_phylloptim_Leaf__dprofit_droot_collar_psi", (DL_FUNC) &_phylloptim_Leaf__dprofit_droot_collar_psi, 2},
     {"_phylloptim_Leaf__psi_stem_to_ci", (DL_FUNC) &_phylloptim_Leaf__psi_stem_to_ci, 3},
     {"_phylloptim_Leaf__hydraulic_cost_Sperry", (DL_FUNC) &_phylloptim_Leaf__hydraulic_cost_Sperry, 3},
@@ -2594,7 +2557,6 @@ static const R_CallMethodDef CallEntries[] = {
     {"_phylloptim_gradient_batch_prepare", (DL_FUNC) &_phylloptim_gradient_batch_prepare, 9},
     {"_phylloptim_gradient_batch_check", (DL_FUNC) &_phylloptim_gradient_batch_check, 1},
     {"_phylloptim_gradient_batch_run", (DL_FUNC) &_phylloptim_gradient_batch_run, 8},
-    {"_phylloptim_profit_env_row_values", (DL_FUNC) &_phylloptim_profit_env_row_values, 1},
     {"_phylloptim_root_network_from_carbon", (DL_FUNC) &_phylloptim_root_network_from_carbon, 4},
     {NULL, NULL, 0}
 };

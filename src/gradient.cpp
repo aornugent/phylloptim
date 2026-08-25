@@ -236,26 +236,3 @@ Rcpp::List gradient_batch_run(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_,
       Rcpp::_["message"] = message);
 }
 
-// The profit's environment rows -- radiation and each soil layer -- at whatever
-// operating point the leaf is currently seated at.
-//
-// Exported so the rows can be refereed from R against a central difference of
-// the profit at a RE-SOLVED operating point, which is the relation that defines
-// them and which shares no code with the derivation. That reference matters most
-// at a pin, where the row stops being an envelope step and picks up the bound's
-// own movement.
-//
-// A list rather than a flattened vector, because `message` is the diagnostic
-// half of an unusable answer and there is no honest way to encode a string as a
-// double.
-// [[Rcpp::export]]
-Rcpp::List profit_env_row_values(
-    phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
-  phylloptim::gradient::ProfitEnvDerivatives rows;
-  phylloptim::gradient::profit_env_derivatives(*obj_, rows);
-  return Rcpp::List::create(
-      Rcpp::_["usable"] = rows.usable, Rcpp::_["pinned"] = rows.pinned,
-      Rcpp::_["dprofit_dlight"] = rows.dprofit_dlight,
-      Rcpp::_["dprofit_dpsi_soil"] = rows.dprofit_dpsi_soil,
-      Rcpp::_["message"] = rows.message);
-}

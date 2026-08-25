@@ -426,17 +426,6 @@ Leaf:
     profit_at_fixed_collar_values:
       return_type: "std::vector<double>"
       args: [collar: double]
-    # A feasibility bound's own row, by the implicit function theorem on the
-    # residual that defines it. `which` is 0 wet, 1 dry-root-crit, 2
-    # dry-root-psi-crit; the layout is documented at bound_row_values.
-    bound_row_values:
-      return_type: "std::vector<double>"
-      args: [which: int]
-    # The hydraulic cost's own row, which IS the trait row of a zero-flux
-    # operating point. Layout documented at hydraulic_cost_row_values.
-    hydraulic_cost_row_values:
-      return_type: "std::vector<double>"
-      args: [psi_stem: double]
     dprofit_droot_collar_psi:
       return_type: double
       args: [opt_root_psi: double]

@@ -186,12 +186,6 @@ NULL
       profit_at_fixed_collar_values = function(collar) {
         Leaf__profit_at_fixed_collar_values(self, collar)
       },
-      bound_row_values = function(which) {
-        Leaf__bound_row_values(self, which)
-      },
-      hydraulic_cost_row_values = function(psi_stem) {
-        Leaf__hydraulic_cost_row_values(self, psi_stem)
-      },
       dprofit_droot_collar_psi = function(opt_root_psi) {
         Leaf__dprofit_droot_collar_psi(self, opt_root_psi)
       },
