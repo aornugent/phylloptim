@@ -90,7 +90,7 @@ ProfitInputs<tangent> inputs_at(const Leaf& l, int par) {
       tangent(l.R_d_),          tangent(l.leaf_specific_conductance_max_),
       tangent(l.stem_b),        tangent(l.stem_c),
       tangent(l.beta2),         tangent(l.cost_scale_TF24),
-      tangent(l.transpiration_)};
+      tangent(l.opt_root_psi_),  tangent(0.0)};
   switch (par) {
     case grad::par_vcmax_25: seed_direction(p.vcmax, l.vcmax_ / l.vcmax_25); break;
     case grad::par_jmax_25:
@@ -107,6 +107,10 @@ ProfitInputs<tangent> inputs_at(const Leaf& l, int par) {
     case grad::par_kmax: seed_direction(p.kmax, 1.0); break;
     default: break;
   }
+  // The flux the soil delivers at this collar. Held, like the collar: this
+  // measures profit's rows at a point that does not move.
+  std::vector<tangent> per_layer;
+  p.flux = l.E_from_soil_at<tangent>(p.collar, per_layer);
   return p;
 }
 
@@ -169,8 +173,8 @@ int main() {
           const double hand = rows.held[i];
           if (!std::isfinite(hand)) continue;
           const ProfitInputs<tangent> p = inputs_at(l, kInputs[i].par);
-          const double got = derivative_along(l.profit_at<tangent>(
-              l.opt_root_psi_, l.opt_psi_stem_, l.ci_, p));
+          const double got = derivative_along(
+              l.profit_at<tangent>(l.opt_psi_stem_, l.ci_, p));
           ++compared;
           ++at;
           const double rel = std::abs(got - hand) / scale;

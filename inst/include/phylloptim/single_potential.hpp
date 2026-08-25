@@ -131,9 +131,30 @@ public:
   // "how much CAN the soil supply at this collar potential" -- so a zero
   // resistance is rejected at the point it would produce an infinity rather than
   // silently returning one.
-  void uptake(double T_collar, std::vector<double>& soil_consumption,
-              double& E_up) const {
-    uptake_from(T_collar, psi_soil_, soil_consumption, E_up);
+  //
+  // One scalar or another, so a caller differentiating the collar has one supply
+  // path to ask rather than two.
+  template <typename T>
+  void uptake(const T& T_collar, std::vector<T>& soil_consumption,
+              T& E_up) const {
+    const double at = odelia::util::to_passive(T_collar);
+    if (!std::isfinite(at)) {
+      util::stop("SinglePotential::uptake invalid input; T_collar=" +
+                 util::to_string(at));
+    }
+    if (!(resistance_ > 0.0)) {
+      util::stop("SinglePotential::uptake needs a positive resistance_; got " +
+                 util::to_string(resistance_));
+    }
+    const T E_i = (T_collar - psi_soil_ - grav_head_) / resistance_;
+    if (!soil_consumption.empty()) {
+      soil_consumption[0] = E_i;  // mol, as MultiLayerRoots leaves it
+    }
+    E_up = E_i * kg_per_mol_h2o;
+    if (!std::isfinite(odelia::util::to_passive(E_up))) {
+      util::stop("SinglePotential::uptake non-finite E_up; T_collar=" +
+                 util::to_string(at));
+    }
   }
 
   void uptake_from(double T_collar, double T_soil,

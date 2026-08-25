@@ -45,17 +45,16 @@ using odelia::ode::seed_direction;
 // so a caller seeds them in the direction their ratio gives and the chain from
 // the trait is one factor rather than a pass of its own.
 //
-// `uptake` is the water the roots deliver at this collar, and it is an input
-// rather than something derived here because it is the roots model's output --
-// and it is the ONLY route the soil state reaches profit by: the stomatal
-// conductance is proportional to it and the stem potential is what carries it.
 template <typename T>
 struct ProfitInputs {
   using value_type = T;
   T vcmax, transport_jmax, quantum_yield, curv_elec, curv_colim, ppfd,
       respiration;
   T kmax, stem_b, stem_c, beta2, cost_scale;
-  T uptake;
+  // The operating point, and what the soil delivers there. Both are parameters
+  // of the two residuals rather than unknowns of them, and the flux is passed
+  // beside the collar it came from so the quadrature runs once for the pair.
+  T collar, flux;
 
   // The same inputs with the derivatives taken off, which is what an implicit
   // node asks for to take a slope with the parameters held still.
@@ -68,7 +67,7 @@ struct ProfitInputs {
             U(to_passive(respiration)),   U(to_passive(kmax)),
             U(to_passive(stem_b)),        U(to_passive(stem_c)),
             U(to_passive(beta2)),         U(to_passive(cost_scale)),
-            U(to_passive(uptake))};
+            U(to_passive(collar)),        U(to_passive(flux))};
   }
 };
 
@@ -1660,17 +1659,38 @@ public:
   template <typename T>
   T stem_integral_at(const T& psi, const ProfitInputs<T>& in) const;
 
-  // Profit at a collar the solve already placed, differentiable in every input
-  // that reaches it. `sigma_star` and `ci_star` are the two the solve found
-  // there, so nothing here searches: they enter the two residuals that define
-  // them and come back carrying the implicit function theorem's quotient.
+  // The water the soil delivers at a collar, at one scalar, against the soil
+  // state the solve cached. Both supply paths answer the same question, so a
+  // caller differentiating the collar asks one thing rather than branching.
   //
-  // The collar is HELD. At an interior point that is the whole answer, because
-  // the collar is where the marginal profit is zero and profit's response to it
-  // therefore is -- the envelope theorem, written as a collar that does not move
-  // rather than as a term that has to come out to zero.
+  // This is the ONLY route the collar reaches the carbon side by: the stomatal
+  // conductance is proportional to the flux and the stem potential is what
+  // carries it.
+  template <typename T>
+  T E_from_soil_at(const T& collar, std::vector<T>& per_layer) const {
+    per_layer.assign(static_cast<std::size_t>(supply_n_layers()), T(0.0));
+    T out = T(0.0);
+    switch (supply_kind_) {
+      case SupplyKind::MultiLayer: roots_.uptake(collar, per_layer, out); break;
+      default:                     single_.uptake(collar, per_layer, out); break;
+    }
+    return out;
+  }
+
+  // Profit at a collar the solve already placed, differentiable in every input
+  // that reaches it AND in the collar itself. `sigma_star` and `ci_star` are the
+  // two the solve found there, so nothing here searches: they enter the two
+  // residuals that define them and come back carrying the implicit function
+  // theorem's quotient.
+  //
+  // The collar is an argument at the working scalar, which is what makes the
+  // marginal profit a seeded pass over this rather than a second derivation:
+  // seed the collar and read the direction. At an interior point profit's own
+  // row needs none of it -- the collar is where the marginal is zero, which is
+  // the envelope theorem -- but the marginal itself is what places the collar,
+  // and every water output reads that.
   template <typename S>
-  S profit_at(double collar, double sigma_star, double ci_star,
+  S profit_at(double sigma_star, double ci_star,
               const ProfitInputs<S>& in) const;
 
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
@@ -5303,9 +5323,20 @@ inline T Leaf::stem_integral_at(const T& psi, const ProfitInputs<T>& in) const {
   const double c = to_passive(in.stem_c);
   const VulnerabilityIntegralDerivatives d =
       cumulative_vulnerability_integral_derivatives_at(at, b, c);
+  const T step = psi - T(at);
+  // ⚠️ TO SECOND ORDER IN THE QUERY, AND THAT IS NOT A REFINEMENT. The marginal
+  // profit is a first derivative of this and the condition that places the collar
+  // is a second, so a lift that stops at first order reports the curvature as
+  // zero -- finite, plausible, and wrong by a factor of order one.
+  //
+  // The first-order coefficient is the curve AT THE WORKING SCALAR rather than a
+  // constant, which is what carries the cross terms in the curve's own traits;
+  // its argument is the passive query point, so the term contributes exactly
+  // G'(at) to the first derivative and nothing to the second.
   return T(stem_curve_integral(at, "Leaf::stem_integral_at")) +
-         T(d.dpsi) * (psi - T(at)) + T(d.db) * (in.stem_b - T(b)) +
-         T(d.dc) * (in.stem_c - T(c));
+         proportion_of_conductivity_kernel<T>(T(at), in.stem_b, in.stem_c) * step +
+         T(0.5 * d.d2psi) * step * step +
+         T(d.db) * (in.stem_b - T(b)) + T(d.dc) * (in.stem_c - T(c));
 }
 
 // The two residuals that place the operating point at a held collar, and the
@@ -5320,9 +5351,9 @@ inline T Leaf::stem_integral_at(const T& psi, const ProfitInputs<T>& in) const {
 // gc is proportional to the flux, so it is derived from the uptake here rather
 // than passed: two spellings of one fact is a place they can disagree.
 template <typename S>
-inline S Leaf::profit_at(double collar, double sigma_star, double ci_star,
+inline S Leaf::profit_at(double sigma_star, double ci_star,
                          const ProfitInputs<S>& in) const {
-  const double gc_per_uptake =
+  const double gc_per_flux =
       atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
   const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
   const Leaf& leaf = *this;
@@ -5331,8 +5362,8 @@ inline S Leaf::profit_at(double collar, double sigma_star, double ci_star,
       sigma_star, in,
       [&]<class T>(const T& s, const ProfitInputs<T>& p) -> T {
         return p.kmax * (leaf.template stem_integral_at<T>(s, p) -
-                         leaf.template stem_integral_at<T>(T(collar), p)) -
-               p.uptake;
+                         leaf.template stem_integral_at<T>(p.collar, p)) -
+               p.flux;
       });
 
   const S ci = odelia::implicit_value<S>(
@@ -5343,7 +5374,7 @@ inline S Leaf::profit_at(double collar, double sigma_star, double ci_star,
         const T A = leaf.template assim_colimited_kernel<T>(
             c, p.vcmax, J, p.curv_colim, p.respiration);
         return A * umol_to_mol -
-               T(gc_per_uptake) * p.uptake * (T(leaf.ca_) - c) * T(inv_atm);
+               T(gc_per_flux) * p.flux * (T(leaf.ca_) - c) * T(inv_atm);
       });
 
   const S J = electron_transport_kernel<S>(in.ppfd, in.quantum_yield,
