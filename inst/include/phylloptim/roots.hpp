@@ -1461,10 +1461,21 @@ private:
       // f_r is the cumulative table's own slope, read through root_vuln_at so a
       // layer drier than the grid gets the last knot's conductivity rather than an
       // extrapolated (eventually negative) one.
-      const double f_ri = root_vuln_at(to_passive(T_src_max));
-      if (!std::isfinite(f_ri) || f_ri <= 0.0) {
+      // The conductivity at the potential both ends sit at, carrying the query's
+      // own slope and the curve's two trait derivatives -- the same five reads of
+      // one curve the cumulative integral is lifted with. A constant here reports
+      // this layer as insensitive to the soil it is in.
+      const double f_at = to_passive(T_src_max);
+      const T f_ri =
+          T(root_vuln_at(f_at)) +
+          T(root_vuln_integrand_deriv_at(f_at)) * (T_src_max - T(f_at)) +
+          T(root_vuln_integrand_dtrait(f_at, CurveTrait::Position)) *
+              (at_scalar.root_b - T(root_b0)) +
+          T(root_vuln_integrand_dtrait(f_at, CurveTrait::Steepness)) *
+              (at_scalar.root_c - T(root_c0));
+      if (!std::isfinite(to_passive(f_ri)) || to_passive(f_ri) <= 0.0) {
         util::stop("E_from_Soil_to_Root_Collar invalid f_ri; layer=" + std::to_string(i) +
-                   "; f_ri=" + util::to_string(f_ri) +
+                   "; f_ri=" + util::to_string(to_passive(f_ri)) +
                    "; T_src_max=" + util::to_string(to_passive(T_src_max)) +
                    "; T_collar=" + util::to_string(collar_at));
       }

@@ -61,9 +61,10 @@ GOLDEN_ARGS ?=
 
 all: build
 	./test_leaf
+	./test_leaf_gradient
 	./test_golden $(GOLDEN_ARGS)
 
-build: test_leaf test_golden
+build: test_leaf test_leaf_gradient test_golden
 
 # Not built or run by `make all` -- it takes a few seconds and measures the
 # machine as much as the code. Run it deliberately when a change might have
@@ -73,6 +74,12 @@ bench: bench_solve bench_gradient
 	./bench_gradient
 
 test_leaf: test_leaf.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+
+# The gradient against a difference of the solve. Slower than test_leaf -- it
+# re-solves the whole leaf four times per input per state -- and it is the one
+# thing that referees the derivative against something that is not itself.
+test_leaf_gradient: test_leaf_gradient.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
 
 test_golden: test_golden.cpp $(HEADERS)

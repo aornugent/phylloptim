@@ -1764,16 +1764,25 @@ public:
     odelia::record_report point{};
   };
 
-  // The outputs at the point this solve left, at whatever scalar the caller
-  // wants. The kind chooses which condition closes the system and nothing else:
-  // underneath it is one composition.
+  // The collar this solve left, at whatever scalar the caller wants, from
+  // whatever pins it. The kind chooses which condition closes the system and
+  // nothing else.
   //
   // `cond` is the interior condition's gradient, which the caller has already
   // seen -- its slope is the curvature, and whether that is usable is a policy
-  // the caller owns. It is ignored at every other kind.
+  // the caller owns. It is ignored at every other kind, because every other
+  // kind's condition is first order and composes here.
+  //
+  // `point` says whether the collar could be put on the tape. Where it could
+  // not, it carries its value and no rows.
   template <typename S>
-  LeafOutputs<S> outputs_at(const LeafInputs<S>& in,
-                            const CollarCondition& cond) const;
+  S collar_at(const LeafInputs<S>& in, const CollarCondition& cond,
+              odelia::record_report& point) const;
+
+  // The outputs at a collar, whatever placed it. Underneath the kind switch this
+  // is one composition: the two residuals, the kernels and the quadrature.
+  template <typename S>
+  LeafOutputs<S> outputs_at(const S& collar, const LeafInputs<S>& in) const;
 
   // Profit at a collar the solve already placed, differentiable in every input
   // that reaches it AND in the collar itself. `sigma_star` and `ci_star` are the
@@ -5484,7 +5493,16 @@ inline S Leaf::profit_at(double sigma_star, double ci_star,
                p.flux;
       });
 
-  const S ci = odelia::implicit_value<S>(
+  // ⚠️ FOLLOW THE BRANCH THE FORWARD MODEL TOOK. Where the leaf is not moving
+  // water it does not place ci by the residual at all -- it assigns the CO2
+  // compensation point, which is a function of temperature and which no carbon
+  // input reaches. Applying the theorem to a condition the model did not solve
+  // returns a number rather than an error, and the number is a cancellation of
+  // two vanishing terms.
+  const S ci =
+      ci_at_compensation_point_
+          ? S(ci_star)
+          : odelia::implicit_value<S>(
       ci_star, at,
       [&]<class T>(const T& c, const ProfitInputs<T>& p) -> T {
         const T J = leaf.template electron_transport_kernel<T>(
@@ -5578,22 +5596,20 @@ inline S Leaf::bound_at(WhichBound which, double bound_x,
       });
 }
 
+// An interior point is the only kind whose condition is a second derivative, so
+// it is the only one whose gradient had to be taken in forward mode and handed
+// over; every other kind's condition is first order and composes here.
 template <typename S>
-inline Leaf::LeafOutputs<S> Leaf::outputs_at(const LeafInputs<S>& in,
-                                             const CollarCondition& cond) const {
-  LeafOutputs<S> out;
+inline S Leaf::collar_at(const LeafInputs<S>& in, const CollarCondition& cond,
+                         odelia::record_report& point) const {
   LeafInputs<S> at = in;
-
-  // The collar, from whatever pins it. An interior point is the only kind whose
-  // condition is a second derivative, so it is the only one whose gradient had
-  // to be taken in forward mode and handed over; every other kind's condition
-  // composes here.
   S collar = S(opt_root_psi_);
+  point = odelia::record_report{};
   switch (operating_point_kind_) {
     case OperatingPointKind::Interior: {
       LeafInputs<double> gradient = cond.gradient;
       std::vector<odelia::input_and_derivative<S>> terms = against<S>(at, gradient);
-      out.point = odelia::implicit_root<S>(opt_root_psi_, cond.slope, terms, collar);
+      point = odelia::implicit_root<S>(opt_root_psi_, cond.slope, terms, collar);
       break;
     }
     case OperatingPointKind::PinnedWet:
@@ -5613,10 +5629,18 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const LeafInputs<S>& in,
       // at all, so it does not move.
       break;
     default:
-      util::stop(std::string("Leaf::outputs_at: no outputs at an operating "
-                             "point that is ") +
+      util::stop(std::string("Leaf::collar_at: no operating point to place at "
+                             "one that is ") +
                  operating_point_kind_name(operating_point_kind_));
   }
+  return collar;
+}
+
+template <typename S>
+inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
+                                             const LeafInputs<S>& in) const {
+  LeafOutputs<S> out;
+  LeafInputs<S> at = in;
   // ⚠️ PROFIT READS THE HELD COLLAR AT AN INTERIOR POINT, and that is the
   // envelope theorem written as an omission rather than as a term that has to
   // come out to zero. The marginal is zero there by the condition the solve
@@ -5625,8 +5649,9 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const LeafInputs<S>& in,
   // model's. It is also why a collar that cannot be recorded costs the water
   // rows and not the objective.
   at.profit.collar =
-      operating_point_kind_ == OperatingPointKind::Interior ? S(opt_root_psi_)
-                                                            : collar;
+      operating_point_kind_ == OperatingPointKind::Interior
+          ? S(odelia::util::to_passive(collar))
+          : collar;
 
   if (zero_flux_operating_point()) {
     // No water moves, so no carbon is fixed: assimilation is minus the dark
