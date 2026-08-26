@@ -8,7 +8,7 @@ Read alongside:
 
 - **[README.md](../README.md)** — what it is and how to use it
 - **[NEWS.md](../NEWS.md)** — what changed in each release, and what it broke
-- **[`vignettes/the-models.Rmd`](../vignettes/the-models.Rmd)** — the seven
+- **[`vignettes/the-models.Rmd`](../vignettes/the-models.Rmd)** — the eight
   optimality models, the cost/link framework that unifies them, and two
   appendices: **B** derives the gradients, **C** is the numerical practice
   (finite-difference steps, golden files, cross-platform magnitudes)
@@ -92,8 +92,8 @@ tests/cpp/golden/              THREE bit-exact regression baselines.
                                solve calls, in five call-tree TIERS. Says WHICH
                                ONE moved -- the lowest tier that changed is the
                                cause. #64
-                               psi_stem_optima.tsv: 4608 rows covering what the
-                               other two cannot -- the seven STEM routes
+                               psi_stem_optima.tsv: 5184 rows covering what the
+                               other two cannot -- the eight STEM routes
                                across solver x topology x energy balance
                                x thermal cost, in two passes, the second of which
                                reuses one Leaf with the outputs POISONED so stale
@@ -687,6 +687,46 @@ passes `0`, which makes the same function the endpoints-plus-root-find method.
 | a different decision variable or supply topology | the bracket and the chain factor `dpsi_stem/dpsi` |
 | a scan, or no scan | `n` |
 
+**The worked example is `TF24_floor`**, added after this section was written, and it
+is the shape a new curve should have. What it touched: one enumerator (kept last,
+so `n_cost_curves` follows it), one arm each in `with_curve()` and `curve_name()`,
+one arm each in the four `if constexpr` tables (`benefit_link`,
+`check_cost_parameters`, `cost_deriv`, `profit_psi_stem_for`, `lambda_for`), a
+cost/profit/lambda trio beside its parents' — and nothing in any solver. Both
+routes, both supply topologies, the gradient and the closed form came for free.
+Its ONE parameter is a caller INPUT with no default (`TF24_floor_lambda_o`, as
+`CF77_lambda_`); the hydraulic half reads `TF24_cost_scale` and `TF24_beta2`.
+
+⚠️ **PREFER SHARING THE PARENT'S PARAMETERS TO GIVING THE NEW CURVE ITS OWN, WHEN
+THE NEW CURVE IS A PARENT PLUS A TERM.** The first version of `TF24_floor` had its
+own hydraulic scale, on the convention that a parameter names the curve that reads
+it. That convention is right for a curve that stands alone and wrong for one that
+exists to be COMPARED with its parent: sharing makes the parent the same curve at
+one parameter's zero, so "is TF24 missing a price of water?" is a one-restriction
+question instead of a three-restriction one. It also kept the trait vector at
+fifteen, which is not nothing — see hazard 13 for what a sixteenth cost.
+
+⚠️ **The cheapest test of a new curve is a REDUCTION to an old one, and it costs
+nothing to arrange.** `TF24_floor` is `TF24` at `lambda_o = 0` and `CF77` at
+`TF24_cost_scale = 0`, and both are asserted BIT-FOR-BIT rather than to a tolerance
+— which works only because each term is the parent's own expression, so zeroing a
+parameter adds an exact zero to the other curve's exact value. It survives fused
+multiply-add too: with the addend an exact zero, `fma(x, y, 0)` is `round(x*y)`
+and `fma(0, y, q)` is `q`, so both reductions hold under `-ffp-contract=fast`.
+That test needs no fixture, no golden file and no tolerance to argue about, and it
+catches a wiring error anywhere between the enum and the reported outputs. **Reach
+for it before reaching for a new baseline.**
+
+⚠️ **A NEW CURVE WHOSE PARAMETER IS A FIELD RATHER THAN A TRAIT IS UNREACHABLE FROM
+`leaf_solve()` UNTIL SOMEONE WIRES IT.** `leaf_traits()` cannot carry a field and
+`leaf_solve()` builds its own `Leaf`, so `CF77` spent its whole life reachable only
+through `leaf_model()` — survivable while its documentation said so, and not
+survivable for a curve whose ONLY parameter is a price. `leaf_solve()` and
+`leaf_batch()` take the two prices as arguments now and `.seat_model()` applies
+them; `.solve_price_fields` is the one table saying which price belongs to which
+curve, and `.gradient_owned_pars` is its twin on the gradient side. A third priced
+curve needs a row in both.
+
 ⚠️ **`n` IS SET FROM MEASUREMENT, NOT FROM CAUTION, AND SCANNING BY DEFAULT IS THE
 EXPENSIVE MISTAKE.** This is a package whose reason for existing is a ~3 µs solve
 that plant calls millions of times. Measured over a 1728-row sweep (8 air
@@ -738,7 +778,7 @@ that can be load-bearing -- but one duplicating its *structure* with a piece
 missing. That is what the deleted maximiser was.
 
 **And the runtime curve dispatch is ONE switch.** There were four -- solve-collar,
-solve-stem, evaluate-stem, dprofit-stem -- all with the same seven arms; they are
+solve-stem, evaluate-stem, dprofit-stem -- all with the same arms; they are
 `Leaf::with_curve()`, a template taking a generic lambda, so a curve added to the
 enum touches an arm there, an arm in `curve_name()`, and the three `if constexpr`
 tables. Neither surviving switch has a `default:`, deliberately: a `default`
@@ -1096,7 +1136,7 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    and −1.5459 at 1.88, so a search that steps in from the bounds reports an open
    stoma where the objective says shut.
 
-   So all seven stem routes maximise over a CLOSED interval: endpoints
+   So all eight stem routes maximise over a CLOSED interval: endpoints
    included, a `boundary_scan_n_` = 64 scan to pick the basin **where
    `basin_scan_cells()` asks for one**, and a refine that root-finds the
    first-order condition inside the winning cell. Against a
@@ -1150,6 +1190,15 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    named count to a literal** — `bench_gradient.cpp` carried a literal `13` over an
    11-element array through three trait-count changes, and it only ever crashed
    when the address layout happened to be unlucky.
+
+   ⚠️ **Two of those initialisers are DELIBERATELY SHORT — they leave the
+   model-owned prices zero-filled because the route they exercise reads neither —
+   and that is exactly the case the zero-fill hides.** Both now carry
+   `static_assert(gradient::n_pars == N)` beside them, so the next appended
+   parameter is a compile error rather than a shifted `kmax`. Three places assert
+   that constant now: `tests/cpp/test_leaf.cpp`, `tests/cpp/bench_gradient.cpp`,
+   and the consumer program inside `.github/workflows/cpp-tests.yml`. Grep for
+   `n_pars ==` and update all three together.
 13. **The trait vector is bound POSITIONALLY in four places**: C++
    `gradient::apply()`, R's `.gradient_setter`, the batch route's `theta` matrix,
    and R's derived copy of the enumeration. Two of those fail loudly on a length
@@ -1160,6 +1209,29 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    They are addressed by NAME now, and `.gradient_non_traits` names the non-trait
    set once. Appending a parameter is safe; reordering the enumeration
    differentiates the wrong thing and returns plausible numbers.
+
+   ⚠️ **`.gradient_setter`'s own call was the last positional one, and it broke as
+   its comment predicted.** It spelled out fifteen subscripts into `l$set_traits`,
+   with a note saying that adding a trait would fail at run time inside the
+   generated binding, naming neither the line nor the count — "that is how #41
+   broke". Adding a sixteenth trait broke it again the same way: 118 gradient-batch
+   rows came back `status = "error"` where they had been `"interior"`, because the R
+   reference threw and the batch did not, so the failure surfaced as an
+   R-versus-C++ DISAGREEMENT rather than as a missing argument. It is a `do.call`
+   over the derived trait vector now and costs no extra boundary crossing. **A
+   comment predicting a failure is not a guard against it.**
+
+   ⚠️ That trait was then REMOVED — `TF24_floor` shares TF24's parameters instead —
+   so the vector is back at fifteen and nothing in the shipped tree exercises a
+   sixteenth slot. The `do.call` is kept anyway: the next trait will not be so
+   easy to withdraw.
+
+   ⚠️ **The MODEL-OWNED parameters are a second class now, and `CF77_lambda_` is
+   no longer the only one.** `TF24_floor_lambda_o` joins it: a slot in the
+   enumeration available for exactly one curve and refused, by name, on every
+   other. `R/gradient.R`'s `.gradient_owned_pars` is the single table mapping
+   price to owner — do not write a second one, and do not reason about "the CF77
+   slot" as though it were unique.
 14. **A derived `psi_crit` makes the P50 chain rule CONDITIONAL.** Since
    `psi_crit` is the curve's 95% quantile rather than a trait, moving `stem_P50`
    moves the threshold, and `d/dP50` picks up a term through it. That term is

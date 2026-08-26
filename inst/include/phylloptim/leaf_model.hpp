@@ -327,6 +327,32 @@ public:
   // golden files pin CF77 rows, so cf77_price() returns CF77_lambda_ itself on
   // this path rather than dividing it by a computed 1.0.
   bool CF77_soil_beta_ = false;
+  // THE PRICE OF WATER AS TRANSPIRATION GOES TO ZERO, umol C (kg H2O)^-1 -- the
+  // `lambda_o` of the TF24_floor cost curve, and an INPUT on exactly the same footing
+  // as `CF77_lambda_` above: same units, same meaning, no default, never assigned
+  // by model code, and not cleared by setup_clean_leaf().
+  //
+  // WHY IT HAS NO DEFAULT, and this is the sharpest case in the class. Zero is a
+  // defensible number and it is the WRONG default, because at `lambda_o = 0` this
+  // curve IS TF24 -- the hydraulic half is TF24's cost, read at TF24's own traits
+  // -- so a caller who seated "TF24_floor" and never set a price would silently be
+  // running the production model under a new name. Every conductance-loss curve in
+  // this package already has `lambda_o = 0` by construction; this one exists to
+  // make the price explicit, so leaving it unset is refused rather than defaulted.
+  //
+  // ⚠️ IT IS THE CURVE'S ONLY PARAMETER. There is deliberately no `TF24_floor_a`: the
+  // hydraulic half reads `TF24_cost_scale` and `TF24_beta2`, so TF24 is TF24_floor at
+  // `lambda_o = 0` AT IDENTICAL PARAMETER VALUES and the comparison between them is
+  // a one-restriction test rather than a fit of two differently-parameterised
+  // models. An earlier version gave it its own scale; that made "is TF24 missing a
+  // price of water" a three-restriction question for no gain.
+  //
+  // ⚠️ ITS SCALE IS SET BY THE LEAF, not chosen freely. lambda here runs 9e4 to 3e5
+  // umol C (kg H2O)^-1 at this package's defaults, so a lambda_o far outside that
+  // band pins the optimum against a bound and the answer describes the bracket
+  // rather than the model. See `kLambdaCF77` in tests/cpp/test_golden.cpp, which
+  // makes the same point about the same units.
+  double TF24_floor_lambda_o = util::na_value;     // umol C (kg H2O)^-1
   double hydraulic_cost_;
   
   double electron_transport_;
@@ -788,7 +814,7 @@ public:
   //   * ProfitMax's normaliser, `k_span = k(psi_soil) - 0.05*kmax`, so its lambda
   //   * the P50 chain rule, through `dpsi_crit/dP50`
   //
-  // So three of the seven cost curves change shape, not just a bound that seldom
+  // So three of the eight cost curves change shape, not just a bound that seldom
   // binds. And there is a ceiling: the vulnerability splines are built out to P99
   // (`vulnerability_conductivity_floor`), and the collar path recovers psi_stem by
   // INVERTING the stem integral, whose range ends there -- measured, asking 0.03%
@@ -1001,7 +1027,7 @@ public:
   // Which cost curve a psi_stem derivative differentiates. The cost enters the
   // chain through exactly ONE quantity -- dC/dpsi_stem -- so this selects that
   // and nothing else.
-  enum class CostCurve { TF24, CF77, JS22, CMax, SOX, JW26, ProfitMax };
+  enum class CostCurve { TF24, CF77, JS22, CMax, SOX, JW26, ProfitMax, TF24_floor };
 
   // ⚠️ THE ONE ABSTRACTION THAT MAKES EVERY MODEL THE SAME MODEL.
   //
@@ -1012,7 +1038,8 @@ public:
   //
   //     d/dpsi [ h(A) - C ] = h'(A) * dA/dpsi - dC/dpsi
   //     ----------------------------------------------------------------------
-  //     Identity  h(A) = A            h' = 1          TF24, CF77, JS22, CMax
+  //     Identity  h(A) = A            h' = 1          TF24, CF77, JS22, CMax,
+  //                                                   TF24_floor
   //     Log       h(A) = log A        h' = 1/A        SOX, JW26  (products: A*g
   //                                                   and log A + log g share
   //                                                   an argmax)
@@ -1043,11 +1070,12 @@ public:
   // moment ProfitMax was appended -- the curve existed, had a link and a
   // derivative, and was simply invisible to R because `curve_name()` called it
   // unknown. Keep this the last member.
-  static constexpr int n_cost_curves = static_cast<int>(CostCurve::ProfitMax) + 1;
+  static constexpr int n_cost_curves = static_cast<int>(CostCurve::TF24_floor) + 1;
 
   // ⚠️ THE MODEL IS CONFIGURATION, NOT A CALL ARGUMENT, and the reason is that its
-  // PARAMETERS already are. `CF77_lambda_` is a field; `JS22_gamma`, `CMax_a` and
-  // `CMax_b` are traits. Naming the curve at the call site while the constants it
+  // PARAMETERS already are. `CF77_lambda_` and `TF24_floor_lambda_o` are fields;
+  // `JS22_gamma`, `CMax_a` and `CMax_b` are traits. Naming the curve
+  // at the call site while the constants it
   // needs live on the object is incoherent -- you cannot configure half a model.
   // So the curve is seated here, beside them, and `optimise()` takes nothing.
   //
@@ -1284,6 +1312,8 @@ public:
         return f(std::integral_constant<CostCurve, CostCurve::JW26>{});
       case CostCurve::ProfitMax:
         return f(std::integral_constant<CostCurve, CostCurve::ProfitMax>{});
+      case CostCurve::TF24_floor:
+        return f(std::integral_constant<CostCurve, CostCurve::TF24_floor>{});
     }
     // Unreachable for any enumerator, and not a `default:` arm -- a `default`
     // would satisfy `-Werror=switch` and so remove the check this exists for.
@@ -1530,6 +1560,19 @@ public:
   // Also both potentials, but only because `E` is measured from the upstream one --
   // the COST here is a function of the absolute potential, unlike JS22's.
   double lambda_CMax(double psi_stem, double psi_upstream) const;
+  // ⚠️ THE ONE lambda IN THIS CLASS THAT DOES NOT VANISH AT THE WET END, and that
+  // is the whole content of the TF24_floor curve. It is `lambda_TF24` plus a constant:
+  //
+  //     lambda = lambda_TF24(psi) + lambda_o
+  //
+  // so as the drop closes the first term goes to zero and the price does not.
+  // Every conductance-loss curve here has `lambda -> 0` there by construction,
+  // which prices water as free precisely when it is abundant; this is the repair.
+  //
+  // ⚠️ ONE ARGUMENT, like `lambda_TF24` and unlike `lambda_JS22`, because the
+  // hydraulic half reads the ABSOLUTE potential. `lambda_for<TF24_floor>` discards
+  // the upstream potential accordingly.
+  double lambda_TF24_floor(double psi_stem) const;
 
   // --- the product-objective family --------------------------------
   //
@@ -1605,6 +1648,34 @@ public:
   // companion manuscript's job, not this header's.
   double g1_eff() const;
 
+  // THE PART OF THE COST THAT IS A PRICE RATHER THAN A REALISED CARBON LOSS, in
+  // umol C m^-2 s^-1. `TF24_floor_lambda_o * E` on that curve and exactly zero on
+  // every other one.
+  //
+  // ⚠️ ZERO IS NOT A CLAIM THAT THE CURVE'S COST IS ALL REALISED CARBON. It says
+  // the curve does not separate the two. CF77 is the case that matters: its whole
+  // cost is `lambda * E`, and reading that as a shadow price is a perfectly
+  // ordinary thing to do -- but the model supplies ONE number and nothing to
+  // attribute it with, so it behaves identically whether that number is read as
+  // carbon lost to water already taken or as the value of water withheld for
+  // later. Reporting it as all-shadow would ship one reading as a fact; reporting
+  // it as zero-shadow ships the other. Zero plus this comment is the honest
+  // choice, because the field is defined only where the CURVE defines it.
+  //
+  // That is also the argument for the two-term form: it is the first curve here in
+  // which the question "is lambda a cost to deduct, or a price that only shapes
+  // behaviour?" can be posed at all.
+  //
+  // Reads `transpiration_` rather than recomputing it, so
+  // `shadow_cost == TF24_floor_lambda_o * E` holds bit-exactly against the
+  // reported `E` -- which is the identity a caller checks.
+  //
+  // An accessor, not stored state (hazard 5), and it deliberately does NOT touch
+  // `hydraulic_cost_`: that member is the cost the OBJECTIVE subtracted, its
+  // expression carries the two bit-exact reductions, and splitting it would
+  // reassociate the arithmetic those depend on.
+  double shadow_cost() const;
+
   // Stomatal conductance to WATER VAPOUR, mol H2O m^-2 s^-1 (#56). The model solves
   // for conductance to CO2; every data source and the g1 literature record it to
   // water, so the conversion belongs here rather than in each caller.
@@ -1666,7 +1737,8 @@ public:
             uptake,
             marginal_cost_water(),
             g1_eff(),
-            Tleaf_};        // deg C -- APPENDED, see below
+            Tleaf_,          // deg C -- APPENDED, see below
+            shadow_cost()};  // APPENDED likewise, for the same reason
   }
 
 // leaf economics functions
@@ -1702,6 +1774,12 @@ public:
   // upstream potential, so the cost of moving no water is zero.
   double hydraulic_cost_CMax(double psi_stem, double psi_upstream);
   double profit_psi_stem_CMax(double psi_stem, double psi_upstream);
+
+  // The TF24_floor cost: TF24's `gamma*(1-f)^beta2` plus CF77's `lambda_o*E`, in
+  // carbon units like both of them and so written into `hydraulic_cost_` on the
+  // same footing.
+  double hydraulic_cost_TF24_floor(double psi_stem, double psi_upstream);
+  double profit_psi_stem_TF24_floor(double psi_stem, double psi_upstream);
 
   // The instantaneous thermal cost at a leaf temperature, in [0,1]. Zero when the
   // gate is off, so callers need not branch.
@@ -2043,8 +2121,8 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
   // that would otherwise hand back the old vcmax_.
   //
   // "The just-constructed state" is exact for the derived state and the outputs,
-  // which is all of it bar `CF77_lambda_` -- a caller input, left standing on purpose
-  // (#96, see its declaration).
+  // which is all of it bar `CF77_lambda_` and `TF24_floor_lambda_o` -- caller inputs,
+  // left standing on purpose (#96, see their declarations).
   setup_clean_leaf();
 }
 
@@ -2056,10 +2134,10 @@ inline void Leaf::setup_clean_leaf() {
   assim_colimited_= util::na_value; // umol C m^-2 s^-1 
   transpiration_= util::na_value; // kg m^-2 s^-1 
   profit_= util::na_value; // umol C m^-2 s^-1
-  // CF77_lambda_ is deliberately NOT here: it is the caller's input, not derived
-  // state, and carries its NA default at the declaration instead (#96). Adding
-  // it back makes a prescribed lambda survive set_drivers() and vanish on
-  // set_traits().
+  // CF77_lambda_ and TF24_floor_lambda_o are deliberately NOT here: they are the
+  // caller's inputs, not derived state, and carry their NA defaults at the
+  // declarations instead (#96). Adding either back makes a prescribed price
+  // survive set_drivers() and vanish on set_traits().
   carbon_gain_= util::na_value;
   hydraulic_cost_norm_= util::na_value;
   thermal_cost_= util::na_value;
@@ -3399,6 +3477,17 @@ inline double Leaf::cost_deriv(double psi_stem, double psi_upstream) {
     // C = gamma*(psi - psi_up)^2, so dC/dpsi = 2*gamma*(psi - psi_up). Analytic,
     // no AD and no spline -- the simplest derivative of the four.
     C_prime = 2.0 * JS22_gamma * (psi_stem - psi_upstream);
+  } else if constexpr (K == CostCurve::TF24_floor) {
+    // C = TF24's cost + lambda_o*E, so dC/dpsi is the TF24 arm's expression plus
+    // the CF77 arm's, each written in that arm's own operand order -- the AD pass
+    // over the same kernel, and the same analytic `kmax*f`. See
+    // `hydraulic_cost_TF24_floor` for why that makes both reductions bit-exact, FMA
+    // included; the argument applies here term for term.
+    AD ps_ad = psi_stem;
+    xad::derivative(ps_ad) = 1.0;
+    C_prime = xad::derivative(hydraulic_cost_TF_kernel(ps_ad)) +
+              TF24_floor_lambda_o * leaf_specific_conductance_max_ *
+                  stem_curve_integral_deriv(psi_stem);
   } else if constexpr (K == CostCurve::SOX) {
     // Under the log link the cost is `-log g`, so dC/dpsi is `-g'/g`. Both are
     // analytic; `g` is bounded below by zero only AT psi_crit, where the objective
@@ -4418,6 +4507,26 @@ inline double Leaf::lambda_CMax(double psi_stem, double psi_upstream) const {
 }
 
 
+// And for TF24_floor, which is the canonical decomposition of any cost into a part
+// depending on the potential alone and a linear price of water:
+//
+//     Theta(E) = Theta~(psi) + lambda_o*E   =>   lambda = Theta~'(psi)/K(psi) + lambda_o
+//
+// with `K = kmax*f` the stem conductance. `Theta~` here is TF24's OWN cost, read at
+// TF24's own traits, so the first term is `lambda_TF24` exactly and this is that
+// function plus a constant. The `f` that does not cancel for JS22 cancels here,
+// because it cancels for TF24 -- whose `|f'|` carries a factor of `f`.
+//
+// ⚠️ CALLED, NOT REPEATED, and the bit-exactness argument still holds. At
+// `TF24_floor_lambda_o == 0` this must reproduce `lambda_TF24` bit for bit; it does,
+// because the addend is an exact zero and `lambda_TF24`'s body ends in a DIVISION,
+// which no fused multiply-add can absorb. (The JS22-based version of this curve
+// had to repeat its parent's body instead, because that one ended in a multiply.)
+inline double Leaf::lambda_TF24_floor(double psi_stem) const {
+  return lambda_TF24(psi_stem) + TF24_floor_lambda_o;
+}
+
+
 // And for SOX, where the objective is a PRODUCT. At its optimum `A'g + Ag' = 0`, so
 // `A' = -A(g'/g)` and
 //
@@ -4677,6 +4786,58 @@ inline double Leaf::profit_psi_stem_CMax(double psi_stem,
 
   double benefit_ = assim_colimited_;
   double cost = hydraulic_cost_CMax(psi_stem, psi_upstream);
+
+  return benefit_ - cost;
+}
+
+
+// TF24's cost plus CF77's price. Both are carbon fluxes, so the sum goes into
+// `hydraulic_cost_` on the same footing as each of them alone.
+//
+// ⚠️ THE TWO REDUCTIONS ARE BIT-EXACT BY CONSTRUCTION, WHICH IS WHY EACH TERM IS
+// THE PARENT'S OWN EXPRESSION. `hydraulic_cost_TF_kernel(psi_stem)` is the
+// function `hydraulic_cost_TF` assigns from, and `TF24_floor_lambda_o *
+// transpiration(...)` is `hydraulic_cost_CF77`'s product in that operand order.
+// So `lambda_o = 0` adds an exact zero to TF24's exact value, and
+// `TF24_cost_scale = 0` -- which zeroes the kernel, since `pow(1-f, beta2)` is
+// finite inside the bracket -- adds an exact zero to CF77's.
+//
+// ⚠️ AND IT SURVIVES FUSED MULTIPLY-ADD, which is the part that is not obvious and
+// the reason no `rounded()` barrier is needed here (contrast gradient.hpp, where
+// one is REQUIRED). Contraction has two candidates -- fuse the kernel's own
+// `scale * pow(...)` with the final add, or fuse `lambda_o * E` with it -- and the
+// zeroed parameter makes the fused addend an exact zero either way:
+// `fma(x, y, 0)` is `round(x*y)`, which is what the unfused form computes, and
+// `fma(0, y, q)` is `q`. So both reductions hold under `-ffp-contract=fast` as
+// well as under `off`. Reassociating would break that, so `test_tf24_floor_reduces`
+// is what to re-run after touching this line.
+//
+// `transpiration()` is memoised on (psi_stem, psi_upstream), so calling it here
+// straight after set_leaf_states_rates_from_psi_stem costs nothing -- see
+// hydraulic_cost_CF77, which relies on the same thing.
+inline double Leaf::hydraulic_cost_TF24_floor(double psi_stem,
+                                           double psi_upstream) {
+  hydraulic_cost_ = hydraulic_cost_TF_kernel(psi_stem) +
+                    TF24_floor_lambda_o * transpiration(psi_stem, psi_upstream);
+  return hydraulic_cost_;
+}
+
+
+// See the declaration for why zero on the other curves is a statement about the
+// curve and not about the cost.
+inline double Leaf::shadow_cost() const {
+  return cost_curve_ == CostCurve::TF24_floor
+           ? TF24_floor_lambda_o * transpiration_
+           : 0.0;
+}
+
+
+inline double Leaf::profit_psi_stem_TF24_floor(double psi_stem,
+                                            double psi_upstream) {
+  set_leaf_states_rates_from_psi_stem(psi_stem, psi_upstream);
+
+  double benefit_ = assim_colimited_;
+  double cost = hydraulic_cost_TF24_floor(psi_stem, psi_upstream);
 
   return benefit_ - cost;
 }
@@ -5009,6 +5170,7 @@ inline std::string Leaf::curve_name(int curve) {
     case CostCurve::SOX:  return "SOX";
     case CostCurve::JW26: return "JW26";
     case CostCurve::ProfitMax: return "ProfitMax";
+    case CostCurve::TF24_floor: return "TF24_floor";
   }
   return "unknown";   // unreachable past the bounds check above
 }
@@ -5063,7 +5225,8 @@ constexpr Leaf::BenefitLink Leaf::benefit_link() {
     return BenefitLink::Scaled;
   } else {
     static_assert(K == CostCurve::TF24 || K == CostCurve::CF77 ||
-                  K == CostCurve::JS22 || K == CostCurve::CMax,
+                  K == CostCurve::JS22 || K == CostCurve::CMax ||
+                  K == CostCurve::TF24_floor,
                   "unhandled CostCurve in benefit_link");
     return BenefitLink::Identity;
   }
@@ -5161,6 +5324,26 @@ inline void Leaf::check_cost_parameters() {
     if (!std::isfinite(CMax_b)) {
       util::stop("CMax_b must be finite; got " + util::to_string(CMax_b));
     }
+  } else if constexpr (K == CostCurve::TF24_floor) {
+    // ⚠️ ONE PARAMETER, AND IT IS AN INPUT WITH NO DEFAULT -- exactly like
+    // CF77_lambda_ and for a sharper reason: zero is a perfectly good value here,
+    // and it is the value at which this curve stops being itself. The hydraulic
+    // half is TF24's cost at TF24's own traits, so at lambda_o = 0 TF24_floor IS
+    // TF24, and a caller who seated this curve and never named a price would be
+    // running the production model under the new model's name. Refuse the
+    // omission; an explicit zero is still accepted and is the reduction test's own
+    // case. The hydraulic half needs no check, for TF24's reason: its parameters
+    // are traits with defaults.
+    if (!std::isfinite(TF24_floor_lambda_o) || TF24_floor_lambda_o < 0.0) {
+      util::stop("the TF24_floor cost curve needs TF24_floor_lambda_o set: it is the "
+                 "PRESCRIBED marginal cost of water as transpiration goes to "
+                 "zero, in umol C (kg H2O)^-1, non-negative, and NA until you "
+                 "assign one -- set_physiology and set_traits never touch it. It "
+                 "has no default because 0 would silently make this curve TF24. "
+                 "Set `$TF24_floor_lambda_o` on the leaf, or pass "
+                 "`TF24_floor_lambda_o =` to leaf_solve() / leaf_batch(); got " +
+                 util::to_string(TF24_floor_lambda_o));
+    }
   } else {
     static_assert(K == CostCurve::TF24 || K == CostCurve::SOX ||
                   K == CostCurve::JW26 || K == CostCurve::ProfitMax,
@@ -5169,8 +5352,9 @@ inline void Leaf::check_cost_parameters() {
 }
 
 
-// Which objective. ⚠️ These are NOT all the same kind of number: the first four
-// are carbon and the last two are products (see `profit_psi_stem_SOX`). That is
+// Which objective. ⚠️ These are NOT all the same kind of number: five are carbon
+// (TF24, CF77, JS22, CMax, TF24_floor) and two are products (see
+// `profit_psi_stem_SOX`). That is
 // already true of `profit_` across the optimisers and is not introduced here.
 template <Leaf::CostCurve K>
 inline double Leaf::profit_psi_stem_for(double psi_stem, double psi_upstream) {
@@ -5186,6 +5370,8 @@ inline double Leaf::profit_psi_stem_for(double psi_stem, double psi_upstream) {
     return profit_psi_stem_SOX(psi_stem, psi_upstream);
   } else if constexpr (K == CostCurve::JW26) {
     return profit_psi_stem_JW26(psi_stem, psi_upstream);
+  } else if constexpr (K == CostCurve::TF24_floor) {
+    return profit_psi_stem_TF24_floor(psi_stem, psi_upstream);
   } else {
     static_assert(K == CostCurve::ProfitMax, "unhandled CostCurve");
     return profit_psi_stem_ProfitMax(psi_stem, psi_upstream);
@@ -5218,6 +5404,11 @@ inline double Leaf::lambda_for(double psi_stem, double psi_upstream) {
     return lambda_SOX(psi_stem, psi_upstream);
   } else if constexpr (K == CostCurve::JW26) {
     return lambda_JW26(psi_stem, psi_upstream);
+  } else if constexpr (K == CostCurve::TF24_floor) {
+    // The hydraulic half reads the absolute potential, so like TF24's this needs
+    // only one of the two potentials.
+    (void)psi_upstream;
+    return lambda_TF24_floor(psi_stem);
   } else {
     static_assert(K == CostCurve::ProfitMax, "unhandled CostCurve");
     (void)psi_upstream;
@@ -5320,8 +5511,31 @@ inline double Leaf::lambda_for(double psi_stem, double psi_upstream) {
 // ProfitMax -- the one curve needing setup before the search, and the one whose
 //   degenerate exit ZEROES where every other curve EVALUATES. See the branch below.
 //
+// TF24_floor -- TF24's cost plus CF77's price, and the only curve here whose marginal
+//   cost of water does NOT vanish at the wet end. That is the whole reason it
+//   exists: every conductance-loss curve in this package has `lambda -> 0` as the
+//   drop closes, which prices water as free precisely when it is abundant.
+//   ⚠️ IT IS TF24 AT `lambda_o = 0`, AT TF24's OWN TRAITS. There is no second
+//   hydraulic parameter: the cost reads `TF24_cost_scale` and `TF24_beta2`, so the
+//   two curves differ by exactly one restriction and `lambda_o` is the whole of
+//   what is being tested.
+//   ⚠️ SO IT CAN BE WET-PINNED WHERE TF24 CANNOT, and the mechanism is CMax's.
+//   dC/dpsi at the wet bound is `lambda_o*kmax*f(psi_soil)`, strictly positive for
+//   any lambda_o > 0, where TF24's `|f'|` vanishes there. The closed interval is
+//   doing real work here; read the note under CMax on comparing a pinned answer
+//   against the bound, since the same step-in fraction applies.
+//   ⚠️ IT INHERITS TF24's SECOND HUMP, which JS22 does not have. The marginal cost
+//   is TF24's -- which FALLS at the dry end, the condition hazard 11 names -- plus
+//   a constant, so `basin_scan_cells()` matters here for the same rows it matters
+//   for TF24. Re-measure with the energy balance on before assuming otherwise.
+//   ⚠️ ITS TWO TERMS ARE NOT INTERCHANGEABLE UNDER kmax/D RESCALING, and that is a
+//   prediction rather than a fitting nuisance. `Theta~'/K` is invariant when kmax
+//   and the vapour deficit move together; `lambda_o` is not. So this curve's
+//   optimum sits BETWEEN TF24 (invariant) and CF77, by an amount that grows with
+//   lambda_o -- which is what `test_tf24_floor_kmax_vpd_invariance` measures.
+//
 // ⚠️ `profit_` CARRIES THREE KINDS OF NUMBER because of these, and nothing
-// enforces it: carbon for the four difference objectives, a dimensionless
+// enforces it: carbon for the five difference objectives, a dimensionless
 // normalised profit for ProfitMax, and carbon times a dimensionless factor for the
 // two products. A caller comparing `profit_` ACROSS curves is exposed; comparing
 // each curve's argmax is fine. The guide's rule for `hydraulic_cost_` ("a third

@@ -75,8 +75,9 @@ differentiate at}
 
 \item{pars}{what to differentiate with respect to. Any of the fifteen
 \code{\link[=leaf_traits]{leaf_traits()}} names, plus \code{"leaf_specific_conductance_max"}, on the
-single-potential path only \code{"resistance"}, and on \code{model = "CF77"} only
-\code{"CF77_lambda_"}. Defaults to all the route allows.
+single-potential path only \code{"resistance"}, on \code{model = "CF77"} only
+\code{"CF77_lambda_"}, and on \code{model = "TF24_floor"} only \code{"TF24_floor_lambda_o"}.
+Defaults to all the route allows.
 
 \code{dY/dvcmax_25} is a PARTIAL at fixed respiration: \code{R_d_25} is its own trait,
 so a fit that wants respiration to follow Vcmax moves both and adds the two
@@ -419,7 +420,7 @@ A companion calibration study has \code{N = 1327}, \code{P_fit = 40},
 57-parameter variant costing the same as its 40-parameter one, because
 \code{P_model} is 4 in both.
 
-⚠️ \strong{Always pass \code{pars}.} It is \code{P_model}, so the default — all sixteen on
+⚠️ \strong{Always pass \code{pars}.} It is \code{P_model}, so the default — all fifteen on
 the multi-layer path — is the most expensive thing you can ask for, and a fit
 that reads four of them pays for twelve it discards.
 

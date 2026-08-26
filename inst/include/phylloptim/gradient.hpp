@@ -71,7 +71,7 @@ namespace gradient {
 // parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
 // them with R's, so the two cannot drift apart without a failure.
 inline constexpr int n_traits = 15;
-inline constexpr int n_pars = 18;
+inline constexpr int n_pars = 19;
 
 // Every index by name, so nothing below indexes `theta` with a bare integer.
 // The first `n_traits` are `set_traits`' arguments in its order, which is also
@@ -112,6 +112,14 @@ inline constexpr int par_resistance = 16;
 // `.gradient_available_pars()` offers it only for CF77 and refuses it elsewhere,
 // naming the model -- the same treatment `resistance` gets on the wrong supply path.
 inline constexpr int par_CF77_lambda = 17;
+// TF24_floor's price of water at zero transpiration, on exactly the same footing:
+// an append after the non-traits, available for ONE model, and refused elsewhere
+// by `.gradient_available_pars()` with the model named.
+//
+// ⚠️ IT IS THE SECOND MODEL-SPECIFIC SLOT, so "the CF77 one" has stopped being a
+// safe way to talk about this class. R's `.gradient_model_pars()` is the single
+// table that says which model owns which slot; there is no second copy here.
+inline constexpr int par_TF24_floor_lambda_o = 18;
 
 inline const std::vector<std::string>& par_names() {
   static const std::vector<std::string> names{
@@ -122,7 +130,8 @@ inline const std::vector<std::string>& par_names() {
       "JS22_gamma", "CMax_a", "CMax_b",
       "leaf_specific_conductance_max",
       "resistance",
-      "CF77_lambda_"};
+      "CF77_lambda_",
+      "TF24_floor_lambda_o"};
   return names;
 }
 
@@ -489,9 +498,10 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
                theta[par_curv_fact_colim], theta[par_TF24_cost_scale],
                theta[par_R_d_25], theta[par_JS22_gamma],
                theta[par_CMax_a], theta[par_CMax_b]);
-  // Not a trait, so it is set directly rather than through set_traits -- and
-  // nothing is derived from it, so a bare write leaves no stale state behind.
+  // Not traits, so they are set directly rather than through set_traits -- and
+  // nothing is derived from either, so a bare write leaves no stale state behind.
   l.CF77_lambda_ = theta[par_CF77_lambda];
+  l.TF24_floor_lambda_o = theta[par_TF24_floor_lambda_o];
   if (single) {
     // R's `series_resistance()`: a default-constructed network carrying one
     // series resistance in `r_R_V_sum`, which is that field's own meaning with

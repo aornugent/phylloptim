@@ -21,14 +21,37 @@ This code was developed as the TF24 strategy inside
 so it can be tested, profiled, extended and embedded on its own.
 
 ## Why a separate package
-**A home for several stomatal models, not just ours.** The package solves **seven**
+**A home for several stomatal models, not just ours.** The package solves **eight**
 optimality models through one optimiser, at identical drivers, behind one gradient
 entry point: our hydraulic gain-risk formulation (`TF24`), Sperry-style profit
 maximisation (`ProfitMax`), Cowan-Farquhar (`CF77`), Joshi & Stocker's quadratic
-cost (`JS22`), Wolf-Anderegg-Pacala carbon maximisation (`CMax`), and the two
-product objectives `SOX` and `JW26`. The Medlyn et al. (2011) empirical model is
-here too, bypassing the hydraulic solve. `vignette("the-models")` sets them side
-by side and derives each one.
+cost (`JS22`), Wolf-Anderegg-Pacala carbon maximisation (`CMax`), the two
+product objectives `SOX` and `JW26`, and `TF24_floor`. The Medlyn
+et al. (2011) empirical model is here too, bypassing the hydraulic solve.
+`vignette("the-models")` sets them side by side and derives each one.
+
+`TF24_floor` is the odd one out and is here for a reason the others make visible.
+Every conductance-loss cost in this list prices water at **zero** as transpiration
+goes to zero — it charges for lost conductivity, and no conductivity is lost when
+nothing flows — so water is free precisely when it is abundant. `TF24_floor` splits
+the cost the way any cost can be split, into a part depending on the potential
+alone and a linear price of water,
+
+    Theta(E) = Theta~(psi) + lambda_o * E,   lambda = Theta~'(psi)/K(psi) + lambda_o
+
+and lets `lambda_o` be non-zero. `Theta~` is **TF24's own cost, at TF24's own
+traits**, so this is our model with a price floor bolted on and `lambda_o` is its
+only parameter — which makes `TF24` the same curve at `lambda_o = 0`, a
+one-restriction comparison rather than a fit of two differently-parameterised
+models. It reduces to `TF24` there, and to `CF77` at `TF24_cost_scale = 0`, both
+bit-for-bit.
+
+```r
+leaf_solve(psi_soil = 1.5, PPFD = 1500, model = "TF24_floor",
+           supply = leaf_supply_singlelayer(),
+           root_network = series_resistance(1e4),
+           TF24_floor_lambda_o = 1.5e5)   # umol C (kg H2O)^-1
+```
 
 Making that comparison apples-to-apples needed one level more generality than
 swapping cost functions. Every one of these models maximises
@@ -36,7 +59,7 @@ swapping cost functions. Every one of these models maximises
     h(A(psi)) - C(psi)
 
 so a model is fully specified by a **cost curve** `C` and a **benefit link** `h`,
-and one derivative serves all seven:
+and one derivative serves all eight:
 
     d/dpsi [h(A) - C] = h'(A) * dA/dpsi - dC/dpsi
 
@@ -51,7 +74,7 @@ commits to a single hydraulically explicit scheme or to none.
 **One solver, so the comparison is not just fair but cheap.** Every model reaches its
 operating point through the same call: evaluate both interval endpoints, optionally
 scan for the basin, then root-find `dJ/dψ = 0` inside the winning cell. Nothing here
-is per-model except a row in two dispatch tables. That is what keeps a seven-model
+is per-model except a row in two dispatch tables. That is what keeps an eight-model
 package as fast as a one-model one — the stem entry points run at **2.9 µs** and
 ProfitMax at **5.6 µs**, against 9.3 and 58.2 before the solvers were merged, because
 a basin scan is now used only where multi-modality is measured rather than everywhere
@@ -79,8 +102,9 @@ a companion calibration study.
 
 ## Status
 
-**v0.6.0 — the model is mature and in production use inside plant; the
-*packaging* is what is new.**
+**v0.7.0 — the model is mature and in production use inside plant. 0.7.0 adds a
+cost curve, `TF24_floor`, and separates the shadow price from the realised carbon
+cost in what a solved leaf reports.**
 
 - **Cross-checked against plant's compiled build**, and the swap was bit-identical
   at the point it was made: plant's full suite 0 fail / 0 error on both builds,
@@ -368,7 +392,7 @@ g <- leaf_gradient(psi_soil = 2.0, PPFD = 900,
 g$gradient   # rows: parameters.  columns: A, gc, psi_stem, collar, profit
 g$method     # "ift" or "fd" -- see below
 
-# any of the seven models, same call -- and `leaf_solve()` takes `model` too
+# any of the eight models, same call -- and `leaf_solve()` takes `model` too
 leaf_gradient(psi_soil = 2.0, PPFD = 900, model = "JS22",
               supply = leaf_supply_singlelayer(), pars = c("vcmax_25", "JS22_gamma"))
 ```

@@ -73,14 +73,15 @@ read the operating point off the object: \verb{$opt_psi_stem_}, \verb{$profit_},
 because that is what \code{plant}'s own sources spell.
 
 \strong{Which model is configuration, not a call argument.} \verb{$set_model(curve, route)} seats it and \verb{$optimise()} takes nothing, because the curves'
-constants already live on the object -- \verb{$CF77_lambda_} is a field, and
-\code{JS22_gamma}, \code{CMax_a} and \code{CMax_b} are traits. \code{curve} is any name from
+constants already live on the object -- \verb{$CF77_lambda_} and
+\verb{$TF24_floor_lambda_o} are fields, and \code{JS22_gamma}, \code{CMax_a} and \code{CMax_b}
+are traits. \code{curve} is any name from
 \code{\link[=cost_curve_names]{cost_curve_names()}}; \code{route} is \code{"collar"} (the full soil-to-collar path,
 any supply) or \code{"stem"} (psi_stem with the upstream potential pinned at
 \code{psi_soil}, single soil layer only). A third argument, \code{method}, chooses HOW
 the operating point is reached: \code{"exact"} (the default, a root-find of the
-first-order condition) or \code{"closed"} (the closed form, for \code{TF24} and \code{CF77}
-on the stem route only). \verb{$model_curve()}, \verb{$model_route()} and
+first-order condition) or \code{"closed"} (the closed form, for \code{TF24}, \code{CF77}
+and \code{TF24_floor} on the stem route only). \verb{$model_curve()}, \verb{$model_route()} and
 \verb{$model_method()} report what is seated. The defaults are \code{"TF24"},
 \code{"collar"} and \code{"exact"}, which is the production path.
 
@@ -93,8 +94,8 @@ l$optimise()
 \verb{$hydraulic_cost_}; \verb{$profitmax_curve()} returns its whole cost, gain and
 profit curve in one call.
 
-⚠️ \strong{\verb{$profit_} carries three kinds of number across the seven curves} --
-carbon for the four difference objectives, a dimensionless normalised
+⚠️ \strong{\verb{$profit_} carries three kinds of number across the eight curves} --
+carbon for the five difference objectives, a dimensionless normalised
 profit for \code{ProfitMax}, and carbon times a dimensionless factor for the two
 products. Comparing it BETWEEN curves is not meaningful; comparing each
 curve's argmax is.

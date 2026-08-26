@@ -85,6 +85,12 @@ const double kRd25 = 1.44;
 const double kGammaJS22 = 1.0;
 const double kCMaxA = 0.6;
 const double kCMaxB = 0.0;
+// The TF24_floor curve's ONLY parameter: its price of water as transpiration goes to
+// zero. The hydraulic half is TF24's cost at TF24's own traits, so there is nothing
+// else to name. Mirrors kLambdaCF77 in test_golden.cpp and carries the same caveat:
+// its scale is set by the leaf, whose own marginal cost of water runs 9e4 to 3e5 at
+// these drivers.
+const double kFloorLambdaO = 1.5e5;
 
 phylloptim::Leaf make_leaf(const Drivers &d, std::vector<double> psi_soil,
                      std::vector<double> soil_depth) {
@@ -1770,7 +1776,11 @@ void test_leaf_temperature_is_reported() {
     ok(l.Tleaf_ == T,
        "off the energy-balance path Tleaf is the driver, at T = " +
            std::to_string(T));
-    ok(l.operating_point_values().back() == l.Tleaf_,
+    // ⚠️ NOT `.back()` any more: `shadow_cost` was appended after `Tleaf`, so the
+    // last element is that. Addressed from the end by name-order instead, which
+    // is what the R side's `.operating_point_names` pins.
+    const std::vector<double> ov = l.operating_point_values();
+    ok(ov[ov.size() - 2] == l.Tleaf_,
        "operating_point_values() reports it, at T = " + std::to_string(T));
   }
 
@@ -3214,6 +3224,13 @@ void test_stem_curve_shortcut_needs_no_rebuild() {
       96.0,   2.680147, P50_0, 2.680147, P50_0, 1.5,
       157.44, 0.30,     0.7,   0.99,     7.5,   kRd25, kGammaJS22,
       kCMaxA, kCMaxB,  kmax,      0.0};
+  // The two prices are left zero-filled: this test differentiates the collar
+  // route, which reads neither. ⚠️ THE ASSERTION IS WHAT MAKES THE SHORT
+  // INITIALISER SAFE -- without it the next appended parameter shifts `kmax`
+  // silently, which is the failure the comment above describes.
+  static_assert(phylloptim::gradient::n_pars == 19,
+                "theta above is positional and deliberately short; recount it "
+                "against n_pars and update this assertion together");
 
   phylloptim::gradient::Drivers gd;
   gd.root_network = fixture::root_network(mrp, depth);
@@ -4772,6 +4789,489 @@ void test_product_link_is_the_product_rule() {
 // assertion meaningful: the solver includes both endpoints and refines within a
 // cell, so it should never come back below a grid it contains. A scan that WINS is
 // the failure -- it means the search missed a basin.
+// ============================================================================
+// THE TWO-TERM COST: `Theta(E) = Theta~(psi) + lambda_o*E`
+// ----------------------------------------------------------------------------
+// The decomposition is canonical -- any cost splits into a part depending on the
+// potential alone and a linear price of water -- and the content of this curve is
+// that the second part is not zero. Every conductance-loss curve in this package
+// has `lambda -> 0` as the drop closes, i.e. prices water as free precisely when
+// it is abundant; `lambda_o` is the floor that removes that.
+//
+// `Theta~` here is TF24's OWN cost, read at TF24's own traits, so this curve is
+// TF24 plus CF77's price and has exactly ONE parameter of its own. That is what
+// makes the first test below the strongest available: two reductions, asserted
+// bit-for-bit, needing no fixture and no tolerance -- and the first of them is a
+// ONE-restriction statement about the production model.
+// ============================================================================
+
+// Bit-equality that survives NaN, which several reported fields legitimately are.
+bool same_bits(double a, double b) {
+  return (std::isnan(a) && std::isnan(b)) || a == b;
+}
+
+// The reported operating point, as one vector, so a reduction can be compared
+// field by field rather than on `profit_` alone -- a curve wired to the right
+// objective and the wrong output assembly would pass the latter.
+std::vector<double> reported(const phylloptim::Leaf &l) {
+  return {l.opt_psi_stem_, l.profit_, l.hydraulic_cost_, l.ci_,
+          l.assim_colimited_, l.transpiration_, l.stom_cond_CO2_,
+          l.lambda_emergent()};
+}
+
+const char *reported_names[] = {"opt_psi_stem", "profit", "hydraulic_cost",
+                                "ci", "assim", "transpiration", "gc",
+                                "lambda_emergent"};
+
+void test_shadow_cost() {
+  printf("shadow_cost separates the price from the realised carbon cost\n");
+  // WHAT THIS PINS. `hydraulic_cost_` is the whole cost the objective subtracted;
+  // `shadow_cost()` is the share of it that is a price rather than carbon the
+  // plant gave up. So the carbon actually forgone is the difference, and the
+  // realised profit is `profit + shadow_cost`. A consumer that grows a plant on
+  // this leaf wants that second quantity and never `profit`, or it taxes growth
+  // by something the plant never spent.
+  //
+  // ⚠️ BIT EQUALITY against `lambda_o * transpiration_`, not a tolerance. The
+  // accessor reads the stored transpiration rather than recomputing it, precisely
+  // so this identity holds exactly against the REPORTED `E` -- which is what a
+  // caller checks. A tolerance would pass on an accessor that recomputed
+  // transpiration from the potentials and drifted in the last bit.
+  Drivers d;
+  int compared = 0;
+  for (double ppfd : {300.0, 900.0, 1500.0}) {
+    for (double vpd : {1.0, 2.0, 4.0}) {
+      for (double psi_soil : {0.5, 1.0, 2.0, 3.0}) {
+        d.PPFD = ppfd;
+        d.atm_vpd = vpd;
+
+        for (double lo : {0.0, 1.5e4, 1.5e5}) {
+          phylloptim::Leaf l = make_single_leaf(d, psi_soil);
+          l.TF24_floor_lambda_o = lo;
+          l.set_model(phylloptim::Leaf::CostCurve::TF24_floor, false);
+          l.optimise();
+          if (!std::isfinite(l.transpiration_)) continue;
+
+          ok(l.shadow_cost() == lo * l.transpiration_,
+             "shadow_cost is lambda_o * E exactly");
+          // the realised cost is what is left, and it is never the whole cost
+          // unless the price is zero
+          const double realised = l.hydraulic_cost_ - l.shadow_cost();
+          ok(std::isfinite(realised) && realised >= 0.0,
+             "the realised cost is non-negative");
+          ok((lo == 0.0) == (l.shadow_cost() == 0.0),
+             "the price vanishes exactly when lambda_o does");
+          ++compared;
+        }
+
+        // ⚠️ ZERO ON EVERY OTHER CURVE, INCLUDING CF77. That is a statement about
+        // the curve, not about the cost: CF77's whole cost IS `lambda * E` and
+        // reading it as a shadow price is ordinary, but the model supplies one
+        // number and nothing to attribute it with. Reporting it as all-shadow
+        // would ship one reading as a fact. See `Leaf::shadow_cost`.
+        for (auto c : {phylloptim::Leaf::CostCurve::TF24,
+                       phylloptim::Leaf::CostCurve::CF77,
+                       phylloptim::Leaf::CostCurve::JS22,
+                       phylloptim::Leaf::CostCurve::CMax}) {
+          phylloptim::Leaf l = make_single_leaf(d, psi_soil);
+          l.CF77_lambda_ = 1.5e5;
+          l.set_model(c, false);
+          l.optimise();
+          ok(l.shadow_cost() == 0.0,
+             "shadow_cost is exactly zero off TF24_floor");
+        }
+      }
+    }
+  }
+  printf("  compared %d priced operating points\n", compared);
+}
+
+
+void test_tf24_floor_reduces() {
+  printf("TF24_floor reduces to TF24 and to CF77, bit-for-bit\n");
+  // ⚠️ BIT EQUALITY IS THE RIGHT TEST HERE AND A TOLERANCE WOULD BE THE WRONG
+  // ONE. The reductions are exact by construction rather than by convergence:
+  // each term is the parent's own expression, so zeroing one parameter adds an
+  // exact zero to the other curve's exact value -- see
+  // `Leaf::hydraulic_cost_TF24_floor`, which also records why fused multiply-add
+  // does not break it. A tolerance would pass on a rewrite that lost the
+  // property, which is the only thing this test exists to catch.
+  Drivers d;
+  int compared = 0;
+  for (double ppfd : {300.0, 900.0, 1500.0}) {
+    for (double vpd : {1.0, 2.0, 4.0}) {
+      for (double psi_soil : {0.5, 1.0, 2.0, 3.0, 4.0}) {
+        d.PPFD = ppfd;
+        d.atm_vpd = vpd;
+
+        // --- lambda_o = 0 is TF24, at TF24's own traits --------------------
+        // ⚠️ THE ONE-RESTRICTION REDUCTION, and the reason this curve has no
+        // hydraulic parameter of its own. Nothing is set on either leaf but the
+        // price: if the two disagree, they disagree about `lambda_o` alone.
+        {
+          phylloptim::Leaf a = make_single_leaf(d, psi_soil);
+          a.TF24_floor_lambda_o = 0.0;
+          a.set_model(phylloptim::Leaf::CostCurve::TF24_floor, false);
+          a.optimise();
+
+          phylloptim::Leaf b = make_single_leaf(d, psi_soil);
+          b.set_model(phylloptim::Leaf::CostCurve::TF24, false);
+          b.optimise();
+
+          const std::vector<double> va = reported(a), vb = reported(b);
+          for (std::size_t i = 0; i < va.size(); ++i) {
+            ok(same_bits(va[i], vb[i]),
+               std::string("TF24_floor(lambda_o=0) == TF24 in ") +
+                   reported_names[i] + " at psi_soil=" +
+                   std::to_string(psi_soil) + " ppfd=" + std::to_string(ppfd) +
+                   " vpd=" + std::to_string(vpd));
+          }
+        }
+
+        // --- TF24_cost_scale = 0 is CF77 -----------------------------------
+        // The hydraulic half is scaled by `TF24_cost_scale`, so zeroing that
+        // trait is what leaves the price alone. `pow(1-f, beta2)` is finite
+        // inside the bracket, so `0 * pow(...)` is an exact zero rather than a
+        // NaN -- which is why this reduction is available at all.
+        {
+          phylloptim::Leaf a = make_single_leaf(d, psi_soil);
+          a.TF24_cost_scale = 0.0;
+          a.TF24_floor_lambda_o = kFloorLambdaO;
+          a.set_model(phylloptim::Leaf::CostCurve::TF24_floor, false);
+          a.optimise();
+
+          phylloptim::Leaf b = make_single_leaf(d, psi_soil);
+          b.CF77_lambda_ = kFloorLambdaO;
+          b.set_model(phylloptim::Leaf::CostCurve::CF77, false);
+          b.optimise();
+
+          const std::vector<double> va = reported(a), vb = reported(b);
+          for (std::size_t i = 0; i < va.size(); ++i) {
+            ok(same_bits(va[i], vb[i]),
+               std::string("TF24_floor(TF24_cost_scale=0) == CF77 in ") +
+                   reported_names[i] + " at psi_soil=" +
+                   std::to_string(psi_soil) + " ppfd=" + std::to_string(ppfd) +
+                   " vpd=" + std::to_string(vpd));
+          }
+        }
+        ++compared;
+      }
+    }
+  }
+  // ⚠️ Hazard 16: an assertion that never runs passes. Both reductions are
+  // inside two loops and a refused row would silently skip one.
+  printf("    %d driver rows, both reductions, %d fields each\n", compared,
+         int(sizeof(reported_names) / sizeof(reported_names[0])));
+  ok(compared == 45, "every driver row was compared");
+}
+
+void test_tf24_floor_wet_end_price() {
+  printf("TF24_floor's marginal cost of water does not vanish at the wet end\n");
+  Drivers d;
+  phylloptim::Leaf l = make_single_leaf(d, 1.0);
+  l.TF24_floor_lambda_o = kFloorLambdaO;
+
+  // ⚠️ THE LIMIT IS AT ZERO POTENTIAL, NOT AT ZERO DROP, and that is the one
+  // behavioural difference from the JS22-based version of this curve. The
+  // hydraulic half reads the ABSOLUTE potential, so it vanishes as psi -> 0 --
+  // not as psi -> psi_soil, where TF24's own cost is already non-zero.
+  double prev_excess = 0.0;
+  for (int k = 0; k < 4; ++k) {
+    const double psi = 1e-2 / std::pow(2.0, k);
+    const double excess = l.lambda_TF24_floor(psi) - l.TF24_floor_lambda_o;
+    ok(excess > 0.0, "the excess over lambda_o is positive");
+    if (k > 0) {
+      // lambda_TF24 ~ psi^(stem_c*beta2 - 1), so halving psi divides the excess
+      // by 2^(stem_c*beta2 - 1). Asserting the EXPONENT rather than a ratio of 2
+      // is what makes this a statement about the curve rather than about a step.
+      const double n = l.stem_c * l.TF24_beta2 - 1.0;
+      near(prev_excess / excess, std::pow(2.0, n), 1e-2,
+           "halving psi divides the excess by 2^(stem_c*beta2 - 1)");
+    }
+    prev_excess = excess;
+  }
+  ok(l.stem_c * l.TF24_beta2 > 1.0,
+     "and the wet-end limit exists at all, which needs stem_c*beta2 > 1");
+
+  // ⚠️ THE CONTRAST IS THE POINT. At the same potential every conductance-loss
+  // curve here is heading for zero, which is what "water is free when abundant"
+  // means as a number rather than as an argument.
+  const double psi = 1e-6;
+  printf("    at psi = %.0e MPa: TF24_floor %.6g, TF24 %.3e, JS22 %.3e\n", psi,
+         l.lambda_TF24_floor(psi), l.lambda_TF24(psi), l.lambda_JS22(psi, 0.0));
+  ok(l.lambda_TF24(psi) < 1e-3 * l.TF24_floor_lambda_o,
+     "TF24's price at the same potential is negligible beside lambda_o");
+  near(l.lambda_TF24_floor(psi) / l.TF24_floor_lambda_o, 1.0, 1e-6,
+     "so TF24_floor's is lambda_o to six figures");
+}
+
+void test_tf24_floor_emergent_lambda() {
+  printf("TF24_floor's emergent lambda is dC/dE at the solved point\n");
+  // Against a finite difference of the COST over the TRANSPIRATION, not against
+  // a second copy of `lambda_TF24_floor` -- which would only assert that the
+  // dispatch table reaches the function it reaches. This tests the definition.
+  Drivers d;
+  d.PPFD = 1500.0;
+  const double h = 1e-3;   // the step `test_every_curve_reports_an_emergent_lambda` uses
+  int interior = 0;
+
+  for (double psi_soil : {0.5, 1.0, 2.0}) {
+    phylloptim::Leaf l = make_single_leaf(d, psi_soil);
+    l.TF24_floor_lambda_o = kFloorLambdaO;
+    l.set_model(phylloptim::Leaf::CostCurve::TF24_floor, false);
+    l.optimise();
+    const double psi = l.opt_psi_stem_;
+    const double got = l.lambda_emergent();
+    if (psi <= psi_soil + h || psi >= l.psi_crit - h) {
+      continue;   // a pinned optimum: dC/dE is defined but is not what pinned it
+    }
+    ++interior;
+
+    // ⚠️ THROUGH `profit_psi_stem_TF24_floor`, NOT `hydraulic_cost_TF24_floor`. The cost
+    // function reads the memoised transpiration but does not SEAT the leaf, so
+    // reading `transpiration_` after it returns gives whatever the last solve
+    // left there -- the same E at both ends, a zero denominator, and a ratio of
+    // exactly 0 that looks like a broken lambda. The profit function seats it.
+    l.profit_psi_stem_TF24_floor(psi + h, psi_soil);
+    const double C1 = l.hydraulic_cost_, E1 = l.transpiration_;
+    l.profit_psi_stem_TF24_floor(psi - h, psi_soil);
+    const double C0 = l.hydraulic_cost_, E0 = l.transpiration_;
+    near(got / ((C1 - C0) / (E1 - E0)), 1.0, 1e-4,
+         "TF24_floor's emergent lambda is dC/dE at psi_soil=" +
+             std::to_string(psi_soil));
+
+    // And it exceeds lambda_o by exactly the hydraulic term, which is the
+    // decomposition read back off the solved point.
+    ok(got > l.TF24_floor_lambda_o,
+       "the emergent lambda sits above the wet-end floor at psi_soil=" +
+           std::to_string(psi_soil));
+    near(got - l.TF24_floor_lambda_o, l.lambda_TF24(psi), 1e-12,
+       "and the excess over the floor IS TF24's own lambda at psi_soil=" +
+           std::to_string(psi_soil));
+  }
+  // Hazard 16 again: print what was actually exercised.
+  printf("    %d of 3 rows interior and compared\n", interior);
+  ok(interior >= 2, "the identity was evaluated on at least two rows");
+}
+
+void test_tf24_floor_kmax_vpd_invariance() {
+  printf("TF24_floor sits between TF24 and CF77 under kmax/D rescaling\n");
+  // ⚠️ A PREDICTION, NOT A REGRESSION CHECK. Scaling `kmax` and the vapour
+  // deficit together leaves the stomatal conductance -- and so ci, A and dA/dpsi
+  // -- untouched at every potential, because `gc ~ kmax*G(psi)/D`. So a cost
+  // whose MARGINAL value depends on psi alone is invariant, and one that prices
+  // the FLUX is not: `dC/dpsi` is TF24's `|f'|` form for the first part and
+  // `lambda_o*kmax*f(psi)` for the second. TF24_floor carries both, so it must move
+  // by less than CF77 and by more than TF24, and by more as lambda_o rises.
+  const double factor = 16.0;
+  Drivers lo, hi;
+  lo.PPFD = hi.PPFD = 1500.0;
+  lo.atm_vpd = 2.0;
+  hi.atm_vpd = lo.atm_vpd * factor;
+  hi.K_s = lo.K_s * factor;
+  const double psi_soil = 1.0;
+
+  auto solved = [&](const Drivers &d, phylloptim::Leaf::CostCurve curve,
+                    double lambda_o) {
+    phylloptim::Leaf l = make_single_leaf(d, psi_soil);
+    l.CF77_lambda_ = kFloorLambdaO;
+    l.TF24_floor_lambda_o = lambda_o;
+    l.set_model(curve, false);
+    l.optimise();
+    return l.opt_psi_stem_;
+  };
+  auto shift = [&](phylloptim::Leaf::CostCurve curve, double lambda_o) {
+    const double a = solved(lo, curve, lambda_o);
+    const double b = solved(hi, curve, lambda_o);
+    return std::abs(b - a) / a;
+  };
+
+  using Curve = phylloptim::Leaf::CostCurve;
+  const double tf24 = shift(Curve::TF24, 0.0);
+  const double cf77 = shift(Curve::CF77, 0.0);
+  printf("    kmax and D both x%.0f:  TF24 %.3e  CF77 %.3e\n", factor, tf24,
+         cf77);
+  ok(tf24 < 1e-12, "TF24's optimum is invariant");
+  ok(cf77 > 0.1, "CF77's is not, because it prices the flux");
+
+  // The interpolation, and that it is monotone in lambda_o.
+  double previous = 0.0;
+  for (double lambda_o : {1.5e3, 1.5e4, 1.5e5}) {
+    const double s = shift(Curve::TF24_floor, lambda_o);
+    printf("    TF24_floor at lambda_o = %.1e: %.3e\n", lambda_o, s);
+    ok(s > tf24, "TF24_floor moves more than TF24 at lambda_o=" +
+                     std::to_string(lambda_o));
+    ok(s < cf77, "and less than CF77 at lambda_o=" + std::to_string(lambda_o));
+    ok(s > previous, "and by more as lambda_o rises");
+    previous = s;
+  }
+}
+
+void test_tf24_floor_refuses_an_unset_price() {
+  printf("TF24_floor refuses an unset price, and says why\n");
+  Drivers d;
+  {
+    phylloptim::Leaf l = make_single_leaf(d, 1.0);
+    l.set_model(phylloptim::Leaf::CostCurve::TF24_floor, false);
+    ok(throws_with([&] { l.optimise(); },
+                   "needs TF24_floor_lambda_o set"),
+       "an unset lambda_o is refused rather than optimised as a NaN objective");
+    // ⚠️ AND THE MESSAGE HAS TO NAME TF24, or the obvious repair -- set it to
+    // zero -- silently substitutes the production model for the one the caller
+    // asked for.
+    ok(throws_with([&] { l.optimise(); }, "would silently make this curve TF24"),
+       "and says why there is no default");
+    // It also has to say where a price can be SET FROM, since the field is not
+    // reachable through leaf_traits(). That gap is what made this curve
+    // unusable through leaf_solve() when it was first added.
+    ok(throws_with([&] { l.optimise(); }, "leaf_solve()"),
+       "and names a route that can supply one");
+  }
+  {
+    phylloptim::Leaf l = make_single_leaf(d, 1.0);
+    l.TF24_floor_lambda_o = 0.0;
+    l.set_model(phylloptim::Leaf::CostCurve::TF24_floor, false);
+    l.optimise();
+    ok(std::isfinite(l.profit_), "an explicit lambda_o = 0 solves");
+  }
+  {
+    phylloptim::Leaf l = make_single_leaf(d, 1.0);
+    l.TF24_floor_lambda_o = -1.0;
+    l.set_model(phylloptim::Leaf::CostCurve::TF24_floor, false);
+    ok(throws_with([&] { l.optimise(); }, "non-negative"),
+       "a negative price -- which would PAY the leaf to transpire -- is refused");
+  }
+}
+
+void test_tf24_floor_closed_form() {
+  printf("TF24_floor's closed form: the reduction, the coverage, and the tail\n");
+  Drivers d;
+  d.PPFD = 1500.0;
+
+  // --- at TF24_cost_scale = 0 this curve is CF77, and the two closed arms are
+  // compared. ⚠️ NOT BIT-FOR-BIT, AND THE DIFFERENCE IS DELIBERATE.
+  // `solve_CF77` takes no Newton step at all -- with lambda constant there is no
+  // circularity to break -- and stops at the spline inversion of the supply. This
+  // arm still takes its step, and with a zeroed hydraulic term there is nothing in
+  // lambda for it to correct, so what it does instead is drive the
+  // supply-minus-demand residual to zero from a start clamped strictly inside the
+  // bracket. So the comparison worth making is against the EXACT answer, and the
+  // finding is that the extra step does not hurt.
+  int both_served = 0, different_decision = 0;
+  double worst_gap = 0.0;
+  for (double psi_soil : {0.5, 1.0, 2.0}) {
+    phylloptim::Leaf exact = make_single_leaf(d, psi_soil);
+    exact.TF24_cost_scale = 0.0;
+    exact.TF24_floor_lambda_o = 1.5e5;
+    exact.set_model("TF24_floor", "stem", "exact");
+    exact.optimise();
+
+    phylloptim::Leaf a = make_single_leaf(d, psi_soil);
+    a.TF24_cost_scale = 0.0;
+    a.TF24_floor_lambda_o = 1.5e5;
+    a.set_model("TF24_floor", "stem", "closed");
+    a.optimise();
+
+    phylloptim::Leaf b = make_single_leaf(d, psi_soil);
+    b.CF77_lambda_ = 1.5e5;
+    b.set_model("CF77", "stem", "closed");
+    b.optimise();
+
+    // The EXACT solves must agree bit-for-bit -- that is the reduction, on the
+    // method both curves share, and it is asserted without a tolerance.
+    phylloptim::Leaf cf_exact = make_single_leaf(d, psi_soil);
+    cf_exact.CF77_lambda_ = 1.5e5;
+    cf_exact.set_model("CF77", "stem", "exact");
+    cf_exact.optimise();
+    ok(same_bits(exact.opt_psi_stem_, cf_exact.opt_psi_stem_),
+       "exact TF24_floor(TF24_cost_scale=0) IS exact CF77 at psi_soil=" +
+           std::to_string(psi_soil));
+
+    if (a.last_solve_fell_back_ != b.last_solve_fell_back_) {
+      ++different_decision;
+      continue;
+    }
+    if (a.last_solve_fell_back_) {
+      continue;
+    }
+    ++both_served;
+    const double ea = std::abs(a.opt_psi_stem_ - exact.opt_psi_stem_);
+    const double eb = std::abs(b.opt_psi_stem_ - exact.opt_psi_stem_);
+    ok(ea <= eb * 1.05,
+       "the TF24_floor arm is no further from the exact optimum than CF77's at "
+       "psi_soil=" + std::to_string(psi_soil));
+    worst_gap = std::max(worst_gap,
+                         std::abs(a.opt_psi_stem_ - b.opt_psi_stem_) /
+                             b.opt_psi_stem_);
+  }
+  printf("    scale=0: %d rows served by both (worst |dpsi*| between arms %.3e), "
+         "%d where only one was served\n", both_served, worst_gap,
+         different_decision);
+  ok(both_served >= 2, "the scale = 0 comparison was actually exercised");
+
+  // --- coverage and the worst served error at real parameters -----------------
+  // ⚠️ THIS BOUND IS A MEASUREMENT, NOT A SPECIFICATION. What limits the accuracy
+  // is the USO collapse (see closed_form.hpp), and on this curve the leading order
+  // additionally discards the whole TF24 term -- so the tail is worse than CF77's
+  // and the shared ci/ca guard does not see it. The assertion exists to notice
+  // DRIFT; read the printed numbers, not the pass.
+  int served = 0, fell_back = 0;
+  double worst = 0.0;
+  for (double scale : {0.5, 7.5}) {
+    for (double psi_soil : {0.5, 1.0, 1.5, 2.0}) {
+      for (double vpd : {1.0, 2.0}) {
+        Drivers dd = d;
+        dd.atm_vpd = vpd;
+        phylloptim::Leaf exact = make_single_leaf(dd, psi_soil);
+        exact.TF24_cost_scale = scale;
+        exact.TF24_floor_lambda_o = 1.5e5;
+        exact.set_model("TF24_floor", "stem", "exact");
+        exact.optimise();
+
+        phylloptim::Leaf closed = make_single_leaf(dd, psi_soil);
+        closed.TF24_cost_scale = scale;
+        closed.TF24_floor_lambda_o = 1.5e5;
+        closed.set_model("TF24_floor", "stem", "closed");
+        closed.optimise();
+
+        if (closed.last_solve_fell_back_) {
+          ++fell_back;
+          // ⚠️ A FALLBACK IS THE WHOLE EXACT SOLVE, so it must be bit-identical
+          // rather than close. This is what makes the fallback fraction a cost
+          // rather than an accuracy question.
+          ok(same_bits(closed.opt_psi_stem_, exact.opt_psi_stem_) &&
+                 same_bits(closed.profit_, exact.profit_),
+             "a fallback IS the exact solve, bit-for-bit");
+          continue;
+        }
+        ++served;
+        ok(closed.opt_psi_stem_ > psi_soil && closed.opt_psi_stem_ < closed.psi_crit,
+           "a served row is strictly inside the bracket");
+        worst = std::max(worst,
+                         std::abs(closed.opt_psi_stem_ - exact.opt_psi_stem_) /
+                             exact.opt_psi_stem_);
+      }
+    }
+  }
+  printf("    %d served, %d fell back (phi %.2f) | worst served |dpsi*|/psi* %.3e\n",
+         served, fell_back, double(fell_back) / double(served + fell_back), worst);
+  ok(served >= 2, "the closed form served at least two rows");
+  ok(worst < 0.6, "and no served row is worse than the measured tail");
+
+  // --- and where it is refused -------------------------------------------------
+  // At lambda_o = 0 the curve is TF24, whose wet-end lambda is zero rather than a
+  // constant: `xi = sqrt(Q/lambda)` diverges and there is nothing to expand about.
+  // Refused, naming which of the two curves it has become -- and TF24 has its own
+  // start, so the message can point somewhere.
+  phylloptim::Leaf zero = make_single_leaf(d, 1.0);
+  zero.TF24_floor_lambda_o = 0.0;
+  zero.set_model("TF24_floor", "stem", "closed");
+  ok(throws_with([&] { zero.optimise(); }, "needs TF24_floor_lambda_o > 0"),
+     "the closed form refuses lambda_o = 0");
+  ok(throws_with([&] { zero.optimise(); }, "Seat TF24 instead"),
+     "and points at the curve that does have a start");
+}
+
 void test_every_curve_returns_its_own_maximum() {
   printf("every cost curve's optimum beats a scan of its own objective\n");
 
@@ -4809,8 +5309,10 @@ void test_every_curve_returns_its_own_maximum() {
       d.leaf_temp = r.leaf_temp;
 
       phylloptim::Leaf l = make_single_leaf(d, r.psi_soil);
-      // The one curve with no default: prescribed, not derived, and unset is NA.
+      // The two curves with no default: prescribed, not derived, and unset is NA.
+      // Set unconditionally, because a field a curve does not read costs nothing.
       l.CF77_lambda_ = 1.5e5;
+      l.TF24_floor_lambda_o = kFloorLambdaO;
       l.set_model(static_cast<phylloptim::Leaf::CostCurve>(curve), false);
       l.optimise();
       const double got = l.profit_;
@@ -4821,6 +5323,7 @@ void test_every_curve_returns_its_own_maximum() {
       // Fresh leaf, so the solve's own state cannot influence the oracle.
       phylloptim::Leaf m = make_single_leaf(d, r.psi_soil);
       m.CF77_lambda_ = 1.5e5;
+      m.TF24_floor_lambda_o = kFloorLambdaO;
       // ⚠️ ProfitMax's objective is UNDEFINED on a leaf that has not scanned for
       // |A|max, so a fresh oracle leaf returns NaN at every point and the curve
       // silently contributes nothing -- which is how this test first passed while
@@ -4843,7 +5346,7 @@ void test_every_curve_returns_its_own_maximum() {
       }
       ++total_rows;
       ++curve_rows;
-      // Relative slack, because the seven objectives differ in units and by orders
+      // Relative slack, because the eight objectives differ in units and by orders
       // of magnitude -- ProfitMax is dimensionless and O(1), TF24 is carbon.
       const double shortfall =
           (best - got) / std::max(std::fabs(best), 1.0);
@@ -4902,6 +5405,7 @@ void test_collar_profit_is_its_own_curve() {
   for (int c = 0; c < phylloptim::Leaf::n_cost_curves; ++c) {
     phylloptim::Leaf l = make_single_leaf(d, 1.0);
     l.CF77_lambda_ = 1.5e5;
+    l.TF24_floor_lambda_o = kFloorLambdaO;
     try {
       l.set_model(static_cast<phylloptim::Leaf::CostCurve>(c), true);
       l.optimise();
@@ -4915,6 +5419,7 @@ void test_collar_profit_is_its_own_curve() {
     // A fresh leaf, so the solve's own trailing state cannot supply the answer.
     phylloptim::Leaf m = make_single_leaf(d, 1.0);
     m.CF77_lambda_ = 1.5e5;
+    m.TF24_floor_lambda_o = kFloorLambdaO;
     m.set_model(static_cast<phylloptim::Leaf::CostCurve>(c), false);
     const double again = m.evaluate_psi_stem_at(psi);
     (void)collar;
@@ -5033,6 +5538,13 @@ int main() {
   test_maximise_over_closed_interval_foc();
   test_single_layer_optimisers_reach_a_bound();
   test_product_link_is_the_product_rule();
+  test_shadow_cost();
+  test_tf24_floor_reduces();
+  test_tf24_floor_wet_end_price();
+  test_tf24_floor_emergent_lambda();
+  test_tf24_floor_kmax_vpd_invariance();
+  test_tf24_floor_refuses_an_unset_price();
+  test_tf24_floor_closed_form();
   test_every_curve_returns_its_own_maximum();
   test_collar_profit_is_its_own_curve();
   benchmark();

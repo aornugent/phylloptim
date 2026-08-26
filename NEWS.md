@@ -1,4 +1,147 @@
-# phylloptim (development version)
+# phylloptim 0.7.0
+
+## A new cost curve, `TF24_floor`: TF24 with a price of water at the wet end
+
+Every conductance-loss cost in this package prices water at **zero** as
+transpiration goes to zero. That is not a choice anyone made — it is what "the cost
+of water is the conductivity you lose to move it" implies, since no conductivity is
+lost when nothing flows — and its consequence is that water is free precisely when
+it is abundant. `TF24_floor` is the repair, applied to our own cost.
+
+It takes the split any cost admits, into a part depending on the potential alone
+and a part linear in the flux:
+
+```
+Theta(E) = Theta~(psi) + lambda_o * E,   lambda = Theta~'(psi)/K(psi) + lambda_o
+```
+
+with `K = kmax * f(psi)` the stem conductance, and `Theta~` taken to be **TF24's own
+cost at TF24's own traits**. So `lambda_o` is the curve's only parameter, `TF24` is
+the same curve at `lambda_o = 0` at identical parameter values, and the comparison
+between them is a one-restriction test rather than a fit of two
+differently-parameterised models.
+
+```r
+leaf_solve(psi_soil = 1.5, PPFD = 1500, model = "TF24_floor",
+           supply = leaf_supply_singlelayer(),
+           root_network = series_resistance(1e4),
+           TF24_floor_lambda_o = 1.5e5)   # umol C (kg H2O)^-1
+```
+
+**Two reductions, asserted BIT-FOR-BIT** over 45 driver rows and eight reported
+fields, with no fixture and no tolerance: `lambda_o = 0` gives `TF24`, and
+`TF24_cost_scale = 0` gives `CF77`. Each term is the parent's own expression, so
+zeroing a parameter adds an exact zero to the other curve's exact value — and that
+survives fused multiply-add, since the fused addend is then an exact zero.
+
+**`TF24_floor_lambda_o` is an INPUT with no default**, like `CF77_lambda_`, and the
+reason is sharper: at zero this curve **is** `TF24`, so a caller who seated it and
+never named a price would be running the production model under a new name.
+Omitting it is refused, with the units and the routes that can supply one; an
+explicit zero is accepted.
+
+**`shadow_cost`, a new reported output, because the two terms are not the same
+kind of thing.** `Theta~` is a **realised** cost: carbon actually forgone, in
+damaged tissue and in capacity that has to be rebuilt, and it belongs in a carbon
+budget. `lambda_o` is not a cost at all. It is a **shadow price** — the value of
+water in its best alternative use, which for a leaf is assimilation later — and no
+carbon is lost when the plant pays it. It changes the aperture the plant chooses
+and nothing else, which is what a multiplier does.
+
+`profit` still reports the objective, so it deducts both. The new column reports
+the part that is a price, and the two quantities a caller wants follow:
+
+```
+realised cost   = hydraulic_cost - shadow_cost
+carbon profit   = profit + shadow_cost
+```
+
+⚠️ **A consumer that grows a plant on this leaf wants the second of those, never
+`profit`.** Deducting a shadow price from a carbon budget taxes growth by something
+the plant never spent. At `lambda_o = 1e5` the objective understates the carbon the
+leaf actually kept by 28%.
+
+⚠️ **Zero on every other curve means "this curve does not separate the two", not
+"this curve's cost is all realised carbon".** `CF77` is the case worth stating: its
+whole cost is `lambda * E`, and reading that as a shadow price is an ordinary thing
+to do — but the model supplies one number and nothing to attribute it with, and
+behaves identically whether that number is read as carbon lost to water already
+taken or as the value of water withheld for later. Reporting it as all-shadow would
+present one reading as a fact; as zero-shadow, the other. The field is defined only
+where the *curve* defines it, and that is itself an argument for the two-term form:
+it is the first curve here in which the question "is `lambda` a cost to deduct, or a
+price that only shapes behaviour?" can be posed at all.
+
+The sharpest test of the column is the pair that was already here. `CF77` at
+`lambda` and `TF24_floor` at `TF24_cost_scale = 0` are the same model numerically —
+every state and flux bit-identical — and `shadow_cost` is the only column that
+separates them.
+
+Appended to `operating_point()`, after `Tleaf`, for the reason `Tleaf` was: those
+names are positions and an insertion would shift every saved output. It reads the
+stored transpiration rather than recomputing it, so `shadow_cost == lambda_o * E`
+holds bit-exactly against the reported `E`. No golden file moves, since those are
+written from their own struct, and `n_pars` is unchanged at 19 — this is a reported
+output, not a parameter.
+
+**A real prediction, and a test of it.** Scaling `kmax` and the vapour deficit
+together by 16 leaves stomatal conductance untouched at every potential, so a cost
+whose marginal value depends on `psi` alone is invariant and one that prices the
+FLUX is not. Measured: `TF24` moves by 0, `CF77` by 64%, and `TF24_floor` in
+between and monotonically in `lambda_o` — 4.5e-02, 3.8e-01, 5.7e-01 at `lambda_o`
+of 1.5e3, 1.5e4 and 1.5e5.
+
+**The closed form serves it, and its tail is worse than the other two's.** The
+wet-end `lambda` IS `lambda_o`, a constant — the `n = 0` case, reached for a reason
+belonging to the MODEL rather than to the vulnerability curve — so
+`set_model("TF24_floor", "stem", "closed")` works and runs at 1.40 against 2.90
+µs/call, 2.11x realised at phi = 0.375. But the leading order discards the whole
+TF24 term, and the shared `ci/ca` guard does not see the resulting error: over a
+150-row grid the worst SERVED error is 2.9e-01 at `TF24_cost_scale = 0.5` (against
+`CF77`'s own 2.4e-01) and **5.2e-01 at the DEFAULT scale**. Read `solve_TF24_floor`'s
+table before using that arm. At `lambda_o = 0` it is refused by name and points at
+`TF24`, which has its own start.
+
+## `leaf_solve()` and `leaf_batch()` can set the prescribed prices
+
+`$CF77_lambda_` and `$TF24_floor_lambda_o` are fields rather than traits, so
+`leaf_traits()` could not carry them — and `leaf_solve()` builds its own `Leaf`
+internally. The two priced curves were therefore reachable from `leaf_model()` and
+**unreachable from the one-call surface**: `leaf_solve(model = "CF77")` could only
+ever raise that curve's own "needs `CF77_lambda_` set" refusal. That was survivable
+while CF77 was the only such curve and its documentation said "build the leaf
+yourself"; it stopped being survivable for a curve whose only parameter is a price.
+
+`leaf_solve()` takes `CF77_lambda` and `TF24_floor_lambda_o` now, matching
+`leaf_batch()`, and applies them where the model is seated — so they survive
+`set_drivers()` per row on both the `reuse = TRUE` and `reuse = FALSE` paths.
+Passing a price the seated model does not read is **refused rather than ignored**,
+naming the curve that does read it: silently ignoring it is how someone spends an
+afternoon wondering why their lambda had no effect.
+
+## Smaller things
+
+`.gradient_setter()`'s positional trait call is a `do.call` over the derived trait
+vector rather than fifteen subscripts written out. The comment beside it predicted
+that adding a trait would break it at run time inside the generated binding,
+"naming neither this line nor the count" — which is how #41 broke — and an
+intermediate version of this work added one and broke it again, in exactly that
+way: 118 gradient-batch rows reporting `error` where they had reported `interior`,
+because the R reference threw and the batch did not. The trait was withdrawn, so
+the shipped trait vector is unchanged at fifteen; the fix is kept, because the next
+trait will not be so easy to withdraw.
+
+⚠️ **`operating_point()$lambda` is TF24's, whatever curve is seated.** It is
+`marginal_cost_water()`. The per-curve number is `$lambda_emergent`. That is not
+new, but `TF24_floor` is the curve where reading the wrong one is easiest — its
+hydraulic half really is TF24's — so the field list now says so, and the R
+reduction test pins the one column where the two legitimately disagree.
+
+`gradient_par_names()` goes 18 -> 19: `TF24_floor_lambda_o` is appended after
+`CF77_lambda_`, and nothing before it moves. `psi_stem_optima.tsv` grows 4608 ->
+5184 rows; every pre-existing row is byte-identical, which is the check the
+append-only rule exists for. The 576 operating points, the 544 primitives and the
+recorded R gradient baseline are untouched.
 
 ## A third axis on `set_model()`: the closed form as a selectable method
 

@@ -18,7 +18,8 @@ leaf_batch(
   traits = leaf_traits(),
   control = leaf_control(),
   supply = leaf_supply_multilayer(),
-  CF77_lambda = NA_real_
+  CF77_lambda = NA_real_,
+  TF24_floor_lambda_o = NA_real_
 )
 }
 \arguments{
@@ -65,6 +66,11 @@ value rather than a profile.}
 \item{CF77_lambda}{Cowan-Farquhar's prescribed marginal value of water, in
 umol C (kg H2O)^-1, one per observation. Only \code{model = "CF77"} reads it;
 \code{NA_real_} (the default) leaves it unset, which every other model wants.}
+
+\item{TF24_floor_lambda_o}{the \code{TF24_floor} curve's price of water as transpiration
+goes to zero, same units, one per observation. Only \code{model = "TF24_floor"}
+reads it; \code{NA_real_} (the default) leaves it unset. That curve refuses to
+solve without one, deliberately: at zero it is \code{JS22}.}
 }
 \value{
 A \code{leaf_batch} object.

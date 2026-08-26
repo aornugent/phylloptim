@@ -63,6 +63,10 @@
 ##' @param CF77_lambda Cowan-Farquhar's prescribed marginal value of water, in
 ##'   umol C (kg H2O)^-1, one per observation. Only `model = "CF77"` reads it;
 ##'   `NA_real_` (the default) leaves it unset, which every other model wants.
+##' @param TF24_floor_lambda_o the `TF24_floor` curve's price of water as transpiration
+##'   goes to zero, same units, one per observation. Only `model = "TF24_floor"`
+##'   reads it; `NA_real_` (the default) leaves it unset. That curve refuses to
+##'   solve without one, deliberately: at zero it is `JS22`.
 ##'
 ##' @return A `leaf_batch` object.
 ##' @seealso [leaf_gradient_batch()], [leaf_gradient()] for one observation.
@@ -84,7 +88,8 @@ leaf_batch <- function(psi_soil,
                        traits = leaf_traits(),
                        control = leaf_control(),
                        supply = leaf_supply_multilayer(),
-                       CF77_lambda = NA_real_) {
+                       CF77_lambda = NA_real_,
+                       TF24_floor_lambda_o = NA_real_) {
   if (!inherits(traits, "leaf_traits")) {
     stop("`traits` must come from leaf_traits()", call. = FALSE)
   }
@@ -174,6 +179,7 @@ leaf_batch <- function(psi_soil,
          kmax = if (shared) kmax[[1L]] else kmax,
          resistance = if (shared) resistance[[1L]] else resistance,
          CF77_lambda = CF77_lambda,
+         TF24_floor_lambda_o = TF24_floor_lambda_o,
          theta_nrow = if (shared) 1L else n),
     class = "leaf_batch")
 }
@@ -484,9 +490,11 @@ leaf_gradient_batch <- function(batch,
   # NA on the multi-layer path, where there is no such parameter and C++ never
   # reads the column.
   m[, "resistance"] <- batch$resistance
-  # NA unless the batch was built for the CF77 route; C++ reads the slot
-  # unconditionally, so it must hold whatever the solve will actually use.
+  # NA unless the batch was built for the route that owns the price; C++ reads
+  # both slots unconditionally, so each must hold whatever the solve will actually
+  # use.
   m[, "CF77_lambda_"] <- batch$CF77_lambda
+  m[, "TF24_floor_lambda_o"] <- batch$TF24_floor_lambda_o
   # Handed over WITHOUT names, as `leaf_gradient_batch()` documents: C++ indexes by
   # position, and the check there rejects any colnames that are not this order.
   unname(m)

@@ -199,3 +199,41 @@ test_that("a driven row costs a bounded multiple of a trivial .Call", {
                                          supply = leaf_supply_singlelayer(),
                                          root_network = net), 30) / 16 / ref, 45)  # measured 20
 })
+
+
+test_that("shadow_cost separates the price from the realised carbon cost", {
+  # ⚠️ BIT EQUALITY against `lambda_o * E`, not a tolerance. The accessor reads the
+  # stored transpiration rather than recomputing it, precisely so the identity
+  # holds exactly against the REPORTED `E` -- which is what a caller checks.
+  sp <- leaf_supply_singlelayer()
+  for (lo in c(0, 1.5e4, 1.5e5)) {
+    r <- leaf_solve(psi_soil = 1.0, PPFD = 900, atm_vpd = 2, model = "TF24_floor",
+                    TF24_floor_lambda_o = lo, supply = sp)
+    expect_identical(r$shadow_cost, lo * r$E)
+    # The two routes to the carbon the plant actually kept agree, but NOT to the
+    # last bit: `profit` is `A - hydraulic_cost` computed in C++, so adding the
+    # shadow term back reassociates the subtraction. 1 ULP, and asserting
+    # `identical` here would be asserting that floating-point addition is
+    # associative.
+    expect_equal(r$profit + r$shadow_cost,
+                 r$A - (r$hydraulic_cost - r$shadow_cost))
+    expect_gte(r$hydraulic_cost - r$shadow_cost, 0)
+  }
+
+  # At a zero price the curve IS TF24, so the realised cost is the whole cost and
+  # the carbon profit is the objective.
+  r0 <- leaf_solve(psi_soil = 1.0, PPFD = 900, atm_vpd = 2, model = "TF24_floor",
+                   TF24_floor_lambda_o = 0, supply = sp)
+  expect_identical(r0$shadow_cost, 0)
+  expect_identical(r0$profit + r0$shadow_cost, r0$profit)
+
+  # ⚠️ ZERO ON EVERY OTHER CURVE, CF77 INCLUDED, and that is a statement about the
+  # curve rather than about the cost -- see operating_point()'s documentation.
+  for (m in c("TF24", "JS22", "CMax", "SOX", "JW26", "ProfitMax")) {
+    r <- leaf_solve(psi_soil = 1.0, PPFD = 900, atm_vpd = 2, model = m, supply = sp)
+    expect_identical(r$shadow_cost, 0, info = m)
+  }
+  rc <- leaf_solve(psi_soil = 1.0, PPFD = 900, atm_vpd = 2, model = "CF77",
+                   CF77_lambda = 1.5e5, supply = sp)
+  expect_identical(rc$shadow_cost, 0)
+})

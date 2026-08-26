@@ -150,15 +150,18 @@ double pass(std::vector<phylloptim::Leaf> &leaves, const std::vector<Point> &pts
 // solve in one build and the closed form in another is not good enough to price a
 // method against the solve it replaces. Both run in one process, on one grid, in
 // one loop -- so the ratio of two printed lines is a controlled A/B.
-enum class Arm { TF, ProfitMax, CF77, TFClosed, CF77Closed };
+enum class Arm { TF, ProfitMax, CF77, TF24_floor, TFClosed, CF77Closed,
+                 TF24_floorClosed };
 
 const char *arm_label(Arm a) {
   switch (a) {
     case Arm::TF:            return "psi_stem:TF";
     case Arm::ProfitMax:     return "psi_stem:ProfitMax";
     case Arm::CF77: return "psi_stem:CF77";
+    case Arm::TF24_floor:       return "psi_stem:TF24_floor";
     case Arm::TFClosed:      return "psi_stem:TF-closed";
     case Arm::CF77Closed:    return "psi_stem:CF77-closed";
+    case Arm::TF24_floorClosed: return "psi_stem:TF24_floor-closed";
   }
   return "psi_stem:?";
 }
@@ -167,6 +170,9 @@ const char *arm_label(Arm a) {
 // rather than taken from a preceding solve, which would time two solves and call
 // it one.
 const double kLambdaCF77 = 1.5e5;
+// The same for TF24_floor's price floor, which is a separate input on the same
+// footing. `TF24_floor_a` is a trait and takes its default.
+const double kLambdaFloorO = 1.5e5;
 
 double pass_optimiser(Arm arm, std::vector<phylloptim::Leaf> &leaves,
                       const std::vector<Point> &pts) {
@@ -197,6 +203,13 @@ double pass_optimiser(Arm arm, std::vector<phylloptim::Leaf> &leaves,
       case Arm::CF77Closed:
                            l.CF77_lambda_ = kLambdaCF77;
                            l.set_model(phylloptim::Leaf::CostCurve::CF77, false, true);
+                           l.optimise(); break;
+      case Arm::TF24_floor:
+                           l.TF24_floor_lambda_o = kLambdaFloorO;
+                           l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::TF24_floor>(); break;
+      case Arm::TF24_floorClosed:
+                           l.TF24_floor_lambda_o = kLambdaFloorO;
+                           l.set_model(phylloptim::Leaf::CostCurve::TF24_floor, false, true);
                            l.optimise(); break;
     }
     for (double v : {l.opt_psi_stem_, l.ci_, l.assim_colimited_,
@@ -245,8 +258,8 @@ int main(int argc, char **argv) {
     l.setup_transpiration(100);
     l.setup_root_vulnerability(100);
   }
-  for (Arm arm : {Arm::TF, Arm::ProfitMax, Arm::CF77, Arm::TFClosed,
-                  Arm::CF77Closed}) {
+  for (Arm arm : {Arm::TF, Arm::ProfitMax, Arm::CF77, Arm::TF24_floor,
+                  Arm::TFClosed, Arm::CF77Closed, Arm::TF24_floorClosed}) {
     double arm_checksum = 0.0;
     double arm_best = 1e300;
     for (int r = 0; r < reps; ++r) {

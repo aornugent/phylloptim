@@ -1,6 +1,6 @@
 Package: phylloptim
 Title: Leaf Gas Exchange with Explicit Plant Hydraulics
-Version: 0.6.0
+Version: 0.7.0
 Authors@R: c(
     person("Isaac", "Towers", , "", "aut",
             comment = "Author of the leaf gas exchange and hydraulics model"),

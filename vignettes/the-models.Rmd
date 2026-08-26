@@ -265,6 +265,7 @@ so `f` is the fraction of maximum conductivity remaining, `k` the conductance an
 | **Wolf et al.** [@wolf2016] | `CMax` | $\tfrac{a}{2}(\psi^{2}-\psi_s^{2})+b(\psi-\psi_s)$ | $a\,\psi+b$ | carbon |
 | **Eller** [@eller2020] | `SOX` | $-\log g_{\rm SOX}(\psi)$ | $-g'/g$ | log carbon |
 | **Jones et al.** [@jones2026] | `JW26` | $-\log g_{\rm JW}(\psi)$ | $1/(\psi_{\rm crit}-\psi)$ | log carbon |
+| **TF24 with a price floor** | `TF24_floor` | $\gamma\,(1-f)^{\beta}+\lambda_o E$ | $\gamma\beta(1-f)^{\beta-1}\lvert f'\rvert+\lambda_o k_{\max}f$ | carbon |
 
 The last two rows are in that table because of a *benefit link*, and it is worth being explicit about how they got there. Neither subtracts a cost. Both maximise the product `A · g(ψ)`, and they differ only in `g`:
 
@@ -334,7 +335,7 @@ That is still enough to matter. A marginal cost starting at zero, against a marg
 
 ### The benefit link, and the proof it costs nothing
 
-Two of those seven rows do not subtract a cost. This section shows exactly how they belong in one table with the five that do, and that nothing is lost in getting them there.
+Two of those eight rows do not subtract a cost. This section shows exactly how they belong in one table with the six that do, and that nothing is lost in getting them there.
 
 Write the objective as
 
@@ -344,7 +345,7 @@ with `h` a *benefit link*, meaning a transform applied to assimilation before th
 
 | link | `h(A)` | `h'(A)` | curves |
 |---|---|---|---|
-| identity | $A$ | $1$ | `TF24`, `CF77`, `JS22`, `CMax` |
+| identity | $A$ | $1$ | `TF24`, `CF77`, `JS22`, `CMax`, `TF24_floor` |
 | log | $\log A$ | $1/A$ | `SOX`, `JW26` |
 | scaled | $A/\lvert A\rvert_{\max}$ | $1/\lvert A\rvert_{\max}$ | `ProfitMax` |
 
@@ -364,7 +365,7 @@ $$\frac{dP}{d\psi}=A'g+Ag',
 
 The two differ by the factor `A·g`, which is strictly positive wherever the log form is defined. They therefore vanish at exactly the same potentials. The framework's stationary points *are* the product's stationary points, and putting the link on the benefit drops nothing. It is the product rule, divided through.
 
-That claim is checkable rather than decorative. In the chunk below, the left-hand side comes from the model's own `dJ/dψ`, the single expression it uses for all seven curves. The right-hand side is `A'g + Ag'` assembled from parts: `A'` as the derivative of a zero-cost curve, and `g'` differentiated by hand from the closed form for `g` quoted above. So the check does not simply ask the implementation to agree with itself.
+That claim is checkable rather than decorative. In the chunk below, the left-hand side comes from the model's own `dJ/dψ`, the single expression it uses for all eight curves. The right-hand side is `A'g + Ag'` assembled from parts: `A'` as the derivative of a zero-cost curve, and `g'` differentiated by hand from the closed form for `g` quoted above. So the check does not simply ask the implementation to agree with itself.
 
 ```{r}
 #| label: link-identity
@@ -405,6 +406,41 @@ for (nm in names(model)) {
 Agreement is at the last bit. The relative error is measured against the scale of the two terms rather than against their sum, and that is deliberate: `A'g + Ag'` cancels to exactly zero at the optimum, so an error relative to the sum would diverge there even for a perfectly correct implementation.
 
 One consequence matters when reading `profit_` across models. It now carries three kinds of number: carbon for the four difference objectives, a dimensionless normalised profit for `ProfitMax`, and carbon times a dimensionless factor for the two products. Comparing it between curves is not meaningful. Comparing each curve's argmax is.
+
+### The wet-end price, and the one curve that has one
+
+Read down the marginal-cost column and every entry but two carries a factor of `f` or of `|f'|`, both of which vanish as the drop closes. So for those curves
+
+$$\lambda(\psi)=\frac{dC/d\psi}{dE/d\psi}\;\longrightarrow\;0
+\qquad\text{as }\psi\to\psi_s$$
+
+— **water is free precisely when it is abundant.** That is not a modelling choice anyone made; it is what "the cost of water is the conductivity you lose to move it" implies, and every conductance-loss cost in the literature inherits it. `CF77` escapes it by not being a conductivity cost at all: its λ is a prescribed constant everywhere.
+
+`TF24_floor` is the repair, and it takes the form the decomposition already suggests. Any cost splits into a part depending on the potential alone and a part linear in the flux,
+
+$$\Theta(E)=\tilde\Theta(\psi)+\lambda_o E,
+\qquad \lambda=\frac{\tilde\Theta'(\psi)}{K(\psi)}+\lambda_o$$
+
+with `K = k_max f` the stem conductance. The second term is what every curve above sets to zero.
+
+$\tilde\Theta$ here is **TF24's own cost, read at TF24's own traits** — so `λ_o` is this curve's only parameter, and `TF24` is the same curve at `λ_o = 0`. That is deliberate: it makes "is TF24 missing a price of water?" a one-restriction question rather than a comparison between two differently-parameterised fits. The two reductions are `λ_o = 0` → `TF24` and `TF24_cost_scale = 0` → `CF77`, both bit-for-bit, which is how the implementation is pinned.
+
+```{r}
+#| label: wet-end-price
+l <- leaf_model(supply = leaf_supply_singlelayer())
+l$TF24_floor_lambda_o <- 1.5e5
+set_drivers(l, psi_soil = 1.5, PPFD = 1500,
+            root_network = series_resistance(1e4))
+
+# The price at one micro-MPa of tension: essentially no flow at all. The limit is
+# at zero POTENTIAL rather than at zero drop, because these two costs read the
+# absolute potential.
+cat(sprintf("at psi = 1e-06 MPa:  TF24 %10.3e    TF24_floor %9.1f\n",
+            l$lambda_TF24(1e-6),
+            l$lambda_TF24_floor(1e-6)))
+```
+
+`λ_o` has `CF77_lambda_`'s units and meaning — carbon per unit transpiration — and, like it, no default: at `λ_o = 0` this curve *is* `TF24`, so a caller who omitted it would be running the production model under the new model's name. The solve refuses rather than defaults. An explicit zero is accepted, and is the reduction test's own case. [leaf_solve()] and [leaf_batch()] take it as an argument; on a bare `Leaf`, assign the field.
 
 ### Pricing the drop is not pricing the potential
 
@@ -587,7 +623,7 @@ There are four axes, chosen independently. A published model is a point in this 
 
 | axis | options | what it changes |
 |---|---|---|
-| **cost curve** | `TF24`, `CF77`, `ProfitMax`, `JS22`, `CMax`, `SOX`, `JW26` | `C(ψ)` and its units, and for the two product curves whether the objective is a difference at all |
+| **cost curve** | `TF24`, `CF77`, `ProfitMax`, `JS22`, `CMax`, `SOX`, `JW26`, `TF24_floor` | `C(ψ)` and its units, and for the two product curves whether the objective is a difference at all |
 | **supply topology** | single soil potential, or multi-layer root network | the decision variable, and the feasible bracket |
 | **leaf temperature** | prescribed, or energy balance | whether `Tleaf` responds to `E`, and so whether the temperature responses are active at all |
 | **thermal cost** | off, or on | adds a temperature penalty and scales `Jmax`, the only axis that moves both sides |
@@ -606,6 +642,7 @@ The published models map onto that space as follows.
 | @eller2020 | `SOX` | the product objective. Takes no parameter of its own. |
 | @jones2026 | `JW26` | the same product form as `SOX`, with a linear `g`. Takes no parameter of its own; see below. |
 | @sicangco2026 | `ProfitMax` | ProfitMax with the thermal-cost gate on. |
+| — | `TF24_floor` | the canonical two-term split, `Θ̃(ψ) + λ_o E`, with `Θ̃` taken to be TF24's own cost. Not a paper's model: the form is Wolf et al.'s case 8, endorsed in a sentence by Buckley (2017) and fitted once in Anderegg et al. (2018)'s supplement, but never argued for. Here so the claim can be tested rather than argued — and attached to TF24 so that the test is about *our* cost. |
 
 : The published models, and the axes they occupy.
 
@@ -723,7 +760,7 @@ Blocks 1 to 5 are shared. Every published model in the table above accepts them,
 
 Two divisions cut across that list, and both are sharper than any of the individual formulae.
 
-The first is what the *marginal* cost reads, which is the third column of the table and the quantity that actually locates the optimum. For six of the seven it is a function of `ψ` alone. `JS22` is the exception, because `2γ_J Δψ` reads the drop. That is the one difference no parameter can absorb, since as the soil dries the drop shrinks while every absolute-potential cost rises. The `gamma-match` chunk measures both spreads side by side.
+The first is what the *marginal* cost reads, which is the third column of the table and the quantity that actually locates the optimum. For seven of the eight it is a function of `ψ` alone. `JS22` is the exception, because `2γ_J Δψ` reads the drop. That is the one difference no parameter can absorb, since as the soil dries the drop shrinks while every absolute-potential cost rises. The `gamma-match` chunk measures both spreads side by side.
 
 The second is whether the cost is subtracted or the objective is a product. Five subtract; `SOX` and `JW26` multiply. That decides whether λ carries a factor of `A`, and so whether water is priced in absolute carbon or as a share of what the leaf is currently earning.
 
@@ -735,7 +772,7 @@ Every model simplifies. The assumptions that matter most when interpreting outpu
 - **The leaf is intensive.** Every input is per unit leaf area, or is a dimensionless driver. Nothing here scales with plant size; whole-plant allometry is computed by the caller and passed in already reduced.
 - **The hydraulic path is one Weibull curve.** There is no separate leaf, petiole or root-collar vulnerability, no refilling, and no capacitance. Tension is in steady state at every operating point.
 - **Cost is instantaneous.** None of the cost curves carries a memory of past tension, so a curve fitted across a drydown is being asked to represent a history it cannot see.
-- **Which cost curve is right is not settled by this package.** The seven are alternative hypotheses about what a leaf is spending, and they are implemented so that they can be compared, not because one has been shown to be correct.
+- **Which cost curve is right is not settled by this package.** The eight are alternative hypotheses about what a leaf is spending, and they are implemented so that they can be compared, not because one has been shown to be correct.
 - **A gradient describes one operating point.** It is exact there, and says nothing about behaviour where the optimum crosses between the interior of the feasible range and one of its bounds. That crossing is a genuine kink.
 
 ## Glossary

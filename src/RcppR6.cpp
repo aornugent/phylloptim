@@ -152,12 +152,24 @@ double Leaf__profit_psi_stem_CMax(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> o
   return obj_->profit_psi_stem_CMax(psi_stem, psi_upstream);
 }
 // [[Rcpp::export]]
+double Leaf__hydraulic_cost_TF24_floor(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double psi_stem, double psi_upstream) {
+  return obj_->hydraulic_cost_TF24_floor(psi_stem, psi_upstream);
+}
+// [[Rcpp::export]]
+double Leaf__profit_psi_stem_TF24_floor(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double psi_stem, double psi_upstream) {
+  return obj_->profit_psi_stem_TF24_floor(psi_stem, psi_upstream);
+}
+// [[Rcpp::export]]
 double Leaf__lambda_JS22(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double psi_stem, double psi_upstream) {
   return obj_->lambda_JS22(psi_stem, psi_upstream);
 }
 // [[Rcpp::export]]
 double Leaf__lambda_CMax(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double psi_stem, double psi_upstream) {
   return obj_->lambda_CMax(psi_stem, psi_upstream);
+}
+// [[Rcpp::export]]
+double Leaf__lambda_TF24_floor(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double psi_stem) {
+  return obj_->lambda_TF24_floor(psi_stem);
 }
 // [[Rcpp::export]]
 double Leaf__sox_reduction(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double psi_stem) {
@@ -425,6 +437,15 @@ bool Leaf__CF77_soil_beta___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj
 // [[Rcpp::export]]
 void Leaf__CF77_soil_beta___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, bool value) {
   obj_->CF77_soil_beta_ = value;
+}
+
+// [[Rcpp::export]]
+double Leaf__TF24_floor_lambda_o__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->TF24_floor_lambda_o;
+}
+// [[Rcpp::export]]
+void Leaf__TF24_floor_lambda_o__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value) {
+  obj_->TF24_floor_lambda_o = value;
 }
 
 // [[Rcpp::export]]
@@ -1191,6 +1212,11 @@ double Leaf__profitmax_k_span__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> 
 // [[Rcpp::export]]
 double Leaf__g1_eff__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
   return obj_->g1_eff();
+}
+
+// [[Rcpp::export]]
+double Leaf__shadow_cost__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->shadow_cost();
 }
 
 // [[Rcpp::export]]

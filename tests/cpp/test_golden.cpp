@@ -618,17 +618,24 @@ const double kPoison = -12345.0;
 // row records the bracket rather than the model.
 const double kLambdaCF77 = 1.5e5;
 
+// The TF24_floor curve's price of water as transpiration goes to zero. Same units,
+// same scale argument, and a separate constant rather than a reuse of the one
+// above: the two are independent inputs and sharing them would make a stale write
+// to either invisible in the other's rows. The curve's hydraulic half is TF24's
+// cost at TF24's own traits, so there is nothing else to set.
+const double kLambdaFloorO = 1.5e5;
+
 // ⚠️ APPEND ONLY. The reuse pass drives ONE Leaf through kSolvers in order, so
 // inserting a solver changes what every solver after it inherits -- see the header.
 // Appending leaves every existing row byte-identical, which is the check when this
 // file is regenerated.
-enum class Solver { TF, ProfitMax, CF77, Collar, JS22, CMax, SOX, JW26 };
+enum class Solver { TF, ProfitMax, CF77, Collar, JS22, CMax, SOX, JW26, TF24_floor };
 
 // ⚠️ EVERY PER-SOLVER ARRAY IS SIZED FROM THIS, never from a literal. Those arrays
 // are indexed by the enum VALUE, so a hardcoded bound is an out-of-bounds write the
 // moment a solver is appended -- which is exactly the bug bench_gradient carried
 // through three trait-count changes before ASan named it. Keep it last-member + 1.
-constexpr int kNSolvers = static_cast<int>(Solver::JW26) + 1;
+constexpr int kNSolvers = static_cast<int>(Solver::TF24_floor) + 1;
 enum class Topology { Single, Multi1, Multi3 };
 
 const char *solver_name(Solver s) {
@@ -641,6 +648,7 @@ const char *solver_name(Solver s) {
     case Solver::CMax:          return "CMax";
     case Solver::SOX:           return "SOX";
     case Solver::JW26:          return "JW26";
+    case Solver::TF24_floor:       return "TF24_floor";
   }
   return "unknown";
 }
@@ -765,6 +773,13 @@ void dispatch(phylloptim::Leaf &l, Solver s) {
     case Solver::CMax:      l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::CMax>();      break;
     case Solver::SOX:       l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::SOX>();       break;
     case Solver::JW26:      l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::JW26>();      break;
+    // ⚠️ ONE PARAMETER, AND IT IS AN INPUT WITH NO DEFAULT, like CF77_lambda_
+    // above: this curve refuses to solve without it. The hydraulic half reads
+    // TF24's own traits, so these rows differ from the TF row above by the price
+    // alone.
+    case Solver::TF24_floor:
+                            l.TF24_floor_lambda_o = kLambdaFloorO;
+                            l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::TF24_floor>(); break;
   }
 }
 
@@ -795,7 +810,7 @@ const double kOptPPFDs[] = {0.0, 1500.0};
 const Solver kSolvers[] = {Solver::TF, Solver::ProfitMax,
                            Solver::CF77, Solver::Collar,
                            Solver::JS22, Solver::CMax, Solver::SOX,
-                           Solver::JW26};
+                           Solver::JW26, Solver::TF24_floor};
 static_assert(sizeof(kSolvers) / sizeof(kSolvers[0]) == kNSolvers,
               "kSolvers must list every Solver exactly once");
 const Topology kTopologies[] = {Topology::Single, Topology::Multi1,

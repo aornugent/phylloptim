@@ -82,11 +82,11 @@ test_that("the parameter enumeration is the same order in R and in C++", {
   # is safe and reordering would differentiate the wrong parameter and report
   # plausible numbers for it. Compared rather than trusted, in both directions.
   r_side <- c(names(leaf_traits()), "leaf_specific_conductance_max",
-              "resistance", "CF77_lambda_")
+              "resistance", "CF77_lambda_", "TF24_floor_lambda_o")
   expect_identical(gradient_par_names(), r_side)
   # And the count, which is what a positional trait call would silently break:
-  # fifteen traits then the two that are not traits.
-  expect_length(gradient_par_names(), 18L)
+  # fifteen traits then the four that are not traits.
+  expect_length(gradient_par_names(), 19L)
   expect_identical(gradient_par_names()[1:15], names(leaf_traits()))
 })
 
@@ -349,10 +349,14 @@ test_that("per-observation theta differentiates each row at its own parameters",
   })
 
   b <- leaf_batch(psi_soil = psv, PPFD = 900)
+  # ⚠️ THE TRAIT COUNT IS DERIVED, not written down. It was `[1:15]` and a literal
+  # `numeric(18)`, both of which had to be found by hand when a trait was added.
+  n_traits <- length(leaf_traits())
+  n_pars <- length(gradient_par_names())
   theta <- t(vapply(traits, function(tr) {
-    unname(c(unlist(tr)[gradient_par_names()[1:15]], 3.14e-5, NA_real_,
-             NA_real_))
-  }, numeric(18)))
+    unname(c(unlist(tr)[gradient_par_names()[seq_len(n_traits)]], 3.14e-5,
+             rep(NA_real_, n_pars - n_traits - 1L)))
+  }, numeric(n_pars)))
   g <- leaf_gradient_batch(b, theta = theta, pars = pars)
 
   for (i in seq_along(psv)) {
@@ -529,11 +533,12 @@ test_that("leaf_gradient_batch() rejects what it cannot do", {
 
   # `traits` and `theta` both say where the gradient is taken, so passing both is
   # refused rather than resolved in favour of one of them.
-  th <- matrix(1, nrow = 1, ncol = 18)
+  th <- matrix(1, nrow = 1, ncol = length(gradient_par_names()))
   expect_error(leaf_gradient_batch(b, traits = leaf_traits(), theta = th),
                "pass one")
-  expect_error(leaf_gradient_batch(b, theta = matrix(1, 1, 13)), "18 columns")
-  expect_error(leaf_gradient_batch(b, theta = matrix(1, 3, 18)),
+  expect_error(leaf_gradient_batch(b, theta = matrix(1, 1, 13)),
+               paste(length(gradient_par_names()), "columns"))
+  expect_error(leaf_gradient_batch(b, theta = th[rep(1, 3), , drop = FALSE]),
                "1 row or one per observation")
   expect_error(leaf_gradient_batch(b, theta = as.data.frame(th)),
                "numeric matrix")
@@ -674,16 +679,21 @@ test_that("the batch reproduces leaf_gradient() on every model, bit-for-bit", {
   psv <- c(1.0, 1.5, 2.0)
   own <- c(collar = "TF24_cost_scale", TF24 = "TF24_cost_scale",
            CF77 = "CF77_lambda_", JS22 = "JS22_gamma", CMax = "CMax_a",
-           SOX = "vcmax_25", JW26 = "vcmax_25", ProfitMax = "vcmax_25")
+           SOX = "vcmax_25", JW26 = "vcmax_25", ProfitMax = "vcmax_25",
+           TF24_floor = "TF24_floor_lambda_o")
   for (m in names(own)) {
     p <- own[[m]]
+    # Both prices supplied on every row: a batch column a model does not read is
+    # never touched, so this is one call rather than a branch on the model, and it
+    # is what covers the second model-owned slot reaching the right member.
     b <- leaf_batch(psi_soil = psv, PPFD = 1500, root_network = net,
                     supply = leaf_supply_singlelayer(), traits = tr,
-                    CF77_lambda = 1.5e5)
+                    CF77_lambda = 1.5e5, TF24_floor_lambda_o = 1.5e5)
     gb <- leaf_gradient_batch(b, pars = p, model = m)
     one <- vapply(psv, function(ps) {
       l <- leaf_model(tr, leaf_control(), leaf_supply_singlelayer())
       l$CF77_lambda_ <- 1.5e5
+      l$TF24_floor_lambda_o <- 1.5e5
       leaf_gradient(psi_soil = ps, PPFD = 1500, root_network = net, x = l,
                     traits = tr, pars = p, model = m)$gradient[1, "A"]
     }, numeric(1))

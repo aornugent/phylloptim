@@ -226,8 +226,9 @@ jobs:
                 0.0,                    // CMax_b
                 1.0 * 0.000157 / 5.0,   // leaf_specific_conductance_max
                 0.0,                    // resistance
-                0.0};                   // CF77_lambda_ (CF77 only)
-            static_assert(phylloptim::gradient::n_pars == 18,
+                0.0,                    // CF77_lambda_ (CF77 only)
+                0.0};                   // TF24_floor_lambda_o (TF24_floor only)
+            static_assert(phylloptim::gradient::n_pars == 19,
                           "theta above is written out element by element; update "
                           "it and this assertion together");
             const int pars[1] = {0};  // vcmax_25

@@ -532,15 +532,28 @@ tibble(method = cf$model_method(), psi_stem = cf$opt_psi_stem_,
 It is refused rather than approximated wherever it does not hold, and the
 refusals carry their reasons:
 
-- **`TF24` and `CF77` only, of the seven cost curves.** The three-way split is
-  worth knowing, because only one part of it is a gap in the code. A closed form
-  exists exactly when `h'(A)`, the derivative of the benefit link, does not depend
-  on the solution. For `JS22`, `CMax` and `ProfitMax` it does not — so the
-  inversion *exists* for them and is simply not written yet. For `SOX` and `JW26`
-  it does: their link is `log`, so `h'(A) = 1/A`, and `lambda` therefore carries
-  the assimilation the solve is for. Given `lambda -> xi -> ci -> A` the
+- **`TF24`, `CF77` and `TF24_floor` only, of the eight cost curves.** The three-way
+  split is worth knowing, because only one part of it is a gap in the code. A
+  closed form exists exactly when `h'(A)`, the derivative of the benefit link, does
+  not depend on the solution. For `JS22`, `CMax` and `ProfitMax` it does not — so
+  the inversion *exists* for them and is simply not written yet. For `SOX` and
+  `JW26` it does: their link is `log`, so `h'(A) = 1/A`, and `lambda` therefore
+  carries the assimilation the solve is for. Given `lambda -> xi -> ci -> A` the
   dependency closes into a fixed point, which can be iterated but not inverted.
   Those two **cannot** have a closed form.
+
+  ⚠️ **`TF24_floor` needs `$TF24_floor_lambda_o > 0`, and its tail is worse than
+  the other two's.** Its wet-end `lambda` is `lambda_o` — a constant, so the same
+  `n = 0` case as `CF77` — and at `lambda_o = 0` that limit is zero, `xi =
+  sqrt(Q/lambda)` diverges, and there is nothing to expand about; that case is
+  `TF24`, which has its own start, and the refusal points there. Where it does
+  apply, the leading order discards the whole `Θ̃'(ψ)/K(ψ)` term, which at the
+  DEFAULT `TF24_cost_scale` dominates `lambda_o` at the operating point. Measured
+  over a 150-row driver grid, the worst served error is 2.9e-01 at
+  `TF24_cost_scale = 0.5` (against `CF77`'s own 2.4e-01) and **5.2e-01** at the
+  default 7.5. The `ci/ca` guard does not catch that, because it reads the closed
+  form's own `lambda` and stays plausible while `psi*` is wrong — so on this curve
+  the fast arm is a measurement tool rather than a production path.
 - **The stem route only, and one soil layer only.** The inversion is against a
   supply measured from `psi_soil`; it says nothing about the soil-to-collar path,
   and the multi-layer closed form does not exist.
@@ -694,7 +707,7 @@ output from this one are:
 ## Where to go next
 
 - **I want to know what is being solved.** `vignette("the-models")` is the
-  reference: the objective, the seven cost curves, the first-order conditions,
+  reference: the objective, the eight cost curves, the first-order conditions,
   and the two optional gates.
 - **I want to fit this to data.** `vignette("fitting")` works through a
   calibration, and covers when the exact gradient earns its complexity.

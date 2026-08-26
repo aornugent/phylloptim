@@ -804,14 +804,17 @@ test_that("leaf_gradient() refuses the combinations that would disagree", {
 
 test_that("the setter's positional trait call cannot drift in arity", {
   # `.gradient_setter()` applies traits POSITIONALLY, straight onto the object, to
-  # skip rebuilding a leaf_traits per perturbation. That is a hard-coded THIRTEEN. If
-  # a trait is added to leaf_traits() and to the C++ setter, nothing about that call
-  # fails to compile -- it would silently pass the wrong value for every argument
-  # after the new one. So the arity is asserted here rather than trusted.
-  #
+  # skip rebuilding a leaf_traits per perturbation. It used to name a fixed number
+  # of subscripts, and a trait added to leaf_traits() and to the C++ setter would
+  # silently pass the wrong value for every argument after the new one -- so this
+  # test asserted the arity. It is a `do.call` over the derived trait vector now,
+  # which cannot drift; what is still worth asserting is that the three lists agree
+  # with each other, since the setter takes its ORDER from the C++ enumeration.
   expect_length(leaf_traits(), 15L)
   expect_length(formals(leaf_model()$set_traits), 15L)
   expect_identical(names(leaf_traits()), names(formals(leaf_model()$set_traits)))
+  expect_identical(names(leaf_traits()),
+                   gradient_par_names()[seq_along(leaf_traits())])
 })
 
 # --- a collar potential the caller supplies (#88) -----------------------------
@@ -1045,8 +1048,11 @@ test_that("CF77_lambda_ is in the enumeration and refused by other models", {
   # EMERGENT -- derived from that curve's own parameters rather than set -- so the
   # slot exists once in the enumeration and is available for one model.
   expect_true("CF77_lambda_" %in% gradient_par_names())
-  expect_identical(gradient_par_names()[[length(gradient_par_names())]],
-                   "CF77_lambda_")
+  # ⚠️ NO LONGER LAST. `TF24_floor_lambda_o` is the second model-owned price and was
+  # appended after it, which is exactly the "appending is safe" the enumeration is
+  # designed for -- so what is asserted is the pair and its order, not a position.
+  expect_identical(tail(gradient_par_names(), 2L),
+                   c("CF77_lambda_", "TF24_floor_lambda_o"))
 
   # ⚠️ REFUSED, not returned as a zero. A zero means "in this objective but
   # inactive at this operating point", which is the psi_crit case and is
@@ -1077,12 +1083,52 @@ test_that("CF77_lambda_ is in the enumeration and refused by other models", {
                "no gradient route")
 })
 
+test_that("TF24_floor_lambda_o is the second model-owned price, and refused elsewhere", {
+  # ⚠️ THE CLASS, NOT THE INSTANCE. There are two prescribed prices in the
+  # enumeration now -- Cowan-Farquhar's and the two-term curve's -- so the thing
+  # under test is that `.gradient_owned_pars` maps each to its owner rather than
+  # that one name is special. On every other curve the price is EMERGENT, derived
+  # from that curve's own parameters rather than set.
+  expect_true("TF24_floor_lambda_o" %in% gradient_par_names())
+
+  expect_error(leaf_gradient(psi_soil = 2.0, PPFD = 900,
+                             pars = "TF24_floor_lambda_o"),
+               "not a parameter of the collar model")
+  expect_error(leaf_gradient(psi_soil = 2.0, PPFD = 900,
+                             pars = "TF24_floor_lambda_o"),
+               "emergent")
+  # And the refusal names the OWNER, so a caller is told what to pass rather than
+  # only what is wrong.
+  expect_error(leaf_gradient(psi_soil = 2.0, PPFD = 900,
+                             pars = "TF24_floor_lambda_o"),
+               "TF24_floor")
+
+  # The two prices exclude each other, which is what makes this a table rather
+  # than a special case.
+  cf <- phylloptim:::.gradient_available_pars(TRUE, "CF77")
+  tt <- phylloptim:::.gradient_available_pars(TRUE, "TF24_floor")
+  expect_true("CF77_lambda_" %in% cf)
+  expect_false("TF24_floor_lambda_o" %in% cf)
+  expect_true("TF24_floor_lambda_o" %in% tt)
+  expect_false("CF77_lambda_" %in% tt)
+
+  # ⚠️ AND THE HYDRAULIC HALF IS NOT IN THIS CLASS AT ALL. `TF24_floor` reads
+  # `TF24_cost_scale`, which is a TRAIT and available on every model -- returning
+  # an exactly zero gradient off the curves that do not read it, which is the
+  # `psi_crit` case and is information rather than an error. The distinction
+  # between "zero" and "refused" is the whole design here, so both are checked.
+  expect_true("TF24_cost_scale" %in%
+                phylloptim:::.gradient_available_pars(TRUE, "TF24_floor"))
+  g <- leaf_gradient(psi_soil = 2.0, PPFD = 900, pars = "JS22_gamma")
+  expect_identical(unname(g$gradient["JS22_gamma", "A"]), 0)
+})
+
 test_that("the curve registry is read from C++, not restated in R", {
   # R selects a curve by POSITION in this vector, so it is compared rather than
   # trusted -- the same discipline gradient_par_names() gets.
   nms <- cost_curve_names()
   expect_identical(nms, c("TF24", "CF77", "JS22", "CMax", "SOX", "JW26",
-                          "ProfitMax"))
+                          "ProfitMax", "TF24_floor"))
 
   # ⚠️ THERE IS NO `cost_curve_has_derivative()` ANY MORE, and its absence is the
   # statement. Every curve is `h(A) - C(psi)` and every derivative is
@@ -1143,10 +1189,21 @@ test_that("every additive curve's IFT gradient matches differencing its solve", 
   mk <- function() {
     l <- leaf_model(tr, leaf_control(), leaf_supply_singlelayer())
     l$CF77_lambda_ <- 1.5e5   # in band: marginal_cost_water runs 9e4-3e5
+    l$TF24_floor_lambda_o <- 1.5e5   # the same band, and the same reason
     l
   }
+  # ⚠️ `TF24_floor` APPEARS TWICE ON PURPOSE. It is the one curve with a parameter in
+  # each half of the decomposition -- `TF24_cost_scale` in `Theta~(psi)` and
+  # `TF24_floor_lambda_o` in the price -- and the two reach the first-order
+  # condition by different routes: the hydraulic term is a function of the
+  # potential alone, while `lambda_o*kmax*f(psi)` carries the supply. A composite
+  # that had them the right way round on one and not the other would pass on
+  # either alone. Note the first is a parameter the curve SHARES with TF24, which
+  # is exactly the point of the shared parameterisation.
   cases <- list(c("TF24", "TF24_cost_scale"), c("CF77", "CF77_lambda_"),
-                c("JS22", "JS22_gamma"), c("CMax", "CMax_a"))
+                c("JS22", "JS22_gamma"), c("CMax", "CMax_a"),
+                c("TF24_floor", "TF24_cost_scale"),
+                c("TF24_floor", "TF24_floor_lambda_o"))
   n_checked <- 0L
   for (case in cases) {
     m <- case[[1]]
@@ -1176,7 +1233,7 @@ test_that("every additive curve's IFT gradient matches differencing its solve", 
     }
     n_checked <- n_checked + 1L
   }
-  expect_identical(n_checked, 4L)
+  expect_identical(n_checked, 6L)
 })
 
 test_that("the decision variable follows the route", {
