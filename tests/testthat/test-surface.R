@@ -607,20 +607,59 @@ test_that("atm_kpa is not decorative", {
 # The root network as an input (#33)
 # ---------------------------------------------------------------------------
 
-test_that("root_network_from_carbon() reproduces the leaf's own layer thickness", {
-  # The one thing that could go silently wrong when the carbon -> resistance step
-  # crossed the package boundary: dz is derived from the soil-depth profile, and
-  # the vertical resistance scales with dz^2, so a caller deriving dz differently
-  # would be wrong by a squared factor with nothing to catch it. This asserts the
-  # R helper agrees with what the leaf computes from the same profile.
+test_that("root_network_from_carbon() uses each layer's own thickness", {
+  # ⚠️ THIS TEST ENCODED THE BUG #626 FIXED, AND THE OLD EXPECTATION IS WORTH
+  # KNOWING. It asserted `r_R_V` was the SAME in all three layers of a graded
+  # profile, using a single column-average thickness `depth[[3]] / 3`. That is
+  # right only for equal layers, and this profile's layers are 0.4, 0.5 and 0.6 m.
+  # The vertical resistance scales with the square of the thickness of the segment
+  # spanning the layer, so it is per layer.
   depth <- c(0.4, 0.9, 1.5)
-  l <- leaf_model()
-  set_drivers(l, psi_soil = c(1, 2, 3), soil_depth = depth)
-  expect_equal(l$dz_, depth[[3]] / 3)
+  dz <- diff(c(0, depth))
 
   n <- root_network_from_carbon(rep(2, 3), soil_depth = depth)
-  # r_R_V[i] = beta_R_V * dz^2 / (carbon/3)
-  expect_equal(n$r_R_V, rep(9.4e3 * (depth[[3]] / 3)^2 / (2 / 3), 3))
+  # r_R_V[i] = beta_R_V * dz[i]^2 / (carbon/3)
+  expect_equal(n$r_R_V, 9.4e3 * dz^2 / (2 / 3))
+  # ...so they differ across the profile, which the old expectation denied.
+  expect_false(isTRUE(all.equal(n$r_R_V[[1]], n$r_R_V[[3]])))
+})
+
+test_that("total vertical root resistance does not depend on the layer slicing", {
+  # The property the scalar thickness broke, and the reason #626 is a fix rather
+  # than a generalisation. Slicing a soil column is a numerical choice, so nothing
+  # about the plant may depend on it: with root density uniform over depth, the
+  # layer-integrated carbon in layer i goes as dz[i], and the total vertical
+  # resistance comes to 3 * beta_R_V * D^2 / C for ANY profile of the same depth D
+  # carrying the same carbon C.
+  #
+  # Measured before the fix, on the 2 cm profile below: 3.68x this value.
+  D <- 1.5
+  C <- 20
+  beta_R_V <- 9.4e3
+  profiles <- list(
+    uniform_5 = rep(0.3, 5),
+    uniform_3 = rep(0.5, 3),
+    evap_2cm = c(0.02, 0.28, 0.3, 0.4, 0.5),
+    thick_first = c(0.75, 0.25, 0.25, 0.15, 0.1)
+  )
+
+  for (nm in names(profiles)) {
+    dz <- profiles[[nm]]
+    expect_equal(sum(dz), D, info = nm)
+    n <- root_network_from_carbon(C * dz / D, soil_depth = cumsum(dz))
+    expect_equal(n$r_R_V_sum[[length(dz)]], 3 * beta_R_V * D^2 / C, info = nm)
+  }
+})
+
+test_that("root_network_from_carbon() rejects a profile that is not a profile", {
+  # `soil_depth` is cumulative depth to the bottom of each layer, so it must
+  # increase. The refusal exists because the likely mistake is passing WIDTHS
+  # here -- and note it catches that only when the widths are non-monotone, which
+  # is why the C++ side asserts the limit rather than claiming protection.
+  expect_error(root_network_from_carbon(rep(2, 3), soil_depth = c(0.5, 0.4, 0.3)),
+               "strictly increasing")
+  expect_error(root_network_from_carbon(rep(2, 2), soil_depth = c(0.3, 0.3)),
+               "strictly increasing")
 })
 
 test_that("root_network_from_carbon() is homogeneous of degree 1 in each beta", {

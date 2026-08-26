@@ -44,10 +44,28 @@ struct RootNetwork {
 // Each layer's root carbon is split 1/3 vertical : 2/3 horizontal, and
 //   network_.r_R_H_min[i] = beta_R_H / c_r_h        (min horizontal resistance, i.e. the
 //                                           reciprocal of max conductance)
-//   r_R_V[i]     = beta_R_V * dz^2 / c_r_v (vertical; dz^2 because vertical
-//                                           conductivity scales with root
-//                                           cross-sectional area)
+//   r_R_V[i]     = beta_R_V * dz[i]^2 / c_r_v (vertical; dz[i]^2 because
+//                                           vertical conductivity scales with
+//                                           root cross-sectional area, and the
+//                                           segment spanning layer i is dz[i]
+//                                           long)
 //   network_.r_R_V_sum[i] = cumulative vertical resistance from the surface to layer i.
+//
+// ⚠️ `dz` IS PER LAYER, AND THAT IS LOAD-BEARING RATHER THAN GENERALITY FOR ITS
+// OWN SAKE. It was one scalar until #626, which was correct only for a profile of
+// equal layers and silently wrong for any other. The property that fails is
+// DISCRETISATION INVARIANCE: with a root density uniform over depth, the
+// layer-integrated carbon in layer i is c_r_V[i] = (C/3)*dz[i]/D, so the
+// per-layer form gives r_R_V[i] = 3*beta_R_V*D*dz[i]/C and the total
+// sum(r_R_V) = 3*beta_R_V*D^2/C -- independent of how the column is sliced, as it
+// must be, since slicing is a numerical choice and not a property of the plant. A
+// single scalar dz = D/n breaks that: total resistance picks up a factor
+// (D/n)^2 * sum(1/dz[i]) / D^2, which is 1 only for equal layers. Measured with a
+// 2 cm surface layer over 1.5 m in five layers, it inflates total vertical root
+// resistance 3.68x and throttles uptake, with nothing anywhere reporting it.
+//
+// So the reduction test is a total, not a per-layer value, and it is the one
+// worth keeping: sum(r_R_V) must not depend on the profile.
 //
 // The returned vectors are sized to the deepest layer with non-zero root carbon,
 // so the hot loop only iterates over layers that actually contain roots.
@@ -71,9 +89,26 @@ struct RootNetwork {
 // buffer. The value-returning overload below is for tests and one-off callers,
 // where that does not matter.
 inline void root_network_from_carbon(
-    const std::vector<double>& root_carbon_per_layer, double dz,
+    const std::vector<double>& root_carbon_per_layer,
+    const std::vector<double>& dz,
     double beta_R_H, double beta_R_V, RootNetwork& out) {
   const size_t n_layers = root_carbon_per_layer.size();
+
+  if (dz.size() != n_layers) {
+    util::stop("root_network_from_carbon: dz and root_carbon_per_layer must "
+               "have the same number of elements");
+  }
+  for (size_t i = 0; i < n_layers; ++i) {
+    // Checked for every layer rather than only the rooted ones, because a
+    // caller's profile is wrong as a whole if any width is: the layers below the
+    // rooting depth are the ones a shallow plant does not reach *today* and will
+    // reach as it grows.
+    if (!util::is_finite(dz[i]) || dz[i] <= 0.0) {
+      util::stop("root_network_from_carbon: dz must be finite and positive in "
+                 "every layer; layer " + util::to_string(i + 1) +
+                 " is " + util::format_double(dz[i]));
+    }
+  }
 
   // deepest layer with non-zero root carbon
   int max_soil_layer = 0;
@@ -88,7 +123,6 @@ inline void root_network_from_carbon(
   out.r_R_V.resize(max_soil_layer);
   out.r_R_V_sum.resize(max_soil_layer);
 
-  const double dz_sq = dz * dz;
   double vertical_resistance_sum = 0.0;
   for (int i = 0; i < max_soil_layer; ++i) {
     if(root_carbon_per_layer[i] < 0){
@@ -109,7 +143,16 @@ inline void root_network_from_carbon(
 
     // Set horizantal minimum resistance per soil layer (i.e. reciprocal of maximum conductance).
     out.r_R_H_min[i] = beta_R_H / c_r_h;
-    // The vertical conductivity is likely linearly proportional to the root area projected onto the horizontal plane, hence dz^2.
+    // The vertical conductivity is likely linearly proportional to the root area
+    // projected onto the horizontal plane, hence dz^2 -- and it is THIS layer's
+    // thickness, because the vertical root segment being resisted is the one
+    // spanning this layer. See the discretisation-invariance note above.
+    //
+    // ⚠️ SQUARE FIRST, INTO ITS OWN VARIABLE. `beta_R_V * dz[i] * dz[i] / c_r_v`
+    // associates left to right, i.e. (beta_R_V*dz)*dz, which is NOT the
+    // beta_R_V*(dz*dz) this has always computed and would move the golden file by
+    // a last bit for no reason.
+    const double dz_sq = dz[i] * dz[i];
     out.r_R_V[i] = beta_R_V * dz_sq / c_r_v;
     vertical_resistance_sum += out.r_R_V[i];
     out.r_R_V_sum[i] = vertical_resistance_sum;
@@ -118,29 +161,64 @@ inline void root_network_from_carbon(
 
 // Same, returning a fresh network. Convenience for tests and standalone callers.
 inline RootNetwork root_network_from_carbon(
-    const std::vector<double>& root_carbon_per_layer, double dz,
+    const std::vector<double>& root_carbon_per_layer,
+    const std::vector<double>& dz,
     double beta_R_H, double beta_R_V) {
   RootNetwork out;
   root_network_from_carbon(root_carbon_per_layer, dz, beta_R_H, beta_R_V, out);
   return out;
 }
 
-// Layer thickness implied by a cumulative soil-depth profile.
+// Per-layer thicknesses implied by a cumulative soil-depth profile: the
+// differences between consecutive boundaries, with an implicit 0 at the surface.
 //
-// Exported as its own function because since #33 there are TWO callers that must
-// agree on it: MultiLayerRoots::set_soil_state, and whoever builds the root
-// network before handing it over. root_network_from_carbon scales the vertical
-// resistance by dz^2, so two definitions drifting apart would put a silent
-// squared factor on every vertical resistance -- and nothing in either package
-// would notice, because both halves would still be internally consistent.
-inline double layer_thickness(const std::vector<double>& soil_depth) {
+// FOR A CALLER WHO HAS A PROFILE AND NOT THE WIDTHS. It is a convenience, and
+// deliberately no longer billed as "the shared definition of dz" the way its
+// scalar predecessor was: since #626 there is no derivation to share, because the
+// widths ARE the geometry a caller states and everything else follows from them.
+// A caller who holds its own widths -- plant's TF24_Environment does -- must pass
+// those, NOT re-derive them through here.
+//
+// ⚠️ THE REASON THAT IS NOT PEDANTRY: differencing is not bit-exact. Over 180
+// (total depth, n) pairs, `diff` of a profile built as `(i+1)*depth/n` differs
+// from `depth/n` in the last bit in 122 of them -- the package defaults among
+// them. So re-deriving widths a caller already holds silently perturbs every
+// vertical resistance, and through the solve that reaches the reported outputs.
+// Exact whenever the boundaries are exactly representable, which is why the
+// golden grid (1 m layers) is unaffected.
+inline std::vector<double>
+layer_thicknesses(const std::vector<double>& soil_depth) {
   if (soil_depth.empty()) {
     // Guarded because this is a public entry point a caller reaches for directly,
     // where the same expression inside set_soil_state was only ever reachable
     // after set_physiology had validated the profile against psi_soil.
-    util::stop("layer_thickness: soil_depth must have at least one layer");
+    util::stop("layer_thicknesses: soil_depth must have at least one layer");
   }
-  return soil_depth.back() / soil_depth.size();
+  std::vector<double> out(soil_depth.size());
+  double previous = 0.0;
+  for (size_t i = 0; i < soil_depth.size(); ++i) {
+    // Strictly increasing, so every width comes out positive. Checked here rather
+    // than left to root_network_from_carbon's positivity guard because the
+    // diagnosis differs: there the widths are wrong, here the PROFILE is not a
+    // profile.
+    //
+    // ⚠️ IT DOES NOT CATCH WIDTHS PASSED WHERE BOUNDARIES WERE WANTED, and do not
+    // read it as though it did. A width vector that happens to increase with
+    // depth -- which a graded profile thinning towards the surface does -- passes
+    // every check here and yields different, entirely plausible widths. Only the
+    // caller knows which of the two it is holding. Asserted in
+    // test_layer_thicknesses so the limit is on the record.
+    if (!util::is_finite(soil_depth[i]) || !(soil_depth[i] > previous)) {
+      util::stop("layer_thicknesses: soil_depth must be finite and strictly "
+                 "increasing (cumulative depth to the bottom of each layer); "
+                 "layer " + util::to_string(i + 1) + " is " +
+                 util::format_double(soil_depth[i]) + " after " +
+                 util::format_double(previous));
+    }
+    out[i] = soil_depth[i] - previous;
+    previous = soil_depth[i];
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +317,11 @@ public:
   // multiply per layer per (re)evaluation.
   std::vector<double> grav_head_z_;
   bool use_precomputed_z_soil_mid_ = false;
-  double dz_ = util::na_value;
+  // NOTE: `dz_` used to live here, a scalar layer thickness re-derived from the
+  // profile on every set_soil_state. Nothing in this package had read it since
+  // #33, and #626 removed the last reason to carry it: layer thickness is stated
+  // by the caller now, per layer, and is an argument to root_network_from_carbon
+  // rather than something this object derives a second opinion about.
 
   // --- soil state ----------------------------------------------------------
   std::vector<double> psi_soil_;           // positive magnitudes, as supplied
@@ -378,6 +460,11 @@ public:
     if (!(use_precomputed_z_soil_mid_ &&
           z_soil_mid_.size() == static_cast<size_t>(soil_number_of_depths_))) {
       // Fallback for paths that do not provide environment-precomputed midpoints.
+      //
+      // Correct at ANY layer spacing, and left alone by #626 for that reason:
+      // `soil_depth` holds the cumulative depth to the BOTTOM of each layer, so
+      // averaging consecutive boundaries (with an implicit 0 at the surface) is
+      // the midpoint of layer i whether or not the layers are equal.
       z_soil_mid_.resize(soil_number_of_depths_);
       for (size_t i = 0; i < soil_number_of_depths_; ++i) {
         if (i == 0) {
@@ -394,16 +481,6 @@ public:
     for (size_t i = 0; i < soil_number_of_depths_; ++i) {
       grav_head_z_[i] = gravity_head * z_soil_mid_[i];
     }
-
-    // Layer thickness is soil geometry, not root architecture, so it is set here
-    // rather than alongside the resistance network that consumes it.
-    //
-    // ⚠️ Since #33 nothing in this package READS dz_: the only thing that did was
-    // the carbon -> resistance map, which is now the caller's. It is kept because
-    // it is a property of the soil profile this object is given, and because the
-    // caller needs the same number -- see layer_thickness, which is the shared
-    // definition. It is a removal candidate with the diagnostics (item 6).
-    dz_ = layer_thickness(soil_depth_);
   }
 
   // Per-timestep root resistance network. Takes the resistances themselves, not

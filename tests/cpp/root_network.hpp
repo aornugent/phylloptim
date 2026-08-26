@@ -25,14 +25,15 @@ namespace fixture {
 inline constexpr double beta_R_H = 3.4e2; // MPa s (mol C) / (mol H2O)
 inline constexpr double beta_R_V = 9.4e3; // MPa (mol C) s / (mol H2O) / m^2
 
-// Carbon -> resistances, exactly as set_physiology used to do it internally:
-// the layer thickness comes from the soil profile via the package's own shared
-// definition, so this cannot drift from what MultiLayerRoots would have derived.
+// Carbon -> resistances, exactly as set_physiology used to do it internally.
+// The suite drives the leaf from a cumulative depth profile, so it differences
+// that profile into per-layer widths here (#626) rather than holding widths of
+// its own. Bit-exact for the golden grid, whose layers are exactly 1 m.
 inline phylloptim::RootNetwork
 root_network(const std::vector<double>& root_carbon_per_leaf_area,
              const std::vector<double>& soil_depth) {
   return phylloptim::root_network_from_carbon(
-      root_carbon_per_leaf_area, phylloptim::layer_thickness(soil_depth),
+      root_carbon_per_leaf_area, phylloptim::layer_thicknesses(soil_depth),
       beta_R_H, beta_R_V);
 }
 

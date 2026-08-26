@@ -54,7 +54,12 @@ const double kCa = 40.0, kO2 = 21.0, kTleaf = 25.0, kPatm = 101.3;
 struct Point {
   double psi_soil, ppfd, vpd;
   int layers;
-  std::vector<double> ps, depth, root;
+  // `dz` is held alongside `depth` rather than differenced in the timed loop
+  // (#626). root_network_from_carbon takes per-layer widths now, and deriving
+  // them per call would allocate a vector per solve -- exactly the
+  // allocation-in-the-timed-region the note above the loop warns against, and it
+  // would land on the "after" arm of every interleaved comparison.
+  std::vector<double> ps, depth, dz, root;
 };
 
 std::vector<Point> grid() {
@@ -68,13 +73,15 @@ std::vector<Point> grid() {
     for (double q : ppfds) {
       for (double d : vpds) {
         for (int n : layer_counts) {
-          Point pt{p, q, d, n, {}, {}, {}};
+          Point pt{p, q, d, n, {}, {}, {}, {}};
           pt.ps.resize(n);
           pt.depth.resize(n);
+          pt.dz.resize(n);
           pt.root.resize(n);
           for (int i = 0; i < n; ++i) {
             pt.ps[i] = p + 0.25 * i;
             pt.depth[i] = 1.0 * (i + 1);
+            pt.dz[i] = 1.0;
             // root carbon PER UNIT LEAF AREA -- set_physiology no longer takes
             // area_leaf, so the ratio is the input. Matches test_golden.cpp.
             pt.root[i] = 1.0 / n / kAreaLeaf;
@@ -108,8 +115,7 @@ double pass(std::vector<phylloptim::Leaf> &leaves, const std::vector<Point> &pts
   for (size_t i = 0; i < pts.size(); ++i) {
     const Point &pt = pts[i];
     phylloptim::Leaf &l = leaves[i];
-    phylloptim::root_network_from_carbon(pt.root,
-                                        phylloptim::layer_thickness(pt.depth),
+    phylloptim::root_network_from_carbon(pt.root, pt.dz,
                                         fixture::beta_R_H, fixture::beta_R_V, net);
     l.set_physiology(net, pt.ppfd, pt.ps, pt.depth, kKs * kTheta / kH,
                      pt.vpd, kCa, kTleaf, kO2, kPatm);
@@ -181,8 +187,7 @@ double pass_optimiser(Arm arm, std::vector<phylloptim::Leaf> &leaves,
   for (size_t i = 0; i < pts.size(); ++i) {
     const Point &pt = pts[i];
     phylloptim::Leaf &l = leaves[i];
-    phylloptim::root_network_from_carbon(pt.root,
-                                        phylloptim::layer_thickness(pt.depth),
+    phylloptim::root_network_from_carbon(pt.root, pt.dz,
                                         fixture::beta_R_H, fixture::beta_R_V, net);
     l.set_physiology(net, pt.ppfd, pt.ps, pt.depth, kKs * kTheta / kH,
                      pt.vpd, kCa, kTleaf, kO2, kPatm);

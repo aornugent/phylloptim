@@ -151,7 +151,7 @@ std::vector<double> soil_depth{1.0};           // m
 // from. If you have carbon, this is the root-architecture model that maps one to
 // the other -- a helper you call, not something the solve does for you.
 const phylloptim::RootNetwork roots = phylloptim::root_network_from_carbon(
-    /*kg C per m2 LEAF*/ {20.0}, phylloptim::layer_thickness(soil_depth),
+    /*kg C per m2 LEAF*/ {20.0}, phylloptim::layer_thicknesses(soil_depth),
     /*beta_R_H*/ 3.4e2, /*beta_R_V*/ 9.4e3);
 
 l.set_physiology(roots, /*PPFD*/ 900,
@@ -242,7 +242,7 @@ target_link_libraries(pyleaf PRIVATE phylloptim::phylloptim)
 ```python
 >>> import pyleaf
 >>> l = pyleaf.Leaf()
->>> roots = pyleaf.root_network_from_carbon([20.0], 1.0, 340.0, 9400.0)
+>>> roots = pyleaf.root_network_from_carbon([20.0], [1.0], 340.0, 9400.0)
 >>> l.set_physiology(roots, 900, [2.0], [1.0], 3.14e-5, 2.0, 40.0, 25.0, 21.0, 101.3)
 >>> l.find_root_collar_psi()
 >>> l.profit
@@ -257,7 +257,8 @@ target_link_libraries(pyleaf PRIVATE phylloptim::phylloptim)
       .def_readwrite("r_R_H_min", &phylloptim::RootNetwork::r_R_H_min)
       .def_readwrite("r_R_V_sum", &phylloptim::RootNetwork::r_R_V_sum);
   m.def("root_network_from_carbon",
-        py::overload_cast<const std::vector<double>&, double, double, double>(
+        py::overload_cast<const std::vector<double>&, const std::vector<double>&,
+                          double, double>(
             &phylloptim::root_network_from_carbon));
 ```
 

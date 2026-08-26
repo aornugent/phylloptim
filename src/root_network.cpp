@@ -7,11 +7,11 @@
 // WHY IT IS EXPOSED AT ALL, given that #33 was about the leaf NOT running this.
 // Two reasons, and neither is convenience:
 //
-//   * The layer thickness. root_network_from_carbon scales the vertical
-//     resistance by dz^2, and dz is derived from the soil-depth profile by a rule
-//     (phylloptim::layer_thickness) that the leaf applies to the same profile.
-//     An R caller who reimplemented it would be one arithmetic slip away from a
-//     silent squared factor, so this takes the PROFILE and derives dz itself.
+//   * The layer thicknesses. root_network_from_carbon scales the vertical
+//     resistance by dz[i]^2, and an R caller working from a cumulative depth
+//     profile would have to difference it themselves -- one arithmetic slip away
+//     from a silent squared factor. So this takes the PROFILE and derives the
+//     widths (phylloptim::layer_thicknesses) itself.
 //   * It is what makes the default in set_drivers() honest. The R default root
 //     network is a nominal carbon profile put through this function, visibly,
 //     rather than five hard-coded resistance vectors whose provenance would rot.
@@ -22,14 +22,15 @@
 //' The root-architecture model that used to run inside `set_physiology()` (#33).
 //' Each layer's root carbon is split 1/3 vertical : 2/3 horizontal; the minimum
 //' horizontal resistance is `beta_R_H / c_r_h`, and the vertical resistance is
-//' `beta_R_V * dz^2 / c_r_v`, accumulated from the surface down.
+//' `beta_R_V * dz[i]^2 / c_r_v`, accumulated from the surface down, where `dz[i]`
+//' is the thickness of layer `i`.
 //'
 //' The result is sized to the deepest layer with non-zero root carbon, so it is
 //' shorter than `soil_depth` for a plant that is shallower than the soil profile.
 //' That is what `max_soil_layer` reports after a solve.
 //'
 //' @section This is a model, not a conversion:
-//' The 1/3 : 2/3 split, the `dz^2` scaling and both `beta_R_*` constants are
+//' The 1/3 : 2/3 split, the `dz[i]^2` scaling and both `beta_R_*` constants are
 //' choices, made in plant's TF24 strategy and calibrated there for
 //' *Eucalyptus saligna*. Nothing in the leaf solve depends on them -- it reads
 //' the resistances. If you have measured root resistances, or are fitting them,
@@ -39,14 +40,17 @@
 //'   m^-2 leaf, one entry per soil layer. Per unit leaf area because the leaf is
 //'   purely intensive; passing absolute carbon gives resistances that are wrong
 //'   by the leaf area and no error anywhere will say so.
-//' @param soil_depth cumulative depth to the bottom of each layer, m. The layer
-//'   thickness `dz` is derived from it exactly as the leaf derives it, which is
-//'   why this takes the profile rather than `dz`.
+//' @param soil_depth cumulative depth to the bottom of each layer, m, strictly
+//'   increasing. Layer thicknesses are the differences between consecutive
+//'   entries, with an implicit 0 at the surface, so the layers need not be equal:
+//'   `soil_depth = c(0.02, 0.3, 1.5)` is a 2 cm surface layer over two thicker
+//'   ones. This takes the profile rather than the widths so that a caller reading
+//'   a depth profile cannot get the differencing wrong.
 //' @param beta_R_H proportionality constant between minimum horizontal
 //'   (intralayer) root hydraulic resistance and `C_r^-1`
 //'   (MPa s mol C / mol H2O).
 //' @param beta_R_V proportionality constant between minimum vertical
-//'   (interlayer) root hydraulic resistance and `dz^2/C_r`
+//'   (interlayer) root hydraulic resistance and `dz[i]^2/C_r`
 //'   (MPa mol C s / mol H2O / m^2).
 //'
 //' @return A [RootNetwork()].
@@ -68,6 +72,6 @@ phylloptim::RootNetwork root_network_from_carbon(
     Rcpp::stop("soil_depth must have at least one layer");
   }
   return phylloptim::root_network_from_carbon(
-      root_carbon_per_leaf_area, phylloptim::layer_thickness(soil_depth),
+      root_carbon_per_leaf_area, phylloptim::layer_thicknesses(soil_depth),
       beta_R_H, beta_R_V);
 }

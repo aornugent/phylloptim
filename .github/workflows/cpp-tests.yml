@@ -180,13 +180,13 @@ jobs:
           int main() {
             phylloptim::Leaf l;
             // The root RESISTANCES, via the architecture model (#33). Exercising
-            // root_network_from_carbon and layer_thickness here is deliberate: a
+            // root_network_from_carbon and layer_thicknesses here is deliberate: a
             // consumer with a carbon profile has to be able to reach both from the
             // installed headers, so this checks they were shipped and not only that
             // the solve was.
             const std::vector<double> soil_depth{1.0};
             const phylloptim::RootNetwork roots = phylloptim::root_network_from_carbon(
-                {1.0 / 0.05}, phylloptim::layer_thickness(soil_depth), 3.4e2, 9.4e3);
+                {1.0 / 0.05}, phylloptim::layer_thicknesses(soil_depth), 3.4e2, 9.4e3);
             l.set_physiology(roots, 900, {2.0}, soil_depth, 1.0 * 0.000157 / 5.0,
                              2.0, 40.0, 25.0, 21.0, 101.3);
             l.find_root_collar_psi();

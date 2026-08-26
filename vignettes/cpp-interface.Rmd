@@ -85,7 +85,7 @@ int main() {
   // resistances directly if that is what you have.
   const phylloptim::RootNetwork roots = phylloptim::root_network_from_carbon(
       /*root carbon per m2 LEAF*/ {20.0},
-      phylloptim::layer_thickness(soil_depth), /*beta_R_H*/ 3.4e2,
+      phylloptim::layer_thicknesses(soil_depth), /*beta_R_H*/ 3.4e2,
       /*beta_R_V*/ 9.4e3);
 
   l.set_physiology(roots, /*PPFD*/ 900, psi_soil, soil_depth,

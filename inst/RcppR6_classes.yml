@@ -333,7 +333,10 @@ Leaf:
     # --- soil geometry and state, which live in roots_ (hazard 7) ------------
     soil_depth_: {type: "std::vector<double>", access: field, name_cpp: "roots_.soil_depth_"}
     z_soil_mid_: {type: "std::vector<double>", access: field, name_cpp: "roots_.z_soil_mid_"}
-    dz_: {type: double, access: field, name_cpp: "roots_.dz_"}
+    # NOTE: `dz_` is gone (#626). It was a scalar layer thickness, correct only for
+    # a profile of equal layers, and nothing read it. Layer thicknesses are the
+    # caller's input to root_network_from_carbon() now; from a profile, derive them
+    # with layer_thicknesses(), and read them back off the network via r_R_V.
     soil_number_of_depths_: {type: int, access: field, name_cpp: "roots_.soil_number_of_depths_"}
     max_soil_layer: {type: int, access: field, name_cpp: "roots_.max_soil_layer"}
     psi_soil_: {type: "std::vector<double>", access: field, name_cpp: "roots_.psi_soil_"}

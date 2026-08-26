@@ -355,7 +355,13 @@ void test_light_response() {
 void test_multi_layer_soil() {
   printf("multi-layer soil\n");
   Drivers d;
-  phylloptim::Leaf l = make_leaf(d, {1.0, 2.0, 3.0}, {0.5, 0.5, 0.5});
+  // ⚠️ The profile is CUMULATIVE depth to the bottom of each layer, so three
+  // 0.5 m layers are {0.5, 1.0, 1.5}. This read {0.5, 0.5, 0.5} until #626 --
+  // three layers all bottoming at 0.5 m, which put two of the three midpoints at
+  // the same depth and gave the root network a thickness of 0.5/3. Nothing
+  // noticed, because the assertions below are finiteness and sign only. The
+  // strictly-increasing guard in layer_thicknesses() is what surfaced it.
+  phylloptim::Leaf l = make_leaf(d, {1.0, 2.0, 3.0}, {0.5, 1.0, 1.5});
   l.find_root_collar_psi();
   ok(std::isfinite(l.profit_), "profit is finite with three layers");
   ok(l.soil_consumption_.size() == 3u, "one consumption term per layer");
@@ -2774,11 +2780,12 @@ void test_single_potential() {
 void test_root_network_from_carbon() {
   printf("root architecture: carbon -> resistance\n");
   const double beta_H = 3.4e2, beta_V = 9.4e3, dz = 0.5;
+  const std::vector<double> dz3(3, dz), dz1(1, dz);
 
   // Closed form, straight from the documented model: carbon splits 1/3 vertical
-  // : 2/3 horizontal, r_R_H_min = beta_H/c_r_h, r_R_V = beta_V*dz^2/c_r_v.
+  // : 2/3 horizontal, r_R_H_min = beta_H/c_r_h, r_R_V = beta_V*dz[i]^2/c_r_v.
   const std::vector<double> carbon{3.0, 6.0, 1.5};
-  const auto n = phylloptim::root_network_from_carbon(carbon, dz, beta_H, beta_V);
+  const auto n = phylloptim::root_network_from_carbon(carbon, dz3, beta_H, beta_V);
 
   ok(n.r_R_H_min.size() == 3u, "one resistance per rooted layer");
   near(n.r_R_H_min[0], beta_H / (3.0 * 2.0 / 3.0), 1e-14, "r_R_H_min layer 0");
@@ -2794,24 +2801,161 @@ void test_root_network_from_carbon() {
 
   // More carbon is less resistance, in both directions. This is the sign that
   // matters: getting it backwards would make investment in roots harmful.
-  const auto rich = phylloptim::root_network_from_carbon({12.0}, dz, beta_H, beta_V);
-  const auto poor = phylloptim::root_network_from_carbon({3.0}, dz, beta_H, beta_V);
+  const auto rich = phylloptim::root_network_from_carbon({12.0}, dz1, beta_H, beta_V);
+  const auto poor = phylloptim::root_network_from_carbon({3.0}, dz1, beta_H, beta_V);
   ok(rich.r_R_H_min[0] < poor.r_R_H_min[0], "more root carbon -> less horizontal resistance");
   ok(rich.r_R_V_sum[0] < poor.r_R_V_sum[0], "more root carbon -> less vertical resistance");
 
   // Trailing zero-carbon layers are dropped, so the hot loop never visits them.
-  const auto trailing = phylloptim::root_network_from_carbon({3.0, 6.0, 0.0, 0.0}, dz,
+  const auto trailing = phylloptim::root_network_from_carbon({3.0, 6.0, 0.0, 0.0},
+                                                      std::vector<double>(4, dz),
                                                       beta_H, beta_V);
   ok(trailing.r_R_H_min.size() == 2u, "trailing rootless layers are dropped");
 
   // Negative carbon is rejected rather than producing a negative resistance.
   bool threw = false;
   try {
-    phylloptim::root_network_from_carbon({3.0, -1.0}, dz, beta_H, beta_V);
+    phylloptim::root_network_from_carbon({3.0, -1.0}, std::vector<double>(2, dz),
+                                        beta_H, beta_V);
   } catch (const std::exception &) {
     threw = true;
   }
   ok(threw, "negative root carbon throws");
+
+  // -------------------------------------------------------------------------
+  // Per-layer thickness (#626)
+  // -------------------------------------------------------------------------
+  // Each layer's vertical resistance uses ITS OWN thickness, not a column
+  // average. Asserted per layer, because a scalar dz would satisfy the r_R_V_sum
+  // total on a uniform profile and only differ on a graded one.
+  const std::vector<double> graded{0.02, 0.28, 1.2};
+  const auto g = phylloptim::root_network_from_carbon(carbon, graded, beta_H, beta_V);
+  for (int i = 0; i < 3; ++i) {
+    near(g.r_R_V[i], beta_V * graded[i] * graded[i] / (carbon[i] / 3.0), 1e-14,
+         "r_R_V uses this layer's own thickness");
+  }
+  // The horizontal term has no thickness in it, so it must be untouched by the
+  // profile -- which is what says the change went where it was meant to. Exact,
+  // because these are the same expression on the same input.
+  for (int i = 0; i < 3; ++i) {
+    ok(g.r_R_H_min[i] == n.r_R_H_min[i], "r_R_H_min does not depend on dz");
+  }
+
+  // DISCRETISATION INVARIANCE, the property the scalar dz broke and the reason
+  // this is a bug fix and not a generalisation. With root density uniform over
+  // depth the layer-integrated carbon goes as dz[i], so total vertical
+  // resistance is 3*beta_V*D^2/C for ANY slicing of the same column. Three
+  // profiles of total depth 1.5 m carrying the same 20 kg C m^-2:
+  const double kD = 1.5, kC = 20.0;
+  const std::vector<std::vector<double> > profiles{
+      {0.3, 0.3, 0.3, 0.3, 0.3},              // 5 equal layers
+      {0.5, 0.5, 0.5},                        // 3 equal layers
+      {0.02, 0.28, 0.3, 0.4, 0.5},            // a 2 cm evaporation layer on top
+      {0.75, 0.25, 0.25, 0.15, 0.1}           // thick over thin
+  };
+  const double expected = 3.0 * beta_V * kD * kD / kC;
+  for (const auto &p : profiles) {
+    std::vector<double> c(p.size());
+    for (size_t i = 0; i < p.size(); ++i) {
+      c[i] = kC * p[i] / kD;  // uniform density -> carbon proportional to width
+    }
+    const auto net = phylloptim::root_network_from_carbon(c, p, beta_H, beta_V);
+    near(net.r_R_V_sum.back(), expected, 1e-12,
+         "total vertical resistance is independent of the layer slicing");
+  }
+
+  // A width vector of the wrong length, or a non-positive width, is refused
+  // rather than read past the end or turned into a zero resistance. Checked by
+  // REASON, because the two refusals are different mistakes: a length mismatch is
+  // a mis-paired pair of vectors, a non-positive width is a bad profile.
+  ok(throws_with([&] { phylloptim::root_network_from_carbon(
+                           carbon, std::vector<double>{0.5, 0.5},
+                           beta_H, beta_V); },
+                 "same number of elements"),
+     "a dz vector of the wrong length is refused as a length mismatch");
+  for (double w : {0.0, -0.1}) {
+    ok(throws_with([&] { phylloptim::root_network_from_carbon(
+                             carbon, std::vector<double>{0.5, w, 0.5},
+                             beta_H, beta_V); },
+                   "finite and positive"),
+       "a non-positive dz is refused as a bad width");
+  }
+}
+
+// layer_thicknesses(): the profile -> widths helper an R caller and the test
+// fixtures come through (#626).
+void test_layer_thicknesses() {
+  printf("root architecture: layer_thicknesses\n");
+
+  // Differences with an implicit 0 at the surface, so the first width is the
+  // first boundary and equal layers come back equal.
+  const auto uniform = phylloptim::layer_thicknesses({1.0, 2.0, 3.0});
+  for (int i = 0; i < 3; ++i) {
+    // Exact, and that is the load-bearing part: it is what keeps the golden grid
+    // (1 m layers, differenced here since #626) bit-identical.
+    ok(uniform[i] == 1.0, "1 m boundaries give exactly 1 m widths");
+  }
+
+  const auto graded = phylloptim::layer_thicknesses({0.02, 0.3, 1.5});
+  near(graded[0], 0.02, 1e-16, "surface layer width is the first boundary");
+  near(graded[1], 0.28, 1e-16, "interior width is a difference of boundaries");
+  near(graded[2], 1.2, 1e-16, "deepest width is a difference of boundaries");
+
+  // ⚠️ THE NEGATIVE, which is why plant passes its own widths rather than coming
+  // through here: differencing is NOT bit-exact. 1.5 m over 5 layers is the
+  // package's own default geometry, and the round trip loses a bit.
+  const size_t kN = 5;
+  const double kDelta = 1.5 / kN;
+  std::vector<double> profile(kN);
+  for (size_t i = 0; i < kN; ++i) {
+    profile[i] = (i + 1) * kDelta;
+  }
+  const auto round_tripped = phylloptim::layer_thicknesses(profile);
+  bool all_exact = true;
+  for (size_t i = 0; i < kN; ++i) {
+    if (round_tripped[i] != kDelta) {
+      all_exact = false;
+    }
+  }
+  ok(!all_exact,
+     "differencing a uniform profile is NOT bit-exact -- pass widths, do not "
+     "re-derive them");
+  for (size_t i = 0; i < kN; ++i) {
+    near(round_tripped[i], kDelta, 1e-15, "...but it is right to rounding");
+  }
+
+  // A profile that is not a profile: empty, or not strictly increasing. The
+  // second is the one that matters -- it is what happens when someone passes
+  // WIDTHS to a function wanting boundaries, which for a graded profile is not
+  // even monotone.
+  ok(throws_with([] { phylloptim::layer_thicknesses({}); }, "at least one layer"),
+     "an empty profile is refused");
+  for (const std::vector<double> &bad :
+       {std::vector<double>{0.3, 0.3},        // repeated boundary
+        std::vector<double>{0.5, 0.4, 0.3},   // decreasing
+        std::vector<double>{-0.5},            // above the surface
+        std::vector<double>{0.0, 1.0}}) {     // a zero-thickness surface layer
+    ok(throws_with([&] { phylloptim::layer_thicknesses(bad); },
+                   "strictly increasing"),
+       "a profile that is not strictly increasing is refused, and says so");
+  }
+
+  // ⚠️ AND THE LIMIT OF THAT GUARD, ASSERTED SO IT IS NOT MISREAD AS PROTECTION.
+  // The mistake it was reached for -- passing WIDTHS where boundaries are wanted
+  // -- is only caught when the widths happen to be non-monotone. plant's own
+  // graded profile is a counterexample: its widths increase with depth, so read
+  // as boundaries they pass every check here and silently yield different,
+  // entirely plausible widths. Only the caller knows which it holds; the guard
+  // catches a malformed profile, not a mislabelled one.
+  const std::vector<double> widths{0.02, 0.28, 0.3, 0.4, 0.5};
+  const auto misread = phylloptim::layer_thicknesses(widths);
+  bool differs = false;
+  for (size_t i = 0; i < widths.size(); ++i) {
+    if (misread[i] != widths[i]) {
+      differs = true;
+    }
+  }
+  ok(differs, "widths misread as boundaries are accepted and silently wrong");
 }
 
 // The temperature-response parameters were constexpr constants; they are now
@@ -5566,6 +5710,7 @@ int main() {
   test_single_potential();
   test_leaf_on_single_potential();
   test_root_network_from_carbon();
+  test_layer_thicknesses();
   test_temperature_parameters_are_settable();
   test_temperature_params_invalidate_cache();
   test_rd_temperature_response();

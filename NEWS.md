@@ -1,3 +1,91 @@
+# phylloptim 0.9.0
+
+## ⚠️ Breaking: root layer thickness is per layer, and it was a 3.7× error
+
+`root_network_from_carbon()`'s C++ signature takes a **vector** of layer
+thicknesses where it took one scalar:
+
+```
+// was
+root_network_from_carbon(carbon, double dz, beta_R_H, beta_R_V [, out])
+// now
+root_network_from_carbon(carbon, const std::vector<double>& dz, beta_R_H, beta_R_V [, out])
+```
+
+`layer_thickness()` → **`layer_thicknesses()`**, returning the per-layer widths
+implied by a cumulative depth profile (consecutive differences, implicit 0 at the
+surface). Both scalar versions are **deleted** rather than kept as overloads, so a
+stale call is a compile error instead of silently binding the old model.
+
+**The R signature does not change.** `root_network_from_carbon(carbon,
+soil_depth, ...)` has always taken the profile and derived the widths itself.
+
+**Why this is a fix and not a generalisation.** The vertical resistance is
+`beta_R_V * dz^2 / c_r_V`, and one scalar `dz = D/n` is correct only for a profile
+of equal layers. What fails otherwise is **discretisation invariance**: slicing a
+soil column is a numerical choice, so no property of the plant may depend on it.
+With root density uniform over depth the layer-integrated carbon goes as `dz[i]`,
+so the per-layer form gives a total `sum(r_R_V) = 3*beta_R_V*D^2/C` for any
+slicing — and a single scalar does not. Total vertical root resistance over 1.5 m
+carrying 20 kg C m^-2 leaf:
+
+| profile | scalar `dz` (0.8.0) | per-layer `dz[i]` (0.9.0) | ratio |
+|---|---|---|---|
+| 5 equal layers | 3172.5 | 3172.5 | 1.000 |
+| 3 equal layers | 3172.5 | 3172.5 | 1.000 |
+| 5 cm surface layer | 6059.5 | 3172.5 | **1.910** |
+| 2 cm surface layer | 11688.4 | 3172.5 | **3.684** |
+
+So a graded profile inflated total vertical root resistance up to 3.7×, throttling
+uptake, with nothing anywhere reporting it. Unreachable before now only because
+nothing built a graded profile; plant #626 makes them reachable, which is what
+brought this up.
+
+**Bit-identical for every profile reachable before this change.** All three golden
+baselines unchanged (576 operating points, 5184 psi_stem optima, 544 primitives),
+and `gradient_golden.tsv` bit-exact. Equal layers give equal widths exactly, and
+the golden grid's 1 m boundaries difference exactly.
+
+⚠️ **Two floating-point facts, both asserted in the suite, because they decide how
+a caller should reach this function.** Passing widths a caller already holds is
+bit-exact against 0.8.0 in 180 of 180 `(depth, n)` pairs. *Differencing* a profile
+built as `(i+1)*depth/n` is not — it loses a bit in 122 of those 180, the package
+defaults among them. So **a caller holding its own widths must pass them and must
+not re-derive them through `layer_thicknesses()`**; the helper is for a caller who
+genuinely has only a profile. The one R export therefore is not bit-exact against
+0.8.0 for a uniform *non-integer* profile; no golden value moves, because every
+baseline here uses integer-metre boundaries.
+
+## `MultiLayerRoots::dz_` is gone
+
+A scalar layer thickness, re-derived from the profile on every `set_soil_state`,
+that nothing in this package had read since #33 — and that #626 removed the last
+reason to carry, since thickness is now stated by the caller per layer rather than
+being something this object holds a second opinion about. Dropped from
+`inst/RcppR6_classes.yml`, so `leaf$dz_` no longer exists on the R side; read the
+widths off the profile with `layer_thicknesses()`, or off the network via `r_R_V`.
+
+Downstream (plant) must drop the matching `dz_` line from its own
+`RcppR6_classes.yml` in the same coupled change.
+
+## Two test-suite bugs the new guards surfaced
+
+`layer_thicknesses()` refuses a profile that is not strictly increasing, and that
+immediately caught `test_multi_layer_soil`, which had passed `{0.5, 0.5, 0.5}` as
+a cumulative profile — three layers all bottoming at 0.5 m, so two of the three
+midpoints sat at the same depth. It went unnoticed because that test asserts
+finiteness and sign only. The profile is `{0.5, 1.0, 1.5}` now.
+
+`test-surface.R`'s "reproduces the leaf's own layer thickness" **asserted the
+bug**: on a graded profile of 0.4, 0.5 and 0.6 m layers it required all three
+`r_R_V` to be equal, computed from a column-average thickness. Replaced by a
+per-layer expectation plus the invariance test above.
+
+⚠️ The strictly-increasing guard does **not** catch widths passed where boundaries
+were wanted — a width vector that increases with depth passes every check and
+yields plausible, different widths. That limit is asserted rather than left
+implicit, so the guard is not mistaken for protection it does not give.
+
 # phylloptim 0.8.0
 
 ## `leaf_solve()` reports the seated curve's lambda
