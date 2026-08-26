@@ -102,9 +102,10 @@ a companion calibration study.
 
 ## Status
 
-**v0.7.0 — the model is mature and in production use inside plant. 0.7.0 adds a
-cost curve, `TF24_floor`, and separates the shadow price from the realised carbon
-cost in what a solved leaf reports.**
+**v0.8.0 — the model is mature and in production use inside plant. 0.7.0 added a
+cost curve, `TF24_floor`, and separated the shadow price from the realised carbon
+cost in what a solved leaf reports; 0.8.0 reports the seated curve's own marginal
+cost of water rather than TF24's.**
 
 - **Cross-checked against plant's compiled build**, and the swap was bit-identical
   at the point it was made: plant's full suite 0 fail / 0 error on both builds,

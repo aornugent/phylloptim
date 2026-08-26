@@ -19,7 +19,7 @@ constructed with.
 }
 \details{
 Costs about 4 µs, so it is usable in a loop. It was 180 µs until it stopped
-reading the fourteen outputs through fourteen separate calls into C++ and
+reading the fifteen outputs through fifteen separate calls into C++ and
 stopped building its one row with \code{data.frame()} (#39) -- 45× more than the
 ~3 µs solve it was reporting on.
 }

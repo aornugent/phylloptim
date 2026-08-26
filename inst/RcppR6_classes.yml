@@ -454,7 +454,7 @@ Leaf:
     H2O_CO2_stom_diff_ratio_: {type: double, access: field}
 
   methods:
-    # All fourteen reported outputs in ONE call, for the R boundary's benefit.
+    # All fifteen reported outputs in ONE call, for the R boundary's benefit.
     #
     # A method rather than an `active` entry because it does a little work (the
     # uptake sum), and it is bound at all because reading the thirteen outputs

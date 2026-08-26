@@ -1776,11 +1776,12 @@ void test_leaf_temperature_is_reported() {
     ok(l.Tleaf_ == T,
        "off the energy-balance path Tleaf is the driver, at T = " +
            std::to_string(T));
-    // ⚠️ NOT `.back()` any more: `shadow_cost` was appended after `Tleaf`, so the
-    // last element is that. Addressed from the end by name-order instead, which
-    // is what the R side's `.operating_point_names` pins.
+    // ⚠️ NOT `.back()`: `shadow_cost` and then `lambda_emergent` were appended
+    // after `Tleaf`, so the last element is neither. Addressed from the end by
+    // name-order instead, which is what the R side's `.operating_point_names`
+    // pins -- and that test is what catches this drifting again.
     const std::vector<double> ov = l.operating_point_values();
-    ok(ov[ov.size() - 2] == l.Tleaf_,
+    ok(ov[ov.size() - 3] == l.Tleaf_,
        "operating_point_values() reports it, at T = " + std::to_string(T));
   }
 
@@ -4887,6 +4888,62 @@ void test_shadow_cost() {
 }
 
 
+void test_lambda_emergent_reported() {
+  printf("operating_point_values() reports the SEATED curve's lambda\n");
+  // WHY THIS EXISTS. `lambda` is `marginal_cost_water()` -- TF24's price at this
+  // operating point, whatever curve ran -- so on any other curve it answers a
+  // question nobody asked. `lambda_emergent` is the seated curve's own
+  // (dC/dpsi)/(dE/dpsi), and it was reachable only off the object until it was
+  // appended here, which left every leaf_solve() caller reconstructing it.
+  //
+  // ⚠️ CF77 IS THE CASE THAT PINS IT, because its emergent lambda is KNOWN: the
+  // curve prices water at a prescribed constant, so `lambda_emergent` must come
+  // back as that constant. Nothing else here has an answer fixed independently of
+  // the solve.
+  Drivers d;
+  const double price = 1.5e5;
+  int compared = 0;
+  for (double ppfd : {300.0, 900.0, 1500.0}) {
+    for (double psi_soil : {0.5, 1.0, 2.0}) {
+      d.PPFD = ppfd;
+
+      phylloptim::Leaf c = make_single_leaf(d, psi_soil);
+      c.CF77_lambda_ = price;
+      c.set_model(phylloptim::Leaf::CostCurve::CF77, false);
+      c.optimise();
+      if (std::isfinite(c.transpiration_) && c.transpiration_ > 0.0) {
+        ok(std::fabs(c.lambda_emergent() - price) <= 1e-6 * price,
+           "CF77's emergent lambda is the price it was given");
+        ++compared;
+      }
+
+      // TF24 is the one curve where the two agree, by construction
+      phylloptim::Leaf t = make_single_leaf(d, psi_soil);
+      t.set_model(phylloptim::Leaf::CostCurve::TF24, false);
+      t.optimise();
+      ok(t.lambda_emergent() == t.marginal_cost_water(),
+         "on TF24 the seated lambda and marginal_cost_water agree exactly");
+
+      // and TF24_floor's is its hydraulic half plus the floor -- the correction a
+      // caller used to have to make by hand
+      phylloptim::Leaf f = make_single_leaf(d, psi_soil);
+      f.TF24_floor_lambda_o = price;
+      f.set_model(phylloptim::Leaf::CostCurve::TF24_floor, false);
+      f.optimise();
+      ok(std::fabs(f.lambda_emergent() -
+                   (f.marginal_cost_water() + price)) <= 1e-9 * price,
+         "TF24_floor's emergent lambda is the hydraulic half plus the floor");
+
+      // the reported vector must carry the same number the accessor does
+      const std::vector<double> ov = f.operating_point_values();
+      ok(ov.back() == f.lambda_emergent(),
+         "operating_point_values() reports lambda_emergent last");
+    }
+  }
+  printf("  %d CF77 points with a known emergent lambda\n", compared);
+}
+
+
 void test_tf24_floor_reduces() {
   printf("TF24_floor reduces to TF24 and to CF77, bit-for-bit\n");
   // ⚠️ BIT EQUALITY IS THE RIGHT TEST HERE AND A TOLERANCE WOULD BE THE WRONG
@@ -5539,6 +5596,7 @@ int main() {
   test_single_layer_optimisers_reach_a_bound();
   test_product_link_is_the_product_rule();
   test_shadow_cost();
+  test_lambda_emergent_reported();
   test_tf24_floor_reduces();
   test_tf24_floor_wet_end_price();
   test_tf24_floor_emergent_lambda();

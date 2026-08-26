@@ -1738,7 +1738,11 @@ public:
             marginal_cost_water(),
             g1_eff(),
             Tleaf_,          // deg C -- APPENDED, see below
-            shadow_cost()};  // APPENDED likewise, for the same reason
+            shadow_cost(),   // APPENDED likewise, for the same reason
+            // THE SEATED CURVE'S marginal cost of water, as against `lambda`
+            // above, which is TF24's whatever ran. Appended rather than placed
+            // beside its namesake, because these names are positions.
+            lambda_emergent()};
   }
 
 // leaf economics functions
@@ -2585,6 +2589,19 @@ inline void Leaf::set_shutdown_state(double root_collar) {
   // temperature block is derived from it and `R_d_`/`gamma_` above are read out
   // of that block. The two used to be set at opposite ends and disagree.
   std::fill(soil_consumption_.begin(), soil_consumption_.end(), 0.0);
+  // ⚠️ AND THE EMERGENT LAMBDA, for exactly the reason the block above exists. A
+  // leaf that moves no water has no marginal cost of moving it, so the honest
+  // value is NA -- and without this line it kept whatever the PREVIOUS solve on
+  // this object left, which on a reused Leaf is a finite, plausible number
+  // belonging to a different plant. `leaf_solve()` reuses one Leaf across rows,
+  // so a shut-down row reported the previous row's price: 3.49e+05 against the NA
+  // the same drivers give on a fresh leaf. Found when `lambda_emergent` was added
+  // to the reported vector; before that the field was reachable only off an object
+  // the caller had driven themselves, so nobody met it.
+  //
+  // `shadow_cost()` needs no equivalent -- it is computed from `transpiration_`,
+  // which is set to zero just above, so it follows to zero on its own.
+  lambda_emergent_ = util::na_value;
   // Invalidate the transpiration memo: it is keyed on (psi_stem, psi_upstream) and
   // we have just written transpiration_ without going through transpiration().
   transpiration_cached_ = false;
@@ -2690,6 +2707,12 @@ if(assim_max_ < 0){
     // on a cold object. The compensation point, matching `set_shutdown_state` and
     // both zero-transpiration branches of set_leaf_states_rates_from_psi_stem.
     ci_ = gamma_ * umol_per_mol_to_Pa_;
+    // And the emergent lambda, for the same reason and by the same argument as in
+    // set_shutdown_state: no water moves here, so there is no marginal cost of
+    // moving it, and leaving it unwritten hands a reused Leaf the previous row's
+    // price. This exit is shade death rather than hydraulic shutdown, but the
+    // stale-state hazard is identical.
+    lambda_emergent_ = util::na_value;
 
         if(std::isnan(profit_)){
           util::stop_infeasible("collar_solve", "profit is not finite at the shade-death "

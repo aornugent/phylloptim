@@ -1,3 +1,51 @@
+# phylloptim 0.8.0
+
+## `leaf_solve()` reports the seated curve's lambda
+
+`lambda` is `marginal_cost_water()` — TF24's price at this operating point,
+**whatever curve ran** — so on any other curve it answers a question nobody asked.
+The seated curve's own `(dC/dpsi)/(dE/dpsi)` is `lambda_emergent`, and it was
+reachable only off a `leaf_model()` object. Every `leaf_solve()` caller on a
+non-TF24 curve was therefore reconstructing it, and on `TF24_floor` that meant
+knowing that `lambda` carries only the hydraulic half and adding the price floor
+back by hand:
+
+| curve | `lambda` | `lambda_emergent` |
+|---|---|---|
+| TF24 | 55757 | 55757 |
+| CF77, price 1e5 | 26012 | **100000** |
+| SOX | 23354 | 108864 |
+| TF24_floor, floor 5e4 | 32996 | 82996 |
+
+CF77's row is the one that pins the field: its emergent lambda is known
+independently of the solve, being the constant it was given, and it comes back as
+that constant. Appended to `operating_point()` after `shadow_cost`, for the reason
+`Tleaf` and `shadow_cost` were appended — those names are positions, so an
+insertion beside its namesake would shift every saved output.
+
+## ⚠️ A stale `lambda_emergent` after a shut-down row, found by reporting it
+
+Two terminal exits — hydraulic shutdown and shade death — wrote every other flux
+output and left `lambda_emergent_` alone, so a **reused** `Leaf` reported the
+previous row's price for a leaf that moves no water. `leaf_solve()` reuses one Leaf
+across rows, so a batch containing a dry row returned a finite, plausible price
+there — 3.49e+05 — where the same drivers on a fresh leaf give NA.
+
+Both exits now write the NA sentinel, with the reasoning recorded beside the block
+in `set_shutdown_state` that already existed for exactly this hazard on the flux
+outputs (plant #577, #578). `shadow_cost` needs no equivalent: it is computed from
+`transpiration_`, which those exits zero, so it follows to zero on its own.
+
+The bug predates this change and was latent because the field was reachable only
+off an object the caller had driven themselves. Reporting it through `leaf_solve()`
+is what made it visible, and `test-surface.R`'s row-order test caught it
+immediately — the test whose own comment says it crosses into shut-down because
+"that is where a last-written-value bug would show up as a duplicated row".
+
+No golden file moves; `n_pars` is unchanged. The C++ assertion that read `Tleaf`
+off the end of the reported vector is now two from the end, and the R name/binding
+alignment test is what catches that drifting again.
+
 # phylloptim 0.7.0
 
 ## A new cost curve, `TF24_floor`: TF24 with a price of water at the wet end

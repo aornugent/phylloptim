@@ -253,7 +253,7 @@ test_that("leaf_solve() reproduces the stateful path exactly", {
                    operating_point(stateful))
 })
 
-# Read the fourteen outputs the slow way -- one active binding at a time, which is
+# Read the fifteen outputs the slow way -- one active binding at a time, which is
 # what operating_point() did before #39 -- so the one-call C++ reader can be
 # checked against it.
 #
@@ -290,10 +290,11 @@ outputs_one_at_a_time <- function(l) {
     lambda = l$lambda,
     g1_eff = l$g1_eff,
     Tleaf = l$Tleaf_,
-    shadow_cost = l$shadow_cost)
+    shadow_cost = l$shadow_cost,
+    lambda_emergent = l$lambda_emergent)
 }
 
-test_that("operating_point_values() returns the fourteen fields, in that order", {
+test_that("operating_point_values() returns the fifteen fields, in that order", {
   # ⚠️ THE ORDER IS AN INTERFACE AND NOTHING IN THE TYPES ENFORCES IT. The C++
   # method returns a flat vector because that is what crosses the R boundary for
   # free (#39: twelve active bindings cost ~15 us against a ~3 us solve, one call
@@ -347,7 +348,7 @@ test_that("Tleaf is reported, and is not the leaf_temp driver on the PM path", {
   expect_identical(d$Tleaf, rep(30, 3L))
   # Last column, not inserted: these names are positions, and a saved output
   # would shift under an insertion.
-  expect_identical(names(d)[[length(names(d)) - 1L]], "Tleaf")
+  expect_identical(names(d)[[length(names(d)) - 2L]], "Tleaf")
 
   # With the energy balance on, driven by hand because the gate is a field.
   l <- leaf_model()
@@ -385,7 +386,8 @@ test_that("operating_point() is the data.frame it replaced", {
     lambda = l$lambda,
     g1_eff = l$g1_eff,
     Tleaf = l$Tleaf_,
-    shadow_cost = l$shadow_cost
+    shadow_cost = l$shadow_cost,
+    lambda_emergent = l$lambda_emergent
   )
   expect_identical(operating_point(l), as_written_before)
 

@@ -1042,7 +1042,7 @@ leaf_gradient <- function(psi_soil,
 # ⚠️ ONE call, not four field reads. Every `l$field` is an R6 ACTIVE BINDING -- a
 # closure call wrapping a `.Call` -- and this function runs once per perturbation, so
 # eleven times per four-parameter gradient. Four reads cost 4.65 us against 0.93 us
-# for the one C++ reader that returns all fourteen outputs, and `$` was 12.7% of a
+# for the one C++ reader that returns all fifteen outputs, and `$` was 12.7% of a
 # gradient's self time before this. Same numbers: the reader is the same accessor the
 # bindings wrap, and test-gradient.R requires bit-identical gradients.
 #

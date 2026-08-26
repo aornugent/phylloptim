@@ -750,7 +750,7 @@ set_drivers <- function(x,
 ##' constructed with.
 ##'
 ##' Costs about 4 µs, so it is usable in a loop. It was 180 µs until it stopped
-##' reading the fourteen outputs through fourteen separate calls into C++ and
+##' reading the fifteen outputs through fifteen separate calls into C++ and
 ##' stopped building its one row with `data.frame()` (#39) -- 45× more than the
 ##' ~3 µs solve it was reporting on.
 ##'
@@ -798,7 +798,7 @@ operating_point <- function(x) {
   # ⚠️ Built directly rather than through data.frame(), which costs 158 us
   # against 2 us for this -- on a function called once per solved point, to
   # report a 3 us solve. What data.frame() spends it on is checking and recycling
-  # fourteen arguments that are already fourteen length-1 doubles by construction.
+  # fifteen arguments that are already fifteen length-1 doubles by construction.
   # The result is `identical()` to what data.frame() returned, which
   # test-surface.R asserts rather than assumes; note row.names has to be the
   # integer 1L and not 1.0, or it would not be.
@@ -807,7 +807,7 @@ operating_point <- function(x) {
   structure(v, class = "data.frame", row.names = 1L)
 }
 
-# What an operating point IS: the names of the fourteen values
+# What an operating point IS: the names of the fifteen values
 # `Leaf::operating_point_values()` returns, in its order. `operating_point()`
 # wraps them in a one-row data.frame and `leaf_solve()` fills a matrix row with
 # them, so the two cannot disagree about which outputs there are.
@@ -815,7 +815,7 @@ operating_point <- function(x) {
 # ⚠️ THE ORDER IS AN INTERFACE, and it is one nothing in the types enforces --
 # the C++ side returns a flat vector, because a flat vector is what crosses the
 # boundary for free. test-surface.R asserts these names line up with the
-# fourteen individual bindings by reading each one and comparing, so a field
+# fifteen individual bindings by reading each one and comparing, so a field
 # inserted on either side without the other fails there instead of silently
 # shifting a column. test-golden.R then compares leaf_solve()'s output
 # bit-exactly against a file generated in C++.
@@ -834,10 +834,10 @@ operating_point <- function(x) {
   # `marginal_cost_water()`, i.e. `lambda_TF24(opt_psi_stem_)`, so on any other
   # curve it reports what the TF24 cost WOULD price water at at this leaf's
   # operating point -- not what the seated curve does. The per-curve number is
-  # `$lambda_emergent`, which is `(dC/dpsi)/(dE/dpsi)` for whichever curve ran and
-  # is the one output every curve reports on the same axis. It is not in this
-  # vector because these names are POSITIONS and inserting one would shift every
-  # saved output; read it off the object.
+  # `lambda_emergent`, which is `(dC/dpsi)/(dE/dpsi)` for whichever curve ran and
+  # is the one output every curve reports on the same axis. It is APPENDED at the
+  # end of this vector rather than placed here beside its namesake, because these
+  # names are POSITIONS and an insertion would shift every saved output.
   "lambda",         # dA/dE under the TF24 cost -- see above
   "g1_eff",         # the Medlyn g1 this leaf implies
   # deg C. APPENDED rather than placed beside the other state variables, because
@@ -874,7 +874,22 @@ operating_point <- function(x) {
   # under either reading. Reporting it as all-shadow would ship an interpretation
   # as a fact, and as zero-shadow the opposite one; the field is defined only where
   # the CURVE defines it.
-  "shadow_cost"
+  "shadow_cost",
+  # umol C (kg H2O)^-1. APPENDED, for the reason Tleaf and shadow_cost were.
+  #
+  # ⚠️ THIS, NOT `lambda`, IS THE SEATED CURVE'S MARGINAL COST OF WATER.
+  # `lambda` above is `marginal_cost_water()` -- TF24's price at this operating
+  # point, whatever curve actually ran -- so on any other curve it reports what the
+  # TF24 cost WOULD charge here. This one is `(dC/dpsi)/(dE/dpsi)` for the curve
+  # that ran, which is the quantity the optimality literature means by lambda and
+  # the one every curve reports on the same axis.
+  #
+  # It was reachable only off the object until now, so a caller using leaf_solve()
+  # on any curve but TF24 had to reconstruct it. On TF24_floor that meant knowing
+  # that `lambda` carries only the hydraulic half and adding the price floor back
+  # by hand -- which is exactly the kind of correction a package should not leave
+  # to its callers, and it read 6.8e+04 against a floor of 1.5e+05.
+  "lambda_emergent"
 )
 
 ##' Solve a leaf, in one call
