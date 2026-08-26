@@ -4053,14 +4053,13 @@ void test_the_two_zero_flux_kinds_are_two_points() {
       soil.depth.push_back(1.0 * (i + 1));
       soil.carbon.push_back(1.0 / L / 0.05);
     }
-    pl::LeafInputs<pl::tangent> in = fixture::leaf_inputs<pl::tangent>(
-        leaf, pl::tangent(leaf.opt_root_psi_), which, layer, soil);
+    const pl::LeafInputs<pl::tangent> in = fixture::leaf_inputs<pl::tangent>(
+        leaf, which, layer, soil);
     // Placed, then evaluated: a shade-death collar is the wet bound, and whether
     // an input reaches profit through that placement is the whole question here.
     odelia::record_report where;
     const pl::Leaf::CollarCondition none;
     const pl::tangent collar = leaf.collar_at<pl::tangent>(in, none, where);
-    in.profit.collar = collar;
     return leaf.outputs_at<pl::tangent>(collar, in);
   };
   ok(pl::derivative_along(seeded(parched, fixture::Input::psi_crit, 0).profit) != 0.0,
@@ -4096,7 +4095,7 @@ void test_the_two_zero_flux_kinds_are_two_points() {
     pl::tangent c = leaf.opt_root_psi_;
     pl::seed_direction(c, 1.0);
     const pl::LeafInputs<pl::tangent> in =
-        fixture::leaf_inputs<pl::tangent>(leaf, c, fixture::Input::None, 0, soil);
+        fixture::leaf_inputs<pl::tangent>(leaf, fixture::Input::None, 0, soil);
     return leaf.outputs_at<pl::tangent>(c, in);
   };
   const pl::Leaf::LeafOutputs<pl::tangent> shaded_along = along_collar(shaded);
@@ -4122,7 +4121,7 @@ void test_the_two_zero_flux_kinds_are_two_points() {
     pl::tangent c = shaded.opt_root_psi_;
     pl::seed_direction(c, 1.0);
     const pl::LeafInputs<pl::tangent> in = fixture::leaf_inputs<pl::tangent>(
-        shaded, c, fixture::Input::None, 0, soil);
+        shaded, fixture::Input::None, 0, soil);
     std::vector<pl::tangent> per;
     const double total = pl::derivative_along(
         shaded.E_from_soil_at<pl::tangent>(c, in.supply.at(), per));
@@ -4170,7 +4169,7 @@ void test_the_two_zero_flux_kinds_are_two_points() {
       soil.carbon.push_back(1.0 / layers / 0.05);
     }
     const pl::LeafInputs<double> in = fixture::leaf_inputs<double>(
-        probe, probe.opt_root_psi_, fixture::Input::None, 0, soil);
+        probe, fixture::Input::None, 0, soil);
     const double placed =
         probe.bound_at<double>(pl::Leaf::WhichBound::Wet, wet.bound, in);
     ok(placed == wet.bound,

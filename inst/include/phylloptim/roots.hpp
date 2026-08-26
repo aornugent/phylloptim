@@ -8,12 +8,14 @@
 #include <phylloptim/vulnerability.hpp>
 
 #include <odelia/interpolator.hpp>
+#include <odelia/tangent.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace phylloptim {
@@ -62,15 +64,24 @@ struct SupplyValues {
   }
 
   // The entries a caller can seed, in one order, so a gradient over them cannot
-  // be matched to them by hand. The layer arrays come first, layer-major.
-  std::vector<T*> field_ptrs() {
-    std::vector<T*> out;
+  // be matched to them by hand. The layer arrays come first, layer-major. The
+  // const form carries the list and the mutable one takes the constness back
+  // off, so an entry is named in one place.
+  std::vector<const T*> field_ptrs() const {
+    std::vector<const T*> out;
     out.reserve(psi_soil.size() + r_R_H_min.size() + r_R_V_sum.size() + 2);
-    for (T& v : psi_soil) out.push_back(&v);
-    for (T& v : r_R_H_min) out.push_back(&v);
-    for (T& v : r_R_V_sum) out.push_back(&v);
+    for (const T& v : psi_soil) out.push_back(&v);
+    for (const T& v : r_R_H_min) out.push_back(&v);
+    for (const T& v : r_R_V_sum) out.push_back(&v);
     out.push_back(&root_b);
     out.push_back(&root_c);
+    return out;
+  }
+  std::vector<T*> field_ptrs() {
+    std::vector<T*> out;
+    for (const T* q : std::as_const(*this).field_ptrs()) {
+      out.push_back(const_cast<T*>(q));
+    }
     return out;
   }
 };
@@ -396,14 +407,20 @@ public:
     double last_knot = 0.0, integral_limit = 0.0;
   };
   static constexpr std::size_t curve_cache_size = 32;
-  // Held behind a pointer so a copied MultiLayerRoots SHARES the store rather
-  // than duplicating it. A caller that rebuilds this object per cohort per stage
-  // -- which a reverse sweep does -- otherwise starts empty every time and the
-  // cache never reads back a single entry it wrote.
-  std::shared_ptr<std::vector<CurveCache>> curve_cache_ =
-      std::make_shared<std::vector<CurveCache>>();
+  // One store per thread, shared by every MultiLayerRoots on it: the key
+  // determines the value completely, so nothing of the plant being solved is
+  // carried in it. Per-object stores start empty, so constructing this to
+  // overwrite it -- which rebinding to another scalar does, per cohort per stage
+  // -- rebuilt the curve every time.
+  static std::shared_ptr<std::vector<CurveCache>> curve_store() {
+    static thread_local std::shared_ptr<std::vector<CurveCache>> store =
+        std::make_shared<std::vector<CurveCache>>();
+    return store;
+  }
+  std::shared_ptr<std::vector<CurveCache>> curve_cache_ = curve_store();
 
   void setup_vulnerability(double resolution) {
+    curve_reads_.clear();
     for (const CurveCache& hit : *curve_cache_) {
       if (hit.b == root_b && hit.c == root_c && hit.resolution == resolution) {
         root_vuln_integral_from_psi = hit.integral;
@@ -628,6 +645,40 @@ public:
                : -f * x * std::log(psi / root_b);
   }
 
+  // Every read of the root curve a lifted evaluation takes, at one suction. The
+  // lift asks for seven numbers at the same passive point -- one of them an
+  // incomplete-gamma series -- and the suctions it asks at are the layer
+  // potentials and the collar, which are fixed for a solve. The double path
+  // already memoises the first of them; this holds the rest on the same terms.
+  struct CurveReads {
+    double q = 0.0;
+    double integral = 0.0, deriv = 0.0, integrand_deriv = 0.0;
+    double dtrait_pos = 0.0, dtrait_steep = 0.0;
+    double integral_db = 0.0, integral_dc = 0.0;
+  };
+  // Bounded by the suctions a solve asks at: a layer potential, the collar, or
+  // zero. Cleared where either the soil state or the curve changes.
+  mutable std::vector<CurveReads> curve_reads_;
+
+  CurveReads curve_reads_at(double q) const {
+    for (const CurveReads& hit : curve_reads_) {
+      if (hit.q == q) {
+        return hit;
+      }
+    }
+    CurveReads r;
+    r.q = q;
+    r.integral = root_vuln_integral_at(q);
+    r.deriv = root_vuln_integral_deriv_at(q);
+    r.integrand_deriv = root_vuln_integrand_deriv_at(q);
+    r.dtrait_pos = root_vuln_integrand_dtrait(q, CurveTrait::Position);
+    r.dtrait_steep = root_vuln_integrand_dtrait(q, CurveTrait::Steepness);
+    r.integral_db = root_vuln_integral_dtrait(q, CurveTrait::Position);
+    r.integral_dc = root_vuln_integral_dtrait(q, CurveTrait::Steepness);
+    curve_reads_.push_back(r);
+    return r;
+  }
+
   // Per-timestep soil state: the layer potentials, the layer depths, and the
   // gravitational head that follows from them.
   void set_soil_state(const std::vector<double>& psi_soil,
@@ -752,6 +803,7 @@ public:
   // optimisation described on root_vuln_integral_soil_, and the wettest layer
   // falls out of the same loop.
   double begin_solve() {
+    curve_reads_.clear();
     root_vuln_integral_soil_.resize(max_soil_layer);
     double wettest_soil_layer = std::numeric_limits<double>::infinity();
     for (int i = 0; i < max_soil_layer; ++i) {
@@ -1526,17 +1578,26 @@ private:
           }
           return root_vuln_integral_at(q);
         } else {
+          const CurveReads c = curve_reads_at(q);
           const T step = arg - T(q);
           const T db = at_scalar.root_b - T(root_b0);
           const T dc = at_scalar.root_c - T(root_c0);
-          const T slope =
-              T(root_vuln_integral_deriv_at(q)) +
-              T(root_vuln_integrand_dtrait(q, CurveTrait::Position)) * db +
-              T(root_vuln_integrand_dtrait(q, CurveTrait::Steepness)) * dc;
-          return T(root_vuln_integral_at(q)) + slope * step +
-                 T(0.5 * root_vuln_integrand_deriv_at(q)) * step * step +
-                 T(root_vuln_integral_dtrait(q, CurveTrait::Position)) * db +
-                 T(root_vuln_integral_dtrait(q, CurveTrait::Steepness)) * dc;
+          // step, db and dc are all exactly zero in VALUE -- they carry the
+          // query's derivatives and nothing else -- so every term that
+          // multiplies two of them contributes exactly zero to a first
+          // derivative. A scalar that reads no second derivative therefore pays
+          // for the curvature and the trait cross terms in tape it then sweeps
+          // once per seed, and reads zero off all of it. Same value either way.
+          if constexpr (!odelia::ode::SecondOrder<T>) {
+            return T(c.integral) + T(c.deriv) * step + T(c.integral_db) * db +
+                   T(c.integral_dc) * dc;
+          } else {
+            const T slope = T(c.deriv) + T(c.dtrait_pos) * db +
+                            T(c.dtrait_steep) * dc;
+            return T(c.integral) + slope * step +
+                   T(0.5 * c.integrand_deriv) * step * step +
+                   T(c.integral_db) * db + T(c.integral_dc) * dc;
+          }
         }
       };
 

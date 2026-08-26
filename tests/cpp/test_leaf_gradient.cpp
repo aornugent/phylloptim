@@ -259,7 +259,7 @@ int main() {
 
         // The tape path: one seeded evaluation, every output at once.
         const LeafInputs<tangent> in =
-            fixture::leaf_inputs<tangent>(l, tangent(held), inputs[k], layer, soil);
+            fixture::leaf_inputs<tangent>(l, inputs[k], layer, soil);
         // The tape path at the same held collar. The collar is passive, so this
         // is the model's own branch for this kind evaluated at a point that does
         // not move -- which is what the difference below is.
@@ -272,8 +272,9 @@ int main() {
           const phylloptim::Leaf::FixedCollarEval base_at =
               l.profit_at_fixed_collar(held);
           static_cast<void>(base_at);
-          profit = l.profit_at<tangent>(l.opt_psi_stem_, l.ci_, in);
-          l.E_from_soil_at<tangent>(in.profit.collar, in.supply.at(), uptake);
+          const tangent at_collar(held);
+          profit = l.profit_at<tangent>(l.opt_psi_stem_, l.ci_, at_collar, in);
+          l.E_from_soil_at<tangent>(at_collar, in.supply.at(), uptake);
         } catch (const std::exception& e) {
           std::printf("   %-8s %-12s %-14s %2d   refused: %s\n", st.what, point,
                       fixture::name_of(inputs[k]), layer, e.what());
@@ -412,7 +413,7 @@ int main() {
                                   : base_of(st, soil, inputs[k], layer);
           if (!(std::abs(base) > 0.0)) continue;
           const LeafInputs<tangent> in =
-              fixture::leaf_inputs<tangent>(l, tangent(x), inputs[k], layer, soil);
+              fixture::leaf_inputs<tangent>(l, inputs[k], layer, soil);
           double tape = 0.0;
           try {
             tape = derivative_along(l.bound_at<tangent>(arm, x, in));

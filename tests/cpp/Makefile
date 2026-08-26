@@ -46,6 +46,14 @@ DEP_INC  = $(ODELIA_INC) $(BH_INC)
 SYS_INC  = $(foreach d,$(filter-out /usr/include /usr/include/,$(strip $(DEP_INC))),-isystem $(d))
 INCLUDES = -I$(PHYLLOPTIM_INC) $(SYS_INC)
 
+# The collar's condition records a reverse pass, so the suite needs XAD's tape:
+# the two storage-class defines, which must match odelia's and plant's Makevars,
+# and the one translation unit odelia compiles the tape into. The installed
+# package ships headers only, so this comes from a checkout.
+XADFLAGS = -DXAD_NO_THREADLOCAL -DXAD_USE_STRONG_INLINE
+ODELIA_SRC ?= $(ODELIA_INC)/../../src
+TAPE_SRC = $(ODELIA_SRC)/Tape.cpp
+
 .PHONY: all build clean golden bench
 # The suite's own headers are prerequisites too: root_network.hpp holds the two
 # ex-`Leaf`-default constants the golden file's bit-exactness depends on, so a
@@ -53,11 +61,20 @@ INCLUDES = -I$(PHYLLOPTIM_INC) $(SYS_INC)
 HEADERS = $(wildcard $(PHYLLOPTIM_INC)/phylloptim/*.hpp) $(PHYLLOPTIM_INC)/phylloptim.hpp \
           $(wildcard *.hpp)
 
-# Extra arguments for the golden comparison. Empty means bit-exact, which is what
-# you want locally and on the platform that generated the file. CI passes
-# GOLDEN_ARGS=--cross-platform on platforms other than that one -- see the comment
-# above main() in test_golden.cpp for why that is correct and not a loosening.
-GOLDEN_ARGS ?=
+# The golden file is bit-exact only on the platform that generated it, so the
+# comparison that means anything depends on where it runs: bit-exact on
+# macOS/arm64, per-field tolerances everywhere else. See the comment above main()
+# in test_golden.cpp for why the tolerant mode is correct and not a loosening.
+#
+# Defaulted by platform rather than left to the caller. Empty everywhere, the
+# form this had, makes `make` fail on every other platform for a reason that is
+# never a regression -- so a reader learns to ignore it, and the one time it IS a
+# regression nothing can say so. A stale golden then went unnoticed for ten days.
+ifeq ($(shell uname -s)/$(shell uname -m),Darwin/arm64)
+  GOLDEN_ARGS ?=
+else
+  GOLDEN_ARGS ?= --cross-platform
+endif
 
 all: build
 	./test_leaf
@@ -74,28 +91,28 @@ bench: bench_solve bench_gradient
 	./bench_gradient
 
 test_leaf: test_leaf.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
 # The gradient against a difference of the solve. Slower than test_leaf -- it
 # re-solves the whole leaf four times per input per state -- and it is the one
 # thing that referees the derivative against something that is not itself.
 test_leaf_gradient: test_leaf_gradient.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
 test_golden: test_golden.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
 bench_solve: bench_solve.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
 bench_gradient: bench_gradient.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
 # One-off measurement programs. Not built or run by anything; `make probe_x`
 # builds probe_x.cpp with the suite's own flags so a probe measures the same code
 # the tests do.
 probe_%: probe_%.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
 # Regenerate the golden file. Only ever run this deliberately: it overwrites the
 # recorded behaviour, so a refactor that changed results would be rubber-stamped.

@@ -22,6 +22,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace phylloptim {
@@ -35,37 +36,39 @@ namespace phylloptim {
 // stays visibly without one while the AD library is named in one place for the
 // whole family.
 using tangent = odelia::ode::tangent_scalar<double>;
-using tangent2 = odelia::ode::tangent_scalar<tangent>;
 using odelia::ode::derivative_along;
 using odelia::ode::seed_direction;
 
-// The active inputs profit answers for at a held collar, at one scalar.
+// The parameters profit answers for, at one scalar. WHERE the leaf is operating
+// is not among them: the collar, the stem potential and the intercellular CO2
+// are what the solve found, and these are what it found them for. They arrive as
+// arguments, so nothing can hold a stale one and nothing has to copy this to
+// override one.
 //
 // The two _25 traits enter as the temperature-adjusted values the kernels take,
 // so a caller seeds them in the direction their ratio gives and the chain from
 // the trait is one factor rather than a pass of its own.
-//
 template <typename T>
 struct ProfitInputs {
   using value_type = T;
   T vcmax, transport_jmax, quantum_yield, curv_elec, curv_colim, ppfd,
       respiration;
   T kmax, stem_b, stem_c, beta2, cost_scale;
-  // The operating point, and what the soil delivers there. Both are parameters
-  // of the two residuals rather than unknowns of them, and the flux is passed
-  // beside the collar it came from so the quadrature runs once for the pair.
-  T collar, flux;
 
-  // The entries a caller can seed, in one order, so a gradient over them cannot
-  // be matched to them by hand. `flux` is not among them: it is derived from the
-  // collar and the supply, and seeding it would answer a question the model does
-  // not ask. The collar IS among them, and its own entry is the slope the
-  // theorem divides by.
-  std::vector<T*> field_ptrs() {
+  // Every field, in one order, so a gradient over them cannot be matched to them
+  // by hand. The const form carries the list and the mutable one takes the
+  // constness back off, so a field is named in one place.
+  std::vector<const T*> field_ptrs() const {
     return {&vcmax,  &transport_jmax, &quantum_yield, &curv_elec,
             &curv_colim, &ppfd,       &respiration,   &kmax,
-            &stem_b, &stem_c,         &beta2,         &cost_scale,
-            &collar};
+            &stem_b, &stem_c,         &beta2,         &cost_scale};
+  }
+  std::vector<T*> field_ptrs() {
+    std::vector<T*> out;
+    for (const T* q : std::as_const(*this).field_ptrs()) {
+      out.push_back(const_cast<T*>(q));
+    }
+    return out;
   }
 
   // The same inputs with the derivatives taken off, which is what an implicit
@@ -78,10 +81,17 @@ struct ProfitInputs {
             U(to_passive(curv_colim)),    U(to_passive(ppfd)),
             U(to_passive(respiration)),   U(to_passive(kmax)),
             U(to_passive(stem_b)),        U(to_passive(stem_c)),
-            U(to_passive(beta2)),         U(to_passive(cost_scale)),
-            U(to_passive(collar)),        U(to_passive(flux))};
+            U(to_passive(beta2)),         U(to_passive(cost_scale))};
   }
 };
+
+// `field_ptrs` and `rebind_from` above both list the fields by hand, and a field
+// added without a line in either gets no gradient row -- a zero that reads as an
+// answer rather than as an omission. The compiler already counts them; this is
+// the two agreeing.
+static_assert(sizeof(ProfitInputs<double>) == 12 * sizeof(double),
+              "ProfitInputs gained or lost a field, and the two lists inside it "
+              "are written by hand.");
 
 // Everything the leaf answers for, at one scalar. Two halves because the supply
 // is per layer and the rest is not, and one struct because a caller holding two
@@ -109,11 +119,18 @@ struct LeafInputs {
 
   // Every entry a caller can seed, in one order, so a gradient over them cannot
   // be matched to them by hand.
-  std::vector<T*> field_ptrs() {
-    std::vector<T*> out = profit.field_ptrs();
-    for (T* q : supply.field_ptrs()) out.push_back(q);
+  std::vector<const T*> field_ptrs() const {
+    std::vector<const T*> out = profit.field_ptrs();
+    for (const T* q : supply.field_ptrs()) out.push_back(q);
     out.push_back(&psi_crit);
     out.push_back(&root_psi_crit);
+    return out;
+  }
+  std::vector<T*> field_ptrs() {
+    std::vector<T*> out;
+    for (const T* q : std::as_const(*this).field_ptrs()) {
+      out.push_back(const_cast<T*>(q));
+    }
     return out;
   }
 };
@@ -792,18 +809,18 @@ public:
   // again, so growing the store without limit would be a leak rather than a hit.
   // The root curve keeps its own beside its splines, in roots_.
   static constexpr std::size_t curve_cache_size = 32;
-  // Held behind a pointer so a copied Leaf SHARES the store rather than
-  // duplicating it. A caller that rebuilds the leaf per cohort per stage -- which
-  // a reverse sweep does -- otherwise starts empty every time and never reads
-  // back an entry it wrote. Sharing is safe because the key determines the value
-  // completely: the splines are a pure function of (b, c, resolution) and hold no
-  // state of the plant being solved.
-  std::shared_ptr<std::vector<StemCurveCache>> stem_curve_cache_ =
-      std::make_shared<std::vector<StemCurveCache>>();
-  void forget_curve_caches() {
-    stem_curve_cache_->clear();
-    roots_.curve_cache_->clear();
+  // One store per thread, shared by every Leaf on it, because the key determines
+  // the value completely: the splines are a pure function of (b, c, resolution)
+  // and hold no state of the plant being solved. Per-object stores start empty,
+  // so constructing a leaf to overwrite it -- which rebinding to another scalar
+  // does, per cohort per stage -- rebuilt both curves every time.
+  static std::shared_ptr<std::vector<StemCurveCache>> stem_curve_store() {
+    static thread_local std::shared_ptr<std::vector<StemCurveCache>> store =
+        std::make_shared<std::vector<StemCurveCache>>();
+    return store;
   }
+  std::shared_ptr<std::vector<StemCurveCache>> stem_curve_cache_ =
+      stem_curve_store();
 
   // The stem cumulative-vulnerability integral G and its inverse, as the FOUR
   // operations the model actually performs on them. Every read of
@@ -1623,6 +1640,8 @@ public:
   // XAD offers no lift into one -- where forward mode can. So the second
   // derivative is taken here, in forward mode, and everything else composes on
   // the caller's tape.
+  // `slope` is the curvature dM/dcollar the theorem divides by; `gradient` is
+  // dM/dp over the parameters, and the collar is not among them.
   struct CollarCondition {
     double slope = util::na_value;
     LeafInputs<double> gradient{};
@@ -1673,7 +1692,8 @@ public:
   // the envelope theorem -- but the marginal itself is what places the collar,
   // and every water output reads that.
   template <typename S>
-  S profit_at(double sigma_star, double ci_star, const LeafInputs<S>& in) const;
+  S profit_at(double sigma_star, double ci_star, const S& collar,
+              const LeafInputs<S>& in) const;
 
   // The collar where a pinned point sits, at one scalar, from the condition that
   // pins it. Three arms because the dry end is a `min` of two limits that are
@@ -1865,8 +1885,6 @@ public:
   void optimise_psi_stem_Sperry();
   void optimise_psi_stem_TF();
 
-  // --- WHICH KIND of operating point the collar solve found -------------------
-  //
   // The operating point is not one kind of thing, and which kind it is changes
   // what a derivative taken from it means. Along one drydown the leaf passes
   // through these in order: an interior profit maximum while the soil is wet,
@@ -4423,6 +4441,16 @@ inline T Leaf::stem_integral_at(const T& psi, const ProfitInputs<T>& in) const {
   // constant, which is what carries the cross terms in the curve's own traits;
   // its argument is the passive query point, so the term contributes exactly
   // G'(at) to the first derivative and nothing to the second.
+  // `step` and the two trait offsets are exactly zero in VALUE, so a term
+  // multiplying two of them contributes exactly zero to a first derivative. A
+  // scalar reading no second derivative gets the same number from the curve at
+  // the passive point, without the kernel's pow and exp and without the tape
+  // that carries them -- which is swept once per seed.
+  if constexpr (!odelia::ode::SecondOrder<T>) {
+    return T(stem_curve_integral(at, "Leaf::stem_integral_at")) +
+           T(proportion_of_conductivity_kernel<double>(at, b, c)) * step +
+           T(d.db) * (in.stem_b - T(b)) + T(d.dc) * (in.stem_c - T(c));
+  }
   return T(stem_curve_integral(at, "Leaf::stem_integral_at")) +
          proportion_of_conductivity_kernel<T>(T(at), in.stem_b, in.stem_c) * step +
          T(0.5 * d.d2psi) * step * step +
@@ -4441,27 +4469,34 @@ inline T Leaf::stem_integral_at(const T& psi, const ProfitInputs<T>& in) const {
 // gc is proportional to the flux, so it is derived from the uptake here rather
 // than passed: two spellings of one fact is a place they can disagree.
 template <typename S>
-inline S Leaf::profit_at(double sigma_star, double ci_star,
+inline S Leaf::profit_at(double sigma_star, double ci_star, const S& collar,
                          const LeafInputs<S>& whole) const {
+  using odelia::util::to_passive;
   const ProfitInputs<S>& in = whole.profit;
   const double gc_per_flux =
       atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
   const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
   const Leaf& leaf = *this;
 
-  // The flux the soil delivers at this collar, filled HERE rather than by the
-  // caller: it is a function of the collar and the supply, so a caller that
-  // could set it is a caller that could set it wrong.
+  // The flux the soil delivers at this collar. A local, not an input: it is a
+  // function of the collar and the supply, so a caller that could set it is a
+  // caller that could set it wrong -- and carrying it on the inputs cost a copy
+  // of every one of them to fill.
   std::vector<S> per_layer;
-  ProfitInputs<S> at = in;
-  at.flux = E_from_soil_at<S>(in.collar, whole.supply.at(), per_layer);
+  const S flux = E_from_soil_at<S>(collar, whole.supply.at(), per_layer);
 
+  // dT1/dsigma is one term of the residual below: the stem curve at the operating
+  // point, scaled by kmax. Taken at the passive point, which is where the theorem
+  // divides.
+  const double dT1_dsigma =
+      to_passive(in.kmax) * proportion_of_conductivity_kernel<double>(
+                                sigma_star, to_passive(in.stem_b),
+                                to_passive(in.stem_c));
   const S sigma = odelia::implicit_value<S>(
-      sigma_star, at,
-      [&]<class T>(const T& s, const ProfitInputs<T>& p) -> T {
-        return p.kmax * (leaf.template stem_integral_at<T>(s, p) -
-                         leaf.template stem_integral_at<T>(p.collar, p)) -
-               p.flux;
+      sigma_star, dT1_dsigma, [&](const S& s) -> S {
+        return in.kmax * (leaf.template stem_integral_at<S>(s, in) -
+                          leaf.template stem_integral_at<S>(collar, in)) -
+               flux;
       });
 
   // ⚠️ FOLLOW THE BRANCH THE FORWARD MODEL TOOK. Where the leaf is not moving
@@ -4470,52 +4505,88 @@ inline S Leaf::profit_at(double sigma_star, double ci_star,
   // input reaches. Applying the theorem to a condition the model did not solve
   // returns a number rather than an error, and the number is a cancellation of
   // two vanishing terms.
+  // dT2/dci: the assimilation's own slope plus the supply term's, at the passive
+  // point. The marginal profit forms the same quantity and calls it g_ci -- and
+  // takes A' the same way, by a tangent through the one kernel rather than
+  // through the whole residual.
+  double dT2_dci = 0.0;
+  if (!ci_at_compensation_point_) {
+    const double J0 = electron_transport_kernel<double>(
+        to_passive(in.ppfd), to_passive(in.quantum_yield),
+        to_passive(in.curv_elec), to_passive(in.transport_jmax));
+    tangent c_at = ci_star;
+    odelia::ode::seed_direction(c_at, 1.0);
+    const double A_prime = odelia::ode::derivative_along(
+        assim_colimited_kernel<tangent>(c_at, tangent(to_passive(in.vcmax)),
+                                        tangent(J0),
+                                        tangent(to_passive(in.curv_colim)),
+                                        tangent(to_passive(in.respiration))));
+    dT2_dci = A_prime * umol_to_mol +
+              gc_per_flux * to_passive(flux) * inv_atm;
+  }
   const S ci =
       ci_at_compensation_point_
           ? S(ci_star)
           : odelia::implicit_value<S>(
-      ci_star, at,
-      [&]<class T>(const T& c, const ProfitInputs<T>& p) -> T {
-        const T J = leaf.template electron_transport_kernel<T>(
-            p.ppfd, p.quantum_yield, p.curv_elec, p.transport_jmax);
-        const T A = leaf.template assim_colimited_kernel<T>(
-            c, p.vcmax, J, p.curv_colim, p.respiration);
+      ci_star, dT2_dci, [&](const S& c) -> S {
+        const S J = leaf.template electron_transport_kernel<S>(
+            in.ppfd, in.quantum_yield, in.curv_elec, in.transport_jmax);
+        const S A = leaf.template assim_colimited_kernel<S>(
+            c, in.vcmax, J, in.curv_colim, in.respiration);
         return A * umol_to_mol -
-               T(gc_per_flux) * p.flux * (T(leaf.ca_) - c) * T(inv_atm);
+               S(gc_per_flux) * flux * (S(leaf.ca_) - c) * S(inv_atm);
       });
 
-  const S J = electron_transport_kernel<S>(at.ppfd, at.quantum_yield,
-                                           at.curv_elec, at.transport_jmax);
-  const S A = assim_colimited_kernel<S>(ci, at.vcmax, J, at.curv_colim,
-                                        at.respiration);
-  const S cost = hydraulic_cost_TF_kernel<S>(sigma, at.stem_b, at.stem_c,
-                                             at.beta2, at.cost_scale);
+  const S J = electron_transport_kernel<S>(in.ppfd, in.quantum_yield,
+                                           in.curv_elec, in.transport_jmax);
+  const S A = assim_colimited_kernel<S>(ci, in.vcmax, J, in.curv_colim,
+                                        in.respiration);
+  const S cost = hydraulic_cost_TF_kernel<S>(sigma, in.stem_b, in.stem_c,
+                                             in.beta2, in.cost_scale);
   return A - cost;
 }
 
-// One pass over profit_at per input, at a tangent above a tangent: the collar in
-// the inner layer and the input in the outer, so the cross term IS the row. The
-// collar's own entry seeds both layers, which makes it dM/dp.
+// One evaluation of profit with the collar's direction inside the adjoint, swept
+// once: the cross term IS the row, and every input's comes off the same sweep.
+// Taking it one input at a time costs a pass over the whole leaf per input,
+// which is what this replaces.
 //
-// Nothing here derives anything. Every number is a direction read off the same
+// Nothing here derives anything. Every number is a derivative of the same
 // evaluation the forward model runs.
 inline Leaf::CollarCondition Leaf::collar_condition(
     double sigma_star, double ci_star, const LeafInputs<double>& in) const {
+  using S = odelia::ode::directional_adjoint_scalar<double>;
   CollarCondition out;
   out.gradient = in;   // the shape; every entry below is overwritten
 
-  std::vector<double*> rows = out.gradient.field_ptrs();
-  for (std::size_t k = 0; k < rows.size(); ++k) {
-    LeafInputs<tangent2> at = in.template rebind_from<tangent2>();
-    odelia::ode::seed_direction(*at.field_ptrs()[k], 1.0);
-    at.profit.collar.value().derivative() = 1.0;
-    *rows[k] =
-        profit_at<tangent2>(sigma_star, ci_star, at).derivative().derivative();
+  // One tape per thread, not one per call. A tape is reused by clearing it, and
+  // building one per operating point costs several times the recording it then
+  // carries -- measured at 89 s of a 217 s gradient before this.
+  static thread_local odelia::ode::directional_adjoint_tape<double> tape;
+  tape.clearAll();
+  LeafInputs<S> at = in.template rebind_from<S>();
+  // The collar is what the condition is differentiated IN, so it is an input of
+  // its own beside the parameters rather than one of them: differentiated in
+  // itself it gives the curvature, and the curvature is not a row.
+  S collar = S(opt_root_psi_);
+  std::vector<S*> inputs = at.field_ptrs();
+  for (S* p : inputs) {
+    tape.registerInput(*p);
   }
-  // The collar's own entry seeds both layers, so its cross term is the curvature
-  // rather than a row. Read out and cleared, so no caller reads it as one.
-  out.slope = out.gradient.profit.collar;
-  out.gradient.profit.collar = 0.0;
+  tape.registerInput(collar);
+  tape.newRecording();
+  odelia::ode::seed_inner_direction(collar, 1.0);
+  S profit = profit_at<S>(sigma_star, ci_star, collar, at);
+  tape.registerOutput(profit);
+  xad::derivative(profit) = 1.0;
+  tape.computeAdjoints();
+
+  std::vector<double*> rows = out.gradient.field_ptrs();
+  odelia::util::check_length(inputs.size(), rows.size());
+  for (std::size_t k = 0; k < rows.size(); ++k) {
+    *rows[k] = odelia::ode::directional_adjoint(*inputs[k]);
+  }
+  out.slope = odelia::ode::directional_adjoint(collar);
   return out;
 }
 
@@ -4523,9 +4594,9 @@ inline Leaf::CollarCondition Leaf::collar_condition(
 // order, from one table, so the two cannot be matched up by hand.
 template <class S>
 inline std::vector<odelia::input_and_derivative<S>> against(
-    LeafInputs<S>& in, LeafInputs<double>& gradient) {
-  std::vector<S*> active = in.field_ptrs();
-  std::vector<double*> rows = gradient.field_ptrs();
+    const LeafInputs<S>& in, const LeafInputs<double>& gradient) {
+  std::vector<const S*> active = in.field_ptrs();
+  std::vector<const double*> rows = gradient.field_ptrs();
   odelia::util::check_length(active.size(), rows.size());
   std::vector<odelia::input_and_derivative<S>> out;
   out.reserve(active.size());
@@ -4547,22 +4618,40 @@ inline S Leaf::bound_at(WhichBound which, double bound_x,
     // theorem to apply and none applied.
     return in.root_psi_crit;
   }
+  // Both arms move water, so both slopes are the supply's own conductance at the
+  // bound, which the model states analytically rather than differencing.
+  using odelia::util::to_passive;
+  std::vector<double> soil_at;
+  soil_at.reserve(in.supply.psi_soil.size());
+  for (const S& v : in.supply.psi_soil) {
+    soil_at.push_back(to_passive(v));
+  }
+  const double dflux_dx = dE_from_soil_dpsi_collar(bound_x, soil_at);
+
   if (which == WhichBound::Wet) {
     return odelia::implicit_value<S>(
-        bound_x, in, [&]<class T>(const T& x, const LeafInputs<T>& p) -> T {
-          std::vector<T> per_layer;
-          return leaf.template E_from_soil_at<T>(x, p.supply.at(), per_layer);
+        bound_x, dflux_dx, [&](const S& x) -> S {
+          std::vector<S> per_layer;
+          return leaf.template E_from_soil_at<S>(x, in.supply.at(), per_layer);
         });
   }
   // The dry end is T1 with the stem held at its critical potential: the collar
   // at which the soil delivers exactly what the column can still carry.
+  // The stem is held at its critical potential here, so only the second integral
+  // and the flux move with the collar.
+  const double dT_dx =
+      -to_passive(in.profit.kmax) *
+          proportion_of_conductivity_kernel<double>(
+              bound_x, to_passive(in.profit.stem_b),
+              to_passive(in.profit.stem_c)) -
+      dflux_dx;
   return odelia::implicit_value<S>(
-      bound_x, in, [&]<class T>(const T& x, const LeafInputs<T>& p) -> T {
-        std::vector<T> per_layer;
-        const T flux = leaf.template E_from_soil_at<T>(x, p.supply.at(), per_layer);
-        return p.profit.kmax *
-                   (leaf.template stem_integral_at<T>(p.psi_crit, p.profit) -
-                    leaf.template stem_integral_at<T>(x, p.profit)) -
+      bound_x, dT_dx, [&](const S& x) -> S {
+        std::vector<S> per_layer;
+        const S flux = leaf.template E_from_soil_at<S>(x, in.supply.at(), per_layer);
+        return in.profit.kmax *
+                   (leaf.template stem_integral_at<S>(in.psi_crit, in.profit) -
+                    leaf.template stem_integral_at<S>(x, in.profit)) -
                flux;
       });
 }
@@ -4573,27 +4662,25 @@ inline S Leaf::bound_at(WhichBound which, double bound_x,
 template <typename S>
 inline S Leaf::collar_at(const LeafInputs<S>& in, const CollarCondition& cond,
                          odelia::record_report& point) const {
-  LeafInputs<S> at = in;
   S collar = S(opt_root_psi_);
   point = odelia::record_report{};
   switch (operating_point_kind_) {
     case OperatingPointKind::Interior: {
-      LeafInputs<double> gradient = cond.gradient;
-      std::vector<odelia::input_and_derivative<S>> terms = against<S>(at, gradient);
-      point = odelia::implicit_root<S>(opt_root_psi_, cond.slope, terms, collar);
+      point = odelia::implicit_root<S>(opt_root_psi_, cond.slope,
+                                      against<S>(in, cond.gradient), collar);
       break;
     }
     case OperatingPointKind::PinnedWet:
     // Shade death sits ON the wet bound: both potentials at the collar where
     // uptake vanishes, so the bound is the point and it moves with the soil.
     case OperatingPointKind::ShadeDeath:
-      collar = bound_at<S>(WhichBound::Wet, opt_root_psi_, at);
+      collar = bound_at<S>(WhichBound::Wet, opt_root_psi_, in);
       break;
     case OperatingPointKind::PinnedDryRootCrit:
-      collar = bound_at<S>(WhichBound::DryRootCrit, opt_root_psi_, at);
+      collar = bound_at<S>(WhichBound::DryRootCrit, opt_root_psi_, in);
       break;
     case OperatingPointKind::PinnedDryRootPsiCrit:
-      collar = bound_at<S>(WhichBound::DryRootPsiCrit, opt_root_psi_, at);
+      collar = bound_at<S>(WhichBound::DryRootPsiCrit, opt_root_psi_, in);
       break;
     case OperatingPointKind::HydraulicShutdown:
       // The stem holds at its critical potential and nothing defines the collar
@@ -4611,7 +4698,6 @@ template <typename S>
 inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
                                              const LeafInputs<S>& in) const {
   LeafOutputs<S> out;
-  LeafInputs<S> at = in;
   // ⚠️ PROFIT READS THE HELD COLLAR AT AN INTERIOR POINT, and that is the
   // envelope theorem written as an omission rather than as a term that has to
   // come out to zero. The marginal is zero there by the condition the solve
@@ -4619,23 +4705,23 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
   // M * dp/dtheta -- a term whose size is the solve's tolerance rather than the
   // model's. It is also why a collar that cannot be recorded costs the water
   // rows and not the objective.
-  at.profit.collar =
-      operating_point_kind_ == OperatingPointKind::Interior
-          ? S(odelia::util::to_passive(collar))
-          : collar;
+  const S collar_held(odelia::util::to_passive(collar));
+  const S& profit_collar =
+      operating_point_kind_ == OperatingPointKind::Interior ? collar_held
+                                                            : collar;
 
   if (zero_flux_operating_point()) {
     // No water moves, so no carbon is fixed: assimilation is minus the dark
     // respiration, and the cost is the one at the potential being held.
     const S& held = operating_point_kind_ == OperatingPointKind::HydraulicShutdown
-                        ? at.psi_crit
+                        ? in.psi_crit
                         : collar;
-    out.profit = -at.profit.respiration -
-                 hydraulic_cost_TF_kernel<S>(held, at.profit.stem_b,
-                                             at.profit.stem_c, at.profit.beta2,
-                                             at.profit.cost_scale);
+    out.profit = -in.profit.respiration -
+                 hydraulic_cost_TF_kernel<S>(held, in.profit.stem_b,
+                                             in.profit.stem_c, in.profit.beta2,
+                                             in.profit.cost_scale);
   } else {
-    out.profit = profit_at<S>(opt_psi_stem_, ci_, at);
+    out.profit = profit_at<S>(opt_psi_stem_, ci_, profit_collar, in);
   }
 
   if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown) {
@@ -4643,7 +4729,7 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
     // that has stopped drawing on it.
     out.uptake.assign(static_cast<std::size_t>(supply_n_layers()), S(0.0));
   } else {
-    E_from_soil_at<S>(collar, at.supply.at(), out.uptake);
+    E_from_soil_at<S>(collar, in.supply.at(), out.uptake);
   }
   return out;
 }

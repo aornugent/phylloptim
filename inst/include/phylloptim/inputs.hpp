@@ -18,8 +18,6 @@
 namespace phylloptim {
 namespace gradient {
 
-// --- the parameter enumeration, which R indexes into --------------------------
-//
 // The fourteen traits, in the order the model places them, then the two
 // quantities a calibration fits that are not traits: the conductance driver and
 // the single-potential path's series resistance.
@@ -27,45 +25,16 @@ namespace gradient {
 // ⚠️ R INDEXES THESE POSITIONS, so a reordering silently differentiates the wrong
 // parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
 // them with R's, so the two cannot drift apart without a failure.
-// Which physical route an input reaches the leaf by, which is what decides the
-// shape of its row. Carried on the entry rather than tested for by four separate
-// lists of names, so the four are a partition by construction and an input
-// belonging to none says so.
-enum class InputRole {
-  Carbon,     // reaches profit through assimilation or the hydraulic cost
-  Transport,  // moves the stem potential at a frozen flux
-  Supply,      // moves the supply, so it reaches the leaf through total uptake
-  Slack,      // a limit the point may or may not be sitting on
-  None        // no row here: the other supply path's input
-};
-
 // THE list, in order. The first `n_traits` are the traits `set_traits` places and
 // `leaf_traits()` names; the two non-traits follow and take a relative step.
-struct par_entry {
-  std::string_view name;
-  InputRole role;
-};
-
-inline constexpr std::array<par_entry, 16> par_table{{
-    {"vcmax_25", InputRole::Carbon},
-    {"stem_c", InputRole::Transport},
-    {"stem_b", InputRole::Transport},
-    {"psi_crit", InputRole::Slack},
-    {"root_c", InputRole::Supply},
-    {"root_b", InputRole::Supply},
-    {"root_psi_crit", InputRole::Slack},
-    {"beta2", InputRole::Carbon},
-    {"jmax_25", InputRole::Carbon},
-    {"a", InputRole::Carbon},
-    {"curv_fact_elec_trans", InputRole::Carbon},
-    {"curv_fact_colim", InputRole::Carbon},
-    {"cost_scale_TF24", InputRole::Carbon},
-    {"R_d_25", InputRole::Carbon},
-    {"leaf_specific_conductance_max", InputRole::Transport},
-    // The single-potential path's series resistance. No closed form here says how
-    // it moves the bound, so the read declines it and a difference answers
-    // instead -- which is why it is the one input no role claims.
-    {"resistance", InputRole::None}}};
+// `resistance` is the single-potential path's series resistance: no closed form
+// here says how it moves the bound, so the read declines it and a difference
+// answers instead.
+inline constexpr std::array<std::string_view, 16> par_table{{
+    "vcmax_25", "stem_c", "stem_b", "psi_crit", "root_c", "root_b",
+    "root_psi_crit", "beta2", "jmax_25", "a", "curv_fact_elec_trans",
+    "curv_fact_colim", "cost_scale_TF24", "R_d_25",
+    "leaf_specific_conductance_max", "resistance"}};
 
 inline constexpr int n_pars = static_cast<int>(par_table.size());
 
@@ -75,7 +44,7 @@ inline constexpr int n_pars = static_cast<int>(par_table.size());
 // misspelling is a compile error at the constant rather than a -1 nobody checks.
 inline constexpr int par_of(std::string_view name) {
   for (std::size_t i = 0; i < par_table.size(); ++i) {
-    if (par_table[i].name == name) {
+    if (par_table[i] == name) {
       return static_cast<int>(i);
     }
   }
@@ -110,16 +79,14 @@ inline const std::vector<std::string>& par_names() {
   static const std::vector<std::string> names = [] {
     std::vector<std::string> ret;
     ret.reserve(par_table.size());
-    for (const par_entry& e : par_table) {
-      ret.emplace_back(e.name);
+    for (std::string_view n : par_table) {
+      ret.emplace_back(n);
     }
     return ret;
   }();
   return names;
 }
 
-// --- the environment rows: the two things plants share ------------------------
-//
 // Everything above differentiates the leaf with respect to what it IS. These rows
 // differentiate it with respect to what it EXPERIENCES. Plants in this model are
 // coupled through exactly two quantities -- the light they cast on each other and
@@ -172,30 +139,6 @@ struct par_ref {
   int index;
 };
 
-// What part one of the sixteen parameters plays. The blocks past them are the
-// supply's, which input_role() below adds -- so a caller asking about a role only
-// a parameter can have needs no layer count.
-inline constexpr InputRole parameter_role(int par) {
-  return par >= 0 && par < n_pars ? par_table[std::size_t(par)].role
-                                  : InputRole::None;
-}
-
-// ⚠️ AN INPUT NO ROLE CLAIMS HAS NO ROW, AND ONE IS EXPECTED. `rows_at`
-// defaults every row to NA and the recording refuses a non-finite derivative by name,
-// so an unclaimed input fails safe -- but it fails safe by accident unless the
-// set of them is known. `resistance` is the one, and this is what says so.
-static_assert(
-    [] {
-      for (int p = 0; p < n_pars; ++p) {
-        if (parameter_role(p) == InputRole::None && p != par_resistance) {
-          return false;
-        }
-      }
-      return true;
-    }(),
-    "a parameter has no role, so it has no row, and only `resistance` is "
-    "meant to be in that position");
-
 inline constexpr par_ref decode(int par, int n_layers) {
   if (par < n_pars) {
     return {par_ref::Block::Parameter, par};
@@ -209,23 +152,6 @@ inline constexpr par_ref decode(int par, int n_layers) {
   }
   return {par_ref::Block::RootCarbon, layer - n_layers};
 }
-
-// What part an input plays in the solve, for ANY input index. The blocks past the
-// parameters belong to the supply by construction: a soil potential and a layer's
-// carbon both reach the leaf through total uptake and nothing else.
-inline constexpr InputRole input_role(int par, int n_layers) {
-  if (par < 0 || par >= n_pars_total(n_layers)) {
-    return InputRole::None;
-  }
-  const par_ref r = decode(par, n_layers);
-  switch (r.block) {
-  case par_ref::Block::Parameter: return parameter_role(r.index);
-  case par_ref::Block::Radiation: return InputRole::Carbon;
-  default:                       break;
-  }
-  return InputRole::Supply;
-}
-
 
 inline std::vector<std::string> par_names(int n_layers) {
   std::vector<std::string> out = par_names();
@@ -258,8 +184,6 @@ inline std::string par_name(int par, int n_layers) {
   return names[std::size_t(par)];
 }
 
-// --- the five differentiated outputs -----------------------------------------
-//
 // A, gc, psi_stem, collar and profit, in that order. THIS LIST IS THE ONE
 // DEFINITION OF IT: R does not keep a second copy, it reads this one back through
 // `gradient_output_names()` in src/gradient.cpp, so the two routes cannot
@@ -305,15 +229,12 @@ inline const std::vector<std::string>& output_names() {
   return names;
 }
 
-// --- the per-layer uptake outputs ---------------------------------------------
-//
 // The five above are a calibration's, and R reads gradient columns by position,
 // so they stay fixed: `output_names()` and `gradient_output_names()` report those
 // five whatever the layer configuration is, and `at`, `batch` and `transpose_at`
 // report those five. A stand adjoint reads a different list -- of the five it
 // wants profit, and it wants the water each soil layer gave up -- so the uptake
-// entries are APPENDED, one per layer, and `rows_at` is the one route that can
-// request them.
+// entries are APPENDED, one per layer.
 //
 // ⚠️ AN OUTPUT THAT IS NOT REPORTED HAS NO ROUTE TO ANY INPUT. At a pin the
 // condition's gradient is zero for every input and each reported output carries a

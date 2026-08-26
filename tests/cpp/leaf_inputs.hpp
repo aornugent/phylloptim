@@ -94,8 +94,8 @@ phylloptim::SupplyValues<T> supply_of(const phylloptim::Leaf& l) {
 // Root carbon is seeded through the architecture model, exactly as a caller that
 // owns that model does it -- the resistances are what the leaf reads.
 template <class T>
-phylloptim::LeafInputs<T> leaf_inputs(const phylloptim::Leaf& l, const T& collar,
-                                      Input which, int layer, const Soil& soil) {
+phylloptim::LeafInputs<T> leaf_inputs(const phylloptim::Leaf& l, Input which,
+                                      int layer, const Soil& soil) {
   phylloptim::LeafInputs<T> in;
   in.profit = phylloptim::ProfitInputs<T>{
       T(l.vcmax_),          T(l.jmax_),
@@ -103,8 +103,7 @@ phylloptim::LeafInputs<T> leaf_inputs(const phylloptim::Leaf& l, const T& collar
       T(l.curv_fact_colim), T(l.PPFD_),
       T(l.R_d_),            T(l.leaf_specific_conductance_max_),
       T(l.stem_b),          T(l.stem_c),
-      T(l.beta2),           T(l.cost_scale_TF24),
-      collar,               T(0.0)};
+      T(l.beta2),           T(l.cost_scale_TF24)};
   in.psi_crit = T(l.psi_crit);
   in.root_psi_crit = T(l.supply_psi_crit());
   in.supply.root_b = T(l.roots_.root_b);

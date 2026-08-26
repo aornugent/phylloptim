@@ -527,11 +527,9 @@ inline bool takes_shortcut(int par, const Settings& s) {
   return s.fast_stem_curve && par == par_stem_b;
 }
 
-// --- what every route shares --------------------------------------------------
-//
 // The base point, the collar channel, and one input's two perturbed evaluations.
-// Both entry points below and `rows_at` stand on these, so a change to the
-// algebra reaches all of them or none.
+// Both entry points below stand on these, so a change to the algebra reaches
+// both or neither.
 
 // The branch a solve took: the kind of operating point, and which of the two
 // limits won the dry bound. The two travel together because a difference taken
@@ -1167,8 +1165,6 @@ inline std::vector<Result> batch(Leaf& l, const double* theta,
   return out;
 }
 
-// --- one observation, in parts -------------------------------------------------
-//
 // `at` above returns TOTAL rows: it forms the quotient and the composite itself,
 // so a consumer recording them has `n_output * n_input` terms to tape. This
 // returns the same algebra unassembled -- the held partials, whichever
@@ -1223,8 +1219,6 @@ inline bool pinned_bound(OperatingPointKind kind, Leaf::WhichBound& bound) {
 }
 
 
-// --- a route that does not work, recorded so it is not tried again -----------
-//
 // A stand adjoint needs per-layer uptake rows, and those are TOTAL derivatives:
 // uptake is set as a side effect at the operating point, so it consumes the
 // argmax rather than being it and the operating point's own movement is part of
