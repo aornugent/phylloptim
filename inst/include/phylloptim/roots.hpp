@@ -997,10 +997,48 @@ private:
           (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
       const double dinteg_dT = sign_var * fr_at;
 
-      const double r_R_H = network_.r_R_H_min[i] * span / integral;
+      // ⚠️ THE DIVIDED DIFFERENCE LOSES AN ORDER OF SPAN TO CANCELLATION, and this
+      // derivative is where it shows. `integral` is f_r * span to leading order and
+      // `dinteg_dT` is f_r, so `sign_var * integral - span * dinteg_dT` cancels its
+      // leading terms EXACTLY and what survives is O(span^2) -- divided by an
+      // integral^2 that is also O(span^2). The limit is finite; the computation is
+      // not, because both the integral and its slope are reads of a TABULATED curve
+      // and the cancellation promotes the table's error by one factor of 1/span.
+      //
+      // MEASURED, in test_leaf's "the mean conductivity" table: the two forms of the
+      // mean conductivity cross at a span of about 1e-5, and below it the divided
+      // difference is the worse one. At the span of 5.6e-08 that one operating point
+      // of 2,829,445 on a century stand reached, the VALUE is still good to ~4e-10 --
+      // and this derivative, having spent an order of span, carries about 0.7%. That
+      // was enough to corrupt the marginal profit at the scale of its own residual,
+      // so the collar solve rooted the corrupted function and returned a MINIMUM of
+      // profit; plant then refused the gradient, correctly, and the whole census went
+      // not-a-number.
+      //
+      // The mean of the integrand over the interval is its midpoint value to
+      // O(span^2), which below the crossover is smaller than the error it replaces
+      // by orders. No differencing, no cancellation, and the value and the slope
+      // both come from the CLOSED-FORM integrand -- one definition supplying both
+      // orders, where the divided difference took its value from the tabulation and
+      // paid for it here.
+      //
+      // dm/dT_collar is 1/2 whichever of the collar and the layer is the larger,
+      // because the midpoint is their mean.
+      constexpr double mean_f_span_min = 1e-5;
+      double r_R_H, dr_R_H_dT;
+      if (span < mean_f_span_min && T_src_min > 0.0) {
+        const double m = 0.5 * (T_src_min + T_src_max);
+        const double mean_f = root_vuln_at(m);
+        r_R_H = network_.r_R_H_min[i] / mean_f;
+        dr_R_H_dT = -network_.r_R_H_min[i] *
+                    (0.5 * root_vuln_integrand_deriv_at(m)) / (mean_f * mean_f);
+      } else {
+        r_R_H = network_.r_R_H_min[i] * span / integral;
+        dr_R_H_dT = network_.r_R_H_min[i] *
+                    (sign_var * integral - span * dinteg_dT) /
+                    (integral * integral);
+      }
       const double r_R = r_R_H + network_.r_R_V_sum[i];
-      const double dr_R_H_dT =
-          network_.r_R_H_min[i] * (sign_var * integral - span * dinteg_dT) / (integral * integral);
       const double dr_R_dT = dr_R_H_dT;
 
       const double num = T_collar - psi_soil[i] - grav_head_z_[i];
