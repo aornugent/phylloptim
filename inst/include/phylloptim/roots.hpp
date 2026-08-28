@@ -559,6 +559,169 @@ public:
     return std::abs(T_collar - psi_soil_i) < 1e-8;
   }
 
+  // ⚠️ ONE PLACE DECIDES HOW A LAYER MEAN IS FORMED, and this is it.
+  //
+  // Everything the uptake and its derivatives need is a MEAN over the layer's suction
+  // interval -- the conductivity curve for the resistance, one of its trait
+  // derivatives for a trait row -- and every caller used to form its own as
+  // `integral / span`, each replicating the construction "bit-for-bit" as its comment
+  // says, and each inheriting the same defect.
+  //
+  // The defect: the integral is a difference of two reads of a TABULATED cumulative
+  // curve, so the quotient's relative error is the table's own divided by the span,
+  // and every derivative taken of it divides by the span again. MEASURED in
+  // test_leaf's "the mean conductivity" table -- the divided difference and the
+  // midpoint cross at a span of about 1e-5, and below it the difference is the worse
+  // form by orders. One operating point of 2,829,445 on a century stand reached a span
+  // of 5.6e-08; the marginal there was corrupted enough that the collar solve returned
+  // a MINIMUM of profit, and the whole census went not-a-number.
+  //
+  // Below the crossover the mean over the interval is the curve at the MIDPOINT to
+  // O(span^2) -- smaller than the error it replaces by orders, and no differencing at
+  // all. Above it the divided difference is the better of the two, so both stay and
+  // the choice lives here rather than in seven copies that could disagree.
+  // ⚠️ THREE THRESHOLDS, NOT ONE, and that is measured rather than assumed. The
+  // divided difference divides by the span once for the mean, twice for its bound
+  // derivative and three times for the second -- so each is degraded a decade or
+  // more earlier than the last. test_leaf's "the layer-mean helpers" sweep finds
+  // where each form stops being the better one:
+  //
+  //     span      d/dbound    d2/dbound2   mixed
+  //     1.0e-02   1.026e-03   9.328e-04    2.024e-06
+  //     5.0e-03   5.131e-04   4.653e-04    6.032e-07   <- mixed crosses
+  //     5.0e-04   5.133e-05   1.595e-06    8.811e-05   <- d2 crosses
+  //     1.0e-04   1.032e-05   2.669e-03    5.328e-03
+  //     5.0e-05   5.436e-06   2.948e-02    5.897e-02
+  //
+  // One threshold at 1e-5 would leave the two second derivatives on the degraded
+  // divided difference across a band two and three decades wide, wrong by up to a
+  // few percent. That the two forms MEET at all -- to 1.6e-06 and 6.0e-07 -- is also
+  // what confirms the f''/3 and f''/6 limits; a f''/4 would bottom out near 25%.
+  static constexpr double layer_mean_span_min = 1e-5;
+  static constexpr double layer_mean_d2_span_min = 5e-4;
+  static constexpr double layer_mean_mixed_span_min = 5e-3;
+
+  // True where the midpoint form applies: a short enough span, with both bounds
+  // above the surface. Below the surface the integrand is the constant 1 and an
+  // interval straddling it has no single midpoint value. `at` is whichever of the
+  // three thresholds the quantity being formed crosses at.
+  template <class T>
+  static bool use_midpoint_mean(const T& span, const T& lo,
+                                double at = layer_mean_span_min) {
+    using odelia::util::to_passive;
+    return to_passive(span) < at && to_passive(lo) > 0.0;
+  }
+
+  // The cumulative curve over the layer's interval. This is the construction five
+  // callers describe as "replicated bit-for-bit from uptake_impl" -- so here it is,
+  // once. Split about the surface because the integrand is the constant 1 below it
+  // and the curve only above.
+  double layer_integral(double lo, double hi) const {
+    const double pos_lo = std::max(lo, 0.0);
+    const double neg_hi = std::min(hi, 0.0);
+    double integral = 0.0;
+    if (pos_lo < hi) {
+      integral += root_vuln_integral_at(hi) - root_vuln_integral_at(pos_lo);
+    }
+    if (lo < neg_hi) {
+      integral += (neg_hi - lo);
+    }
+    return integral;
+  }
+
+  // The mean of the conductivity curve over that interval, by whichever form is
+  // accurate at the span. Writing the callers in MEANS rather than in integrals is
+  // what removes the span from their formulas -- `k * span / integral` is `k / mean`,
+  // and `-k * span * dinteg / integral^2` is `-k * mean_d / mean^2` -- and the span
+  // is what was causing the trouble.
+  double layer_mean(double lo, double hi) const {
+    const double span = hi - lo;
+    if (use_midpoint_mean(span, lo)) {
+      return vulnerability_curve_at<double>(0.5 * (lo + hi), root_b, root_c);
+    }
+    return layer_integral(lo, hi) / span;
+  }
+
+  // The curve's second slope at one suction, by a tangent through the SAME closed
+  // form its first slope comes from. Two callers need it and neither should carry a
+  // hand-derived copy.
+  // The curve's first slope at one suction, named for the checks that compare the
+  // layer-mean branches against their midpoint limits.
+  double curve_slope_at_for_test(double psi) const {
+    return vulnerability_curve_slope_at<double>(psi, root_b, root_c);
+  }
+
+  double curve_slope2_at(double psi) const {
+    using tangent = odelia::ode::tangent_scalar<double>;
+    tangent p = psi;
+    odelia::ode::seed_direction(p, 1.0);
+    return odelia::ode::derivative_along(vulnerability_curve_slope_at<tangent>(
+        p, tangent(root_b), tangent(root_c)));
+  }
+
+  // d^2(mean)/d(hi)d(lo) -- the mean responding to BOTH bounds, which is what a mixed
+  // second derivative of the uptake needs. In the midpoint limit it is the same
+  // quarter of the curve's curvature as the pure one, because the midpoint depends on
+  // the two ends symmetrically; above the crossover it is the divided difference the
+  // caller used to write inline.
+  //
+  // ⚠️ THE LIMIT IS f''/6 AND NOT f''/4. With mean = f(m) + (s^2/24) f''(m), m the
+  // midpoint and s the span, d(mean)/d(a bound) is f'/2 + (s/12) f'' and the mixed
+  // second derivative is f''/4 - f''/12 = f''/6. Checked against a case where the
+  // mean is exact: for f = x^2 the mean is (hi^2 + hi lo + lo^2)/3, whose mixed
+  // derivative is 1/3 -- which is f''/6, not f''/4. The pure one below is f''/3 by
+  // the same expansion, and getting either wrong is a bounded but real error in a
+  // leading term.
+  double layer_mean_dbound_mixed(double lo, double hi) const {
+    const double span = hi - lo;
+    if (use_midpoint_mean(span, lo, layer_mean_mixed_span_min)) {
+      return curve_slope2_at(0.5 * (lo + hi)) / 6.0;
+    }
+    const double mean = layer_integral(lo, hi) / span;
+    const double f_hi = (hi > 0.0) ? root_vuln_integral_deriv_at(hi) : 1.0;
+    const double f_lo = (lo > 0.0) ? root_vuln_integral_deriv_at(lo) : 1.0;
+    return (f_hi + f_lo - 2.0 * mean) / (span * span);
+  }
+
+  // d^2(mean)/d(one bound)^2 -- the PURE second derivative, f''/3 in the limit for
+  // the reason given above. Above the crossover it is the divided difference again.
+  double layer_mean_dbound2(double lo, double hi, bool high_moves) const {
+    const double span = hi - lo;
+    if (use_midpoint_mean(span, lo, layer_mean_d2_span_min)) {
+      return curve_slope2_at(0.5 * (lo + hi)) / 3.0;
+    }
+    const double mean = layer_integral(lo, hi) / span;
+    const double at = high_moves ? hi : lo;
+    const double f_at = (at > 0.0) ? root_vuln_integral_deriv_at(at) : 1.0;
+    const double df_at = (at > 0.0) ? root_vuln_integrand_deriv_at(at) : 0.0;
+    return high_moves ? df_at / span - 2.0 * (f_at - mean) / (span * span)
+                      : 2.0 * (mean - f_at) / (span * span) - df_at / span;
+  }
+
+  // d(mean)/d(a moving bound). Both ends answer with HALF the curve's slope at the
+  // midpoint in the limit -- the mean over an interval responds to either end the
+  // same way -- and above the crossover it is the divided difference the callers
+  // used to write inline, where it cancels its leading terms as the span shuts.
+  double layer_mean_dbound(double lo, double hi, bool high_moves) const {
+    const double span = hi - lo;
+    if (use_midpoint_mean(span, lo)) {
+      return 0.5 * vulnerability_curve_slope_at<double>(0.5 * (lo + hi), root_b,
+                                                        root_c);
+    }
+    // ⚠️ root_vuln_integral_deriv_at AND NOT THE CONDUCTIVITY READ. The two differ in
+    // how they are bounded past the knots -- the conductivity read clamps its
+    // argument to the last knot, the integral is capped at G(inf) -- so beyond the
+    // domain only the integral's own derivative stays consistent with the value the
+    // mean was formed from (issue #1; the reasoning is #527's, and the
+    // "both clamp-to-last-value" it used to cite was never true of either). Below the
+    // surface the bound is in the f_r == 1 part, contributed linearly, so the slope
+    // is 1. This choice used to be made at each caller; it is made here now.
+    const double mean = layer_integral(lo, hi) / span;
+    const double at = high_moves ? hi : lo;
+    const double f_at = (at > 0.0) ? root_vuln_integral_deriv_at(at) : 1.0;
+    return high_moves ? (f_at - mean) / span : (mean - f_at) / span;
+  }
+
   // dG/d(root_b) at a fixed suction, from the homogeneity the curve already has
   // and with NO rebuild. G integrates exp(-(sigma/root_b)^root_c), which is
   // homogeneous of degree one in (psi, root_b), so Euler's theorem gives
@@ -585,6 +748,40 @@ public:
   // nothing else -- so one loop serves both and all that differs is which
   // derivative of the curve it accumulates.
   enum class CurveTrait { Position, Steepness };
+
+  // The mean of one of the curve's TRAIT derivatives over the same interval, by the
+  // same rule. A trait row is a mean of exactly this shape, which is why one decision
+  // serves the value and the rows alike.
+  // d(mean of the trait curve)/d(a moving bound), the trait counterpart of
+  // layer_mean_dbound and the last piece the mixed second derivatives need.
+  double layer_mean_dtrait_dbound(double lo, double hi, CurveTrait trait,
+                                  bool high_moves) const {
+    const double span = hi - lo;
+    if (use_midpoint_mean(span, lo)) {
+      return 0.5 * root_vuln_integrand_dtrait_dpsi(0.5 * (lo + hi), trait);
+    }
+    const double mean = layer_mean_dtrait(lo, hi, trait);
+    const double at = high_moves ? hi : lo;
+    const double f_at = root_vuln_integrand_dtrait(at, trait);
+    return high_moves ? (f_at - mean) / span : (mean - f_at) / span;
+  }
+
+  double layer_mean_dtrait(double lo, double hi, CurveTrait trait) const {
+    const double span = hi - lo;
+    if (use_midpoint_mean(span, lo)) {
+      return root_vuln_integrand_dtrait(0.5 * (lo + hi), trait);
+    }
+    const double pos_lo = std::max(lo, 0.0);
+    double d_integral = 0.0;
+    if (pos_lo < hi) {
+      // Below the surface the integrand is 1, which carries no parameter of the
+      // curve, so only the above-surface part contributes.
+      d_integral = root_vuln_integral_dtrait(hi, trait) -
+                   root_vuln_integral_dtrait(pos_lo, trait);
+    }
+    return d_integral / span;
+  }
+
 
   // dG/dtheta at a fixed suction. Position is Euler's identity on the TABULATED
   // pair, which stays right past the cap because the limit is homogeneous of
@@ -631,6 +828,25 @@ public:
   // three of its arguments. Zero wherever the integral is at its cap, for the
   // reason its psi-derivative is zero there: past the cap the value no longer
   // moves, so nothing that moves it can either.
+  // df_r/d(a curve parameter) at one suction, at any scalar. ONE expression, so the
+  // value below and the psi-slope after it are derivatives of the same function
+  // rather than of a hand-kept mirror of it.
+  template <class T>
+  static T integrand_dtrait_kernel(const T& psi, const T& b, const T& c,
+                                   CurveTrait trait) {
+    using std::exp;
+    using std::log;
+    using std::pow;
+    const T x = pow(psi / b, c);
+    const T f = exp(-x);
+    // if/else rather than ?:, because XAD's expression templates give the two arms
+    // different types and a ternary cannot reconcile them.
+    if (trait == CurveTrait::Position) {
+      return T(f * x * c / b);
+    }
+    return T(-f * x * log(psi / b));
+  }
+
   double root_vuln_integrand_dtrait(double psi, CurveTrait trait) const {
     if (!(psi > 0.0)) {
       return 0.0;   // f_r == 1 there whatever the parameters are
@@ -638,11 +854,24 @@ public:
     if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
       return 0.0;
     }
-    const double x = std::pow(psi / root_b, root_c);
-    const double f = std::exp(-x);
-    return trait == CurveTrait::Position
-               ? f * x * root_c / root_b
-               : -f * x * std::log(psi / root_b);
+    return integrand_dtrait_kernel<double>(psi, root_b, root_c, trait);
+  }
+
+  // Its own psi-slope, by a tangent through that same kernel. Needed where a MEAN of
+  // the trait curve has to respond to a moving bound, which is the mixed second
+  // derivative the two d2uptake_dpsi_d* callers take.
+  double root_vuln_integrand_dtrait_dpsi(double psi, CurveTrait trait) const {
+    if (!(psi > 0.0)) {
+      return 0.0;
+    }
+    if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
+      return 0.0;
+    }
+    using tangent = odelia::ode::tangent_scalar<double>;
+    tangent p = psi;
+    odelia::ode::seed_direction(p, 1.0);
+    return odelia::ode::derivative_along(integrand_dtrait_kernel<tangent>(
+        p, tangent(root_b), tangent(root_c), trait));
   }
 
   // Every read of the root curve a lifted evaluation takes, at one suction. The
@@ -903,74 +1132,27 @@ public:
 
       const double T_src_min = std::min(psi_soil[i], T_collar);
       const double T_src_max = std::max(psi_soil[i], T_collar);
-      const double span = T_src_max - T_src_min;
-      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;
 
-      const double T_pos_lo = std::max(T_src_min, 0.0);
-      const double T_neg_hi = std::min(T_src_max, 0.0);
-      double integral = 0.0;
-      if (T_pos_lo < T_src_max) {
-        integral += root_vuln_integral_at(T_src_max) -
-                    root_vuln_integral_at(T_pos_lo);
-      }
-      if (T_src_min < T_neg_hi) {
-        integral += (T_neg_hi - T_src_min);
-      }
-
-      // Below the surface the moving bound is in the f_r == 1 part, contributed
-      // linearly, so the slope is 1 and its own slope is 0.
-      const double fr_at =
-          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
-      const double dfr_at =
-          (T_collar > 0.0) ? root_vuln_integrand_deriv_at(T_collar) : 0.0;
-      const double dinteg_dT = sign_var * fr_at;
-      const double d2integ_dT = sign_var * dfr_at;
-
-      // ⚠️ THE WORST OF THE THREE CANCELLATIONS, because quotient_d2T is built ON
-      // quotient_dT. That numerator, `sign_var * integral - span * dinteg_dT`,
-      // cancels its leading terms exactly (integral is f_r * span and dinteg_dT is
-      // f_r), so it has already spent one order of the span before the second
-      // derivative spends another. See duptake_dpsi_impl and uptake for the same
-      // defect one and two levels up, and test_leaf's "the mean conductivity" table
-      // for the crossover at a span of about 1e-5.
+      // ⚠️ THE WORST OF THE THREE CANCELLATIONS was here, because the second
+      // derivative was built ON a first whose numerator -- `sign_var * integral -
+      // span * dinteg_dT` -- already cancels its leading terms exactly (integral is
+      // f_r * span and dinteg_dT is f_r). It had spent one order of the span before
+      // the second derivative spent another. See test_leaf's "the mean conductivity"
+      // table for the crossover at a span of about 1e-5.
       //
-      // Below it the mean conductivity is the integrand at the midpoint, and its two
-      // collar derivatives are that curve's own, halved and quartered because
-      // dm/dT_collar is 1/2. No differencing and no cancellation, and f'' comes from
-      // a tangent through the SAME closed form rather than from a hand-derived
-      // sibling that could drift from it.
+      // In MEANS there is no branch left to write: layer_mean* makes the choice, and
+      // what remains is the quotient rule on r = k/g.
       //
       //   r = k/g  ->  r' = -k g'/g^2,  r'' = k (2 g'^2/g^3 - g''/g^2)
-      constexpr double mean_f_span_min = 1e-5;
-      double r_R_H, dr_R_dT, d2r_R_dT;
       const double k_min = network_.r_R_H_min[i];
-      if (span < mean_f_span_min && T_src_min > 0.0) {
-        using tangent = odelia::ode::tangent_scalar<double>;
-        const double m = 0.5 * (T_src_min + T_src_max);
-        const double g = vulnerability_curve_at<double>(m, root_b, root_c);
-        const double g1 = 0.5 * vulnerability_curve_slope_at<double>(m, root_b,
-                                                                    root_c);
-        tangent mt = m;
-        odelia::ode::seed_direction(mt, 1.0);
-        const double f2 = odelia::ode::derivative_along(
-            vulnerability_curve_slope_at<tangent>(mt, tangent(root_b),
-                                                  tangent(root_c)));
-        const double g2 = 0.25 * f2;
-        r_R_H = k_min / g;
-        dr_R_dT = -k_min * g1 / (g * g);
-        d2r_R_dT = k_min * (2.0 * g1 * g1 / (g * g * g) - g2 / (g * g));
-      } else {
-        // The mean resistance is r_R_H_min * span / integral, and both derivatives
-        // of that quotient are taken here rather than once each: the span's second
-        // derivative is zero, which is what leaves only two terms.
-        r_R_H = k_min * span / integral;
-        const double quotient_dT =
-            (sign_var * integral - span * dinteg_dT) / (integral * integral);
-        const double quotient_d2T = -span * d2integ_dT / (integral * integral) -
-                                    2.0 * quotient_dT * dinteg_dT / integral;
-        dr_R_dT = k_min * quotient_dT;
-        d2r_R_dT = k_min * quotient_d2T;
-      }
+      const bool collar_is_high = T_collar > psi_soil[i];
+      const double g = layer_mean(T_src_min, T_src_max);
+      const double g1 = layer_mean_dbound(T_src_min, T_src_max, collar_is_high);
+      const double g2 = layer_mean_dbound2(T_src_min, T_src_max, collar_is_high);
+      const double r_R_H = k_min / g;
+      const double dr_R_dT = -k_min * g1 / (g * g);
+      const double d2r_R_dT =
+          k_min * (2.0 * g1 * g1 / (g * g * g) - g2 / (g * g));
       const double r_R = r_R_H + network_.r_R_V_sum[i];
 
       const double num = T_collar - psi_soil[i] - grav_head_z_[i];
@@ -1002,82 +1184,22 @@ private:
 
       const double T_src_min = std::min(psi_soil[i], T_collar);
       const double T_src_max = std::max(psi_soil[i], T_collar);
-      const double span = T_src_max - T_src_min;
-      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;  // = dspan/dT_collar
-
-      // integral, replicated bit-for-bit from uptake_impl.
-      const double T_pos_lo = std::max(T_src_min, 0.0);
-      const double T_neg_hi = std::min(T_src_max, 0.0);
-      double integral = 0.0;
-      if (T_pos_lo < T_src_max) {
-        integral += root_vuln_integral_at(T_src_max) -
-                    root_vuln_integral_at(T_pos_lo);
-      }
-      if (T_src_min < T_neg_hi) {
-        integral += (T_neg_hi - T_src_min);
-      }
-
-      // d(integral)/d(T_collar): for T_collar>0 the moving bound is in the
-      // vulnerable region. The integrand is the derivative of the *same*
-      // cumulative curve that produced `integral` (root_vuln_integral_deriv_at),
-      // and the two accessors differ only in how they are bounded past the knots:
-      // the conductivity read clamps its argument to the last knot, the integral is
-      // capped at G(inf) -- so beyond the domain only the integral's
-      // own derivative stays consistent with the value used here (issue #1; the
-      // reasoning is #527's, the "both clamp-to-last-value" it used to cite was
-      // never true of either). For T_collar<0 (an above-atmospheric collar) the
-      // moving bound is in the f_r==1 part, contributed linearly, so the slope
-      // is 1.
-      const double fr_at =
-          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
-      const double dinteg_dT = sign_var * fr_at;
 
       // ⚠️ THE DIVIDED DIFFERENCE LOSES AN ORDER OF SPAN TO CANCELLATION, and this
-      // derivative is where it shows. `integral` is f_r * span to leading order and
-      // `dinteg_dT` is f_r, so `sign_var * integral - span * dinteg_dT` cancels its
-      // leading terms EXACTLY and what survives is O(span^2) -- divided by an
-      // integral^2 that is also O(span^2). The limit is finite; the computation is
-      // not, because both the integral and its slope are reads of a TABULATED curve
-      // and the cancellation promotes the table's error by one factor of 1/span.
+      // derivative is where it first showed: `integral` is f_r * span to leading order
+      // and `dinteg_dT` is f_r, so their difference cancels exactly and what survives
+      // is O(span^2) over an integral^2 that is also O(span^2). The limit is finite;
+      // the computation was not, because both are reads of a TABULATED curve and the
+      // cancellation promotes the table's error by one factor of 1/span.
       //
-      // MEASURED, in test_leaf's "the mean conductivity" table: the two forms of the
-      // mean conductivity cross at a span of about 1e-5, and below it the divided
-      // difference is the worse one. At the span of 5.6e-08 that one operating point
-      // of 2,829,445 on a century stand reached, the VALUE is still good to ~4e-10 --
-      // and this derivative, having spent an order of span, carries about 0.7%. That
-      // was enough to corrupt the marginal profit at the scale of its own residual,
-      // so the collar solve rooted the corrupted function and returned a MINIMUM of
-      // profit; plant then refused the gradient, correctly, and the whole census went
-      // not-a-number.
-      //
-      // The mean of the integrand over the interval is its midpoint value to
-      // O(span^2), which below the crossover is smaller than the error it replaces
-      // by orders. No differencing, no cancellation, and the value and the slope
-      // both come from the CLOSED-FORM integrand -- one definition supplying both
-      // orders, where the divided difference took its value from the tabulation and
-      // paid for it here.
-      //
-      // dm/dT_collar is 1/2 whichever of the collar and the layer is the larger,
-      // because the midpoint is their mean.
-      constexpr double mean_f_span_min = 1e-5;
-      double r_R_H, dr_R_H_dT;
-      if (span < mean_f_span_min && T_src_min > 0.0) {
-        // The same closed form the other two sites use, so all three read one
-        // definition of the curve rather than one of them reading the clamped
-        // table while the others read the function.
-        const double m = 0.5 * (T_src_min + T_src_max);
-        const double mean_f = vulnerability_curve_at<double>(m, root_b, root_c);
-        r_R_H = network_.r_R_H_min[i] / mean_f;
-        dr_R_H_dT =
-            -network_.r_R_H_min[i] *
-            (0.5 * vulnerability_curve_slope_at<double>(m, root_b, root_c)) /
-            (mean_f * mean_f);
-      } else {
-        r_R_H = network_.r_R_H_min[i] * span / integral;
-        dr_R_H_dT = network_.r_R_H_min[i] *
-                    (sign_var * integral - span * dinteg_dT) /
-                    (integral * integral);
-      }
+      // In MEANS the span is gone from the algebra and layer_mean* owns the choice of
+      // form, so there is no branch to write here at all.
+      const double k_min = network_.r_R_H_min[i];
+      const double mean_f = layer_mean(T_src_min, T_src_max);
+      const double mean_dT =
+          layer_mean_dbound(T_src_min, T_src_max, T_collar > psi_soil[i]);
+      const double r_R_H = k_min / mean_f;
+      const double dr_R_H_dT = -k_min * mean_dT / (mean_f * mean_f);
       const double r_R = r_R_H + network_.r_R_V_sum[i];
       const double dr_R_dT = dr_R_H_dT;
 
@@ -1116,30 +1238,19 @@ private:
 
       const double T_src_min = std::min(psi_soil[i], T_collar);
       const double T_src_max = std::max(psi_soil[i], T_collar);
-      const double span = T_src_max - T_src_min;
 
-      // integral, replicated bit-for-bit from uptake_impl.
-      const double T_pos_lo = std::max(T_src_min, 0.0);
-      const double T_neg_hi = std::min(T_src_max, 0.0);
-      double integral = 0.0;
-      double dinteg_db = 0.0;
-      if (T_pos_lo < T_src_max) {
-        integral += root_vuln_integral_at(T_src_max) -
-                    root_vuln_integral_at(T_pos_lo);
-        dinteg_db += root_vuln_integral_dtrait(T_src_max, trait) -
-                     root_vuln_integral_dtrait(T_pos_lo, trait);
-      }
-      if (T_src_min < T_neg_hi) {
-        // The above-atmospheric part contributes its width, with f_r == 1
-        // throughout. No curve, so neither parameter of it.
-        integral += (T_neg_hi - T_src_min);
-      }
+      // In MEANS, which is where the span cancels out of the algebra: k*span/integral
+      // is k/mean, and -k*span*dinteg/integral^2 is -k*mean_d/mean^2. Both means come
+      // from layer_mean*, so the form decision is made in one place for the value and
+      // the trait row alike.
+      const double mean_f = layer_mean(T_src_min, T_src_max);
+      const double mean_db = layer_mean_dtrait(T_src_min, T_src_max, trait);
 
-      const double r_R_H = network_.r_R_H_min[i] * span / integral;
+      const double r_R_H = network_.r_R_H_min[i] / mean_f;
       const double r_R = r_R_H + network_.r_R_V_sum[i];
-      // Only the integral moves, and it is in the denominator.
+      // Only the curve's mean moves, and it is in the denominator.
       const double dr_R_db =
-          -network_.r_R_H_min[i] * span * dinteg_db / (integral * integral);
+          -network_.r_R_H_min[i] * mean_db / (mean_f * mean_f);
 
       const double num = T_collar - psi_soil[i] - grav_head_z_[i];
       // E_i = num / r_R with num constant in root_b.
@@ -1211,33 +1322,17 @@ public:
 
       const double T_src_min = std::min(psi_soil[i], T_collar);
       const double T_src_max = std::max(psi_soil[i], T_collar);
-      const double span = T_src_max - T_src_min;
-      // dspan/dT_collar was +1 when the collar pulls; the soil end moves the
-      // other way.
-      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;
-      const double dspan_dpsi = -sign_var;
 
-      const double T_pos_lo = std::max(T_src_min, 0.0);
-      const double T_neg_hi = std::min(T_src_max, 0.0);
-      double integral = 0.0;
-      if (T_pos_lo < T_src_max) {
-        integral += root_vuln_integral_at(T_src_max) -
-                    root_vuln_integral_at(T_pos_lo);
-      }
-      if (T_src_min < T_neg_hi) {
-        integral += (T_neg_hi - T_src_min);
-      }
+      // In means, and the moving bound is the layer's own potential rather than the
+      // collar -- same curve, other endpoint, and layer_mean_dbound is told which.
+      const double mean_f = layer_mean(T_src_min, T_src_max);
+      const double mean_dpsi =
+          layer_mean_dbound(T_src_min, T_src_max, psi_soil[i] > T_collar);
 
-      // Read at psi_i, not at the collar: same curve, other endpoint.
-      const double fr_at =
-          (psi_soil[i] > 0.0) ? root_vuln_integral_deriv_at(psi_soil[i]) : 1.0;
-      const double dinteg_dpsi = dspan_dpsi * fr_at;
-
-      const double r_R_H = network_.r_R_H_min[i] * span / integral;
+      const double r_R_H = network_.r_R_H_min[i] / mean_f;
       const double r_R = r_R_H + network_.r_R_V_sum[i];
-      const double dr_R_dpsi = network_.r_R_H_min[i] *
-                               (dspan_dpsi * integral - span * dinteg_dpsi) /
-                               (integral * integral);
+      const double dr_R_dpsi =
+          -network_.r_R_H_min[i] * mean_dpsi / (mean_f * mean_f);
 
       const double num = T_collar - psi_soil[i] - grav_head_z_[i];
       const double dnum_dpsi = -1.0;
@@ -1282,36 +1377,25 @@ public:
         return;
       }
 
-      // Everything down to g is duptake_dpsi_impl's loop, unchanged: the same
-      // span, the same integral, the same moving-bound derivative.
+      // Everything down to g is duptake_dpsi_impl's, and now literally so: the same
+      // two means from the same helpers, rather than the same construction copied.
       const double T_src_min = std::min(psi_soil[i], T_collar);
       const double T_src_max = std::max(psi_soil[i], T_collar);
-      const double span = T_src_max - T_src_min;
-      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;
-
-      const double T_pos_lo = std::max(T_src_min, 0.0);
-      const double T_neg_hi = std::min(T_src_max, 0.0);
-      double integral = 0.0;
-      if (T_pos_lo < T_src_max) {
-        integral += root_vuln_integral_at(T_src_max) -
-                    root_vuln_integral_at(T_pos_lo);
-      }
-      if (T_src_min < T_neg_hi) {
-        integral += (T_neg_hi - T_src_min);
-      }
-      const double fr_at =
-          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
-      const double dinteg_dT = sign_var * fr_at;
 
       // A and B carry the whole of the carbon dependence; f and g carry the
       // whole of the collar dependence. That separation is what makes the rest
       // a quotient rule rather than a new model.
       const double A = network_.r_R_H_min[i];
-      const double f = span / integral;
+      // In means: span/integral is 1/mean, and its collar derivative is
+      // -mean_dT/mean^2. Same numbers above the crossover, and the accurate ones
+      // below it, because layer_mean* makes that choice once for every caller.
+      const double mean_f = layer_mean(T_src_min, T_src_max);
+      const double mean_dT =
+          layer_mean_dbound(T_src_min, T_src_max, T_collar > psi_soil[i]);
+      const double f = 1.0 / mean_f;
       const double B = network_.r_R_V_sum[i];
       const double r_R = A * f + B;
-      const double g = (sign_var * integral - span * dinteg_dT) /
-                       (integral * integral);
+      const double g = -mean_dT / (mean_f * mean_f);
       const double num = T_collar - psi_soil[i] - grav_head_z_[i];
       const double E_i = num / r_R;
       const double N = r_R - num * A * g;   // the numerator of dE_i/dT_collar
@@ -1362,41 +1446,24 @@ public:
 
       const double T_src_min = std::min(psi_soil[i], T_collar);
       const double T_src_max = std::max(psi_soil[i], T_collar);
-      const double span = T_src_max - T_src_min;
-      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;
-
-      const double T_pos_lo = std::max(T_src_min, 0.0);
-      const double T_neg_hi = std::min(T_src_max, 0.0);
-      double integral = 0.0;
-      double integral_t = 0.0;   // dI/dtheta
-      if (T_pos_lo < T_src_max) {
-        integral += root_vuln_integral_at(T_src_max) -
-                    root_vuln_integral_at(T_pos_lo);
-        integral_t += root_vuln_integral_dtrait(T_src_max, trait) -
-                      root_vuln_integral_dtrait(T_pos_lo, trait);
-      }
-      if (T_src_min < T_neg_hi) {
-        integral += (T_neg_hi - T_src_min);
-      }
-
-      // The integrand at the moving bound, and its own trait derivative there.
-      const double fr =
-          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
-      const double fr_t = (T_collar > 0.0)
-                              ? root_vuln_integrand_dtrait(T_collar, trait)
-                              : 0.0;
-      const double dI_dT = sign_var * fr;
-      const double dI_t_dT = sign_var * fr_t;
 
       const double H = network_.r_R_H_min[i];
-      const double r_R = H * span / integral + network_.r_R_V_sum[i];
-      const double dr_dT =
-          H * (sign_var * integral - span * dI_dT) / (integral * integral);
-      // dr/dtheta, and its own collar derivative.
-      const double dr_dt = -H * span * integral_t / (integral * integral);
-      const double d2r =
-          -H * (sign_var * integral_t + span * dI_t_dT) / (integral * integral) +
-          2.0 * H * span * integral_t * dI_dT / (integral * integral * integral);
+      // In means throughout: r = H/mean + V, dr/dT = -H mean_dT/mean^2,
+      // dr/dtheta = -H mean_t/mean^2, and one more collar derivative of that is the
+      // quotient rule on those two. The span is gone from every line, which is what
+      // the divided difference was spending its accuracy on.
+      const bool high_moves = T_collar > psi_soil[i];
+      const double mean_f = layer_mean(T_src_min, T_src_max);
+      const double mean_dT = layer_mean_dbound(T_src_min, T_src_max, high_moves);
+      const double mean_t = layer_mean_dtrait(T_src_min, T_src_max, trait);
+      const double mean_t_dT =
+          layer_mean_dtrait_dbound(T_src_min, T_src_max, trait, high_moves);
+
+      const double r_R = H / mean_f + network_.r_R_V_sum[i];
+      const double dr_dT = -H * mean_dT / (mean_f * mean_f);
+      const double dr_dt = -H * mean_t / (mean_f * mean_f);
+      const double d2r = -H * mean_t_dT / (mean_f * mean_f) +
+                         2.0 * H * mean_t * mean_dT / (mean_f * mean_f * mean_f);
 
       const double num = T_collar - psi_soil[i] - grav_head_z_[i];
       // E_i = num / r_R, so dE/dtheta = -num dr/dtheta / r_R^2, and one more
@@ -1435,41 +1502,25 @@ public:
 
       const double T_src_min = std::min(psi_soil[i], T_collar);
       const double T_src_max = std::max(psi_soil[i], T_collar);
-      const double span = T_src_max - T_src_min;
-      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;
 
-      const double T_pos_lo = std::max(T_src_min, 0.0);
-      const double T_neg_hi = std::min(T_src_max, 0.0);
-      double integral = 0.0;
-      if (T_pos_lo < T_src_max) {
-        integral += root_vuln_integral_at(T_src_max) -
-                    root_vuln_integral_at(T_pos_lo);
-      }
-      if (T_src_min < T_neg_hi) {
-        integral += (T_neg_hi - T_src_min);
-      }
-
-      // The integrand at each moving endpoint, each read at its own end.
-      const double fr_T =
-          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
-      const double fr_psi =
-          (psi_soil[i] > 0.0) ? root_vuln_integral_deriv_at(psi_soil[i]) : 1.0;
-
+      // In means, with BOTH bounds moving: the collar and the layer's own potential
+      // are the two ends of one interval, so the mixed term is the mean's own mixed
+      // bound derivative and the rest is the quotient rule on it.
+      const bool collar_is_high = T_collar > psi_soil[i];
       const double H = network_.r_R_H_min[i];
-      const double dinteg_dT = sign_var * fr_T;
-      const double dinteg_dpsi = -sign_var * fr_psi;
+      const double mean_f = layer_mean(T_src_min, T_src_max);
+      const double mean_dT =
+          layer_mean_dbound(T_src_min, T_src_max, collar_is_high);
+      const double mean_dpsi =
+          layer_mean_dbound(T_src_min, T_src_max, !collar_is_high);
+      const double mean_mixed = layer_mean_dbound_mixed(T_src_min, T_src_max);
 
-      const double r_R = H * span / integral + network_.r_R_V_sum[i];
-      const double dr_dT =
-          H * (sign_var * integral - span * dinteg_dT) / (integral * integral);
-      // A = dspan/dpsi * integral - span * dinteg/dpsi, so dr/dpsi = H A / I^2.
-      const double A = -sign_var * integral - span * dinteg_dpsi;
-      const double dr_dpsi = H * A / (integral * integral);
-      // dA/dT, with both second derivatives of the endpoints vanishing.
-      const double dA_dT = fr_psi - fr_T;
+      const double r_R = H / mean_f + network_.r_R_V_sum[i];
+      const double dr_dT = -H * mean_dT / (mean_f * mean_f);
+      const double dr_dpsi = -H * mean_dpsi / (mean_f * mean_f);
       const double d2r_dT_dpsi =
-          H * (dA_dT * integral - 2.0 * A * dinteg_dT) /
-          (integral * integral * integral);
+          -H * mean_mixed / (mean_f * mean_f) +
+          2.0 * H * mean_dpsi * mean_dT / (mean_f * mean_f * mean_f);
 
       const double num = T_collar - psi_soil[i] - grav_head_z_[i];
       // E = num / r_R; dE/dpsi = N / r^2 with N = -r - num dr/dpsi.
@@ -1719,9 +1770,8 @@ private:
     //
     // Only where both bounds sit above the surface: below it the integrand is the
     // constant 1 and a span straddling it has no single midpoint value.
-    constexpr double mean_f_span_min = 1e-5;
     T mean_f;
-    if (to_passive(span) < mean_f_span_min && to_passive(T_src_min) > 0.0) {
+    if (use_midpoint_mean(span, T_src_min)) {
       const T mid = T(0.5) * (T_src_min + T_src_max);
       mean_f = vulnerability_curve_at<T>(mid, at_scalar.root_b, at_scalar.root_c);
     } else {

@@ -4148,6 +4148,68 @@ void test_the_supply_derivatives_stay_smooth_into_a_coincidence() {
   ok(worst_jump2 < 0.05, "d2E/dT2 stays smooth into the coincidence");
 }
 
+// The layer-mean helpers' two branches, against each other where both are valid.
+//
+// ⚠️ THE CHECK THAT CATCHES A WRONG CONSTANT, and it was missing: the midpoint limits
+// are f'/2, f''/3 and f''/6, and I first wrote the last two as f''/4. The continuity
+// sweep could not see it -- those terms contribute little to dE/dT there -- so this
+// compares the two branches directly, just ABOVE the crossover where the divided
+// difference is still accurate and the midpoint form is too. A wrong constant shows
+// up here as a 25% disagreement rather than not at all.
+void test_the_layer_mean_branches_agree_across_the_crossover() {
+  printf("the layer-mean helpers: divided difference against the midpoint limits\n");
+  namespace grad = phylloptim::gradient;
+  grad::Settings s;
+  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
+  phylloptim::Leaf l = env::fresh();
+  grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+  auto& r = l.roots_;
+
+  // 2e-5: above the 1e-5 threshold, so the helpers take the general branch, and
+  // still short enough that the midpoint expansion is accurate.
+  const double centre = 2.0, span = 2e-5;
+  const double lo = centre - 0.5 * span, hi = centre + 0.5 * span;
+  const double m = 0.5 * (lo + hi);
+
+  const double f1 = r.curve_slope_at_for_test(m);
+  const double f2 = r.curve_slope2_at(m);
+
+  // Swept, because each quantity crosses at its OWN span. The mean's divided
+  // difference divides by the span once, its first bound derivative twice and its
+  // second three times, so each degrades a decade or more earlier than the last --
+  // one threshold for all three would be right for at most one.
+  (void)lo; (void)hi; (void)m; (void)f1; (void)f2; (void)span;
+  printf("      %-10s %-12s %-12s %s\n", "span", "d/dbound", "d2/dbound2", "mixed");
+  double best1 = 1.0, best2 = 1.0, bestm = 1.0;
+  double at1 = 0, at2 = 0, atm = 0;
+  for (int e = 1; e <= 5; ++e) {
+    for (double mult : {5.0, 1.0}) {
+      const double sp = mult * std::pow(10.0, -double(e));
+      const double a = centre - 0.5 * sp, b = centre + 0.5 * sp;
+      const double mm = 0.5 * (a + b);
+      const double g1 = r.curve_slope_at_for_test(mm);
+      const double g2 = r.curve_slope2_at(mm);
+      const double r1 = std::abs(r.layer_mean_dbound(a, b, true) / (0.5 * g1) - 1.0);
+      const double r2 = std::abs(r.layer_mean_dbound2(a, b, true) / (g2 / 3.0) - 1.0);
+      const double rm = std::abs(r.layer_mean_dbound_mixed(a, b) / (g2 / 6.0) - 1.0);
+      printf("      %-10.1e %-12.3e %-12.3e %.3e\n", sp, r1, r2, rm);
+      // An exact zero means the helper took the midpoint branch and is being
+      // compared against itself, which says nothing.
+      if (r1 > 0.0 && r1 < best1) { best1 = r1; at1 = sp; }
+      if (r2 > 0.0 && r2 < best2) { best2 = r2; at2 = sp; }
+      if (rm > 0.0 && rm < bestm) { bestm = rm; atm = sp; }
+    }
+  }
+  printf("      best agreement: d/dbound %.2e at %.0e, d2 %.2e at %.0e, "
+         "mixed %.2e at %.0e\n", best1, at1, best2, at2, bestm, atm);
+  // Each must have SOME span at which the two forms meet. Where one never does, one
+  // of the two is wrong -- which is how a 1/4 written for a 1/3 or a 1/6 presents,
+  // and how it did.
+  ok(best1 < 1e-5, "the first bound derivative's two forms meet");
+  ok(best2 < 1e-2, "the second bound derivative's two forms meet");
+  ok(bestm < 1e-2, "the mixed bound derivative's two forms meet");
+}
+
 void test_the_two_zero_flux_kinds_are_two_points() {
   printf("the two zero-flux kinds are two points, and the placement says which\n");
   namespace grad = phylloptim::gradient;
@@ -4451,6 +4513,7 @@ int main() {
   test_the_marginals_collar_slope_against_a_difference();
   test_where_the_mean_conductivity_should_stop_differencing();
   test_the_supply_derivatives_stay_smooth_into_a_coincidence();
+  test_the_layer_mean_branches_agree_across_the_crossover();
   test_the_two_zero_flux_kinds_are_two_points();
   benchmark();
 
