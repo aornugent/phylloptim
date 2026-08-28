@@ -3060,6 +3060,30 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // Interior stationary point. f_lo > 0 > f_hi, so the bracket is valid and
   // uniroot_smooth's throw-on-bad-bracket cannot fire; passing the two endpoint
   // values it already has saves it re-evaluating them.
+  //
+  // ⚠️ A VALID BRACKET IS NOT A UNIQUE ROOT, and this is where the monotonicity
+  // caveat above stops being theoretical. The pin tests catch a minimum that is
+  // the ONLY interior stationary point; they cannot catch one that COEXISTS with
+  // maxima, because f_lo > 0 > f_hi holds just as well with three roots in
+  // between, and TOMS748 is then free to return any of them -- including the
+  // middle, upward crossing, which is a MINIMUM of profit. The point is tagged
+  // Interior, profit_ is placed at it, and nothing on the forward path says so.
+  //
+  // MEASURED, on the 105-year TF24 stand in plant's scripts/profile-stand-gradient.R:
+  // collar 1.798486, marginal profit there -1e-06 (a root, within 3e-08 of
+  // stationary), and the profit curvature at it +34.414226. A converged root with
+  // a positive slope on a downward-crossing bracket is a proof that the marginal
+  // is not monotone there. The 240-row golden grid this was validated on does not
+  // reach that state; a century of stand dynamics does.
+  //
+  // Today the only thing that notices is plant's reverse-mode guard, which refuses
+  // the gradient because the interior derivation divides by this curvature -- so a
+  // forward-model error is visible only through a derivative nobody has to ask
+  // for. Options, none of them free, are in plant's docs/design/one-program.md:
+  // classify it (needs the crossing direction, which uniroot_smooth currently
+  // discards along with Boost's final bracket), split the bracket at the minimum
+  // and re-solve each half, or fall back to golden_section_max as the
+  // no-usable-gradient path already does.
   operating_point_kind_ = OperatingPointKind::Interior;
   return util::uniroot_smooth(dprofit, lo, hi, f_lo, f_hi, collar_root_tol,
                               static_cast<size_t>(ci_niter));
