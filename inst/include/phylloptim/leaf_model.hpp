@@ -3213,53 +3213,21 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
                                            collar_root_tol,
                                            static_cast<size_t>(ci_niter));
 
-  // ONE evaluation, dry of the root, decides which way the marginal crosses there.
-  // Going wet to dry a maximum has the marginal falling through zero, so just dry
-  // of it the marginal is negative; a minimum has it rising, so just dry of it the
-  // marginal is positive. Only the sign is read.
+  // ⚠️ THE CROSSING DIRECTION IS NOT MEASURABLE BY A PROBE HERE, and a probe was
+  // tried. An interior collar is only reached on a bracket the marginal crosses
+  // downward, so the slope at a converged root must be non-positive -- but near a
+  // collar/soil coincidence the marginal has a sharp feature, and MEASURED on the
+  // century stand: a difference at a 1e-6 relative step gives -9.63, at 1e-8 gives
+  // +166, at 1e-10 gives -10588. It does not converge. Above the feature the step
+  // straddles it; inside it, the marginal's own ~1e-6 evaluation noise divided by
+  // the step swamps the signal. So no step size works, and a probe at 1e-6 reported
+  // the crossing as downward at all 2,829,445 interior solves on that stand while
+  // two independent analytic routes agreed the slope there is +34.41.
   //
-  // Not free, and not a diagnostic tax either: resolving the case needs this same
-  // evaluation, so the cost is the price of being correct rather than of being
-  // observant. Paid on interior solves only -- a pin needs none of it. Safe to
-  // evaluate here because find_root_collar_psi closes on the returned collar
-  // AFTER this returns, which is what restores the leaf's own coefficients.
-  const double h = std::max(std::abs(root), 1.0) * collar_probe_frac;
-  const double dry_x = std::min(root + h, hi);
-  bool dry_ok = false;
-  const double f_dry = dprofit_at_collar_psi(dry_x, &dry_ok);
-  const bool rising = dry_ok && std::isfinite(f_dry) && f_dry > 0.0;
-  if (!rising) {
-    return root;
-  }
-  ++(*nonmonotone_collars);
-
-  // A one-shot scan of the marginal across the bracket, for deciding WHY it is not
-  // monotone -- a smooth second maximum and a kink from the nested ci solve
-  // switching to its compensation point are different findings with different
-  // fixes, and the sign pattern alone separates them. Behind an environment
-  // variable because it is an investigation rather than a check, and evaluating
-  // the marginal fifty times is not something a run should ever do by accident.
-  if (std::getenv("PHYLLOPTIM_SCAN_NONMONOTONE_COLLAR") != nullptr) {
-    static bool scanned = false;
-    if (!scanned) {
-      scanned = true;
-      std::fprintf(stderr,
-                   "# nonmonotone collar: lo=%.17g hi=%.17g root=%.17g "
-                   "f_lo=%.17g f_hi=%.17g f_dry=%.17g\n",
-                   lo, hi, root, f_lo, f_hi, f_dry);
-      std::fprintf(stderr, "# x\tdprofit\tfeasible\tci_at_compensation\n");
-      const int n = 400;
-      for (int i = 0; i <= n; ++i) {
-        const double x = lo + (hi - lo) * (double(i) / double(n));
-        bool ok = false;
-        const double f = dprofit_at_collar_psi(x, &ok);
-        std::fprintf(stderr, "%.17g\t%.17g\t%d\t%d\n", x, f, ok ? 1 : 0,
-                     ci_at_compensation_point_ ? 1 : 0);
-      }
-      std::fflush(stderr);
-    }
-  }
-
+  // The detection therefore has to be ANALYTIC, and it is: marginal_collar_slope()
+  // is dM/dp in closed form, agreeing with plant's independent nested-AD route to
+  // seven digits. It is called from find_root_collar_psi, after the coordinates it
+  // reads have been placed.
   return root;
 }
 
@@ -3334,6 +3302,21 @@ inline void Leaf::find_root_collar_psi(){
 
     opt_root_psi_ = opt_root_psi;
     profit_ = profit_psi_stem_TF(opt_psi_stem_, opt_root_psi);
+
+    // ⚠️ AN INTERIOR ROOT THAT IS A MINIMUM, counted here because here is the first
+    // place it can be seen. The bracket guarantees the marginal crosses downward
+    // over the interval, so a converged root inside it should have a non-positive
+    // slope -- and where the marginal has a sharp feature it can have three roots
+    // and TOMS748 may return the middle, upward one. That is a MINIMUM of profit,
+    // tagged Interior, with profit_ placed at it.
+    //
+    // Analytic, not a probe: see maximise_profit_over_collar for the measurement
+    // that shows no finite-difference step can answer this. One closed-form
+    // assembly per interior solve, and no model re-solve.
+    if (operating_point_kind_ == OperatingPointKind::Interior &&
+        marginal_collar_slope() > 0.0) {
+      ++(*nonmonotone_collars);
+    }
 
     if(!std::isfinite(profit_)){
         util::stop("Error: non-finite profit; opt_psi_stem_=" + util::to_string(opt_psi_stem_) +
