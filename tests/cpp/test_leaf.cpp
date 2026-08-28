@@ -4061,6 +4061,41 @@ void test_the_marginals_collar_slope_against_a_difference() {
   ok(worst < 1e-3, "the closed slope matches a difference of the marginal");
 }
 
+// Where a divided difference stops being the right form for the mean conductivity.
+//
+// The layer resistance is r_R_H_min * span / (G(max) - G(min)) -- a divided
+// difference of the cumulative curve. Its denominator is a difference of two
+// nearly-equal reads of a TABULATED G, so the relative error is the table's own
+// error divided by the span, and it diverges as the span shuts. The mean of the
+// integrand over the interval is also just f(midpoint) + span^2/24 * f'', so below
+// some span the midpoint is strictly better AND needs no differencing.
+//
+// This measures where they cross, so the threshold is data rather than a guess.
+void test_where_the_mean_conductivity_should_stop_differencing() {
+  printf("the mean conductivity: divided difference against the midpoint\n");
+  phylloptim::Leaf l = env::fresh();
+  namespace grad = phylloptim::gradient;
+  grad::Settings s;
+  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
+  grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+
+  // One suction well inside the curve's domain, and spans shrinking around it.
+  const double centre = 2.0;
+  printf("      %-12s %-22s %-22s %s\n", "span", "difference", "midpoint", "rel gap");
+  for (int e = 2; e <= 12; ++e) {
+    const double span = std::pow(10.0, -double(e));
+    const double lo = centre - 0.5 * span;
+    const double hi = centre + 0.5 * span;
+    const double integral =
+        l.roots_.root_vuln_integral_at(hi) - l.roots_.root_vuln_integral_at(lo);
+    const double differenced = integral / span;
+    const double midpoint = l.roots_.root_vuln_at(centre);
+    const double rel = std::abs(differenced / midpoint - 1.0);
+    printf("      1e-%-9d %-22.15g %-22.15g %.3e\n", e, differenced, midpoint, rel);
+  }
+  ok(true, "measured (read the table above; this test reports rather than asserts)");
+}
+
 void test_the_two_zero_flux_kinds_are_two_points() {
   printf("the two zero-flux kinds are two points, and the placement says which\n");
   namespace grad = phylloptim::gradient;
@@ -4362,6 +4397,7 @@ int main() {
   test_the_supply_answers_at_the_two_coincidences();
   test_the_supplys_second_collar_derivative();
   test_the_marginals_collar_slope_against_a_difference();
+  test_where_the_mean_conductivity_should_stop_differencing();
   test_the_two_zero_flux_kinds_are_two_points();
   benchmark();
 

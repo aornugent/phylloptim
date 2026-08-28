@@ -1584,15 +1584,6 @@ public:
   std::shared_ptr<std::size_t> collar_solves =
       std::make_shared<std::size_t>(0);
 
-  // How often the collar solve found the marginal NOT monotone on a bracket whose
-  // ends said it was -- i.e. how often the root-find returned a minimum of profit
-  // and had to look again. Zero on every fixture this package was validated on;
-  // non-zero on a 105-year plant stand, which is why it is counted rather than
-  // asserted away. Behind a pointer for collar_solves' reason and no other.
-  std::shared_ptr<std::size_t> nonmonotone_collars =
-      std::make_shared<std::size_t>(0);
-  std::size_t nonmonotone_collar_count() const { return *nonmonotone_collars; }
-  void clear_nonmonotone_collars() const { *nonmonotone_collars = 0; }
 
   // This leaf's own sites plus the supply model's, which are one list. Summed on
   // read rather than shared on construction, so rebuilding the root network cannot
@@ -3303,20 +3294,6 @@ inline void Leaf::find_root_collar_psi(){
     opt_root_psi_ = opt_root_psi;
     profit_ = profit_psi_stem_TF(opt_psi_stem_, opt_root_psi);
 
-    // ⚠️ AN INTERIOR ROOT THAT IS A MINIMUM, counted here because here is the first
-    // place it can be seen. The bracket guarantees the marginal crosses downward
-    // over the interval, so a converged root inside it should have a non-positive
-    // slope -- and where the marginal has a sharp feature it can have three roots
-    // and TOMS748 may return the middle, upward one. That is a MINIMUM of profit,
-    // tagged Interior, with profit_ placed at it.
-    //
-    // Analytic, not a probe: see maximise_profit_over_collar for the measurement
-    // that shows no finite-difference step can answer this. One closed-form
-    // assembly per interior solve, and no model re-solve.
-    if (operating_point_kind_ == OperatingPointKind::Interior &&
-        marginal_collar_slope() > 0.0) {
-      ++(*nonmonotone_collars);
-    }
 
     if(!std::isfinite(profit_)){
         util::stop("Error: non-finite profit; opt_psi_stem_=" + util::to_string(opt_psi_stem_) +
