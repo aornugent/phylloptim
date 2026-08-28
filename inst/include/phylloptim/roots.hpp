@@ -1662,9 +1662,35 @@ private:
     // caller reads as "use central differences".
     const T span = T_src_max - T_src_min;
 
+    // ⚠️ SAME CANCELLATION AS duptake_dpsi_impl'S, ONE LEVEL DOWN. span/integral is
+    // (max - min)/(G(max) - G(min)), whose denominator differences two nearly-equal
+    // reads of a TABULATED G. The VALUE survives it -- 4e-10 at the span of 5.6e-08
+    // that one operating point of 2,829,445 on a century stand reached -- but this is
+    // the path plant's curvature is taken through, and AD differentiates it TWICE.
+    // Each differentiation divides by the span again, so 4e-10/(5.6e-08)^2 is about
+    // 0.13 relative: the curvature at that point was never trustworthy either.
+    //
+    // The mean of the integrand over the interval is its midpoint value to O(span^2),
+    // and below the crossover measured in test_leaf (a span of about 1e-5) that error
+    // is smaller than the one it replaces by orders. Written as ARITHMETIC rather than
+    // as a lift, from the curve's own closed form, so AD supplies every order and both
+    // trait rows exactly -- one definition, all orders, which is the invariant the
+    // divided difference broke by taking its value from the tabulation.
+    //
+    // Only where both bounds sit above the surface: below it the integrand is the
+    // constant 1 and a span straddling it has no single midpoint value.
+    constexpr double mean_f_span_min = 1e-5;
+    T mean_f;
+    if (to_passive(span) < mean_f_span_min && to_passive(T_src_min) > 0.0) {
+      const T mid = T(0.5) * (T_src_min + T_src_max);
+      mean_f = vulnerability_curve_at<T>(mid, at_scalar.root_b, at_scalar.root_c);
+    } else {
+      mean_f = integral / span;
+    }
+
     // Find the horizantal resistance in a given layer by dividing the minimum resistance (i.e. maximum conductivity) by the fractional loss of conductivity
     const T r_R_H =
-        at_scalar.r_R_H_min[std::size_t(i)] * span / integral; // [MPa * s * (mol H2O)^-1]
+        at_scalar.r_R_H_min[std::size_t(i)] / mean_f; // [MPa * s * (mol H2O)^-1]
 
     // Find the total resistance in a given layer by adding the vertical resistance in that layer
     const T r_R = r_R_H + at_scalar.r_R_V_sum[std::size_t(i)]; // [MPa * s * (mol H2O)^-1]
