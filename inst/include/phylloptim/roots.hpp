@@ -926,17 +926,52 @@ public:
       const double dinteg_dT = sign_var * fr_at;
       const double d2integ_dT = sign_var * dfr_at;
 
-      // The mean resistance is r_R_H_min * span / integral, and both derivatives
-      // of that quotient are taken here rather than once each: the span's second
-      // derivative is zero, which is what leaves only two terms.
-      const double r_R_H = network_.r_R_H_min[i] * span / integral;
+      // ⚠️ THE WORST OF THE THREE CANCELLATIONS, because quotient_d2T is built ON
+      // quotient_dT. That numerator, `sign_var * integral - span * dinteg_dT`,
+      // cancels its leading terms exactly (integral is f_r * span and dinteg_dT is
+      // f_r), so it has already spent one order of the span before the second
+      // derivative spends another. See duptake_dpsi_impl and uptake for the same
+      // defect one and two levels up, and test_leaf's "the mean conductivity" table
+      // for the crossover at a span of about 1e-5.
+      //
+      // Below it the mean conductivity is the integrand at the midpoint, and its two
+      // collar derivatives are that curve's own, halved and quartered because
+      // dm/dT_collar is 1/2. No differencing and no cancellation, and f'' comes from
+      // a tangent through the SAME closed form rather than from a hand-derived
+      // sibling that could drift from it.
+      //
+      //   r = k/g  ->  r' = -k g'/g^2,  r'' = k (2 g'^2/g^3 - g''/g^2)
+      constexpr double mean_f_span_min = 1e-5;
+      double r_R_H, dr_R_dT, d2r_R_dT;
+      const double k_min = network_.r_R_H_min[i];
+      if (span < mean_f_span_min && T_src_min > 0.0) {
+        using tangent = odelia::ode::tangent_scalar<double>;
+        const double m = 0.5 * (T_src_min + T_src_max);
+        const double g = vulnerability_curve_at<double>(m, root_b, root_c);
+        const double g1 = 0.5 * vulnerability_curve_slope_at<double>(m, root_b,
+                                                                    root_c);
+        tangent mt = m;
+        odelia::ode::seed_direction(mt, 1.0);
+        const double f2 = odelia::ode::derivative_along(
+            vulnerability_curve_slope_at<tangent>(mt, tangent(root_b),
+                                                  tangent(root_c)));
+        const double g2 = 0.25 * f2;
+        r_R_H = k_min / g;
+        dr_R_dT = -k_min * g1 / (g * g);
+        d2r_R_dT = k_min * (2.0 * g1 * g1 / (g * g * g) - g2 / (g * g));
+      } else {
+        // The mean resistance is r_R_H_min * span / integral, and both derivatives
+        // of that quotient are taken here rather than once each: the span's second
+        // derivative is zero, which is what leaves only two terms.
+        r_R_H = k_min * span / integral;
+        const double quotient_dT =
+            (sign_var * integral - span * dinteg_dT) / (integral * integral);
+        const double quotient_d2T = -span * d2integ_dT / (integral * integral) -
+                                    2.0 * quotient_dT * dinteg_dT / integral;
+        dr_R_dT = k_min * quotient_dT;
+        d2r_R_dT = k_min * quotient_d2T;
+      }
       const double r_R = r_R_H + network_.r_R_V_sum[i];
-      const double quotient_dT =
-          (sign_var * integral - span * dinteg_dT) / (integral * integral);
-      const double quotient_d2T = -span * d2integ_dT / (integral * integral) -
-                                  2.0 * quotient_dT * dinteg_dT / integral;
-      const double dr_R_dT = network_.r_R_H_min[i] * quotient_dT;
-      const double d2r_R_dT = network_.r_R_H_min[i] * quotient_d2T;
 
       const double num = T_collar - psi_soil[i] - grav_head_z_[i];
       // E_i = num / r_R with num linear in the collar, so the same two terms
@@ -1027,11 +1062,16 @@ private:
       constexpr double mean_f_span_min = 1e-5;
       double r_R_H, dr_R_H_dT;
       if (span < mean_f_span_min && T_src_min > 0.0) {
+        // The same closed form the other two sites use, so all three read one
+        // definition of the curve rather than one of them reading the clamped
+        // table while the others read the function.
         const double m = 0.5 * (T_src_min + T_src_max);
-        const double mean_f = root_vuln_at(m);
+        const double mean_f = vulnerability_curve_at<double>(m, root_b, root_c);
         r_R_H = network_.r_R_H_min[i] / mean_f;
-        dr_R_H_dT = -network_.r_R_H_min[i] *
-                    (0.5 * root_vuln_integrand_deriv_at(m)) / (mean_f * mean_f);
+        dr_R_H_dT =
+            -network_.r_R_H_min[i] *
+            (0.5 * vulnerability_curve_slope_at<double>(m, root_b, root_c)) /
+            (mean_f * mean_f);
       } else {
         r_R_H = network_.r_R_H_min[i] * span / integral;
         dr_R_H_dT = network_.r_R_H_min[i] *

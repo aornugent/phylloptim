@@ -4096,6 +4096,58 @@ void test_where_the_mean_conductivity_should_stop_differencing() {
   ok(true, "measured (read the table above; this test reports rather than asserts)");
 }
 
+// The supply's collar derivatives as the collar closes on a layer's potential.
+//
+// ⚠️ A DIFFERENCE CANNOT REFEREE THIS REGION -- that is the whole reason the midpoint
+// form exists -- so what is checked is CONTINUITY. The two forms of the mean
+// conductivity agree to ~1e-11 at the crossover (see the table above), so switching
+// between them must not move the answer, and the sequence must stay smooth and finite
+// all the way down. Before the midpoint form the divided difference lost an order of
+// span per derivative and this sweep went to noise: one operating point of 2,829,445
+// on a century stand reached a span of 5.6e-08 and cost the whole gradient.
+void test_the_supply_derivatives_stay_smooth_into_a_coincidence() {
+  printf("the supply's collar derivatives closing on a layer's potential\n");
+  namespace grad = phylloptim::gradient;
+  grad::Settings s;
+  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
+  phylloptim::Leaf l = env::fresh();
+  grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+  const std::vector<double> soil = l.supply_psi_soil();
+
+  // Approach layer 0's potential from the dry side, straddling the 1e-5 crossover.
+  // Stops at 2e-08, above the at_equal_potentials guard, which still answers NaN.
+  const double target = soil[0];
+  double prev1 = 0.0, prev2 = 0.0;
+  double worst_jump1 = 0.0, worst_jump2 = 0.0;
+  int finite = 0, steps = 0;
+  printf("      %-10s %-24s %s\n", "span", "dE/dT", "d2E/dT2");
+  for (int e = 3; e <= 8; ++e) {
+    for (double mult : {5.0, 1.0}) {
+      const double span = mult * std::pow(10.0, -double(e));
+      if (span < 2e-8) continue;
+      const double T = target + span;
+      const double d1 = l.dE_from_soil_dpsi_collar(T, soil);
+      const double d2 = l.d2E_from_soil_dpsi_collar2(T, soil);
+      if (std::isfinite(d1) && std::isfinite(d2)) {
+        ++finite;
+        if (steps > 0) {
+          worst_jump1 = std::max(worst_jump1, std::abs(d1 / prev1 - 1.0));
+          worst_jump2 = std::max(worst_jump2, std::abs(d2 / prev2 - 1.0));
+        }
+        prev1 = d1; prev2 = d2; ++steps;
+      }
+      printf("      %-10.1e %-24.15g %.15g\n", span, d1, d2);
+    }
+  }
+  printf("      worst step-to-step change: dE/dT %.3e, d2E/dT2 %.3e\n",
+         worst_jump1, worst_jump2);
+  ok(finite >= 10, "every span above the guard answers");
+  // Both derivatives approach a finite limit, so consecutive halvings of the span
+  // must move them by a bounded amount. Noise showed up here as changes of order 1.
+  ok(worst_jump1 < 0.05, "dE/dT stays smooth into the coincidence");
+  ok(worst_jump2 < 0.05, "d2E/dT2 stays smooth into the coincidence");
+}
+
 void test_the_two_zero_flux_kinds_are_two_points() {
   printf("the two zero-flux kinds are two points, and the placement says which\n");
   namespace grad = phylloptim::gradient;
@@ -4398,6 +4450,7 @@ int main() {
   test_the_supplys_second_collar_derivative();
   test_the_marginals_collar_slope_against_a_difference();
   test_where_the_mean_conductivity_should_stop_differencing();
+  test_the_supply_derivatives_stay_smooth_into_a_coincidence();
   test_the_two_zero_flux_kinds_are_two_points();
   benchmark();
 
