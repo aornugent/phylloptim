@@ -1192,12 +1192,18 @@ public:
   };
 
   template <class T>
-  MarginalParts<T> marginal_assembled(const CollarPoint<T>& at) const {
+  MarginalParts<T> marginal_assembled(const CollarPoint<T>& at,
+                                      const ProfitInputs<T>& in) const {
     using TT = typename xad::fwd<T>::active_type;
-    const T kmax = T(leaf_specific_conductance_max_);
-    const T f_p = proportion_of_conductivity_kernel<T>(at.p, T(stem_b), T(stem_c));
+    // ⚠️ FROM THE INPUTS, NOT THE MEMBERS. At double the two are the same numbers,
+    // but a member read carries no row -- so an assembly that reached for members
+    // would answer correctly and differentiate to a silent zero in every parameter
+    // it touched. The atmospheric constants below stay members because nothing
+    // differentiates them.
+    const T kmax = in.kmax;
+    const T f_p = proportion_of_conductivity_kernel<T>(at.p, in.stem_b, in.stem_c);
     const T f_sigma =
-        proportion_of_conductivity_kernel<T>(at.sigma, T(stem_b), T(stem_c));
+        proportion_of_conductivity_kernel<T>(at.sigma, in.stem_b, in.stem_c);
 
     // dpsi_stem/dpsi, from the same closed form the double path uses. At a tangent
     // its own slope falls out of this arithmetic, so no quotient rule is written.
@@ -1205,14 +1211,27 @@ public:
 
     // Assigned rather than constructed: a nested tangent's VALUE is the scalar
     // below it, and FReal has no converting constructor from that.
-    TT c_ad{};
-    xad::value(c_ad) = at.ci;
+    // A' and C' one tangent order above T, through the kernels' input-carrying
+    // overloads so the parameters keep their rows across the derivative too. `lift`
+    // promotes an input to that order: its value is the T below, its direction zero.
+    const auto lift = [](const T& v) {
+      TT out{};
+      xad::value(out) = v;
+      return out;
+    };
+    const TT J0 = electron_transport_kernel<TT>(lift(in.ppfd),
+                                                lift(in.quantum_yield),
+                                                lift(in.curv_elec),
+                                                lift(in.transport_jmax));
+    TT c_ad = lift(at.ci);
     xad::derivative(c_ad) = T(1.0);
-    const T A_prime = xad::derivative(assim_colimited_kernel<TT>(c_ad));
-    TT s_ad{};
-    xad::value(s_ad) = at.sigma;
+    const T A_prime = xad::derivative(assim_colimited_kernel<TT>(
+        c_ad, lift(in.vcmax), J0, lift(in.curv_colim), lift(in.respiration)));
+    TT s_ad = lift(at.sigma);
     xad::derivative(s_ad) = T(1.0);
-    const T C_prime = xad::derivative(hydraulic_cost_TF_kernel<TT>(s_ad));
+    const T C_prime = xad::derivative(hydraulic_cost_TF_kernel<TT>(
+        s_ad, lift(in.stem_b), lift(in.stem_c), lift(in.beta2),
+        lift(in.cost_scale)));
 
     const T gc_const =
         T(atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio);
@@ -1246,7 +1265,7 @@ public:
   //
   // The flux's second order is d2E_from_soil_dpsi_collar2: a closed form that
   // existed, was tested against a difference, and had no production caller.
-  double marginal_collar_slope() const;
+  double marginal_collar_slope(const ProfitInputs<double>& in) const;
 
 
   // The two cost traits reach profit through the hydraulic cost and nothing
@@ -3403,7 +3422,7 @@ inline double Leaf::dprofit_droot_collar_psi(double opt_root_psi, bool* feasible
 
 // dM/dp at the placed operating point. See the declaration for why this is a FIRST
 // derivative of the marginal rather than a second of the objective.
-inline double Leaf::marginal_collar_slope() const {
+inline double Leaf::marginal_collar_slope(const ProfitInputs<double>& in) const {
   using odelia::ode::derivative_along;
   using odelia::ode::seed_direction;
   using T = odelia::ode::tangent_scalar<double>;
@@ -3422,7 +3441,7 @@ inline double Leaf::marginal_collar_slope() const {
   // One pass at double for the collar responses the tangent seeds are, then one at
   // a tangent to read their slope. Same assembly both times.
   const CollarPoint<double> here{p, sigma, ci_, dEup, transp};
-  const MarginalParts<double> parts = marginal_assembled<double>(here);
+  const MarginalParts<double> parts = marginal_assembled<double>(here, in);
 
   CollarPoint<T> at{T(p), T(sigma), T(ci_), T(dEup), T(transp)};
   seed_direction(at.p, 1.0);
@@ -3431,7 +3450,8 @@ inline double Leaf::marginal_collar_slope() const {
   seed_direction(at.dEup_dp, d2Eup);
   seed_direction(at.transpiration, dEup);
 
-  return derivative_along(marginal_assembled<T>(at).marginal);
+  return derivative_along(
+      marginal_assembled<T>(at, in.template rebind_from<T>()).marginal);
 }
 
 inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {

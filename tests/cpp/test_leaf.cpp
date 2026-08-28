@@ -4019,7 +4019,17 @@ void test_the_marginals_collar_slope_against_a_difference() {
           continue;
         }
         const double p = l.opt_root_psi_;
-        const double closed = l.marginal_collar_slope();
+        // The inputs at double, from the same fixture the seeded checks use: the
+        // slope reads them rather than the leaf's members so its parameter rows
+        // survive at an active scalar, and at double the two are the same numbers.
+        fixture::Soil soil;
+        for (int q = 0; q < layers; ++q) {
+          soil.depth.push_back(1.0 * (q + 1));
+          soil.carbon.push_back(1.0 / layers / 0.05);
+        }
+        const phylloptim::LeafInputs<double> li =
+            fixture::leaf_inputs<double>(l, fixture::Input::None, 0, soil);
+        const double closed = l.marginal_collar_slope(li.profit);
         if (!std::isfinite(closed) || closed == 0.0) {
           continue;
         }
