@@ -19,6 +19,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+// cstdio/cstdlib for the environment-gated scan of a non-monotone marginal in
+// maximise_profit_over_collar, and nothing else in this header.
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <string>
@@ -435,6 +439,14 @@ public:
   // calls a difference real, and the cost of going there from GSS_tol_abs's 1e-3
   // is a handful of evaluations, because TOMS748 is superlinear.
   static constexpr double collar_root_tol = 1e-12;
+
+  // How far dry of the returned root the marginal is probed, to find out which way
+  // it crosses there. Deliberately NOT collar_root_tol: the root is located to
+  // 1e-12, so a probe that close reads the solver's own noise rather than the
+  // function's slope. 1e-6 relative is the scale gradient.hpp's differenced
+  // curvature already works at, and it is a probe rather than a difference -- only
+  // the SIGN is read, so nothing here needs the step to be optimal.
+  static constexpr double collar_probe_frac = 1e-6;
 
 
   double ci_;
@@ -1475,6 +1487,16 @@ public:
   std::shared_ptr<std::size_t> collar_solves =
       std::make_shared<std::size_t>(0);
 
+  // How often the collar solve found the marginal NOT monotone on a bracket whose
+  // ends said it was -- i.e. how often the root-find returned a minimum of profit
+  // and had to look again. Zero on every fixture this package was validated on;
+  // non-zero on a 105-year plant stand, which is why it is counted rather than
+  // asserted away. Behind a pointer for collar_solves' reason and no other.
+  std::shared_ptr<std::size_t> nonmonotone_collars =
+      std::make_shared<std::size_t>(0);
+  std::size_t nonmonotone_collar_count() const { return *nonmonotone_collars; }
+  void clear_nonmonotone_collars() const { *nonmonotone_collars = 0; }
+
   // This leaf's own sites plus the supply model's, which are one list. Summed on
   // read rather than shared on construction, so rebuilding the root network cannot
   // silently detach the tally.
@@ -1645,6 +1667,13 @@ public:
   struct CollarCondition {
     double slope = util::na_value;
     LeafInputs<double> gradient{};
+    // The FIRST derivative the slope above is taken from, which the same sweep
+    // already computed. At an interior point the solve put the collar where the
+    // marginal profit is zero, so this must be ~0 -- and if it is not, profit_at
+    // is not the function the solve rooted and its curvature is the curvature of
+    // something else. Free, and the one check this derivation could not make
+    // about itself.
+    double marginal = util::na_value;
   };
   CollarCondition collar_condition(double sigma_star, double ci_star,
                                    const LeafInputs<double>& in) const;
@@ -3061,32 +3090,80 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // uniroot_smooth's throw-on-bad-bracket cannot fire; passing the two endpoint
   // values it already has saves it re-evaluating them.
   //
-  // ⚠️ A VALID BRACKET IS NOT A UNIQUE ROOT, and this is where the monotonicity
-  // caveat above stops being theoretical. The pin tests catch a minimum that is
-  // the ONLY interior stationary point; they cannot catch one that COEXISTS with
-  // maxima, because f_lo > 0 > f_hi holds just as well with three roots in
-  // between, and TOMS748 is then free to return any of them -- including the
-  // middle, upward crossing, which is a MINIMUM of profit. The point is tagged
-  // Interior, profit_ is placed at it, and nothing on the forward path says so.
+  // ⚠️ A NOTE THAT WAS WRONG, KEPT BECAUSE THE MEASUREMENT THAT KILLED IT MATTERS.
+  // This said the solve returns a MINIMUM of profit on a century stand, because
+  // plant's reverse-mode guard reported a POSITIVE profit curvature at an interior
+  // point and an interior point is only reached on a bracket the marginal crosses
+  // downward. The reasoning was sound and the premise was false.
   //
-  // MEASURED, on the 105-year TF24 stand in plant's scripts/profile-stand-gradient.R:
-  // collar 1.798486, marginal profit there -1e-06 (a root, within 3e-08 of
-  // stationary), and the profit curvature at it +34.414226. A converged root with
-  // a positive slope on a downward-crossing bracket is a proof that the marginal
-  // is not monotone there. The 240-row golden grid this was validated on does not
-  // reach that state; a century of stand dynamics does.
+  // MEASURED, at the offending point (collar 1.7984860121573381) on that stand:
   //
-  // Today the only thing that notices is plant's reverse-mode guard, which refuses
-  // the gradient because the interior derivation divides by this curvature -- so a
-  // forward-model error is visible only through a derivative nobody has to ask
-  // for. Options, none of them free, are in plant's docs/design/one-program.md:
-  // classify it (needs the crossing direction, which uniroot_smooth currently
-  // discards along with Boost's final bracket), split the bracket at the minimum
-  // and re-solve each half, or fall back to golden_section_max as the
-  // no-usable-gradient path already does.
+  //     dprofit at x-h = +1.71e-05      dprofit at x+h = -1.75e-05
+  //     centred difference             = -9.633
+  //     plant's nested-AD curvature    = +34.414
+  //
+  // The marginal crosses DOWNWARD. The collar is a genuine maximum, the curvature
+  // there is negative, and this solve is right. The probe below -- one evaluation
+  // dry of every root it returns -- ran over 2,829,445 interior solves on that
+  // stand and found the marginal rising exactly zero times.
+  //
+  // So the defect is in the CURVATURE, not here: plant's collar_condition
+  // differentiates profit_at twice and gets the wrong sign. The counter stays,
+  // because it is what establishes this solve's innocence and would catch the
+  // failure it was written for if that ever does happen.
   operating_point_kind_ = OperatingPointKind::Interior;
-  return util::uniroot_smooth(dprofit, lo, hi, f_lo, f_hi, collar_root_tol,
-                              static_cast<size_t>(ci_niter));
+  const double root = util::uniroot_smooth(dprofit, lo, hi, f_lo, f_hi,
+                                           collar_root_tol,
+                                           static_cast<size_t>(ci_niter));
+
+  // ONE evaluation, dry of the root, decides which way the marginal crosses there.
+  // Going wet to dry a maximum has the marginal falling through zero, so just dry
+  // of it the marginal is negative; a minimum has it rising, so just dry of it the
+  // marginal is positive. Only the sign is read.
+  //
+  // Not free, and not a diagnostic tax either: resolving the case needs this same
+  // evaluation, so the cost is the price of being correct rather than of being
+  // observant. Paid on interior solves only -- a pin needs none of it. Safe to
+  // evaluate here because find_root_collar_psi closes on the returned collar
+  // AFTER this returns, which is what restores the leaf's own coefficients.
+  const double h = std::max(std::abs(root), 1.0) * collar_probe_frac;
+  const double dry_x = std::min(root + h, hi);
+  bool dry_ok = false;
+  const double f_dry = dprofit_at_collar_psi(dry_x, &dry_ok);
+  const bool rising = dry_ok && std::isfinite(f_dry) && f_dry > 0.0;
+  if (!rising) {
+    return root;
+  }
+  ++(*nonmonotone_collars);
+
+  // A one-shot scan of the marginal across the bracket, for deciding WHY it is not
+  // monotone -- a smooth second maximum and a kink from the nested ci solve
+  // switching to its compensation point are different findings with different
+  // fixes, and the sign pattern alone separates them. Behind an environment
+  // variable because it is an investigation rather than a check, and evaluating
+  // the marginal fifty times is not something a run should ever do by accident.
+  if (std::getenv("PHYLLOPTIM_SCAN_NONMONOTONE_COLLAR") != nullptr) {
+    static bool scanned = false;
+    if (!scanned) {
+      scanned = true;
+      std::fprintf(stderr,
+                   "# nonmonotone collar: lo=%.17g hi=%.17g root=%.17g "
+                   "f_lo=%.17g f_hi=%.17g f_dry=%.17g\n",
+                   lo, hi, root, f_lo, f_hi, f_dry);
+      std::fprintf(stderr, "# x\tdprofit\tfeasible\tci_at_compensation\n");
+      const int n = 400;
+      for (int i = 0; i <= n; ++i) {
+        const double x = lo + (hi - lo) * (double(i) / double(n));
+        bool ok = false;
+        const double f = dprofit_at_collar_psi(x, &ok);
+        std::fprintf(stderr, "%.17g\t%.17g\t%d\t%d\n", x, f, ok ? 1 : 0,
+                     ci_at_compensation_point_ ? 1 : 0);
+      }
+      std::fflush(stderr);
+    }
+  }
+
+  return root;
 }
 
 // The same operating point, placed rather than searched for. Every line below is
@@ -4611,6 +4688,7 @@ inline Leaf::CollarCondition Leaf::collar_condition(
     *rows[k] = odelia::ode::directional_adjoint(*inputs[k]);
   }
   out.slope = odelia::ode::directional_adjoint(collar);
+  out.marginal = odelia::ode::plain_adjoint(collar);
   return out;
 }
 
