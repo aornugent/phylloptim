@@ -3989,6 +3989,78 @@ void test_the_supplys_second_collar_derivative() {
 // nothing the leaf reads is a function of the soil. Shade death holds both
 // potentials at the collar of zero uptake instead: the critical potential is
 // inactive exactly as at an interior optimum, and the placement moves with the soil.
+// The curvature the interior derivation divides by, against a difference of the
+// marginal it is the slope of.
+//
+// ⚠️ THIS IS THE CHECK THAT DID NOT EXIST, and its absence cost a plant gradient.
+// The curvature was formed by differentiating a DIFFERENT assembly of the profit
+// twice, whose second-order content was two hand-written Taylor coefficients with
+// no referee -- and on a 105-year stand it returned +34.4 where a difference of the
+// marginal gives -9.63, so plant refused a perfectly good interior maximum.
+// marginal_collar_slope() takes it as a FIRST derivative of the marginal instead,
+// from the same assembly the solve roots, and this is what says so.
+void test_the_marginals_collar_slope_against_a_difference() {
+  printf("the marginal's collar slope against a difference of the marginal\n");
+  namespace grad = phylloptim::gradient;
+  grad::Settings s;
+  double worst = 0.0;
+  std::string worst_where;
+  int compared = 0;
+  int sign_disagreements = 0;
+  for (double psi : {0.5, 1.0, 2.0, 3.0, 4.0}) {
+    for (int layers : {1, 3, 5}) {
+      for (double ppfd : {150.0, 900.0}) {
+        grad::Drivers d = env::drivers(psi, ppfd, 2.0, layers, layers);
+        phylloptim::Leaf l = env::fresh();
+        grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+        l.find_root_collar_psi();
+        if (l.operating_point_kind() !=
+            phylloptim::Leaf::OperatingPointKind::Interior) {
+          continue;
+        }
+        const double p = l.opt_root_psi_;
+        const double closed = l.marginal_collar_slope();
+        if (!std::isfinite(closed) || closed == 0.0) {
+          continue;
+        }
+        ++compared;
+        // An interior collar sits on a downward crossing, so the slope there is
+        // negative. A positive one is the defect this test exists for.
+        if (!(closed < 0.0)) {
+          ++sign_disagreements;
+        }
+        double best = std::numeric_limits<double>::infinity();
+        for (int e = 4; e <= 7; ++e) {
+          const double h = std::max(std::abs(p), 1.0) * std::pow(10.0, -double(e));
+          bool up_ok = false, dn_ok = false;
+          const double up = l.dprofit_droot_collar_psi(p + h, &up_ok);
+          const double dn = l.dprofit_droot_collar_psi(p - h, &dn_ok);
+          if (!up_ok || !dn_ok || !std::isfinite(up) || !std::isfinite(dn)) {
+            continue;
+          }
+          best = std::min(best, std::abs(closed / ((up - dn) / (2.0 * h)) - 1.0));
+        }
+        // The solve closes on the returned collar afterwards, so the probes above
+        // leave nothing behind for the next iteration.
+        l.dprofit_droot_collar_psi(p);
+        if (std::isfinite(best) && best > worst) {
+          worst = best;
+          worst_where = "psi=" + std::to_string(psi) + " layers=" +
+                        std::to_string(layers) + " ppfd=" + std::to_string(ppfd);
+        }
+      }
+    }
+  }
+  printf("  %d interior points compared, worst relative gap %.3e at %s\n", compared,
+         worst, worst_where.c_str());
+  ok(compared >= 6, "the grid reaches interior points at all");
+  ok(sign_disagreements == 0, "every interior slope is negative");
+  // A centred difference of a quantity whose own evaluation carries a nested ci
+  // root-find cannot do better than about 1e-5; the defect this catches is a
+  // FACTOR, not a last digit.
+  ok(worst < 1e-3, "the closed slope matches a difference of the marginal");
+}
+
 void test_the_two_zero_flux_kinds_are_two_points() {
   printf("the two zero-flux kinds are two points, and the placement says which\n");
   namespace grad = phylloptim::gradient;
@@ -4289,6 +4361,7 @@ int main() {
   test_the_two_classifications_of_one_point();
   test_the_supply_answers_at_the_two_coincidences();
   test_the_supplys_second_collar_derivative();
+  test_the_marginals_collar_slope_against_a_difference();
   test_the_two_zero_flux_kinds_are_two_points();
   benchmark();
 

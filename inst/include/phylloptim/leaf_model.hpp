@@ -1151,6 +1151,103 @@ public:
   // begin_solve() is a spline evaluation per soil layer.
   double dprofit_at_collar_psi(double opt_root_psi, bool* feasible = nullptr);
 
+  // ---- the marginal profit, assembled once and read at any scalar ------------
+  //
+  // The operating point's coordinates, each carrying its OWN derivative in the
+  // collar. A structure rather than five parameters because the five must be
+  // seeded consistently or the assembly below is a derivative of nothing, and a
+  // struct is where that requirement can be stated.
+  template <class T>
+  struct CollarPoint {
+    T p;              // the collar itself; dp/dp = 1
+    T sigma;          // the stem potential;  dsigma/dp = V
+    T ci;             // intercellular CO2;   dci/dp
+    T dEup_dp;        // the soil->collar conductance; its own slope is d2E/dp2
+    T transpiration;  // the stem's flux; its collar slope IS dEup_dp, by V's
+                      // definition -- the identity dprofit_at_collar_psi states
+  };
+
+  // M, the marginal profit this class roots, from those coordinates.
+  //
+  // ⚠️ ONE ASSEMBLY, TWO SCALARS. `dprofit_at_collar_psi` is this at double and
+  // `marginal_collar_slope` is this at a tangent, so the function the solve roots
+  // and the slope the implicit function theorem divides by cannot drift apart.
+  // They did: plant's curvature came from differentiating a DIFFERENT assembly
+  // (profit_at) twice, whose second-order content was two hand-written Taylor
+  // coefficients, and on a century stand that put a POSITIVE curvature at an
+  // interior maximum -- +34.4 where a difference of this function gives -9.63.
+  //
+  // A' and C' are taken by a tangent ONE ORDER ABOVE T, through the model's own
+  // kernels, for the reason dprofit_at_collar_psi already gives: they are then
+  // derivatives of the function actually evaluated rather than of a hand-kept
+  // mirror of it. `xad::fwd<T>` is what makes one spelling serve both scalars --
+  // double becomes a tangent, a tangent becomes a second-order tangent.
+  // What the assembly forms on the way. V and dci_dpsi are the collar responses
+  // the coordinates above have to be SEEDED with, so they are returned rather than
+  // recomputed by a caller -- the seeds and the assembly then come from one place
+  // and cannot disagree.
+  template <class T>
+  struct MarginalParts {
+    T marginal, V, dci_dpsi;
+  };
+
+  template <class T>
+  MarginalParts<T> marginal_assembled(const CollarPoint<T>& at) const {
+    using TT = typename xad::fwd<T>::active_type;
+    const T kmax = T(leaf_specific_conductance_max_);
+    const T f_p = proportion_of_conductivity_kernel<T>(at.p, T(stem_b), T(stem_c));
+    const T f_sigma =
+        proportion_of_conductivity_kernel<T>(at.sigma, T(stem_b), T(stem_c));
+
+    // dpsi_stem/dpsi, from the same closed form the double path uses. At a tangent
+    // its own slope falls out of this arithmetic, so no quotient rule is written.
+    const T V = (at.dEup_dp / kmax + f_p) / f_sigma;
+
+    // Assigned rather than constructed: a nested tangent's VALUE is the scalar
+    // below it, and FReal has no converting constructor from that.
+    TT c_ad{};
+    xad::value(c_ad) = at.ci;
+    xad::derivative(c_ad) = T(1.0);
+    const T A_prime = xad::derivative(assim_colimited_kernel<TT>(c_ad));
+    TT s_ad{};
+    xad::value(s_ad) = at.sigma;
+    xad::derivative(s_ad) = T(1.0);
+    const T C_prime = xad::derivative(hydraulic_cost_TF_kernel<TT>(s_ad));
+
+    const T gc_const =
+        T(atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio);
+    const T inv_atm = T(1.0 / (atm_kpa_ * kPa_to_Pa));
+    const T gc = gc_const * at.transpiration;
+    // The conductance partials are the transport slope at each end, which is the
+    // closed form kmax * f -- already formed above, so read rather than recomputed.
+    const T dgc_dpsistem = gc_const * kmax * f_sigma;
+    const T dgc_dpsi = -gc_const * kmax * f_p;
+
+    const T g_ci = A_prime * umol_to_mol + gc * inv_atm;
+    const T ca_minus_ci = T(ca_) - at.ci;
+    const T dci_dpsistem = (dgc_dpsistem * ca_minus_ci * inv_atm) / g_ci;
+    const T dci_dpsi_expl = (dgc_dpsi * ca_minus_ci * inv_atm) / g_ci;
+    const T dci_dpsi = dci_dpsistem * V + dci_dpsi_expl;
+
+    return MarginalParts<T>{A_prime * dci_dpsi - C_prime * V, V, dci_dpsi};
+  }
+
+  // dM/dp at the operating point the solve placed -- the curvature the interior
+  // derivation divides by, taken as a FIRST derivative of the marginal rather than
+  // a second of the objective.
+  //
+  // ⚠️ ONE DEFINITION PER FACTOR AND BOTH ORDERS FROM IT. Every leaf quantity is
+  // seeded with its own closed-form slope, so each pair is a Taylor series of a
+  // single function. That is the whole finding: the lift this replaces took its
+  // value and first derivative from a TABULATION and its second from the TRUE
+  // function, and the two disagree by the interpolation error -- which is harmless
+  // at first order and is what flipped the sign of a curvature where the collar
+  // came within 5.6e-08 of a soil layer's potential.
+  //
+  // The flux's second order is d2E_from_soil_dpsi_collar2: a closed form that
+  // existed, was tested against a difference, and had no production caller.
+  double marginal_collar_slope() const;
+
 
   // The two cost traits reach profit through the hydraulic cost and nothing
   // else -- not the ci residual, not the supply, not the operating point at a
@@ -3342,6 +3439,39 @@ inline double Leaf::dprofit_droot_collar_psi(double opt_root_psi, bool* feasible
   // collar solve call the body directly and placement them once for the whole solve.
   supply_begin_solve();
   return dprofit_at_collar_psi(opt_root_psi, feasible);
+}
+
+// dM/dp at the placed operating point. See the declaration for why this is a FIRST
+// derivative of the marginal rather than a second of the objective.
+inline double Leaf::marginal_collar_slope() const {
+  using odelia::ode::derivative_along;
+  using odelia::ode::seed_direction;
+  using T = odelia::ode::tangent_scalar<double>;
+
+  const double p = opt_root_psi_;
+  const double sigma = opt_psi_stem_;
+  const std::vector<double>& soil = supply_psi_soil();
+
+  // The two leaf quantities that are not closed-form arithmetic, each with its OWN
+  // slope: the soil-to-collar conductance and its tested second derivative, and
+  // the stem's flux, whose collar slope IS that conductance by V's definition.
+  const double dEup = dE_from_soil_dpsi_collar(p, soil);
+  const double d2Eup = d2E_from_soil_dpsi_collar2(p, soil);
+  const double transp = transpiration(sigma, p);
+
+  // One pass at double for the collar responses the tangent seeds are, then one at
+  // a tangent to read their slope. Same assembly both times.
+  const CollarPoint<double> here{p, sigma, ci_, dEup, transp};
+  const MarginalParts<double> parts = marginal_assembled<double>(here);
+
+  CollarPoint<T> at{T(p), T(sigma), T(ci_), T(dEup), T(transp)};
+  seed_direction(at.p, 1.0);
+  seed_direction(at.sigma, parts.V);
+  seed_direction(at.ci, parts.dci_dpsi);
+  seed_direction(at.dEup_dp, d2Eup);
+  seed_direction(at.transpiration, dEup);
+
+  return derivative_along(marginal_assembled<T>(at).marginal);
 }
 
 inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
