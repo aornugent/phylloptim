@@ -700,16 +700,17 @@ public:
     return layer_integral_at<T>(lo, hi, sup) / span;
   }
 
+  // The mean is passed in for the reason its double sibling's is: the caller has it,
+  // and at an active scalar forming it again is a second pass of lifts.
   template <class T>
   T layer_mean_dbound_at(const T& lo, const T& hi, const SupplyAt<T>& sup,
-                         bool high_moves) const {
+                         bool high_moves, const T& mean) const {
     using odelia::util::to_passive;
     const T span = hi - lo;
     if (use_midpoint_mean(span, lo)) {
       return T(0.5) * vulnerability_curve_slope_at<T>(T(0.5) * (lo + hi),
                                                       sup.root_b, sup.root_c);
     }
-    const T mean = layer_integral_at<T>(lo, hi, sup) / span;
     const T& at = high_moves ? hi : lo;
     T f_at = T(1.0);
     if (to_passive(at) > 0.0) {
@@ -745,7 +746,8 @@ public:
 
       const T& k = sup.r_R_H_min[std::size_t(i)];
       const T mean_f = layer_mean_at<T>(lo, hi, sup);
-      const T mean_dT = layer_mean_dbound_at<T>(lo, hi, sup, collar_is_high);
+      const T mean_dT =
+          layer_mean_dbound_at<T>(lo, hi, sup, collar_is_high, mean_f);
       const T r_R = k / mean_f + sup.r_R_V_sum[std::size_t(i)];
       const T dr_R_dT = -k * mean_dT / (mean_f * mean_f);
       const T num = T_collar - psi_i - T(grav_head_z_[std::size_t(i)]);
@@ -810,12 +812,11 @@ public:
   // derivative is 1/3 -- which is f''/6, not f''/4. The pure one below is f''/3 by
   // the same expansion, and getting either wrong is a bounded but real error in a
   // leading term.
-  double layer_mean_dbound_mixed(double lo, double hi) const {
+  double layer_mean_dbound_mixed(double lo, double hi, double mean) const {
     const double span = hi - lo;
     if (use_midpoint_mean(span, lo, layer_mean_mixed_span_min)) {
       return curve_slope2_at(0.5 * (lo + hi)) / 6.0;
     }
-    const double mean = layer_integral(lo, hi) / span;
     const double f_hi = (hi > 0.0) ? root_vuln_integral_deriv_at(hi) : 1.0;
     const double f_lo = (lo > 0.0) ? root_vuln_integral_deriv_at(lo) : 1.0;
     return (f_hi + f_lo - 2.0 * mean) / (span * span);
@@ -823,12 +824,12 @@ public:
 
   // d^2(mean)/d(one bound)^2 -- the PURE second derivative, f''/3 in the limit for
   // the reason given above. Above the crossover it is the divided difference again.
-  double layer_mean_dbound2(double lo, double hi, bool high_moves) const {
+  double layer_mean_dbound2(double lo, double hi, bool high_moves,
+                            double mean) const {
     const double span = hi - lo;
     if (use_midpoint_mean(span, lo, layer_mean_d2_span_min)) {
       return curve_slope2_at(0.5 * (lo + hi)) / 3.0;
     }
-    const double mean = layer_integral(lo, hi) / span;
     const double at = high_moves ? hi : lo;
     const double f_at = (at > 0.0) ? root_vuln_integral_deriv_at(at) : 1.0;
     const double df_at = (at > 0.0) ? root_vuln_integrand_deriv_at(at) : 0.0;
@@ -840,7 +841,13 @@ public:
   // midpoint in the limit -- the mean over an interval responds to either end the
   // same way -- and above the crossover it is the divided difference the callers
   // used to write inline, where it cancels its leading terms as the span shuts.
-  double layer_mean_dbound(double lo, double hi, bool high_moves) const {
+  //
+  // ⚠️ THE MEAN IS PASSED IN, NOT RECOMPUTED. Every caller that wants a bound
+  // derivative already has the mean, and the integral behind it is a pair of table
+  // reads -- so forming it again here doubled them on a path plant runs millions of
+  // times. One source of truth, and the result passed.
+  double layer_mean_dbound(double lo, double hi, bool high_moves,
+                           double mean) const {
     const double span = hi - lo;
     if (use_midpoint_mean(span, lo)) {
       return 0.5 * vulnerability_curve_slope_at<double>(0.5 * (lo + hi), root_b,
@@ -854,7 +861,6 @@ public:
     // "both clamp-to-last-value" it used to cite was never true of either). Below the
     // surface the bound is in the f_r == 1 part, contributed linearly, so the slope
     // is 1. This choice used to be made at each caller; it is made here now.
-    const double mean = layer_integral(lo, hi) / span;
     const double at = high_moves ? hi : lo;
     const double f_at = (at > 0.0) ? root_vuln_integral_deriv_at(at) : 1.0;
     return high_moves ? (f_at - mean) / span : (mean - f_at) / span;
@@ -893,12 +899,11 @@ public:
   // d(mean of the trait curve)/d(a moving bound), the trait counterpart of
   // layer_mean_dbound and the last piece the mixed second derivatives need.
   double layer_mean_dtrait_dbound(double lo, double hi, CurveTrait trait,
-                                  bool high_moves) const {
+                                  bool high_moves, double mean) const {
     const double span = hi - lo;
     if (use_midpoint_mean(span, lo)) {
       return 0.5 * root_vuln_integrand_dtrait_dpsi(0.5 * (lo + hi), trait);
     }
-    const double mean = layer_mean_dtrait(lo, hi, trait);
     const double at = high_moves ? hi : lo;
     const double f_at = root_vuln_integrand_dtrait(at, trait);
     return high_moves ? (f_at - mean) / span : (mean - f_at) / span;
@@ -1285,8 +1290,10 @@ public:
       const double k_min = network_.r_R_H_min[i];
       const bool collar_is_high = T_collar > psi_soil[i];
       const double g = layer_mean(T_src_min, T_src_max);
-      const double g1 = layer_mean_dbound(T_src_min, T_src_max, collar_is_high);
-      const double g2 = layer_mean_dbound2(T_src_min, T_src_max, collar_is_high);
+      const double g1 =
+          layer_mean_dbound(T_src_min, T_src_max, collar_is_high, g);
+      const double g2 =
+          layer_mean_dbound2(T_src_min, T_src_max, collar_is_high, g);
       const double r_R_H = k_min / g;
       const double dr_R_dT = -k_min * g1 / (g * g);
       const double d2r_R_dT =
@@ -1335,7 +1342,7 @@ private:
       const double k_min = network_.r_R_H_min[i];
       const double mean_f = layer_mean(T_src_min, T_src_max);
       const double mean_dT =
-          layer_mean_dbound(T_src_min, T_src_max, T_collar > psi_soil[i]);
+          layer_mean_dbound(T_src_min, T_src_max, T_collar > psi_soil[i], mean_f);
       const double r_R_H = k_min / mean_f;
       const double dr_R_H_dT = -k_min * mean_dT / (mean_f * mean_f);
       const double r_R = r_R_H + network_.r_R_V_sum[i];
@@ -1465,7 +1472,8 @@ public:
       // collar -- same curve, other endpoint, and layer_mean_dbound is told which.
       const double mean_f = layer_mean(T_src_min, T_src_max);
       const double mean_dpsi =
-          layer_mean_dbound(T_src_min, T_src_max, psi_soil[i] > T_collar);
+          layer_mean_dbound(T_src_min, T_src_max, psi_soil[i] > T_collar,
+                            mean_f);
 
       const double r_R_H = network_.r_R_H_min[i] / mean_f;
       const double r_R = r_R_H + network_.r_R_V_sum[i];
@@ -1529,7 +1537,7 @@ public:
       // below it, because layer_mean* makes that choice once for every caller.
       const double mean_f = layer_mean(T_src_min, T_src_max);
       const double mean_dT =
-          layer_mean_dbound(T_src_min, T_src_max, T_collar > psi_soil[i]);
+          layer_mean_dbound(T_src_min, T_src_max, T_collar > psi_soil[i], mean_f);
       const double f = 1.0 / mean_f;
       const double B = network_.r_R_V_sum[i];
       const double r_R = A * f + B;
@@ -1592,10 +1600,12 @@ public:
       // the divided difference was spending its accuracy on.
       const bool high_moves = T_collar > psi_soil[i];
       const double mean_f = layer_mean(T_src_min, T_src_max);
-      const double mean_dT = layer_mean_dbound(T_src_min, T_src_max, high_moves);
+      const double mean_dT =
+          layer_mean_dbound(T_src_min, T_src_max, high_moves, mean_f);
       const double mean_t = layer_mean_dtrait(T_src_min, T_src_max, trait);
       const double mean_t_dT =
-          layer_mean_dtrait_dbound(T_src_min, T_src_max, trait, high_moves);
+          layer_mean_dtrait_dbound(T_src_min, T_src_max, trait, high_moves,
+                                   mean_t);
 
       const double r_R = H / mean_f + network_.r_R_V_sum[i];
       const double dr_dT = -H * mean_dT / (mean_f * mean_f);
@@ -1648,10 +1658,11 @@ public:
       const double H = network_.r_R_H_min[i];
       const double mean_f = layer_mean(T_src_min, T_src_max);
       const double mean_dT =
-          layer_mean_dbound(T_src_min, T_src_max, collar_is_high);
+          layer_mean_dbound(T_src_min, T_src_max, collar_is_high, mean_f);
       const double mean_dpsi =
-          layer_mean_dbound(T_src_min, T_src_max, !collar_is_high);
-      const double mean_mixed = layer_mean_dbound_mixed(T_src_min, T_src_max);
+          layer_mean_dbound(T_src_min, T_src_max, !collar_is_high, mean_f);
+      const double mean_mixed =
+          layer_mean_dbound_mixed(T_src_min, T_src_max, mean_f);
 
       const double r_R = H / mean_f + network_.r_R_V_sum[i];
       const double dr_dT = -H * mean_dT / (mean_f * mean_f);

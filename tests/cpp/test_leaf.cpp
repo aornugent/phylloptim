@@ -4199,9 +4199,13 @@ void test_the_layer_mean_branches_agree_across_the_crossover() {
       const double mm = 0.5 * (a + b);
       const double g1 = r.curve_slope_at_for_test(mm);
       const double g2 = r.curve_slope2_at(mm);
-      const double r1 = std::abs(r.layer_mean_dbound(a, b, true) / (0.5 * g1) - 1.0);
-      const double r2 = std::abs(r.layer_mean_dbound2(a, b, true) / (g2 / 3.0) - 1.0);
-      const double rm = std::abs(r.layer_mean_dbound_mixed(a, b) / (g2 / 6.0) - 1.0);
+      const double mn = r.layer_mean(a, b);
+      const double r1 =
+          std::abs(r.layer_mean_dbound(a, b, true, mn) / (0.5 * g1) - 1.0);
+      const double r2 =
+          std::abs(r.layer_mean_dbound2(a, b, true, mn) / (g2 / 3.0) - 1.0);
+      const double rm =
+          std::abs(r.layer_mean_dbound_mixed(a, b, mn) / (g2 / 6.0) - 1.0);
       printf("      %-10.1e %-12.3e %-12.3e %.3e\n", sp, r1, r2, rm);
       // An exact zero means the helper took the midpoint branch and is being
       // compared against itself, which says nothing.
