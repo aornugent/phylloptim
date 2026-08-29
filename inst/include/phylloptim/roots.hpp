@@ -561,55 +561,88 @@ public:
 
   // ⚠️ ONE PLACE DECIDES HOW A LAYER MEAN IS FORMED, and this is it.
   //
-  // Everything the uptake and its derivatives need is a MEAN over the layer's suction
-  // interval -- the conductivity curve for the resistance, one of its trait
-  // derivatives for a trait row -- and every caller used to form its own as
-  // `integral / span`, each replicating the construction "bit-for-bit" as its comment
-  // says, and each inheriting the same defect.
+  // Everything the uptake and its derivatives need is a MEAN over the layer's
+  // suction interval -- the conductivity curve for the resistance, one of its trait
+  // derivatives for a trait row.
   //
-  // The defect: the integral is a difference of two reads of a TABULATED cumulative
-  // curve, so the quotient's relative error is the table's own divided by the span,
-  // and every derivative taken of it divides by the span again. MEASURED in
-  // test_leaf's "the mean conductivity" table -- the divided difference and the
-  // midpoint cross at a span of about 1e-5, and below it the difference is the worse
-  // form by orders. One operating point of 2,829,445 on a century stand reached a span
-  // of 5.6e-08; the marginal there was corrupted enough that the collar solve returned
-  // a MINIMUM of profit, and the whole census went not-a-number.
+  // A MEAN IS AN AVERAGE AND NOT A DIVIDED DIFFERENCE, and writing it as one is what
+  // removes the failure mode rather than managing it. Formed as
+  // (G(hi) - G(lo))/span it is a difference of two reads of a TABULATED cumulative,
+  // so its relative error is the table's own divided by the span, and every
+  // derivative taken of it divides by the span again. One operating point of
+  // 2,829,445 on a century stand reached a span of 5.6e-08; the marginal there was
+  // corrupted enough that the collar solve returned a MINIMUM of profit and the
+  // whole census went not-a-number.
   //
-  // Below the crossover the mean over the interval is the curve at the MIDPOINT to
-  // O(span^2) -- smaller than the error it replaces by orders, and no differencing at
-  // all. Above it the divided difference is the better of the two, so both stay and
-  // the choice lives here rather than in seven copies that could disagree.
-  // ⚠️ THREE THRESHOLDS, NOT ONE, and that is measured rather than assumed. The
-  // divided difference divides by the span once for the mean, twice for its bound
-  // derivative and three times for the second -- so each is degraded a decade or
-  // more earlier than the last. test_leaf's "the layer-mean helpers" sweep finds
-  // where each form stops being the better one:
+  // Formed directly, every quantity in the family is ONE sum over the same nodes:
   //
-  //     span      d/dbound    d2/dbound2   mixed
-  //     1.0e-02   1.026e-03   9.328e-04    2.024e-06
-  //     5.0e-03   5.131e-04   4.653e-04    6.032e-07   <- mixed crosses
-  //     5.0e-04   5.133e-05   1.595e-06    8.811e-05   <- d2 crosses
-  //     1.0e-04   1.032e-05   2.669e-03    5.328e-03
-  //     5.0e-05   5.436e-06   2.948e-02    5.897e-02
+  //   x_i = m + (s/2) t_i        a_i = (1 + t_i)/2        b_i = (1 - t_i)/2
   //
-  // One threshold at 1e-5 would leave the two second derivatives on the degraded
-  // divided difference across a band two and three decades wide, wrong by up to a
-  // few percent. That the two forms MEET at all -- to 1.6e-06 and 6.0e-07 -- is also
-  // what confirms the f''/3 and f''/6 limits; a f''/4 would bottom out near 25%.
-  static constexpr double layer_mean_span_min = 1e-5;
-  static constexpr double layer_mean_d2_span_min = 5e-4;
-  static constexpr double layer_mean_mixed_span_min = 5e-3;
+  //   mean        = 1/2 sum w_i f  (x_i)
+  //   d/dhi       = 1/2 sum w_i f' (x_i) a_i
+  //   d/dlo       = 1/2 sum w_i f' (x_i) b_i
+  //   d2/dhi2     = 1/2 sum w_i f''(x_i) a_i^2
+  //   d2/dlo dhi  = 1/2 sum w_i f''(x_i) a_i b_i
+  //
+  // Which quantity is wanted picks which derivative of the curve goes under the sum
+  // and which power of the bound weights multiplies it. NOTHING DIVIDES BY THE SPAN
+  // at any order, so there is no cancellation to threshold around, no asymptotic to
+  // cross over to, and no f''/3 and f''/6 limits to derive and check.
+  //
+  // ⚠️ ONE THRESHOLD, AND IT IS A COST SWITCH RATHER THAN A CROSSOVER. The two forms
+  // are complementary rather than competing. The difference is well conditioned and
+  // cheap over a LONG interval, where a fixed rule is not accurate -- the curve has a
+  // weak singularity at the surface, and across the whole domain seven nodes reach
+  // only 8.3e-07. The sum is exact over a SHORT one, where the difference cancels.
+  // Measured in probe_layer_mean, both are better than 1e-11 anywhere between spans
+  // of 1e-3 and 1e-1, so this sits on a wide plateau; the three constants it replaced
+  // each sat at the worst point of the pair they switched between.
+  static constexpr double layer_mean_direct_below = 1e-3;
 
-  // True where the midpoint form applies: a short enough span, with both bounds
-  // above the surface. Below the surface the integrand is the constant 1 and an
-  // interval straddling it has no single midpoint value. `at` is whichever of the
-  // three thresholds the quantity being formed crosses at.
+  // True where the average is formed directly. Both bounds above the surface,
+  // because below it the integrand is the constant 1 and the curve has a corner
+  // there, which no fixed rule integrates.
   template <class T>
-  static bool use_midpoint_mean(const T& span, const T& lo,
-                                double at = layer_mean_span_min) {
+  static bool average_directly(const T& span, const T& lo) {
     using odelia::util::to_passive;
-    return to_passive(span) < at && to_passive(lo) > 0.0;
+    return to_passive(span) < layer_mean_direct_below && to_passive(lo) > 0.0;
+  }
+
+  // Gauss-Legendre on [-1,1]. Seven nodes because probe_layer_mean measures that
+  // exact to rounding at every span this form is used at.
+  static constexpr int n_node = 7;
+  static constexpr double node_t[7] = {
+      -0.9491079123427585, -0.7415311855993945, -0.4058451513773972, 0.0,
+      0.4058451513773972,  0.7415311855993945,  0.9491079123427585};
+  static constexpr double node_w[7] = {
+      0.1294849661688697, 0.2797053914892766, 0.3818300505051189,
+      0.4179591836734694, 0.3818300505051189, 0.2797053914892766,
+      0.1294849661688697};
+
+  // The average of one function of suction over [lo, hi], weighted by how each node
+  // moves with the bound being differentiated. EVERY layer mean below is one call to
+  // this, at whatever scalar the caller works in: the nodes are constants, so an
+  // active bound carries its rows through the curve reads, and nothing here divides
+  // by the span at any order.
+  template <class T, class F, class W>
+  T node_average_at(const T& lo, const T& hi, F&& g, W&& weight) const {
+    const T m = T(0.5) * (lo + hi), s = hi - lo;
+    T acc = T(0.0);
+    for (int i = 0; i < n_node; ++i) {
+      acc += T(node_w[i] * weight(node_t[i])) * g(m + s * T(0.5 * node_t[i]));
+    }
+    return T(0.5) * acc;
+  }
+
+  // The curve and its two slopes at one suction, each from its own closed form.
+  double curve_at(double psi) const {
+    return vulnerability_curve_at<double>(psi, root_b, root_c);
+  }
+  double curve_slope_at(double psi) const {
+    return vulnerability_curve_slope_at<double>(psi, root_b, root_c);
+  }
+  double curve_curvature_at(double psi) const {
+    return vulnerability_curve_curvature_at<double>(psi, root_b, root_c);
   }
 
   // The cumulative curve over the layer's interval. This is the construction five
@@ -681,10 +714,24 @@ public:
     return integral;
   }
 
+  // The layer mean at any scalar, and its bound derivative below it.
+  //
+  // ⚠️ ONE NODE, AND THAT IS THE SAME RULE AS ABOVE RATHER THAN A SECOND FORM. The
+  // midpoint is Gauss-Legendre at n = 1 (t = 0, w = 2), so `f(mid)` is the value sum
+  // and `f'(mid)/2` is the d/dbound sum with its (1 + t)/2 weight at t = 0. What
+  // decides the order is what the consumer needs: a lift asks for the value and its
+  // first rows and nothing more, so its error is the rule's s^2 f''/24 -- about 4e-8
+  // at the span this fires below -- while the ROWS are exact because AD
+  // differentiates the node's own position. The double family feeds the second
+  // derivatives, so it pays for seven.
+  //
+  // Measured: recording the seven-node sum here instead cost 17% of a century
+  // gradient, and lifting the double answer cost 29%, because the double family's
+  // trait rows are an incomplete-gamma series this path has cached away.
   template <class T>
   T layer_mean_at(const T& lo, const T& hi, const SupplyAt<T>& sup) const {
     const T span = hi - lo;
-    if (use_midpoint_mean(span, lo)) {
+    if (average_directly(span, lo)) {
       return vulnerability_curve_at<T>(T(0.5) * (lo + hi), sup.root_b,
                                        sup.root_c);
     }
@@ -698,7 +745,7 @@ public:
                          bool high_moves, const T& mean) const {
     using odelia::util::to_passive;
     const T span = hi - lo;
-    if (use_midpoint_mean(span, lo)) {
+    if (average_directly(span, lo)) {
       return T(0.5) * vulnerability_curve_slope_at<T>(T(0.5) * (lo + hi),
                                                       sup.root_b, sup.root_c);
     }
@@ -767,59 +814,47 @@ public:
   // is what was causing the trouble.
   double layer_mean(double lo, double hi) const {
     const double span = hi - lo;
-    if (use_midpoint_mean(span, lo)) {
-      return vulnerability_curve_at<double>(0.5 * (lo + hi), root_b, root_c);
+    if (average_directly(span, lo)) {
+      return node_average_at<double>(lo, hi,
+                          [&](double p) -> double { return curve_at(p); },
+                          [](double) -> double { return 1.0; });
     }
     return layer_integral(lo, hi) / span;
   }
 
-  // The curve's second slope at one suction, by a tangent through the SAME closed
-  // form its first slope comes from. Two callers need it and neither should carry a
-  // hand-derived copy.
-  // The curve's first slope at one suction, named for the checks that compare the
-  // layer-mean branches against their midpoint limits.
-  double curve_slope_at_for_test(double psi) const {
-    return vulnerability_curve_slope_at<double>(psi, root_b, root_c);
-  }
-
-  double curve_slope2_at(double psi) const {
-    using tangent = odelia::ode::tangent_scalar<double>;
-    tangent p = psi;
-    odelia::ode::seed_direction(p, 1.0);
-    return odelia::ode::derivative_along(vulnerability_curve_slope_at<tangent>(
-        p, tangent(root_b), tangent(root_c)));
-  }
-
-  // d^2(mean)/d(hi)d(lo) -- the mean responding to BOTH bounds, which is what a mixed
-  // second derivative of the uptake needs. In the midpoint limit it is the same
-  // quarter of the curve's curvature as the pure one, because the midpoint depends on
-  // the two ends symmetrically; above the crossover it is the divided difference the
-  // caller used to write inline.
+  // d^2(mean)/d(hi)d(lo) -- the mean responding to BOTH bounds, which is what a
+  // mixed second derivative of the uptake needs. The same sum as the value with
+  // the curve's CURVATURE under it and one weight from each end.
   //
-  // ⚠️ THE LIMIT IS f''/6 AND NOT f''/4. With mean = f(m) + (s^2/24) f''(m), m the
-  // midpoint and s the span, d(mean)/d(a bound) is f'/2 + (s/12) f'' and the mixed
-  // second derivative is f''/4 - f''/12 = f''/6. Checked against a case where the
-  // mean is exact: for f = x^2 the mean is (hi^2 + hi lo + lo^2)/3, whose mixed
-  // derivative is 1/3 -- which is f''/6, not f''/4. The pure one below is f''/3 by
-  // the same expansion, and getting either wrong is a bounded but real error in a
-  // leading term.
+  // ⚠️ THIS USED TO CARRY A HAND-DERIVED f''/6, AND THE 6 WAS THE WHOLE DIFFICULTY.
+  // An expansion about the midpoint gives f''/4 - f''/12 for this and f''/3 for the
+  // pure one below, and an f''/4 written for either is a bounded but real error in a
+  // leading term that only a second hand derivation finds. Under the sum there is
+  // nothing to derive: the weights are where the nodes sit, so the limits come out
+  // rather than being put in.
   double layer_mean_dbound_mixed(double lo, double hi, double mean) const {
     const double span = hi - lo;
-    if (use_midpoint_mean(span, lo, layer_mean_mixed_span_min)) {
-      return curve_slope2_at(0.5 * (lo + hi)) / 6.0;
+    if (average_directly(span, lo)) {
+      return node_average_at<double>(
+          lo, hi, [&](double p) -> double { return curve_curvature_at(p); },
+          [](double t) -> double { return 0.25 * (1.0 + t) * (1.0 - t); });
     }
     const double f_hi = (hi > 0.0) ? root_vuln_integral_deriv_at(hi) : 1.0;
     const double f_lo = (lo > 0.0) ? root_vuln_integral_deriv_at(lo) : 1.0;
     return (f_hi + f_lo - 2.0 * mean) / (span * span);
   }
 
-  // d^2(mean)/d(one bound)^2 -- the PURE second derivative, f''/3 in the limit for
-  // the reason given above. Above the crossover it is the divided difference again.
+  // d^2(mean)/d(one bound)^2 -- the same sum with both weights from the same end.
   double layer_mean_dbound2(double lo, double hi, bool high_moves,
                             double mean) const {
     const double span = hi - lo;
-    if (use_midpoint_mean(span, lo, layer_mean_d2_span_min)) {
-      return curve_slope2_at(0.5 * (lo + hi)) / 3.0;
+    if (average_directly(span, lo)) {
+      return node_average_at<double>(
+          lo, hi, [&](double p) -> double { return curve_curvature_at(p); },
+          [high_moves](double t) -> double {
+            const double a = 0.5 * (high_moves ? 1.0 + t : 1.0 - t);
+            return a * a;
+          });
     }
     const double at = high_moves ? hi : lo;
     const double f_at = (at > 0.0) ? root_vuln_integral_deriv_at(at) : 1.0;
@@ -828,10 +863,8 @@ public:
                       : 2.0 * (mean - f_at) / (span * span) - df_at / span;
   }
 
-  // d(mean)/d(a moving bound). Both ends answer with HALF the curve's slope at the
-  // midpoint in the limit -- the mean over an interval responds to either end the
-  // same way -- and above the crossover it is the divided difference the callers
-  // used to write inline, where it cancels its leading terms as the span shuts.
+  // d(mean)/d(a moving bound): the sum with the curve's SLOPE under it, weighted by
+  // how far each node travels with that end.
   //
   // ⚠️ THE MEAN IS PASSED IN, NOT RECOMPUTED. Every caller that wants a bound
   // derivative already has the mean, and the integral behind it is a pair of table
@@ -840,9 +873,12 @@ public:
   double layer_mean_dbound(double lo, double hi, bool high_moves,
                            double mean) const {
     const double span = hi - lo;
-    if (use_midpoint_mean(span, lo)) {
-      return 0.5 * vulnerability_curve_slope_at<double>(0.5 * (lo + hi), root_b,
-                                                        root_c);
+    if (average_directly(span, lo)) {
+      return node_average_at<double>(
+          lo, hi, [&](double p) -> double { return curve_slope_at(p); },
+          [high_moves](double t) -> double {
+            return 0.5 * (high_moves ? 1.0 + t : 1.0 - t);
+          });
     }
     // ⚠️ root_vuln_integral_deriv_at AND NOT THE CONDUCTIVITY READ. The two differ in
     // how they are bounded past the knots -- the conductivity read clamps its
@@ -892,8 +928,15 @@ public:
   double layer_mean_dtrait_dbound(double lo, double hi, CurveTrait trait,
                                   bool high_moves, double mean) const {
     const double span = hi - lo;
-    if (use_midpoint_mean(span, lo)) {
-      return 0.5 * root_vuln_integrand_dtrait_dpsi(0.5 * (lo + hi), trait);
+    if (average_directly(span, lo)) {
+      return node_average_at<double>(
+          lo, hi,
+          [&](double p) -> double {
+            return root_vuln_integrand_dtrait_dpsi(p, trait);
+          },
+          [high_moves](double t) -> double {
+            return 0.5 * (high_moves ? 1.0 + t : 1.0 - t);
+          });
     }
     const double at = high_moves ? hi : lo;
     const double f_at = root_vuln_integrand_dtrait(at, trait);
@@ -902,8 +945,13 @@ public:
 
   double layer_mean_dtrait(double lo, double hi, CurveTrait trait) const {
     const double span = hi - lo;
-    if (use_midpoint_mean(span, lo)) {
-      return root_vuln_integrand_dtrait(0.5 * (lo + hi), trait);
+    if (average_directly(span, lo)) {
+      return node_average_at<double>(
+          lo, hi,
+          [&](double p) -> double {
+            return root_vuln_integrand_dtrait(p, trait);
+          },
+          [](double) -> double { return 1.0; });
     }
     const double pos_lo = std::max(lo, 0.0);
     double d_integral = 0.0;
@@ -1882,19 +1930,17 @@ private:
     // Each differentiation divides by the span again, so 4e-10/(5.6e-08)^2 is about
     // 0.13 relative: the curvature at that point was never trustworthy either.
     //
-    // The mean of the integrand over the interval is its midpoint value to O(span^2),
-    // and below the crossover measured in test_leaf (a span of about 1e-5) that error
-    // is smaller than the one it replaces by orders. Written as ARITHMETIC rather than
-    // as a lift, from the curve's own closed form, so AD supplies every order and both
-    // trait rows exactly -- one definition, all orders, which is the invariant the
-    // divided difference broke by taking its value from the tabulation.
+    // So over a short interval the mean is formed as a MEAN -- an average of the
+    // curve's own closed form over the interval, which subtracts nothing and so has
+    // no span left in its error. Over a long one the difference is well conditioned
+    // and far cheaper, and average_directly is the one place that choice is made.
     //
     // Only where both bounds sit above the surface: below it the integrand is the
-    // constant 1 and a span straddling it has no single midpoint value.
+    // constant 1 and the curve has a corner there, which no fixed rule integrates.
     T mean_f;
-    if (use_midpoint_mean(span, T_src_min)) {
-      const T mid = T(0.5) * (T_src_min + T_src_max);
-      mean_f = vulnerability_curve_at<T>(mid, at_scalar.root_b, at_scalar.root_c);
+    if (average_directly(span, T_src_min)) {
+      mean_f = vulnerability_curve_at<T>(T(0.5) * (T_src_min + T_src_max),
+                                        at_scalar.root_b, at_scalar.root_c);
     } else {
       mean_f = integral / span;
     }

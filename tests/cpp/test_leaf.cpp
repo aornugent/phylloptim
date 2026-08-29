@@ -4166,8 +4166,19 @@ void test_the_supply_derivatives_stay_smooth_into_a_coincidence() {
 // compares the two branches directly, just ABOVE the crossover where the divided
 // difference is still accurate and the midpoint form is too. A wrong constant shows
 // up here as a 25% disagreement rather than not at all.
-void test_the_layer_mean_branches_agree_across_the_crossover() {
-  printf("the layer-mean helpers: divided difference against the midpoint limits\n");
+// The whole layer-mean family against a quadrature of higher order than the one the
+// model uses, at every span the model switches across.
+//
+// ⚠️ THIS REPLACED A CHECK OF TWO BRANCHES AGAINST EACH OTHER, and the replacement is
+// the point. The model used to switch between a divided difference and a midpoint
+// asymptotic, so the only referee available was the span at which those two met --
+// which says nothing about whether either is right, and which is why an f''/4 written
+// for an f''/6 survived until it was derived by hand a second time. A mean is an
+// average, so an independent average of higher order referees every quantity in the
+// family directly, at every span, including the ones no operating point reaches often
+// enough to be noticed at.
+void test_the_layer_mean_against_a_higher_order_average() {
+  printf("the layer-mean family against a 15-point average\n");
   namespace grad = phylloptim::gradient;
   grad::Settings s;
   grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
@@ -4175,53 +4186,97 @@ void test_the_layer_mean_branches_agree_across_the_crossover() {
   grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
   auto& r = l.roots_;
 
-  // 2e-5: above the 1e-5 threshold, so the helpers take the general branch, and
-  // still short enough that the midpoint expansion is accurate.
-  const double centre = 2.0, span = 2e-5;
-  const double lo = centre - 0.5 * span, hi = centre + 0.5 * span;
-  const double m = 0.5 * (lo + hi);
+  // Fifteen nodes, generated here by Newton on the Legendre polynomial, so the
+  // model's own seven are not refereeing themselves.
+  const int n = 15;
+  std::vector<double> t(n), w(n);
+  for (int i = 0; i < n; ++i) {
+    double x = std::cos(M_PI * (i + 0.75) / (n + 0.5));
+    for (int it = 0; it < 100; ++it) {
+      double p0 = 1.0, p1 = 0.0;
+      for (int j = 0; j < n; ++j) {
+        const double p2 = p1;
+        p1 = p0;
+        p0 = ((2.0 * j + 1.0) * x * p1 - j * p2) / (j + 1);
+      }
+      const double dp = n * (x * p0 - p1) / (x * x - 1.0);
+      const double dx = -p0 / dp;
+      x += dx;
+      if (std::abs(dx) < 1e-16) break;
+    }
+    double p0 = 1.0, p1 = 0.0;
+    for (int j = 0; j < n; ++j) {
+      const double p2 = p1;
+      p1 = p0;
+      p0 = ((2.0 * j + 1.0) * x * p1 - j * p2) / (j + 1);
+    }
+    const double dp = n * (x * p0 - p1) / (x * x - 1.0);
+    t[std::size_t(i)] = x;
+    w[std::size_t(i)] = 2.0 / ((1.0 - x * x) * dp * dp);
+  }
+  auto rel_gap = [](double got, double want) -> double {
+    return std::abs(got - want) / (std::abs(want) + 1e-300);
+  };
+  const double bb = r.root_b, cc = r.root_c;
+  auto avg = [&](double lo, double hi, int order, double pow_hi,
+                 double pow_lo) -> double {
+    const double m = 0.5 * (lo + hi), sp = hi - lo;
+    double acc = 0.0;
+    for (int i = 0; i < n; ++i) {
+      const double x = m + 0.5 * sp * t[std::size_t(i)];
+      const double a = 0.5 * (1.0 + t[std::size_t(i)]);
+      const double b = 0.5 * (1.0 - t[std::size_t(i)]);
+      const double g =
+          order == 0 ? phylloptim::vulnerability_curve_at<double>(x, bb, cc)
+          : order == 1
+              ? phylloptim::vulnerability_curve_slope_at<double>(x, bb, cc)
+              : phylloptim::vulnerability_curve_curvature_at<double>(x, bb, cc);
+      acc += w[std::size_t(i)] * g * std::pow(a, pow_hi) * std::pow(b, pow_lo);
+    }
+    return 0.5 * acc;
+  };
 
-  const double f1 = r.curve_slope_at_for_test(m);
-  const double f2 = r.curve_slope2_at(m);
-
-  // Swept, because each quantity crosses at its OWN span. The mean's divided
-  // difference divides by the span once, its first bound derivative twice and its
-  // second three times, so each degrades a decade or more earlier than the last --
-  // one threshold for all three would be right for at most one.
-  (void)lo; (void)hi; (void)m; (void)f1; (void)f2; (void)span;
-  printf("      %-10s %-12s %-12s %s\n", "span", "d/dbound", "d2/dbound2", "mixed");
-  double best1 = 1.0, best2 = 1.0, bestm = 1.0;
-  double at1 = 0, at2 = 0, atm = 0;
-  for (int e = 1; e <= 5; ++e) {
-    for (double mult : {5.0, 1.0}) {
-      const double sp = mult * std::pow(10.0, -double(e));
-      const double a = centre - 0.5 * sp, b = centre + 0.5 * sp;
-      const double mm = 0.5 * (a + b);
-      const double g1 = r.curve_slope_at_for_test(mm);
-      const double g2 = r.curve_slope2_at(mm);
-      const double mn = r.layer_mean(a, b);
-      const double r1 =
-          std::abs(r.layer_mean_dbound(a, b, true, mn) / (0.5 * g1) - 1.0);
-      const double r2 =
-          std::abs(r.layer_mean_dbound2(a, b, true, mn) / (g2 / 3.0) - 1.0);
-      const double rm =
-          std::abs(r.layer_mean_dbound_mixed(a, b, mn) / (g2 / 6.0) - 1.0);
-      printf("      %-10.1e %-12.3e %-12.3e %.3e\n", sp, r1, r2, rm);
-      // An exact zero means the helper took the midpoint branch and is being
-      // compared against itself, which says nothing.
-      if (r1 > 0.0 && r1 < best1) { best1 = r1; at1 = sp; }
-      if (r2 > 0.0 && r2 < best2) { best2 = r2; at2 = sp; }
-      if (rm > 0.0 && rm < bestm) { bestm = rm; atm = sp; }
+  printf("      %-9s %-11s %-11s %-11s %-11s %s\n", "span", "mean", "d/dhi",
+         "d/dlo", "d2/dhi2", "mixed");
+  double worst = 0.0, worst_direct = 0.0, worst_table = 0.0;
+  for (double centre : {1.0, 2.0, 4.0}) {
+    for (int e = 0; e <= 8; ++e) {
+      const double sp = std::pow(10.0, -double(e));
+      const double lo = centre - 0.5 * sp, hi = centre + 0.5 * sp;
+      if (lo <= 0.0) continue;
+      const double mn = r.layer_mean(lo, hi);
+      const double e0 = rel_gap(mn, avg(lo, hi, 0, 0, 0));
+      const double e1 =
+          rel_gap(r.layer_mean_dbound(lo, hi, true, mn), avg(lo, hi, 1, 1, 0));
+      const double e2 =
+          rel_gap(r.layer_mean_dbound(lo, hi, false, mn), avg(lo, hi, 1, 0, 1));
+      const double e3 = rel_gap(r.layer_mean_dbound2(lo, hi, true, mn),
+                                      avg(lo, hi, 2, 2, 0));
+      const double e4 = rel_gap(r.layer_mean_dbound_mixed(lo, hi, mn),
+                                      avg(lo, hi, 2, 1, 1));
+      if (centre == 2.0) {
+        printf("      %-9.0e %-11.2e %-11.2e %-11.2e %-11.2e %.2e\n", sp, e0, e1,
+               e2, e3, e4);
+      }
+      const double here =
+          std::max(std::max(e0, e1), std::max(std::max(e2, e3), e4));
+      (sp < 1e-3 ? worst_direct : worst_table) =
+          std::max(sp < 1e-3 ? worst_direct : worst_table, here);
+      worst = std::max(worst, here);
     }
   }
-  printf("      best agreement: d/dbound %.2e at %.0e, d2 %.2e at %.0e, "
-         "mixed %.2e at %.0e\n", best1, at1, best2, at2, bestm, atm);
-  // Each must have SOME span at which the two forms meet. Where one never does, one
-  // of the two is wrong -- which is how a 1/4 written for a 1/3 or a 1/6 presents,
-  // and how it did.
-  ok(best1 < 1e-5, "the first bound derivative's two forms meet");
-  ok(best2 < 1e-2, "the second bound derivative's two forms meet");
-  ok(bestm < 1e-2, "the mixed bound derivative's two forms meet");
+  printf("      worst: direct branch %.3e, table branch %.3e (all %.3e)\n",
+         worst_direct, worst_table, worst);
+  // Two bounds, because the two branches are held to different things and that IS
+  // the design. Below the switch the average is formed directly and is exact to
+  // rounding; above it the difference of two table reads is well conditioned but
+  // carries the table's own error, which is what makes it cheap. One bound across
+  // both would either excuse the direct branch or forbid the cheap one.
+  //
+  // The table bound is what the three thresholds this replaced reached at their
+  // worst, 2.67e-05, so a regression to that scheme fails here.
+  ok(worst_direct < 1e-10, "the direct average is exact to rounding below the switch");
+  ok(worst_table < 1e-5, "the difference above the switch stays inside the table");
 }
 
 // The templated supply collar derivative, against the double one it replaces and
@@ -4591,7 +4646,7 @@ int main() {
   test_the_marginals_collar_slope_against_a_difference();
   test_where_the_mean_conductivity_should_stop_differencing();
   test_the_supply_derivatives_stay_smooth_into_a_coincidence();
-  test_the_layer_mean_branches_agree_across_the_crossover();
+  test_the_layer_mean_against_a_higher_order_average();
   test_the_templated_supply_derivative_against_both_routes();
   test_the_two_zero_flux_kinds_are_two_points();
   benchmark();

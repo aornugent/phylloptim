@@ -157,6 +157,25 @@ int main() {
   const Rule c5 = gauss_legendre(5);
   const Rule c7 = gauss_legendre(7);
 
+  // The curvature primitive against the tangent through the slope it replaces --
+  // written before anything reads it, because every second bound derivative below
+  // is that number under the quadrature.
+  {
+    double worst = 0.0;
+    for (double psi = 0.05; psi < 7.3; psi += 0.05) {
+      pl::tangent p = psi;
+      pl::seed_direction(p, 1.0);
+      const double want = pl::derivative_along(
+          pl::vulnerability_curve_slope_at<pl::tangent>(
+              p, pl::tangent(b_root), pl::tangent(c_root)));
+      const double got =
+          pl::vulnerability_curve_curvature_at<double>(psi, b_root, c_root);
+      worst = std::max(worst, rel(got, want));
+    }
+    std::printf("f'' closed form against a tangent through f': worst rel %.3e  %s\n",
+                worst, worst < 1e-12 ? "ok" : "FAIL");
+  }
+
   std::printf("the layer mean: the thresholds against forms that need none\n");
   std::printf("  root curve b=%.6g c=%.6g; reference is Gauss-Legendre 24 on the"
               " closed form\n", b_root, c_root);
@@ -188,6 +207,39 @@ int main() {
                   s, em_a, em_c, mark(em_a), e1_a, e1_c, mark(e1_a), e2_a, e2_c,
                   mark(e2_a));
     }
+  }
+
+  // ⚠️ THE SPANS THE MODEL ACTUALLY VISITS GO UP TO THE WHOLE DOMAIN, and a fixed
+  // rule is only worth having if it holds there too. A layer's span is the collar
+  // against that layer's soil potential, so it reaches several MPa, over which the
+  // curve falls by orders. Reference here is Gauss 40.
+  {
+    const Rule ref40 = gauss_legendre(40);
+    std::printf("\n=== large spans, whole positive domain (reference Gauss 40) ===\n");
+    std::printf("  %-6s %-6s | %-10s %-10s %-10s %-10s\n", "lo", "hi",
+                "GL7 mean", "GL10 mean", "GL15 d2/db2", "GL20 d2/db2");
+    const Rule g10 = gauss_legendre(10), g15 = gauss_legendre(15),
+               g20 = gauss_legendre(20);
+    double w7 = 0.0, w10 = 0.0, w15 = 0.0, w20 = 0.0;
+    const double los[4] = {0.05, 0.5, 1.0, 2.0};
+    const double his[5] = {1.0, 2.0, 4.0, 6.0, 7.3};
+    for (double lo : los) {
+      for (double hi : his) {
+        if (hi <= lo) continue;
+        const Quad R = quad_at(ref40, lo, hi);
+        const Quad q7 = quad_at(c7, lo, hi), q10 = quad_at(g10, lo, hi);
+        const Quad q15 = quad_at(g15, lo, hi), q20 = quad_at(g20, lo, hi);
+        w7 = std::max(w7, rel(q7.mean, R.mean));
+        w10 = std::max(w10, rel(q10.mean, R.mean));
+        w15 = std::max(w15, rel(q15.dhi2, R.dhi2));
+        w20 = std::max(w20, rel(q20.dhi2, R.dhi2));
+        std::printf("  %-6.2f %-6.2f | %-10.2e %-10.2e %-10.2e %-10.2e\n", lo, hi,
+                    rel(q7.mean, R.mean), rel(q10.mean, R.mean),
+                    rel(q15.dhi2, R.dhi2), rel(q20.dhi2, R.dhi2));
+      }
+    }
+    std::printf("  worst          | %-10.2e %-10.2e %-10.2e %-10.2e\n", w7, w10,
+                w15, w20);
   }
 
   // How few nodes C needs across the whole range, which is what decides its cost.
