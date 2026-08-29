@@ -1760,31 +1760,6 @@ public:
   // This leaf's own supply state, as the view the quadrature takes. No copies.
   SupplyAt<double> held_supply() const { return roots_.held_supply(); }
 
-  // The condition that places an interior collar, and its gradient in everything
-  // the leaf answers for. `slope` is dM/dp, what the theorem divides by; the two
-  // gradients carry dM/d(input) in the shape of the inputs themselves.
-  //
-  // ⚠️ THIS IS THE ONE DERIVATIVE THAT CROSSES A BOUNDARY AS A NUMBER, and it
-  // crosses because reverse mode cannot nest a tangent above its own scalar --
-  // XAD offers no lift into one -- where forward mode can. So the second
-  // derivative is taken here, in forward mode, and everything else composes on
-  // the caller's tape.
-  // `slope` is the curvature dM/dcollar the theorem divides by; `gradient` is
-  // dM/dp over the parameters, and the collar is not among them.
-  struct CollarCondition {
-    double slope = util::na_value;
-    LeafInputs<double> gradient{};
-    // The FIRST derivative the slope above is taken from, which the same sweep
-    // already computed. At an interior point the solve put the collar where the
-    // marginal profit is zero, so this must be ~0 -- and if it is not, profit_at
-    // is not the function the solve rooted and its curvature is the curvature of
-    // something else. Free, and the one check this derivation could not make
-    // about itself.
-    double marginal = util::na_value;
-  };
-  CollarCondition collar_condition(double sigma_star, double ci_star,
-                                   const LeafInputs<double>& in) const;
-
   // Everything a consumer asks the leaf for, at one scalar. `point` says whether
   // the collar could be put on the tape; where it could not, the outputs that
   // read it carry their value and no rows, which is the consumer's to act on.
@@ -1807,7 +1782,7 @@ public:
   // `point` says whether the collar could be put on the tape. Where it could
   // not, it carries its value and no rows.
   template <typename S>
-  S collar_at(const LeafInputs<S>& in, const CollarCondition& cond,
+  S collar_at(const LeafInputs<S>& in,
               odelia::record_report& point) const;
 
   // The outputs at a collar, whatever placed it. Underneath the kind switch this
@@ -1827,9 +1802,32 @@ public:
   // row needs none of it -- the collar is where the marginal is zero, which is
   // the envelope theorem -- but the marginal itself is what places the collar,
   // and every water output reads that.
+  // The operating point's other coordinates at scalar S, from the anchors the solve
+  // left: the flux the soil delivers at this collar, and the stem potential and the
+  // intercellular CO2 the two residuals define there. profit_at composes the profit
+  // from these and marginal_at composes the marginal from them, so ONE construction
+  // serves both and they cannot disagree about where the point is.
+  template <class S>
+  struct CollarCoords {
+    S flux, sigma, ci;
+  };
+
+  template <typename S>
+  CollarCoords<S> collar_coords_at(double sigma_star, double ci_star,
+                                   const S& collar,
+                                   const LeafInputs<S>& whole) const;
+
   template <typename S>
   S profit_at(double sigma_star, double ci_star, const S& collar,
               const LeafInputs<S>& in) const;
+
+  // M at scalar S: the marginal profit as a function of the ACTIVE INPUTS, with the
+  // collar wherever the caller puts it. This is the residual the interior collar is
+  // closed by -- `implicit_value_reported(p*, dM/dp, marginal_at)` -- so that its
+  // parameter rows are TAPED from the condition rather than handed over as numbers
+  // from a second-order pass nothing referees.
+  template <typename S>
+  S marginal_at(const S& collar, const LeafInputs<S>& whole) const;
 
   // The collar where a pinned point sits, at one scalar, from the condition that
   // pins it. Three arms because the dry end is a `min` of two limits that are
@@ -3214,10 +3212,11 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // dry of every root it returns -- ran over 2,829,445 interior solves on that
   // stand and found the marginal rising exactly zero times.
   //
-  // So the defect is in the CURVATURE, not here: plant's collar_condition
-  // differentiates profit_at twice and gets the wrong sign. The counter stays,
-  // because it is what establishes this solve's innocence and would catch the
-  // failure it was written for if that ever does happen.
+  // So the defect was in the CURVATURE, not here: it came from differentiating
+  // profit_at twice through a divided difference that had already spent its
+  // accuracy on the span. Both are gone -- the mean conductivity no longer
+  // differences at a short span, and the curvature is marginal_collar_slope(), a
+  // FIRST derivative of the marginal this solve roots.
   operating_point_kind_ = OperatingPointKind::Interior;
   const double root = util::uniroot_smooth(dprofit, lo, hi, f_lo, f_hi,
                                            collar_root_tol,
@@ -3234,10 +3233,10 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // the crossing as downward at all 2,829,445 interior solves on that stand while
   // two independent analytic routes agreed the slope there is +34.41.
   //
-  // The detection therefore has to be ANALYTIC, and it is: marginal_collar_slope()
-  // is dM/dp in closed form, agreeing with plant's independent nested-AD route to
-  // seven digits. It is called from find_root_collar_psi, after the coordinates it
-  // reads have been placed.
+  // Any detection here has to be ANALYTIC for that reason. marginal_collar_slope()
+  // is dM/dp in closed form and is what plant's guard now tests -- the same number
+  // the interior closure divides by, rather than a second one that could disagree
+  // with it.
   return root;
 }
 
@@ -4680,8 +4679,9 @@ inline T Leaf::stem_integral_at(const T& psi, const ProfitInputs<T>& in) const {
 // gc is proportional to the flux, so it is derived from the uptake here rather
 // than passed: two spellings of one fact is a place they can disagree.
 template <typename S>
-inline S Leaf::profit_at(double sigma_star, double ci_star, const S& collar,
-                         const LeafInputs<S>& whole) const {
+inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
+    double sigma_star, double ci_star, const S& collar,
+    const LeafInputs<S>& whole) const {
   using odelia::util::to_passive;
   const ProfitInputs<S>& in = whole.profit;
   const double gc_per_flux =
@@ -4748,6 +4748,20 @@ inline S Leaf::profit_at(double sigma_star, double ci_star, const S& collar,
                S(gc_per_flux) * flux * (S(leaf.ca_) - c) * S(inv_atm);
       });
 
+
+  return CollarCoords<S>{flux, sigma, ci};
+}
+
+// Profit at that point. The coordinates above are the whole of what it shares with
+// the marginal, so they are built once and both read them.
+template <typename S>
+inline S Leaf::profit_at(double sigma_star, double ci_star, const S& collar,
+                         const LeafInputs<S>& whole) const {
+  const ProfitInputs<S>& in = whole.profit;
+  const CollarCoords<S> at =
+      collar_coords_at<S>(sigma_star, ci_star, collar, whole);
+  const S& sigma = at.sigma;
+  const S& ci = at.ci;
   const S J = electron_transport_kernel<S>(in.ppfd, in.quantum_yield,
                                            in.curv_elec, in.transport_jmax);
   const S A = assim_colimited_kernel<S>(ci, in.vcmax, J, in.curv_colim,
@@ -4757,50 +4771,20 @@ inline S Leaf::profit_at(double sigma_star, double ci_star, const S& collar,
   return A - cost;
 }
 
-// One evaluation of profit with the collar's direction inside the adjoint, swept
-// once: the cross term IS the row, and every input's comes off the same sweep.
-// Taking it one input at a time costs a pass over the whole leaf per input,
-// which is what this replaces.
-//
-// Nothing here derives anything. Every number is a derivative of the same
-// evaluation the forward model runs.
-inline Leaf::CollarCondition Leaf::collar_condition(
-    double sigma_star, double ci_star, const LeafInputs<double>& in) const {
-  using S = odelia::ode::directional_adjoint_scalar<double>;
-  CollarCondition out;
-  out.gradient = in;   // the shape; every entry below is overwritten
-
-  // One tape per thread, not one per call. A tape is reused by clearing it, and
-  // building one per operating point costs several times the recording it then
-  // carries -- measured at 89 s of a 217 s gradient before this.
-  static thread_local odelia::ode::directional_adjoint_tape<double> tape;
-  tape.clearAll();
-  LeafInputs<S> at = in.template rebind_from<S>();
-  // The collar is what the condition is differentiated IN, so it is an input of
-  // its own beside the parameters rather than one of them: differentiated in
-  // itself it gives the curvature, and the curvature is not a row.
-  S collar = S(opt_root_psi_);
-  std::vector<S*> inputs = at.field_ptrs();
-  for (S* p : inputs) {
-    tape.registerInput(*p);
-  }
-  tape.registerInput(collar);
-  tape.newRecording();
-  odelia::ode::seed_inner_direction(collar, 1.0);
-  S profit = profit_at<S>(sigma_star, ci_star, collar, at);
-  tape.registerOutput(profit);
-  xad::derivative(profit) = 1.0;
-  tape.computeAdjoints();
-
-  std::vector<double*> rows = out.gradient.field_ptrs();
-  odelia::util::check_length(inputs.size(), rows.size());
-  for (std::size_t k = 0; k < rows.size(); ++k) {
-    *rows[k] = odelia::ode::directional_adjoint(*inputs[k]);
-  }
-  out.slope = odelia::ode::directional_adjoint(collar);
-  out.marginal = odelia::ode::plain_adjoint(collar);
-  return out;
+// M at scalar S, from the same coordinates profit_at uses plus the supply's collar
+// derivative -- which is templated for exactly this, and which the transport response
+// V inside the assembly needs. `transpiration` is the flux: the T1 residual says the
+// stem carries what the soil delivers, so there is no second quantity to form.
+template <typename S>
+inline S Leaf::marginal_at(const S& collar, const LeafInputs<S>& whole) const {
+  const CollarCoords<S> c =
+      collar_coords_at<S>(opt_psi_stem_, ci_, collar, whole);
+  const CollarPoint<S> at{
+      collar, c.sigma, c.ci,
+      roots_.template duptake_dpsi_at<S>(collar, whole.supply.at()), c.flux};
+  return marginal_assembled<S>(at, whole.profit).marginal;
 }
+
 
 // Every input paired with its own entry in a gradient over the same struct. One
 // order, from one table, so the two cannot be matched up by hand.
@@ -4872,14 +4856,21 @@ inline S Leaf::bound_at(WhichBound which, double bound_x,
 // it is the only one whose gradient had to be taken in forward mode and handed
 // over; every other kind's condition is first order and composes here.
 template <typename S>
-inline S Leaf::collar_at(const LeafInputs<S>& in, const CollarCondition& cond,
+inline S Leaf::collar_at(const LeafInputs<S>& in,
                          odelia::record_report& point) const {
   S collar = S(opt_root_psi_);
   point = odelia::record_report{};
   switch (operating_point_kind_) {
     case OperatingPointKind::Interior: {
-      point = odelia::implicit_root<S>(opt_root_psi_, cond.slope,
-                                      against<S>(in, cond.gradient), collar);
+      // Closed by the RESIDUAL, like every other kind here. dM/dp is what the
+      // theorem divides by; every parameter row is taped from M itself rather than
+      // handed over as numbers from a second-order pass over a different assembly.
+      // Reported rather than stopped, because at a fold the point is still the point
+      // and an output the envelope theorem spares does not read the collar at all.
+      point = odelia::implicit_value_reported<S>(
+          opt_root_psi_,
+          marginal_collar_slope(in.profit.template rebind_from<double>()),
+          [&](const S& y) -> S { return marginal_at<S>(y, in); }, collar);
       break;
     }
     case OperatingPointKind::PinnedWet:

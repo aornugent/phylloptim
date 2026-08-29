@@ -616,6 +616,144 @@ public:
   // callers describe as "replicated bit-for-bit from uptake_impl" -- so here it is,
   // once. Split about the surface because the integrand is the constant 1 below it
   // and the curve only above.
+  // The cumulative curve at an ACTIVE query, as a lift about the passive point: the
+  // value is the table's, because the solve ran on the table, and the query slope and
+  // the two trait rows are the curve's own. The double path reads the table directly
+  // and keeps its per-solve cache, which an active query cannot use anyway.
+  //
+  // step, db and dc are all exactly zero in VALUE -- they carry the query's
+  // derivatives and nothing else -- so every term that multiplies two of them
+  // contributes exactly zero to a first derivative. A scalar that reads no second
+  // derivative therefore pays for the curvature and the trait cross terms in tape it
+  // then sweeps once per seed, and reads zero off all of it. Same value either way.
+  template <class T>
+  T cumulative_lift(const T& arg, const SupplyAt<T>& sup) const {
+    using odelia::util::to_passive;
+    const double q = to_passive(arg);
+    const CurveReads c = curve_reads_at(q);
+    const T step = arg - T(q);
+    // Zero in value, carrying the trait's own row: the passive point is the query
+    // and the traits are their own values, so each delta is x - to_passive(x).
+    const T db = sup.root_b - T(to_passive(sup.root_b));
+    const T dc = sup.root_c - T(to_passive(sup.root_c));
+    if constexpr (!odelia::ode::SecondOrder<T>) {
+      return T(c.integral) + T(c.deriv) * step + T(c.integral_db) * db +
+             T(c.integral_dc) * dc;
+    } else {
+      const T slope =
+          T(c.deriv) + T(c.dtrait_pos) * db + T(c.dtrait_steep) * dc;
+      return T(c.integral) + slope * step +
+             T(0.5 * c.integrand_deriv) * step * step +
+             T(c.integral_db) * db + T(c.integral_dc) * dc;
+    }
+  }
+
+  // dG/dpsi at an active query, lifted the same way: the value is the table's own
+  // slope -- consistent with the value the mean above was formed from -- and the
+  // query row is the curve's integrand slope. First order only, which is all a
+  // parameter row asks of it.
+  template <class T>
+  T cumulative_deriv_lift(const T& arg, const SupplyAt<T>& sup) const {
+    using odelia::util::to_passive;
+    const double q = to_passive(arg);
+    const CurveReads c = curve_reads_at(q);
+    const T step = arg - T(q);
+    const T db = sup.root_b - T(to_passive(sup.root_b));
+    const T dc = sup.root_c - T(to_passive(sup.root_c));
+    return T(c.deriv) + T(c.integrand_deriv) * step + T(c.dtrait_pos) * db +
+           T(c.dtrait_steep) * dc;
+  }
+
+  // The three layer-mean forms at ANY scalar. The double siblings below are these
+  // with the table read directly and the per-solve cache kept; these read it through
+  // the lift, so an active query carries its rows. Same decision, same split about
+  // the surface, one definition of each.
+  template <class T>
+  T layer_integral_at(const T& lo, const T& hi, const SupplyAt<T>& sup) const {
+    using odelia::util::to_passive;
+    const double lo_p = to_passive(lo), hi_p = to_passive(hi);
+    T integral = T(0.0);
+    if (std::max(lo_p, 0.0) < hi_p) {
+      T pos_lo = T(0.0);
+      if (lo_p > 0.0) {
+        pos_lo = lo;
+      }
+      integral += cumulative_lift<T>(hi, sup) - cumulative_lift<T>(pos_lo, sup);
+    }
+    if (lo_p < std::min(hi_p, 0.0)) {
+      T neg_hi = T(0.0);
+      if (hi_p < 0.0) {
+        neg_hi = hi;
+      }
+      integral += (neg_hi - lo);
+    }
+    return integral;
+  }
+
+  template <class T>
+  T layer_mean_at(const T& lo, const T& hi, const SupplyAt<T>& sup) const {
+    const T span = hi - lo;
+    if (use_midpoint_mean(span, lo)) {
+      return vulnerability_curve_at<T>(T(0.5) * (lo + hi), sup.root_b,
+                                       sup.root_c);
+    }
+    return layer_integral_at<T>(lo, hi, sup) / span;
+  }
+
+  template <class T>
+  T layer_mean_dbound_at(const T& lo, const T& hi, const SupplyAt<T>& sup,
+                         bool high_moves) const {
+    using odelia::util::to_passive;
+    const T span = hi - lo;
+    if (use_midpoint_mean(span, lo)) {
+      return T(0.5) * vulnerability_curve_slope_at<T>(T(0.5) * (lo + hi),
+                                                      sup.root_b, sup.root_c);
+    }
+    const T mean = layer_integral_at<T>(lo, hi, sup) / span;
+    const T& at = high_moves ? hi : lo;
+    T f_at = T(1.0);
+    if (to_passive(at) > 0.0) {
+      f_at = cumulative_deriv_lift<T>(at, sup);
+    }
+    if (high_moves) {
+      return (f_at - mean) / span;
+    }
+    return (mean - f_at) / span;
+  }
+
+  // d(E_up)/d(the collar) at any scalar -- the same four lines the double form is,
+  // now that both read the layer means rather than building an integral.
+  //
+  // ⚠️ THIS IS WHAT LETS THE INTERIOR COLLAR BE CLOSED BY A RESIDUAL. The marginal
+  // profit contains the transport response V, which contains this; and inside an
+  // implicit_value residual the collar is PASSIVE while the parameters are active, so
+  // what the residual needs is this quantity carrying its PARAMETER rows. Handing
+  // them over as numbers instead is what the interior case did, and those numbers
+  // came from a nested pass nothing referees.
+  template <class T>
+  T duptake_dpsi_at(const T& T_collar, const SupplyAt<T>& sup) const {
+    using odelia::util::to_passive;
+    T dEup = T(0.0);
+    for (int i = 0; i < max_soil_layer; i++) {
+      const T& psi_i = sup.psi_soil[std::size_t(i)];
+      if (at_equal_potentials(to_passive(T_collar), to_passive(psi_i))) {
+        return T(std::numeric_limits<double>::quiet_NaN());
+      }
+      const bool collar_is_high = to_passive(T_collar) > to_passive(psi_i);
+      const T& lo = collar_is_high ? psi_i : T_collar;
+      const T& hi = collar_is_high ? T_collar : psi_i;
+
+      const T& k = sup.r_R_H_min[std::size_t(i)];
+      const T mean_f = layer_mean_at<T>(lo, hi, sup);
+      const T mean_dT = layer_mean_dbound_at<T>(lo, hi, sup, collar_is_high);
+      const T r_R = k / mean_f + sup.r_R_V_sum[std::size_t(i)];
+      const T dr_R_dT = -k * mean_dT / (mean_f * mean_f);
+      const T num = T_collar - psi_i - T(grav_head_z_[std::size_t(i)]);
+      dEup += (r_R - num * dr_R_dT) / (r_R * r_R);
+    }
+    return dEup * T(kg_per_mol_h2o);
+  }
+
   double layer_integral(double lo, double hi) const {
     const double pos_lo = std::max(lo, 0.0);
     const double neg_hi = std::min(hi, 0.0);
@@ -1699,34 +1837,15 @@ private:
       // their cross terms in the query. Five reads of one curve, none of them a
       // hand-kept mirror of it.
       auto G_integral = [&](const T& arg) -> T {
-        const double q = to_passive(arg);
         if constexpr (std::is_same_v<T, double>) {
+          const double q = arg;
           if (use_integral_cache) {
             if (q == collar_at) return G_at_T_collar;
             if (q == soil_at) return root_vuln_integral_soil_[i];
           }
           return root_vuln_integral_at(q);
         } else {
-          const CurveReads c = curve_reads_at(q);
-          const T step = arg - T(q);
-          const T db = at_scalar.root_b - T(root_b0);
-          const T dc = at_scalar.root_c - T(root_c0);
-          // step, db and dc are all exactly zero in VALUE -- they carry the
-          // query's derivatives and nothing else -- so every term that
-          // multiplies two of them contributes exactly zero to a first
-          // derivative. A scalar that reads no second derivative therefore pays
-          // for the curvature and the trait cross terms in tape it then sweeps
-          // once per seed, and reads zero off all of it. Same value either way.
-          if constexpr (!odelia::ode::SecondOrder<T>) {
-            return T(c.integral) + T(c.deriv) * step + T(c.integral_db) * db +
-                   T(c.integral_dc) * dc;
-          } else {
-            const T slope = T(c.deriv) + T(c.dtrait_pos) * db +
-                            T(c.dtrait_steep) * dc;
-            return T(c.integral) + slope * step +
-                   T(0.5 * c.integrand_deriv) * step * step +
-                   T(c.integral_db) * db + T(c.integral_dc) * dc;
-          }
+          return cumulative_lift<T>(arg, at_scalar);
         }
       };
 

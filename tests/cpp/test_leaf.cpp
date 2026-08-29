@@ -4220,6 +4220,69 @@ void test_the_layer_mean_branches_agree_across_the_crossover() {
   ok(bestm < 1e-2, "the mixed bound derivative's two forms meet");
 }
 
+// The templated supply collar derivative, against the double one it replaces and
+// against the independent second derivative.
+//
+// ⚠️ THE REFEREE BEFORE THE ALGEBRA. This form exists so the interior collar can be
+// closed by a RESIDUAL rather than by rows handed over as numbers -- which needs
+// dE_up/dp carrying its parameter rows. Two checks, because two things can go wrong:
+// the value must be the double form's exactly, and its collar derivative must be the
+// closed-form second derivative, which is computed by a different route entirely.
+void test_the_templated_supply_derivative_against_both_routes() {
+  printf("the templated dE_up/dp: against the double form and against d2\n");
+  namespace grad = phylloptim::gradient;
+  namespace pl = phylloptim;
+  grad::Settings s;
+  double worst_value = 0.0, worst_slope = 0.0;
+  int compared = 0;
+  for (double psi : {0.5, 1.0, 2.0, 3.0}) {
+    for (int layers : {1, 3, 5}) {
+      grad::Drivers d = env::drivers(psi, 900.0, 2.0, layers, layers);
+      pl::Leaf l = env::fresh();
+      grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+      l.find_root_collar_psi();
+      const double p = l.opt_root_psi_;
+      const std::vector<double>& soil = l.supply_psi_soil();
+
+      const double theirs = l.dE_from_soil_dpsi_collar(p, soil);
+      const double mine = l.roots_.template duptake_dpsi_at<double>(
+          p, l.roots_.held_supply());
+      if (!std::isfinite(theirs) || theirs == 0.0) {
+        continue;
+      }
+      ++compared;
+      worst_value = std::max(worst_value, std::abs(mine / theirs - 1.0));
+
+      // The same quantity at a tangent, seeded in the collar: its derivative is the
+      // supply's second collar derivative, which d2E_from_soil_dpsi_collar2 forms
+      // from its own algebra.
+      using tangent = odelia::ode::tangent_scalar<double>;
+      pl::SupplyValues<tangent> sup;
+      const pl::SupplyAt<double> held = l.roots_.held_supply();
+      for (std::size_t j = 0; j < held.psi_soil.size(); ++j) {
+        sup.psi_soil.push_back(tangent(held.psi_soil[j]));
+        sup.r_R_H_min.push_back(tangent(held.r_R_H_min[j]));
+        sup.r_R_V_sum.push_back(tangent(held.r_R_V_sum[j]));
+      }
+      sup.root_b = tangent(held.root_b);
+      sup.root_c = tangent(held.root_c);
+      tangent pt = p;
+      odelia::ode::seed_direction(pt, 1.0);
+      const double slope = odelia::ode::derivative_along(
+          l.roots_.template duptake_dpsi_at<tangent>(pt, sup.at()));
+      const double closed = l.d2E_from_soil_dpsi_collar2(p, soil);
+      if (std::isfinite(closed) && closed != 0.0) {
+        worst_slope = std::max(worst_slope, std::abs(slope / closed - 1.0));
+      }
+    }
+  }
+  printf("      %d points; worst value gap %.3e, worst slope gap %.3e\n", compared,
+         worst_value, worst_slope);
+  ok(compared >= 8, "the grid reaches solved interior points");
+  ok(worst_value < 1e-12, "the templated form is the double form");
+  ok(worst_slope < 1e-8, "its collar derivative is the closed second derivative");
+}
+
 void test_the_two_zero_flux_kinds_are_two_points() {
   printf("the two zero-flux kinds are two points, and the placement says which\n");
   namespace grad = phylloptim::gradient;
@@ -4289,8 +4352,7 @@ void test_the_two_zero_flux_kinds_are_two_points() {
     // Placed, then evaluated: a shade-death collar is the wet bound, and whether
     // an input reaches profit through that placement is the whole question here.
     odelia::record_report where;
-    const pl::Leaf::CollarCondition none;
-    const pl::tangent collar = leaf.collar_at<pl::tangent>(in, none, where);
+    const pl::tangent collar = leaf.collar_at<pl::tangent>(in, where);
     return leaf.outputs_at<pl::tangent>(collar, in);
   };
   ok(pl::derivative_along(seeded(parched, fixture::Input::psi_crit, 0).profit) != 0.0,
@@ -4524,6 +4586,7 @@ int main() {
   test_where_the_mean_conductivity_should_stop_differencing();
   test_the_supply_derivatives_stay_smooth_into_a_coincidence();
   test_the_layer_mean_branches_agree_across_the_crossover();
+  test_the_templated_supply_derivative_against_both_routes();
   test_the_two_zero_flux_kinds_are_two_points();
   benchmark();
 
