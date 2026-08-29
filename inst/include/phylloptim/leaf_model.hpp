@@ -1760,14 +1760,18 @@ public:
   // This leaf's own supply state, as the view the quadrature takes. No copies.
   SupplyAt<double> held_supply() const { return roots_.held_supply(); }
 
-  // Everything a consumer asks the leaf for, at one scalar. `point` says whether
-  // the collar could be put on the tape; where it could not, the outputs that
-  // read it carry their value and no rows, which is the consumer's to act on.
+  // Everything a consumer asks the leaf for, at one scalar.
+  //
+  // ⚠️ `point` USED TO BE HERE, and it went because the distinction it carried was
+  // one nothing acted on. It reported a collar the theorem could not place, and it
+  // was filled by ONE of collar_at's five arms -- the interior one -- while the
+  // other four threw. Its single reader turned it into `refuse(...)`, which is
+  // exactly what the catch around the throws does. Two mechanisms, one outcome, and
+  // a field on every LeafOutputs to carry the difference between them.
   template <class S>
   struct LeafOutputs {
     S profit{};
     std::vector<S> uptake;
-    odelia::record_report point{};
   };
 
   // The collar this solve left, at whatever scalar the caller wants, from
@@ -1782,8 +1786,7 @@ public:
   // `point` says whether the collar could be put on the tape. Where it could
   // not, it carries its value and no rows.
   template <typename S>
-  S collar_at(const LeafInputs<S>& in,
-              odelia::record_report& point) const;
+  S collar_at(const LeafInputs<S>& in) const;
 
   // The outputs at a collar, whatever placed it. Underneath the kind switch this
   // is one composition: the two residuals, the kernels and the quadrature.
@@ -4856,10 +4859,8 @@ inline S Leaf::bound_at(WhichBound which, double bound_x,
 // it is the only one whose gradient had to be taken in forward mode and handed
 // over; every other kind's condition is first order and composes here.
 template <typename S>
-inline S Leaf::collar_at(const LeafInputs<S>& in,
-                         odelia::record_report& point) const {
+inline S Leaf::collar_at(const LeafInputs<S>& in) const {
   S collar = S(opt_root_psi_);
-  point = odelia::record_report{};
   switch (operating_point_kind_) {
     case OperatingPointKind::Interior: {
       // Closed by the RESIDUAL, like every other kind here. dM/dp is what the
@@ -4876,10 +4877,10 @@ inline S Leaf::collar_at(const LeafInputs<S>& in,
       if constexpr (std::is_same_v<S, double>) {
         collar = S(opt_root_psi_);
       } else {
-        point = odelia::implicit_value_reported<S>(
+        collar = odelia::implicit_value<S>(
             opt_root_psi_,
             marginal_collar_slope(in.profit.template rebind_from<double>()),
-            [&](const S& y) -> S { return marginal_at<S>(y, in); }, collar);
+            [&](const S& y) -> S { return marginal_at<S>(y, in); });
       }
       break;
     }

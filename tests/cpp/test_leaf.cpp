@@ -4355,8 +4355,7 @@ void test_the_two_zero_flux_kinds_are_two_points() {
         leaf, which, layer, soil);
     // Placed, then evaluated: a shade-death collar is the wet bound, and whether
     // an input reaches profit through that placement is the whole question here.
-    odelia::record_report where;
-    const pl::tangent collar = leaf.collar_at<pl::tangent>(in, where);
+    const pl::tangent collar = leaf.collar_at<pl::tangent>(in);
     return leaf.outputs_at<pl::tangent>(collar, in);
   };
   ok(pl::derivative_along(seeded(parched, fixture::Input::psi_crit, 0).profit) != 0.0,
