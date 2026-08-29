@@ -4867,10 +4867,20 @@ inline S Leaf::collar_at(const LeafInputs<S>& in,
       // handed over as numbers from a second-order pass over a different assembly.
       // Reported rather than stopped, because at a fold the point is still the point
       // and an output the envelope theorem spares does not read the collar at all.
-      point = odelia::implicit_value_reported<S>(
-          opt_root_psi_,
-          marginal_collar_slope(in.profit.template rebind_from<double>()),
-          [&](const S& y) -> S { return marginal_at<S>(y, in); }, collar);
+      // ⚠️ NOT ON THE DOUBLE PATH. implicit_value_reported short-circuits at double
+      // -- there is no tape to record against -- but C++ evaluates its arguments
+      // first, and dM/dp costs a closed-form assembly of the whole marginal. The
+      // forward model was paying for it per interior operating point and discarding
+      // it: measured at 191 s against 32 s on a century stand before this line.
+      // Recording-only, so both arms place the same collar.
+      if constexpr (std::is_same_v<S, double>) {
+        collar = S(opt_root_psi_);
+      } else {
+        point = odelia::implicit_value_reported<S>(
+            opt_root_psi_,
+            marginal_collar_slope(in.profit.template rebind_from<double>()),
+            [&](const S& y) -> S { return marginal_at<S>(y, in); }, collar);
+      }
       break;
     }
     case OperatingPointKind::PinnedWet:
