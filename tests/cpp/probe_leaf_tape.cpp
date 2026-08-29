@@ -137,6 +137,19 @@ void one_width(int layers) {
   // no tangent -- the difference is what a closed-form slope would save.
   using TT = typename xad::fwd<A>::active_type;
   const auto lift = [](const A& v) { TT o{}; xad::value(o) = v; return o; };
+  // WHAT A SUPPLIED-ROW DESIGN WOULD STILL RECORD. The soil state reaches the leaf
+  // only through total uptake and its collar slope, so plant would tape the supply
+  // -- closed-form Ohm's law over a tabulated integral, and the only part whose
+  // inputs are numerous -- and graft the gas-exchange model's rows onto it.
+  const std::size_t w0 = tape.getNumStatements();
+  std::vector<A> per_layer;
+  const A e_up = l.E_from_soil_at<A>(held, in.supply.at(), per_layer);
+  const A s_up = l.roots_.template duptake_dpsi_at<A>(held, in.supply.at());
+  const std::size_t w1 = tape.getNumStatements();
+  std::printf("  THE SUPPLY ALONE (E and S)   %8zu statements   <- all a graft would tape\n",
+              w1 - w0);
+  (void)e_up; (void)s_up;
+
   const std::size_t k0 = tape.getNumStatements();
   const A jA = l.electron_transport_kernel<A>(in.profit.ppfd, in.profit.quantum_yield,
                                               in.profit.curv_elec, in.profit.transport_jmax);
