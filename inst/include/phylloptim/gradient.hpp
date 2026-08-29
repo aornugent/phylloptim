@@ -594,8 +594,8 @@ inline BasePoint base_point(const Leaf& l) {
 }
 
 // The curvature of profit at the point, by differencing the marginal profit over
-// the collar's own step. `Leaf::condition_collar_slope` is the same quantity in
-// closed form, and this is what answers where that refuses.
+// the collar's own step. The closed-form sibling this used to name is gone: the
+// gradient takes dM/dp as a first derivative of the marginal instead.
 //
 // ⚠️ IT LEAVES THE COLLAR ONE STEP BELOW p*, so a caller that reads the point's
 // own coefficients afterwards is reading a neighbouring state -- 4.5e-06 relative,

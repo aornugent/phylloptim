@@ -1268,43 +1268,6 @@ public:
   double marginal_collar_slope(const ProfitInputs<double>& in) const;
 
 
-  // The two cost traits reach profit through the hydraulic cost and nothing
-  // else -- not the ci residual, not the supply, not the operating point at a
-  // frozen collar -- so their rows are elementary and need no re-solve.
-  //
-  // With q = 1 - f(psi_stem) and C = cost_scale * q^beta2:
-  //   dC/dcost_scale  = C / cost_scale          dC/dbeta2  = C * log(q)
-  //   dC'/dcost_scale = C' / cost_scale         dC'/dbeta2 = C' * (1/beta2 + log(q))
-  // and profit is A - C at a frozen collar while the marginal profit carries
-  // -C' * dpsi_stem/dp, so each row is one of those times a factor the solve
-  // already forms.
-  //
-  // The same two formulae hold on the compensation-point branch: gross
-  // assimilation is identically zero there, so the cost is still the only route.
-  struct CostTraitRows {
-    double dprofit_dbeta2, dprofit_dcost_scale;
-    double dmarginal_dbeta2, dmarginal_dcost_scale;
-  };
-
-  // Profit's three second derivatives in the stem potential and the collar, which
-  // is one derivation shared by the two readers below rather than two copies of
-  // the same second-order block. With G = dprofit/dpsi_stem and H =
-  // dprofit/dpsi at a held stem, the condition is G V + H, so
-  //
-  //   condition_slope        = dG_dpsistem * V + dG_dpsi
-  //   condition_collar_slope = dG_dpsistem * V^2 + 2 dG_dpsi * V + dH_dpsi
-  //                              + G * dV/dp
-  //
-  // and dG_dpsi is dH's stem-potential derivative as well as G's collar one,
-  // because they are the same mixed second derivative of profit.
-  struct ConditionCurvature {
-    double dG_dpsistem = util::na_value;
-    double dG_dpsi = util::na_value;
-    double dH_dpsi = util::na_value;
-  };
-
-
-
   // What the soil state reaches, and it reaches all of it through total uptake:
   // at a frozen collar the stem potential is the transport read of
   // E_up/kappa + G(p), and the concentration, the conductance, the cost and
