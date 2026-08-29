@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -233,6 +234,133 @@ void one_width(int layers) {
   std::printf("  record : sweep             %8.2fx\n", us_record / us_sweep);
 }
 
+
+// The OTHER nesting. FReal<AReal> is a tangent WRAPPING an adjoint, and it costs
+// 18x because FReal assigns its two halves separately. AReal<FReal> is an adjoint
+// whose SCALAR is a tangent -- the expression template sees one scalar type and
+// fuses normally, and one sweep carries both d/dtheta and d2/dp dtheta.
+//
+// This is what collar_condition used and what increment 2 deleted.
+void nested_cost(int layers) {
+  using D = typename xad::fwd_adj<double>::active_type;   // AReal<FReal<double>>
+  using DTape = typename xad::fwd_adj<double>::tape_type; // Tape<FReal<double>>
+
+  pl::Leaf l;
+  set_up(l, layers);
+  l.find_root_collar_psi();
+  const fixture::Soil soil = soil_of(layers);
+  const pl::LeafInputs<double> in_d =
+      fixture::leaf_inputs<double>(l, fixture::Input::None, 0, soil);
+
+  // The referee, taken FIRST because two tapes of one scalar type cannot both be
+  // active: d2(profit)/dp d(vcmax) against a central difference of
+  // d(profit)/d(vcmax) in the collar, each arm its own recording.
+  auto row_at = [&](double p_at) -> double {
+    DTape t2;
+    pl::LeafInputs<D> q = in_d.template rebind_from<D>();
+    std::vector<D*> qp = q.profit.field_ptrs();
+    for (D& v : q.supply.psi_soil) qp.push_back(&v);
+    for (D& v : q.supply.r_R_H_min) qp.push_back(&v);
+    for (D& v : q.supply.r_R_V_sum) qp.push_back(&v);
+    qp.push_back(&q.supply.root_b); qp.push_back(&q.supply.root_c);
+    qp.push_back(&q.psi_crit); qp.push_back(&q.root_psi_crit);
+    for (D* z : qp) { t2.registerInput(*z); }
+    t2.newRecording();
+    pl::Leaf::LeafOutputs<D> o = l.outputs_at<D>(D(p_at), q);
+    t2.registerOutput(o.profit);
+    t2.clearDerivatives();
+    xad::derivative(o.profit) = 1.0;
+    t2.computeAdjoints();
+    return xad::value(xad::derivative(*qp[0]));
+  };
+  const double h = 1e-5 * std::max(1.0, std::abs(l.opt_root_psi_));
+  const double fd_hi = row_at(l.opt_root_psi_ + h);
+  const double fd_lo = row_at(l.opt_root_psi_ - h);
+  const double fd = (fd_hi - fd_lo) / (2 * h);
+
+  // Does the inner direction propagate AT ALL? Evaluate away from the optimum,
+  // where dprofit/dp is not zero, and compare against a double difference.
+  {
+    const double pa = l.opt_root_psi_ * 0.97;
+    DTape t3;
+    pl::LeafInputs<D> q = in_d.template rebind_from<D>();
+    D c3 = D(pa);
+    xad::derivative(xad::value(c3)) = 1.0;
+    t3.newRecording();
+    pl::Leaf::LeafOutputs<D> o3 = l.outputs_at<D>(c3, q);
+    const double tang = xad::derivative(xad::value(o3.profit));
+    const double hh = 1e-6 * pa;
+    const pl::LeafInputs<double> qd = in_d;
+    const double up = l.outputs_at<double>(pa + hh, qd).profit;
+    const double dn = l.outputs_at<double>(pa - hh, qd).profit;
+    std::printf("  off-optimum: tangent       %.12g\n", tang);
+    std::printf("  off-optimum: differenced   %.12g\n", (up - dn) / (2 * hh));
+  }
+
+  DTape tape;
+  pl::LeafInputs<D> in = in_d.template rebind_from<D>();
+  std::vector<D*> ptrs = in.profit.field_ptrs();
+  for (D& v : in.supply.psi_soil) ptrs.push_back(&v);
+  for (D& v : in.supply.r_R_H_min) ptrs.push_back(&v);
+  for (D& v : in.supply.r_R_V_sum) ptrs.push_back(&v);
+  ptrs.push_back(&in.supply.root_b);
+  ptrs.push_back(&in.supply.root_c);
+  ptrs.push_back(&in.psi_crit);
+  ptrs.push_back(&in.root_psi_crit);
+  for (D* q : ptrs) { tape.registerInput(*q); }
+  tape.newRecording();
+
+  // The collar is the DOUBLE the solve returned, carrying an inner direction of
+  // one. Nothing here is solved on the tape.
+  D collar = D(l.opt_root_psi_);
+  xad::derivative(xad::value(collar)) = 1.0;
+
+  const std::size_t s0 = tape.getNumStatements();
+  pl::Leaf::LeafOutputs<D> got = l.outputs_at<D>(collar, in);
+  const std::size_t s1 = tape.getNumStatements();
+
+  std::printf("\n--- %d layers, outputs_at at AReal<FReal<double>> ---\n", layers);
+  std::printf("  statements                 %8zu\n", s1 - s0);
+  std::printf("  operations                 %8zu\n", tape.getNumOperations());
+
+  // One sweep per output, read BEFORE any re-recording. The VALUE of an input's
+  // adjoint is d(output)/d(theta); its DERIVATIVE is d2(output)/dp d(theta) --
+  // both from the one recording, which is the whole point.
+  tape.registerOutput(got.profit);
+  tape.clearDerivatives();
+  xad::derivative(got.profit) = 1.0;
+  tape.computeAdjoints();
+  const double d1 = xad::value(xad::derivative(*ptrs[0]));
+  const double d2 = xad::derivative(xad::derivative(*ptrs[0]));
+  // Stationarity, free from the same pass: the inner tangent of profit is
+  // dprofit/dp, which the solve put at zero.
+  const double resid = xad::derivative(xad::value(got.profit));
+
+
+
+  const long reps = 400;
+  clock_type::time_point t0 = clock_type::now();
+  for (long r = 0; r < reps; ++r) {
+    tape.clearDerivatives();
+    xad::derivative(got.profit) = 1.0;
+    tape.computeAdjoints();
+  }
+  const double us_sweep = us_per(t0, clock_type::now(), reps);
+
+  t0 = clock_type::now();
+  for (long r = 0; r < reps; ++r) {
+    pl::Leaf::LeafOutputs<D> o = l.outputs_at<D>(collar, in);
+    (void)o;
+  }
+  const double us_record = us_per(t0, clock_type::now(), reps);
+
+  std::printf("  dprofit/dp at the optimum  %.3e   (stationarity, free here)\n", resid);
+  std::printf("  d(profit)/d(vcmax)         %.12g\n", d1);
+  std::printf("  d2(profit)/dp d(vcmax)     %.12g\n", d2);
+  std::printf("  the same, differenced      %.12g   rel gap %.3e\n",
+              fd, std::abs(d2 - fd) / (std::abs(fd) + 1e-300));
+}
+
 }  // namespace
 
 int main() {
@@ -240,6 +368,7 @@ int main() {
   for (int layers : {1, 3, 5}) {
     one_width(layers);
   }
+  nested_cost(5);
   std::printf(
       "\nplant records one placement per cohort per stage per step and sweeps\n"
       "the result once per census metric.\n");
