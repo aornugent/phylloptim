@@ -623,9 +623,8 @@ public:
   //
   // step, db and dc are all exactly zero in VALUE -- they carry the query's
   // derivatives and nothing else -- so every term that multiplies two of them
-  // contributes exactly zero to a first derivative. A scalar that reads no second
-  // derivative therefore pays for the curvature and the trait cross terms in tape it
-  // then sweeps once per seed, and reads zero off all of it. Same value either way.
+  // contributes exactly zero to a first derivative, and nothing here reads a
+  // second.
   template <class T>
   T cumulative_lift(const T& arg, const SupplyAt<T>& sup) const {
     using odelia::util::to_passive;
@@ -636,16 +635,8 @@ public:
     // and the traits are their own values, so each delta is x - to_passive(x).
     const T db = sup.root_b - T(to_passive(sup.root_b));
     const T dc = sup.root_c - T(to_passive(sup.root_c));
-    if constexpr (!odelia::ode::SecondOrder<T>) {
-      return T(c.integral) + T(c.deriv) * step + T(c.integral_db) * db +
-             T(c.integral_dc) * dc;
-    } else {
-      const T slope =
-          T(c.deriv) + T(c.dtrait_pos) * db + T(c.dtrait_steep) * dc;
-      return T(c.integral) + slope * step +
-             T(0.5 * c.integrand_deriv) * step * step +
-             T(c.integral_db) * db + T(c.integral_dc) * dc;
-    }
+    return T(c.integral) + T(c.deriv) * step + T(c.integral_db) * db +
+           T(c.integral_dc) * dc;
   }
 
   // dG/dpsi at an active query, lifted the same way: the value is the table's own

@@ -117,8 +117,8 @@ void one_width(int layers) {
   const std::size_t n_out = 1 + got.uptake.size();
 
   // Where collar_at's statements go: marginal_at is the residual implicit_value
-  // evaluates, and it is three calls. marginal_assembled is the one that runs a
-  // forward tangent ABOVE the adjoint scalar.
+  // evaluates, and it is three calls. marginal_assembled reads A' and C' off the
+  // slope primitives, so it is arithmetic at the adjoint and nothing above it.
   const A held = A(xad::value(collar));
   const std::size_t c0 = tape.getNumStatements();
   const pl::Leaf::CollarCoords<A> co =
@@ -131,10 +131,10 @@ void one_width(int layers) {
   const std::size_t c3 = tape.getNumStatements();
   (void)mm;
 
-  // What the NESTING itself costs. marginal_assembled evaluates three kernels at
-  // TT = FReal<A>, a tangent above the adjoint, so both halves of every operation
-  // record. The same kernels at the working scalar A are the same arithmetic with
-  // no tangent -- the difference is what a closed-form slope would save.
+  // What a NESTING would cost, kept as the counterfactual the slope primitives
+  // replaced. At TT = FReal<A>, a tangent above the adjoint, both halves of every
+  // operation record and FReal assigns each separately, so the expression template
+  // cannot fuse. The same kernels at the working scalar A are the same arithmetic.
   using TT = typename xad::fwd<A>::active_type;
   const auto lift = [](const A& v) { TT o{}; xad::value(o) = v; return o; };
   // WHAT A SUPPLIED-ROW DESIGN WOULD STILL RECORD. The soil state reaches the leaf
@@ -186,7 +186,7 @@ void one_width(int layers) {
   std::printf("    inside marginal_at:\n");
   std::printf("      collar_coords_at         %8zu statements\n", c1 - c0);
   std::printf("      duptake_dpsi_at          %8zu statements\n", c2 - c1);
-  std::printf("      marginal_assembled       %8zu statements  <- the nested tangent\n",
+  std::printf("      marginal_assembled       %8zu statements  <- from the slope primitives\n",
               c3 - c2);
   std::printf("    the three kernels at A     %8zu statements\n", k1 - k0);
   std::printf("    the same at FReal<A>       %8zu statements  <- %.1fx\n",

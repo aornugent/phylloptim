@@ -1177,11 +1177,11 @@ public:
   // coefficients, and on a century stand that put a POSITIVE curvature at an
   // interior maximum -- +34.4 where a difference of this function gives -9.63.
   //
-  // A' and C' are taken by a tangent ONE ORDER ABOVE T, through the model's own
-  // kernels, for the reason dprofit_at_collar_psi already gives: they are then
-  // derivatives of the function actually evaluated rather than of a hand-kept
-  // mirror of it. `xad::fwd<T>` is what makes one spelling serve both scalars --
-  // double becomes a tangent, a tangent becomes a second-order tangent.
+  // A' and C' come from the slope primitives written beside their own kernels, so
+  // every factor here is a value and the whole assembly is arithmetic at T. That is
+  // what makes dM/dp a FIRST derivative of this function: there is no order above T
+  // anywhere in the marginal.
+
   // What the assembly forms on the way. V and dci_dpsi are the collar responses
   // the coordinates above have to be SEEDED with, so they are returned rather than
   // recomputed by a caller -- the seeds and the assembly then come from one place
@@ -1194,7 +1194,6 @@ public:
   template <class T>
   MarginalParts<T> marginal_assembled(const CollarPoint<T>& at,
                                       const ProfitInputs<T>& in) const {
-    using TT = typename xad::fwd<T>::active_type;
     // ⚠️ FROM THE INPUTS, NOT THE MEMBERS. At double the two are the same numbers,
     // but a member read carries no row -- so an assembly that reached for members
     // would answer correctly and differentiate to a silent zero in every parameter
@@ -1209,33 +1208,14 @@ public:
     // its own slope falls out of this arithmetic, so no quotient rule is written.
     const T V = (at.dEup_dp / kmax + f_p) / f_sigma;
 
-    // Assigned rather than constructed: a nested tangent's VALUE is the scalar
-    // below it, and FReal has no converting constructor from that.
-    // A' and C' one tangent order above T, through the kernels' input-carrying
-    // overloads so the parameters keep their rows across the derivative too. `lift`
-    // promotes an input to that order: its value is the T below, its direction zero.
-    const auto lift = [](const T& v) {
-      TT out{};
-      xad::value(out) = v;
-      return out;
-    };
-    // ⚠️ AT T, THEN LIFTED, AND THE DIFFERENCE IS 197 RECORDED STATEMENTS.
-    // Every argument here is lifted, so J0's direction is identically zero and
-    // the dual carries no information -- but a tangent above an adjoint records
-    // BOTH halves, and FReal assigns each half separately, which defeats the
-    // expression template's fusion. Measured at an interior point: these three
-    // kernels cost 31 statements at T and 566 at TT, and this one is 197 of them.
-    const TT J0 = lift(electron_transport_kernel<T>(
-        in.ppfd, in.quantum_yield, in.curv_elec, in.transport_jmax));
-    TT c_ad = lift(at.ci);
-    xad::derivative(c_ad) = T(1.0);
-    const T A_prime = xad::derivative(assim_colimited_kernel<TT>(
-        c_ad, lift(in.vcmax), J0, lift(in.curv_colim), lift(in.respiration)));
-    TT s_ad = lift(at.sigma);
-    xad::derivative(s_ad) = T(1.0);
-    const T C_prime = xad::derivative(hydraulic_cost_TF_kernel<TT>(
-        s_ad, lift(in.stem_b), lift(in.stem_c), lift(in.beta2),
-        lift(in.cost_scale)));
+    // A' and C' read off the primitives that carry them, at T. Every factor of the
+    // marginal is now a value, so nothing here is differentiated to be assembled.
+    const T J0 = electron_transport_kernel<T>(in.ppfd, in.quantum_yield,
+                                              in.curv_elec, in.transport_jmax);
+    const T A_prime =
+        assim_colimited_slope_kernel<T>(at.ci, in.vcmax, J0, in.curv_colim);
+    const T C_prime = hydraulic_cost_TF_slope_kernel<T>(
+        at.sigma, in.stem_b, in.stem_c, in.beta2, in.cost_scale);
 
     const T gc_const =
         T(atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio);
@@ -1603,8 +1583,12 @@ public:
   // no analytic route.
   template <typename T>
   T proportion_of_conductivity_kernel(T psi, T b, T c) const;
+  // d/dpsi of the curve above, in one definition beside it, so a caller wanting the
+  // slope differentiates nothing.
+  template <typename T>
+  T proportion_of_conductivity_slope_kernel(T psi, T b, T c) const;
 
-  // supply-side transpiration for a given water potential gradient between leaves and soil, 
+  // supply-side transpiration for a given water potential gradient between leaves and soil,
   // references setup_transpiraiton for values (return: kg h20 s^-1 m^-2 LA)
   // should be renamed to reflect supply-side
   double transpiration(double psi_stem, double psi_upstream) const;
@@ -1685,6 +1669,22 @@ public:
   template <typename T> T colimit_kernel(T assim_rubisco_limited_,
                                          T assim_electron_limited_,
                                          T curvature, T respiration) const;
+
+  // Each kernel's slope in ci, beside the kernel it belongs to and decomposed the
+  // same way, so every pair is checkable against the two lines above it.
+  // Respiration is absent from the colimited slope because it is subtracted, and a
+  // constant in ci contributes nothing.
+  template <typename T> T assim_rubisco_limited_slope_kernel(T ci, T vcmax) const;
+  template <typename T> T assim_electron_limited_slope_kernel(T ci,
+                                                              T transport) const;
+  template <typename T> T assim_colimited_slope_kernel(T ci, T vcmax, T transport,
+                                                       T curvature) const;
+  // The colimitation's slope along a direction the two limited rates move in, so
+  // the chain rule is written once here rather than at each caller.
+  template <typename T> T colimit_slope_kernel(T assim_rubisco_limited_,
+                                               T assim_electron_limited_,
+                                               T d_rubisco, T d_electron,
+                                               T curvature) const;
   // G(psi) at one scalar: the value the table holds, carrying the three slopes
   // the closed form gives exactly.
   //
@@ -1815,6 +1815,9 @@ public:
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
   template <typename T>
   T hydraulic_cost_TF_kernel(T psi_stem, T b, T c, T beta, T scale) const;
+  // dC/dpsi_stem, one line over the curve's own slope.
+  template <typename T>
+  T hydraulic_cost_TF_slope_kernel(T psi_stem, T b, T c, T beta, T scale) const;
 
   // dC/d(psi_stem, stem_b, stem_c, beta2, cost_scale) at a stem potential.
   //
@@ -3792,6 +3795,12 @@ inline T Leaf::proportion_of_conductivity_kernel(T psi, T b, T c) const {
   return exp(-pow((psi / b), c));
 }
 
+template <typename T>
+inline T Leaf::proportion_of_conductivity_slope_kernel(T psi, T b, T c) const {
+  const T x = pow((psi / b), c);
+  return -exp(-x) * c * x / psi;
+}
+
 inline double Leaf::proportion_of_conductivity(double psi) const {
   return proportion_of_conductivity_kernel(psi);
 }
@@ -4105,6 +4114,12 @@ inline T Leaf::assim_rubisco_limited_kernel(T ci) const {
 }
 
 template <typename T>
+inline T Leaf::assim_rubisco_limited_slope_kernel(T ci, T vcmax) const {
+  const T g = gamma_ * umol_per_mol_to_Pa_;
+  return vcmax * (km_ + g) / ((ci + km_) * (ci + km_));
+}
+
+template <typename T>
 inline T Leaf::assim_electron_limited_kernel(T ci, T transport) const {
   return transport / 4 *
   ((ci - gamma_ * umol_per_mol_to_Pa_) / (ci + 2 * gamma_ * umol_per_mol_to_Pa_));
@@ -4113,6 +4128,12 @@ inline T Leaf::assim_electron_limited_kernel(T ci, T transport) const {
 template <typename T>
 inline T Leaf::assim_electron_limited_kernel(T ci) const {
   return assim_electron_limited_kernel(ci, T(electron_transport_));
+}
+
+template <typename T>
+inline T Leaf::assim_electron_limited_slope_kernel(T ci, T transport) const {
+  const T g = gamma_ * umol_per_mol_to_Pa_;
+  return transport / 4 * (3 * g) / ((ci + 2 * g) * (ci + 2 * g));
 }
 
 // The colimitation itself, lifted out so it can be differentiated in the
@@ -4136,6 +4157,21 @@ inline T Leaf::colimit_kernel(T assim_rubisco_limited_,
 }
 
 template <typename T>
+inline T Leaf::colimit_slope_kernel(T assim_rubisco_limited_,
+                                    T assim_electron_limited_, T d_rubisco,
+                                    T d_electron, T curvature) const {
+  const T sum = assim_rubisco_limited_ + assim_electron_limited_;
+  const T d_sum = d_rubisco + d_electron;
+  const T root = sqrt(pow(sum, 2) - 4 * curvature * assim_rubisco_limited_ *
+                                        assim_electron_limited_);
+  const T d_root =
+      (sum * d_sum - 2 * curvature * (d_rubisco * assim_electron_limited_ +
+                                      assim_rubisco_limited_ * d_electron)) /
+      root;
+  return (d_sum - d_root) / (2 * curvature);
+}
+
+template <typename T>
 inline T Leaf::assim_colimited_kernel(T ci, T vcmax, T transport,
                                       T curvature, T respiration) const {
   T assim_rubisco_limited_ = assim_rubisco_limited_kernel(ci, vcmax);
@@ -4149,6 +4185,16 @@ template <typename T>
 inline T Leaf::assim_colimited_kernel(T ci) const {
   return assim_colimited_kernel(ci, T(vcmax_), T(electron_transport_),
                                 T(curv_fact_colim), T(R_d_));
+}
+
+template <typename T>
+inline T Leaf::assim_colimited_slope_kernel(T ci, T vcmax, T transport,
+                                            T curvature) const {
+  return colimit_slope_kernel(
+      assim_rubisco_limited_kernel(ci, vcmax),
+      assim_electron_limited_kernel(ci, transport),
+      assim_rubisco_limited_slope_kernel(ci, vcmax),
+      assim_electron_limited_slope_kernel(ci, transport), curvature);
 }
 
 inline double Leaf::assim_rubisco_limited(double ci_) {
@@ -4415,6 +4461,14 @@ inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem, T b, T c, T beta,
          pow((1 - proportion_of_conductivity_kernel(psi_stem, b, c)), beta);
 }
 
+template <typename T>
+inline T Leaf::hydraulic_cost_TF_slope_kernel(T psi_stem, T b, T c, T beta,
+                                              T scale) const {
+  const T f = proportion_of_conductivity_kernel(psi_stem, b, c);
+  const T df = proportion_of_conductivity_slope_kernel(psi_stem, b, c);
+  return -scale * beta * pow((1 - f), beta - 1) * df;
+}
+
 
 inline double Leaf::hydraulic_cost_TF(double psi_stem) {
 
@@ -4612,28 +4666,13 @@ inline T Leaf::stem_integral_at(const T& psi, const ProfitInputs<T>& in) const {
   const VulnerabilityIntegralDerivatives d =
       cumulative_vulnerability_integral_derivatives_at(at, b, c);
   const T step = psi - T(at);
-  // ⚠️ TO SECOND ORDER IN THE QUERY, AND THAT IS NOT A REFINEMENT. The marginal
-  // profit is a first derivative of this and the condition that places the collar
-  // is a second, so a lift that stops at first order reports the curvature as
-  // zero -- finite, plausible, and wrong by a factor of order one.
-  //
-  // The first-order coefficient is the curve AT THE WORKING SCALAR rather than a
-  // constant, which is what carries the cross terms in the curve's own traits;
-  // its argument is the passive query point, so the term contributes exactly
-  // G'(at) to the first derivative and nothing to the second.
-  // `step` and the two trait offsets are exactly zero in VALUE, so a term
-  // multiplying two of them contributes exactly zero to a first derivative. A
-  // scalar reading no second derivative gets the same number from the curve at
-  // the passive point, without the kernel's pow and exp and without the tape
-  // that carries them -- which is swept once per seed.
-  if constexpr (!odelia::ode::SecondOrder<T>) {
-    return T(stem_curve_integral(at, "Leaf::stem_integral_at")) +
-           T(proportion_of_conductivity_kernel<double>(at, b, c)) * step +
-           T(d.db) * (in.stem_b - T(b)) + T(d.dc) * (in.stem_c - T(c));
-  }
+  // The table's value with the query slope and the two trait rows the closed form
+  // gives exactly. `step` and both trait offsets are exactly zero in VALUE, so a
+  // term multiplying two of them contributes exactly nothing to a first
+  // derivative -- and nothing reads a second, so the curve at the passive point is
+  // the whole first-order coefficient.
   return T(stem_curve_integral(at, "Leaf::stem_integral_at")) +
-         proportion_of_conductivity_kernel<T>(T(at), in.stem_b, in.stem_c) * step +
-         T(0.5 * d.d2psi) * step * step +
+         T(proportion_of_conductivity_kernel<double>(at, b, c)) * step +
          T(d.db) * (in.stem_b - T(b)) + T(d.dc) * (in.stem_c - T(c));
 }
 
