@@ -273,7 +273,9 @@ int main() {
               l.profit_at_fixed_collar(held);
           static_cast<void>(base_at);
           const tangent at_collar(held);
-          profit = l.profit_at<tangent>(l.opt_psi_stem_, l.ci_, at_collar, in);
+          profit = l.profit_at<tangent>(
+              l.opt_psi_stem_, l.ci_, at_collar,
+              l.supply_draw_at<tangent>(at_collar, in.supply).flux, in.profit);
           l.E_from_soil_at<tangent>(at_collar, in.supply.at(), uptake);
         } catch (const std::exception& e) {
           std::printf("   %-8s %-12s %-14s %2d   refused: %s\n", st.what, point,
@@ -416,7 +418,9 @@ int main() {
               fixture::leaf_inputs<tangent>(l, inputs[k], layer, soil);
           double tape = 0.0;
           try {
-            tape = derivative_along(l.bound_at<tangent>(arm, x, in));
+            tape = derivative_along(
+                l.bound_at<tangent>(
+                    arm, x, in, l.supply_draw_at<tangent>(tangent(x), in.supply)));
           } catch (const std::exception&) { continue; }
 
           double up = 0.0, dn = 0.0, up2 = 0.0, dn2 = 0.0;

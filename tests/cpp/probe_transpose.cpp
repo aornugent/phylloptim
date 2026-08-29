@@ -109,8 +109,9 @@ double forward_side(const pl::Leaf& l, const pl::LeafInputs<double>& base,
   std::vector<T*> f = flat<T>(in);
   for (std::size_t k = 0; k < f.size(); ++k) pl::seed_direction(*f[k], u[k]);
 
-  const T collar = l.collar_at<T>(in);
-  const pl::Leaf::LeafOutputs<T> o = l.outputs_at<T>(collar, in);
+  const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), in.supply);
+  const T collar = l.collar_at<T>(in, draw);
+  const pl::Leaf::LeafOutputs<T> o = l.outputs_at<T>(collar, in, draw);
 
   double acc = v[0] * pl::derivative_along(o.profit);
   for (std::size_t i = 0; i < o.uptake.size(); ++i) {
@@ -130,9 +131,10 @@ double reverse_side(const pl::Leaf& l, const pl::LeafInputs<double>& base,
   for (A* p : f) tape.registerInput(*p);
   tape.newRecording();
 
-  A collar = l.collar_at<A>(in);
+  const auto draw = l.supply_draw_at<A>(A(l.opt_root_psi_), in.supply);
+  A collar = l.collar_at<A>(in, draw);
   if (hold_collar) collar = A(odelia::util::to_passive(collar));
-  pl::Leaf::LeafOutputs<A> o = l.outputs_at<A>(collar, in);
+  pl::Leaf::LeafOutputs<A> o = l.outputs_at<A>(collar, in, draw);
 
   tape.registerOutput(o.profit);
   xad::derivative(o.profit) = v[0];

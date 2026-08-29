@@ -4355,8 +4355,9 @@ void test_the_two_zero_flux_kinds_are_two_points() {
         leaf, which, layer, soil);
     // Placed, then evaluated: a shade-death collar is the wet bound, and whether
     // an input reaches profit through that placement is the whole question here.
-    const pl::tangent collar = leaf.collar_at<pl::tangent>(in);
-    return leaf.outputs_at<pl::tangent>(collar, in);
+    const auto draw = leaf.supply_draw_at<pl::tangent>(pl::tangent(leaf.opt_root_psi_), in.supply);
+    const pl::tangent collar = leaf.collar_at<pl::tangent>(in, draw);
+    return leaf.outputs_at<pl::tangent>(collar, in, draw);
   };
   ok(pl::derivative_along(seeded(parched, fixture::Input::psi_crit, 0).profit) != 0.0,
      "at a hydraulic shutdown the critical potential IS the placement");
@@ -4392,7 +4393,8 @@ void test_the_two_zero_flux_kinds_are_two_points() {
     pl::seed_direction(c, 1.0);
     const pl::LeafInputs<pl::tangent> in =
         fixture::leaf_inputs<pl::tangent>(leaf, fixture::Input::None, 0, soil);
-    return leaf.outputs_at<pl::tangent>(c, in);
+    return leaf.outputs_at<pl::tangent>(
+        c, in, leaf.supply_draw_at<pl::tangent>(pl::tangent(leaf.opt_root_psi_), in.supply));
   };
   const pl::Leaf::LeafOutputs<pl::tangent> shaded_along = along_collar(shaded);
   ok(pl::derivative_along(shaded_along.profit) != 0.0,
@@ -4466,13 +4468,14 @@ void test_the_two_zero_flux_kinds_are_two_points() {
     }
     const pl::LeafInputs<double> in = fixture::leaf_inputs<double>(
         probe, fixture::Input::None, 0, soil);
-    const double placed =
-        probe.bound_at<double>(pl::Leaf::WhichBound::Wet, wet.bound, in);
+    const auto draw = probe.supply_draw_at<double>(wet.bound, in.supply);
+    const double placed = probe.bound_at<double>(
+        pl::Leaf::WhichBound::Wet, wet.bound, in, draw);
     ok(placed == wet.bound,
        std::string("and the collar at ") + std::to_string(layers) +
            " layer(s) is the wet bound itself");
     const pl::Leaf::LeafOutputs<double> got =
-        probe.outputs_at<double>(placed, in);
+        probe.outputs_at<double>(placed, in, draw);
     bool all_numbers = std::isfinite(got.profit);
     for (double v : got.uptake) {
       all_numbers = all_numbers && std::isfinite(v);

@@ -132,11 +132,12 @@ std::vector<Row> rows_at(pl::Leaf& l, const fixture::Soil& soil, int L) {
     // partials at fixed p, which is what the rank claim is about.
     const T collar = T(l.opt_root_psi_);
 
-    const pl::Leaf::LeafOutputs<T> o = l.outputs_at<T>(collar, in);
+    const auto draw = l.supply_draw_at<T>(collar, in.supply);
+    const pl::Leaf::LeafOutputs<T> o = l.outputs_at<T>(collar, in, draw);
     T e_total = T(0.0);
     for (const T& u : o.uptake) e_total += u;
     const T s = l.roots_.template duptake_dpsi_at<T>(collar, in.supply.at());
-    const T r = l.marginal_at<T>(collar, in);
+    const T r = l.marginal_at<T>(collar, draw, in.profit);
 
     Row row;
     row.name = nm[k];

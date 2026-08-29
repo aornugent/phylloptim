@@ -108,9 +108,13 @@ void one_width(int layers) {
   tape.newRecording();
 
   const std::size_t s0 = tape.getNumStatements(), o0 = tape.getNumOperations();
-  const A collar = l.collar_at<A>(in);
+  // The supply, recorded ONCE at the passive operating point. Everything after
+  // this reads the state through it and never touches the supply again.
+  const auto draw = l.supply_draw_at<A>(A(l.opt_root_psi_), in.supply);
+  const std::size_t sd = tape.getNumStatements(), od = tape.getNumOperations();
+  const A collar = l.collar_at<A>(in, draw);
   const std::size_t s1 = tape.getNumStatements(), o1 = tape.getNumOperations();
-  pl::Leaf::LeafOutputs<A> got = l.outputs_at<A>(collar, in);
+  pl::Leaf::LeafOutputs<A> got = l.outputs_at<A>(collar, in, draw);
   const std::size_t s2 = tape.getNumStatements(), o2 = tape.getNumOperations();
 
   const std::size_t n_in = ptrs.size();
@@ -122,11 +126,11 @@ void one_width(int layers) {
   const A held = A(xad::value(collar));
   const std::size_t c0 = tape.getNumStatements();
   const pl::Leaf::CollarCoords<A> co =
-      l.collar_coords_at<A>(l.opt_psi_stem_, l.ci_, held, in);
+      l.collar_coords_at<A>(l.opt_psi_stem_, l.ci_, held, draw.flux, in.profit);
   const std::size_t c1 = tape.getNumStatements();
   const A dE = l.roots_.duptake_dpsi_at<A>(held, in.supply.at());
   const std::size_t c2 = tape.getNumStatements();
-  const pl::Leaf::CollarPoint<A> at{held, co.sigma, co.ci, dE, co.flux};
+  const pl::Leaf::CollarPoint<A> at{held, co.sigma, co.ci, dE, draw.flux};
   const A mm = l.marginal_assembled<A>(at, in.profit).marginal;
   const std::size_t c3 = tape.getNumStatements();
   (void)mm;
@@ -177,8 +181,10 @@ void one_width(int layers) {
   std::printf("  active inputs              %zu\n", n_in);
   std::printf("  outputs plant reads        %zu  (profit + %zu layer draws)\n",
               n_out, got.uptake.size());
+  std::printf("  the supply draw            %8zu statements %9zu operations  <- recorded ONCE\n",
+              sd - s0, od - o0);
   std::printf("  collar_at                  %8zu statements %9zu operations\n",
-              s1 - s0, o1 - o0);
+              s1 - sd, o1 - od);
   std::printf("  outputs_at                 %8zu statements %9zu operations\n",
               s2 - s1, o2 - o1);
   std::printf("  ONE PLACEMENT              %8zu statements %9zu operations\n",
@@ -222,8 +228,9 @@ void one_width(int layers) {
   tape.newRecording();
   t0 = clock_type::now();
   for (long r = 0; r < reps; ++r) {
-    const A c = l.collar_at<A>(in);
-    pl::Leaf::LeafOutputs<A> o = l.outputs_at<A>(c, in);
+    const auto d = l.supply_draw_at<A>(A(l.opt_root_psi_), in.supply);
+    const A c = l.collar_at<A>(in, d);
+    pl::Leaf::LeafOutputs<A> o = l.outputs_at<A>(c, in, d);
     (void)o;
   }
   const double us_record = us_per(t0, clock_type::now(), reps);
@@ -279,7 +286,9 @@ void nested_cost(int layers) {
     qp.push_back(&q.psi_crit); qp.push_back(&q.root_psi_crit);
     for (D* z : qp) { t2.registerInput(*z); }
     t2.newRecording();
-    pl::Leaf::LeafOutputs<D> o = l.outputs_at<D>(D(p_at), q);
+    const D pc = D(p_at);
+    pl::Leaf::LeafOutputs<D> o =
+        l.outputs_at<D>(pc, q, l.supply_draw_at<D>(pc, q.supply));
     t2.registerOutput(o.profit);
     t2.clearDerivatives();
     xad::derivative(o.profit) = 1.0;
@@ -300,12 +309,19 @@ void nested_cost(int layers) {
     D c3 = D(pa);
     xad::derivative(xad::value(c3)) = 1.0;
     t3.newRecording();
-    pl::Leaf::LeafOutputs<D> o3 = l.outputs_at<D>(c3, q);
+    pl::Leaf::LeafOutputs<D> o3 =
+        l.outputs_at<D>(c3, q, l.supply_draw_at<D>(c3, q.supply));
     const double tang = xad::derivative(xad::value(o3.profit));
     const double hh = 1e-6 * pa;
     const pl::LeafInputs<double> qd = in_d;
-    const double up = l.outputs_at<double>(pa + hh, qd).profit;
-    const double dn = l.outputs_at<double>(pa - hh, qd).profit;
+    const double up =
+        l.outputs_at<double>(pa + hh, qd,
+                             l.supply_draw_at<double>(pa + hh, qd.supply))
+            .profit;
+    const double dn =
+        l.outputs_at<double>(pa - hh, qd,
+                             l.supply_draw_at<double>(pa - hh, qd.supply))
+            .profit;
     std::printf("  off-optimum: tangent       %.12g\n", tang);
     std::printf("  off-optimum: differenced   %.12g\n", (up - dn) / (2 * hh));
   }
@@ -328,8 +344,9 @@ void nested_cost(int layers) {
   D collar = D(l.opt_root_psi_);
   xad::derivative(xad::value(collar)) = 1.0;
 
+  const auto draw = l.supply_draw_at<D>(collar, in.supply);
   const std::size_t s0 = tape.getNumStatements();
-  pl::Leaf::LeafOutputs<D> got = l.outputs_at<D>(collar, in);
+  pl::Leaf::LeafOutputs<D> got = l.outputs_at<D>(collar, in, draw);
   const std::size_t s1 = tape.getNumStatements();
 
   std::printf("\n--- %d layers, outputs_at at AReal<FReal<double>> ---\n", layers);
@@ -362,7 +379,7 @@ void nested_cost(int layers) {
 
   t0 = clock_type::now();
   for (long r = 0; r < reps; ++r) {
-    pl::Leaf::LeafOutputs<D> o = l.outputs_at<D>(collar, in);
+    pl::Leaf::LeafOutputs<D> o = l.outputs_at<D>(collar, in, draw);
     (void)o;
   }
   const double us_record = us_per(t0, clock_type::now(), reps);

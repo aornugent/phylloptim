@@ -1741,24 +1741,75 @@ public:
     std::vector<S> uptake;
   };
 
+  // What the soil delivers at the operating point the solve placed, recorded ONCE.
+  //
+  // The state reaches everything above this through the two waists and the draws
+  // and through nothing else, so a consumer holding one of these needs no supply at
+  // all. Taken at the PASSIVE collar, which is where every residual below is
+  // evaluated anyway: implicit_value asks its residual for the value at the point
+  // the solve found and the rows in the inputs, so the collar it reads carries no
+  // direction.
+  //
+  // ⚠️ THE COLLAR IS PART OF THE VALUE. A flux and a collar that disagree are a
+  // caller's mistake that no arithmetic here can see, so the two travel together
+  // and `at` is checked against the operating point before anything reads it.
+  template <class S>
+  struct SupplyDraw {
+    double at = 0.0;        // the collar this was taken at
+    S flux;                 // E_up there
+    S slope;                // dE_up/dp there
+    std::vector<S> uptake;  // the per-layer draws
+  };
+
+  // The only way to make one, so the draw records the collar it was taken at and
+  // the three values cannot come from different ones. The collar is passive here
+  // whatever the caller hands in: this is the supply at a POINT, and where the
+  // point itself moves is the graft's business rather than the draw's.
+  template <class S>
+  SupplyDraw<S> supply_draw_at(const S& collar,
+                               const SupplyValues<S>& supply) const {
+    SupplyDraw<S> d;
+    d.at = odelia::util::to_passive(collar);
+    // ⚠️ NO DRAW AT A SHUTDOWN, and not because it would be zero. The collar is
+    // held at the stem's critical potential there, which is past where the uptake
+    // model answers at all -- the integral is exactly zero and E_up is not a
+    // number, so asking costs a stop rather than a wrong row. Every consumer reads
+    // zero at that kind anyway. ShadeDeath is NOT this case: it sits on the wet
+    // bound, where E_up is zero in value and its rows are the bound's own theorem.
+    if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown) {
+      d.uptake.assign(static_cast<std::size_t>(supply_n_layers()), S(0.0));
+      return d;
+    }
+    const S held = S(d.at);
+    d.flux = E_from_soil_at<S>(held, supply.at(), d.uptake);
+    d.slope = roots_.template duptake_dpsi_at<S>(held, supply.at());
+    return d;
+  }
+
+  // ⚠️ A DRAW FROM THE WRONG COLLAR IS A WRONG NUMBER, not a missing row: profit
+  // reads the flux at whatever collar it is evaluated at, so a stale draw answers
+  // with the uptake from somewhere else and every value stays finite. Exact,
+  // because the draw stores the point it was taken at rather than deriving it.
+  template <class S>
+  void check_draw(double expect, const SupplyDraw<S>& draw) const {
+    if (draw.at != expect) {
+      util::stop("Leaf: the supply draw was taken at a collar of " +
+                 util::to_string(draw.at) + " and is being read at " +
+                 util::to_string(expect));
+    }
+  }
+
   // The collar this solve left, at whatever scalar the caller wants, from
   // whatever pins it. The kind chooses which condition closes the system and
   // nothing else.
-  //
-  // `cond` is the interior condition's gradient, which the caller has already
-  // seen -- its slope is the curvature, and whether that is usable is a policy
-  // the caller owns. It is ignored at every other kind, because every other
-  // kind's condition is first order and composes here.
-  //
-  // `point` says whether the collar could be put on the tape. Where it could
-  // not, it carries its value and no rows.
   template <typename S>
-  S collar_at(const LeafInputs<S>& in) const;
+  S collar_at(const LeafInputs<S>& in, const SupplyDraw<S>& draw) const;
 
   // The outputs at a collar, whatever placed it. Underneath the kind switch this
   // is one composition: the two residuals, the kernels and the quadrature.
   template <typename S>
-  LeafOutputs<S> outputs_at(const S& collar, const LeafInputs<S>& in) const;
+  LeafOutputs<S> outputs_at(const S& collar, const LeafInputs<S>& in,
+                            const SupplyDraw<S>& draw) const;
 
   // Profit at a collar the solve already placed, differentiable in every input
   // that reaches it AND in the collar itself. `sigma_star` and `ci_star` are the
@@ -1779,17 +1830,20 @@ public:
   // serves both and they cannot disagree about where the point is.
   template <class S>
   struct CollarCoords {
-    S flux, sigma, ci;
+    S sigma, ci;
   };
 
+  // The flux is an ARGUMENT rather than a local, which is the waist: the soil
+  // reaches these two residuals through it and through nothing else, so a caller
+  // holding one recording of it can serve every consumer here.
   template <typename S>
   CollarCoords<S> collar_coords_at(double sigma_star, double ci_star,
-                                   const S& collar,
-                                   const LeafInputs<S>& whole) const;
+                                   const S& collar, const S& flux,
+                                   const ProfitInputs<S>& in) const;
 
   template <typename S>
-  S profit_at(double sigma_star, double ci_star, const S& collar,
-              const LeafInputs<S>& in) const;
+  S profit_at(double sigma_star, double ci_star, const S& collar, const S& flux,
+              const ProfitInputs<S>& in) const;
 
   // M at scalar S: the marginal profit as a function of the ACTIVE INPUTS, with the
   // collar wherever the caller puts it. This is the residual the interior collar is
@@ -1797,7 +1851,8 @@ public:
   // parameter rows are TAPED from the condition rather than handed over as numbers
   // from a second-order pass nothing referees.
   template <typename S>
-  S marginal_at(const S& collar, const LeafInputs<S>& whole) const;
+  S marginal_at(const S& collar, const SupplyDraw<S>& draw,
+                const ProfitInputs<S>& in) const;
 
   // The collar where a pinned point sits, at one scalar, from the condition that
   // pins it. Three arms because the dry end is a `min` of two limits that are
@@ -1810,7 +1865,8 @@ public:
   //                                                   T1 with the stem at its limit
   //   DryRootPsiCrit  x = root_psi_crit                a registered constant
   template <typename S>
-  S bound_at(WhichBound which, double bound_x, const LeafInputs<S>& in) const;
+  S bound_at(WhichBound which, double bound_x, const LeafInputs<S>& in,
+             const SupplyDraw<S>& draw) const;
 
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
   template <typename T>
@@ -4689,21 +4745,13 @@ inline T Leaf::stem_integral_at(const T& psi, const ProfitInputs<T>& in) const {
 // than passed: two spellings of one fact is a place they can disagree.
 template <typename S>
 inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
-    double sigma_star, double ci_star, const S& collar,
-    const LeafInputs<S>& whole) const {
+    double sigma_star, double ci_star, const S& collar, const S& flux,
+    const ProfitInputs<S>& in) const {
   using odelia::util::to_passive;
-  const ProfitInputs<S>& in = whole.profit;
   const double gc_per_flux =
       atm_kpa_ * kg_to_mol_h2o / atm_vpd_ / H2O_CO2_stom_diff_ratio;
   const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
   const Leaf& leaf = *this;
-
-  // The flux the soil delivers at this collar. A local, not an input: it is a
-  // function of the collar and the supply, so a caller that could set it is a
-  // caller that could set it wrong -- and carrying it on the inputs cost a copy
-  // of every one of them to fill.
-  std::vector<S> per_layer;
-  const S flux = E_from_soil_at<S>(collar, whole.supply.at(), per_layer);
 
   // dT1/dsigma is one term of the residual below: the stem curve at the operating
   // point, scaled by kmax. Taken at the passive point, which is where the theorem
@@ -4758,17 +4806,16 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
       });
 
 
-  return CollarCoords<S>{flux, sigma, ci};
+  return CollarCoords<S>{sigma, ci};
 }
 
 // Profit at that point. The coordinates above are the whole of what it shares with
 // the marginal, so they are built once and both read them.
 template <typename S>
 inline S Leaf::profit_at(double sigma_star, double ci_star, const S& collar,
-                         const LeafInputs<S>& whole) const {
-  const ProfitInputs<S>& in = whole.profit;
+                         const S& flux, const ProfitInputs<S>& in) const {
   const CollarCoords<S> at =
-      collar_coords_at<S>(sigma_star, ci_star, collar, whole);
+      collar_coords_at<S>(sigma_star, ci_star, collar, flux, in);
   const S& sigma = at.sigma;
   const S& ci = at.ci;
   const S J = electron_transport_kernel<S>(in.ppfd, in.quantum_yield,
@@ -4785,13 +4832,12 @@ inline S Leaf::profit_at(double sigma_star, double ci_star, const S& collar,
 // V inside the assembly needs. `transpiration` is the flux: the T1 residual says the
 // stem carries what the soil delivers, so there is no second quantity to form.
 template <typename S>
-inline S Leaf::marginal_at(const S& collar, const LeafInputs<S>& whole) const {
+inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
+                           const ProfitInputs<S>& in) const {
   const CollarCoords<S> c =
-      collar_coords_at<S>(opt_psi_stem_, ci_, collar, whole);
-  const CollarPoint<S> at{
-      collar, c.sigma, c.ci,
-      roots_.template duptake_dpsi_at<S>(collar, whole.supply.at()), c.flux};
-  return marginal_assembled<S>(at, whole.profit).marginal;
+      collar_coords_at<S>(opt_psi_stem_, ci_, collar, draw.flux, in);
+  const CollarPoint<S> at{collar, c.sigma, c.ci, draw.slope, draw.flux};
+  return marginal_assembled<S>(at, in).marginal;
 }
 
 
@@ -4816,7 +4862,9 @@ inline std::vector<odelia::input_and_derivative<S>> against(
 // and at S for the rest.
 template <typename S>
 inline S Leaf::bound_at(WhichBound which, double bound_x,
-                        const LeafInputs<S>& in) const {
+                        const LeafInputs<S>& in,
+                        const SupplyDraw<S>& draw) const {
+  check_draw(bound_x, draw);
   const Leaf& leaf = *this;
   if (which == WhichBound::DryRootPsiCrit) {
     // The bound IS the trait, so it moves with that and with nothing else. No
@@ -4834,11 +4882,11 @@ inline S Leaf::bound_at(WhichBound which, double bound_x,
   const double dflux_dx = dE_from_soil_dpsi_collar(bound_x, soil_at);
 
   if (which == WhichBound::Wet) {
+    // The residual IS the draw: implicit_value evaluates at the passive bound, and
+    // the draw was taken there, so re-recording the supply would put the same
+    // expression on the tape a second time.
     return odelia::implicit_value<S>(
-        bound_x, dflux_dx, [&](const S& x) -> S {
-          std::vector<S> per_layer;
-          return leaf.template E_from_soil_at<S>(x, in.supply.at(), per_layer);
-        });
+        bound_x, dflux_dx, [&](const S&) -> S { return draw.flux; });
   }
   // The dry end is T1 with the stem held at its critical potential: the collar
   // at which the soil delivers exactly what the column can still carry.
@@ -4852,12 +4900,10 @@ inline S Leaf::bound_at(WhichBound which, double bound_x,
       dflux_dx;
   return odelia::implicit_value<S>(
       bound_x, dT_dx, [&](const S& x) -> S {
-        std::vector<S> per_layer;
-        const S flux = leaf.template E_from_soil_at<S>(x, in.supply.at(), per_layer);
         return in.profit.kmax *
                    (leaf.template stem_integral_at<S>(in.psi_crit, in.profit) -
                     leaf.template stem_integral_at<S>(x, in.profit)) -
-               flux;
+               draw.flux;
       });
 }
 
@@ -4865,7 +4911,9 @@ inline S Leaf::bound_at(WhichBound which, double bound_x,
 // it is the only one whose gradient had to be taken in forward mode and handed
 // over; every other kind's condition is first order and composes here.
 template <typename S>
-inline S Leaf::collar_at(const LeafInputs<S>& in) const {
+inline S Leaf::collar_at(const LeafInputs<S>& in,
+                         const SupplyDraw<S>& draw) const {
+  check_draw(opt_root_psi_, draw);
   S collar = S(opt_root_psi_);
   switch (operating_point_kind_) {
     case OperatingPointKind::Interior: {
@@ -4886,7 +4934,9 @@ inline S Leaf::collar_at(const LeafInputs<S>& in) const {
         collar = odelia::implicit_value<S>(
             opt_root_psi_,
             marginal_collar_slope(in.profit.template rebind_from<double>()),
-            [&](const S& y) -> S { return marginal_at<S>(y, in); });
+            [&](const S& y) -> S {
+              return marginal_at<S>(y, draw, in.profit);
+            });
       }
       break;
     }
@@ -4894,13 +4944,13 @@ inline S Leaf::collar_at(const LeafInputs<S>& in) const {
     // Shade death sits ON the wet bound: both potentials at the collar where
     // uptake vanishes, so the bound is the point and it moves with the soil.
     case OperatingPointKind::ShadeDeath:
-      collar = bound_at<S>(WhichBound::Wet, opt_root_psi_, in);
+      collar = bound_at<S>(WhichBound::Wet, opt_root_psi_, in, draw);
       break;
     case OperatingPointKind::PinnedDryRootCrit:
-      collar = bound_at<S>(WhichBound::DryRootCrit, opt_root_psi_, in);
+      collar = bound_at<S>(WhichBound::DryRootCrit, opt_root_psi_, in, draw);
       break;
     case OperatingPointKind::PinnedDryRootPsiCrit:
-      collar = bound_at<S>(WhichBound::DryRootPsiCrit, opt_root_psi_, in);
+      collar = bound_at<S>(WhichBound::DryRootPsiCrit, opt_root_psi_, in, draw);
       break;
     case OperatingPointKind::HydraulicShutdown:
       // The stem holds at its critical potential and nothing defines the collar
@@ -4916,8 +4966,22 @@ inline S Leaf::collar_at(const LeafInputs<S>& in) const {
 
 template <typename S>
 inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
-                                             const LeafInputs<S>& in) const {
+                                             const LeafInputs<S>& in,
+                                             const SupplyDraw<S>& draw) const {
+  check_draw(odelia::util::to_passive(collar), draw);
   LeafOutputs<S> out;
+
+  // The draws first. Profit reads the same flux wherever its collar is the live
+  // one, so taking them here is what stops the supply reaching the tape twice.
+  S live_flux = S(0.0);
+  if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown) {
+    // Every flux is zero and stays zero: nothing the soil holds reaches a leaf
+    // that has stopped drawing on it.
+    out.uptake.assign(static_cast<std::size_t>(supply_n_layers()), S(0.0));
+  } else {
+    live_flux = E_from_soil_at<S>(collar, in.supply.at(), out.uptake);
+  }
+
   // ⚠️ PROFIT READS THE HELD COLLAR AT AN INTERIOR POINT, and that is the
   // envelope theorem written as an omission rather than as a term that has to
   // come out to zero. The marginal is zero there by the condition the solve
@@ -4925,10 +4989,13 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
   // M * dp/dtheta -- a term whose size is the solve's tolerance rather than the
   // model's. It is also why a collar that cannot be recorded costs the water
   // rows and not the objective.
+  //
+  // The flux follows the collar, which is the whole reason the draw is taken at
+  // the passive point: at an interior point it IS profit's flux.
+  const bool interior = operating_point_kind_ == OperatingPointKind::Interior;
   const S collar_held(odelia::util::to_passive(collar));
-  const S& profit_collar =
-      operating_point_kind_ == OperatingPointKind::Interior ? collar_held
-                                                            : collar;
+  const S& profit_collar = interior ? collar_held : collar;
+  const S& profit_flux = interior ? draw.flux : live_flux;
 
   if (zero_flux_operating_point()) {
     // No water moves, so no carbon is fixed: assimilation is minus the dark
@@ -4941,15 +5008,8 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
                                              in.profit.stem_c, in.profit.beta2,
                                              in.profit.cost_scale);
   } else {
-    out.profit = profit_at<S>(opt_psi_stem_, ci_, profit_collar, in);
-  }
-
-  if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown) {
-    // Every flux is zero and stays zero: nothing the soil holds reaches a leaf
-    // that has stopped drawing on it.
-    out.uptake.assign(static_cast<std::size_t>(supply_n_layers()), S(0.0));
-  } else {
-    E_from_soil_at<S>(collar, in.supply.at(), out.uptake);
+    out.profit = profit_at<S>(opt_psi_stem_, ci_, profit_collar, profit_flux,
+                              in.profit);
   }
   return out;
 }
