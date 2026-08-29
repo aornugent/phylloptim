@@ -1219,10 +1219,14 @@ public:
       xad::value(out) = v;
       return out;
     };
-    const TT J0 = electron_transport_kernel<TT>(lift(in.ppfd),
-                                                lift(in.quantum_yield),
-                                                lift(in.curv_elec),
-                                                lift(in.transport_jmax));
+    // ⚠️ AT T, THEN LIFTED, AND THE DIFFERENCE IS 197 RECORDED STATEMENTS.
+    // Every argument here is lifted, so J0's direction is identically zero and
+    // the dual carries no information -- but a tangent above an adjoint records
+    // BOTH halves, and FReal assigns each half separately, which defeats the
+    // expression template's fusion. Measured at an interior point: these three
+    // kernels cost 31 statements at T and 566 at TT, and this one is 197 of them.
+    const TT J0 = lift(electron_transport_kernel<T>(
+        in.ppfd, in.quantum_yield, in.curv_elec, in.transport_jmax));
     TT c_ad = lift(at.ci);
     xad::derivative(c_ad) = T(1.0);
     const T A_prime = xad::derivative(assim_colimited_kernel<TT>(
