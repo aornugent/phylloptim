@@ -1756,9 +1756,13 @@ public:
   template <class S>
   struct SupplyDraw {
     double at = 0.0;        // the collar this was taken at
-    S flux;                 // E_up there
-    S slope;                // dE_up/dp there
-    std::vector<S> uptake;  // the per-layer draws
+    S flux;                 // E_up there, in kg
+    S slope;                // dE_up/dp there, in kg
+    std::vector<S> uptake;  // the per-layer draws, in mol
+    // Each layer's own collar slope, in mol to match the draws above. Supplied
+    // rather than recorded because the draws move with the collar and taking the
+    // supply again at the live one records the whole of it a second time.
+    std::vector<double> duptake_dp;
   };
 
   // The only way to make one, so the draw records the collar it was taken at and
@@ -1778,11 +1782,18 @@ public:
     // bound, where E_up is zero in value and its rows are the bound's own theorem.
     if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown) {
       d.uptake.assign(static_cast<std::size_t>(supply_n_layers()), S(0.0));
+      d.duptake_dp.assign(static_cast<std::size_t>(supply_n_layers()), 0.0);
       return d;
     }
     const S held = S(d.at);
     d.flux = E_from_soil_at<S>(held, supply.at(), d.uptake);
     d.slope = roots_.template duptake_dpsi_at<S>(held, supply.at());
+    std::vector<double> soil_at;
+    soil_at.reserve(supply.psi_soil.size());
+    for (const S& v : supply.psi_soil) {
+      soil_at.push_back(odelia::util::to_passive(v));
+    }
+    roots_.duptake_dpsi(d.at, soil_at, d.duptake_dp);
     return d;
   }
 
@@ -4972,7 +4983,21 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
     // that has stopped drawing on it.
     out.uptake.assign(static_cast<std::size_t>(supply_n_layers()), S(0.0));
   } else {
-    live_flux = E_from_soil_at<S>(collar, in.supply.at(), out.uptake);
+    // ⚠️ THE DRAWS ARE GRAFTED, NOT TAKEN AGAIN. The draw already holds every
+    // layer's uptake at the passive collar carrying the state's own rows; what is
+    // missing is the channel through the collar MOVING, and that is one supplied
+    // slope per layer. Taking the supply again at the live collar records the
+    // whole of it a second time for the same numbers -- the step is exactly zero
+    // in value, so every uptake here is the draw's, bit for bit.
+    const S step = collar - S(draw.at);
+    out.uptake = draw.uptake;
+    odelia::util::check_length(draw.duptake_dp.size(), out.uptake.size());
+    for (std::size_t j = 0; j < out.uptake.size(); ++j) {
+      out.uptake[j] = out.uptake[j] + S(draw.duptake_dp[j]) * step;
+    }
+    // The total's own slope IS recorded, so it carries its rows and needs nothing
+    // supplied.
+    live_flux = draw.flux + draw.slope * step;
   }
 
   // ⚠️ PROFIT READS THE HELD COLLAR AT AN INTERIOR POINT, and that is the

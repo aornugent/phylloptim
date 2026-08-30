@@ -1294,6 +1294,17 @@ public:
   double duptake_dpsi(double T_collar,
                       const std::vector<double>& psi_soil) const {
     std::vector<double> per_layer;
+    return duptake_dpsi(T_collar, psi_soil, per_layer);
+  }
+
+  // The same conductance with each layer's own share, which is what a caller
+  // grafting the draws onto a moving collar needs.
+  //
+  // ⚠️ THE TWO HALVES CARRY DIFFERENT UNITS, exactly as uptake's do: the return
+  // is kg to match E_up and per_layer is mol to match soil_consumption. The two
+  // siblings differ by design, so a graft must take each from its own half.
+  double duptake_dpsi(double T_collar, const std::vector<double>& psi_soil,
+                      std::vector<double>& per_layer) const {
     const double total_mol = duptake_dpsi_impl(T_collar, psi_soil, per_layer);
     return total_mol * kg_per_mol_h2o;  // match E_up's kg units
   }
