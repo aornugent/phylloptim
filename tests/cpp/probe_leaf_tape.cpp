@@ -199,12 +199,20 @@ void one_width(int layers) {
               k2 - k1, double(k2 - k1) / double(k1 - k0));
   std::printf("  tape memory                %8zu bytes\n", tape.getMemory());
 
-  // The alternative, in the same units. record_with_derivatives writes one
-  // statement per non-zero row and skips the zeros, so a dense block is at most
-  // this and typically less.
-  std::printf("  a dense block would be     %8zu statements  (%zu outputs x %zu rows)\n",
-              n_out * n_in, n_out, n_in);
-  const double ratio = double(s2 - s0) / double(n_out * n_in);
+  // ⚠️ THE ALTERNATIVE, AND THIS LINE USED TO ARGUE THE WRONG WAY. It priced a
+  // dense block at n_out * n_in on the assumption that a supplied row costs a
+  // statement each, which is what record_with_derivatives does today. It is not
+  // what the tape requires: Tape::pushAll takes a whole row as OPERATIONS and
+  // pushLhs closes it, and a statement has exactly one lhs -- so m outputs cost m
+  // statements carrying n operations each, however they are spelled. The old line
+  // printed a number 31x too pessimistic and every design argument that read it
+  // was reading the wrong counterfactual.
+  std::printf("  a dense block would be     %8zu statements %9zu operations"
+              "  (%zu outputs x %zu rows)\n",
+              n_out, n_out * n_in, n_out, n_in);
+  // Against the STATEMENTS a supplied block would cost, which is n_out, not the
+  // rows. The old denominator was the row count and understated this 31x.
+  const double ratio = double(s2 - s0) / double(n_out);
   std::printf("  ratio, recorded : supplied %8.1fx\n", ratio);
 
   // Sweeping first: the recording it walks is the one just counted, and the
