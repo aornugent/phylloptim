@@ -555,6 +555,12 @@ public:
   // it. The first is reached by one-layer shade death, where the collar of zero
   // uptake IS the gravity balance; 30 of those 540 points came back not-a-number
   // for it.
+  // Where a layer's potential meets the collar. The layer-mean family answers there
+  // now -- at span zero every node of the rule collapses onto the bound, so the mean
+  // is f(lo) and its derivatives are the exact limits, measured in
+  // probe_coincidence -- so the three production paths no longer refuse. The
+  // root-curve rows below still do, because that chain has no production consumer
+  // and goes whole rather than being repaired.
   bool at_equal_potentials(double T_collar, double psi_soil_i) const {
     return std::abs(T_collar - psi_soil_i) < 1e-8;
   }
@@ -775,9 +781,6 @@ public:
     T dEup = T(0.0);
     for (int i = 0; i < max_soil_layer; i++) {
       const T& psi_i = sup.psi_soil[std::size_t(i)];
-      if (at_equal_potentials(to_passive(T_collar), to_passive(psi_i))) {
-        return T(std::numeric_limits<double>::quiet_NaN());
-      }
       const bool collar_is_high = to_passive(T_collar) > to_passive(psi_i);
       const T& lo = collar_is_high ? psi_i : T_collar;
       const T& hi = collar_is_high ? T_collar : psi_i;
@@ -1308,10 +1311,6 @@ public:
                         const std::vector<double>& psi_soil) const {
     double d2_mol = 0.0;
     for (int i = 0; i < max_soil_layer; i++) {
-      if (at_equal_potentials(T_collar, psi_soil[i])) {
-        return std::numeric_limits<double>::quiet_NaN();
-      }
-
       const double T_src_min = std::min(psi_soil[i], T_collar);
       const double T_src_max = std::max(psi_soil[i], T_collar);
 
@@ -1360,12 +1359,6 @@ private:
     per_layer.assign(psi_soil.size(), 0.0);
 
     for (int i = 0; i < max_soil_layer; i++) {
-      if (at_equal_potentials(T_collar, psi_soil[i])) {
-        per_layer.assign(psi_soil.size(),
-                         std::numeric_limits<double>::quiet_NaN());
-        return std::numeric_limits<double>::quiet_NaN();
-      }
-
       const double T_src_min = std::min(psi_soil[i], T_collar);
       const double T_src_max = std::max(psi_soil[i], T_collar);
 

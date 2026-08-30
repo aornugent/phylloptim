@@ -3877,12 +3877,26 @@ void test_the_supply_answers_at_the_two_coincidences() {
   }
   ok(others > 1e-9, "while the layers either side of it do");
 
-  // Equal potentials still refuses, and it is the ONLY thing that does. Asserted
-  // rather than left implicit, because the refusal is what a caller's fallback is
-  // keyed on.
+  // ⚠️ EQUAL POTENTIALS USED TO REFUSE HERE, and this assertion is the replacement
+  // rather than the deletion. The mean was integral/span with both vanishing; formed
+  // as an average it is f at the bound, so the conductance is a number and the
+  // caller's central-difference fallback has nothing left to catch. Checked against
+  // that same difference, taken from far enough out to be refereeing rather than
+  // measuring the same region.
   const double meeting = ps[std::size_t(layer)];
-  ok(!std::isfinite(l.dE_from_soil_dpsi_collar(meeting, ps)),
-     "a collar meeting a layer's potential still refuses, being 0/0 there");
+  const double at_meeting = l.dE_from_soil_dpsi_collar(meeting, ps);
+  ok(std::isfinite(at_meeting),
+     "a collar meeting a layer's potential now answers rather than refusing");
+  {
+    const double h = 1e-4;
+    std::vector<double> per(ps.size(), 0.0);
+    double up = 0.0, dn = 0.0;
+    l.roots_.uptake_at(meeting + h, ps, per, up);
+    l.roots_.uptake_at(meeting - h, ps, per, dn);
+    const double differenced = (up - dn) / (2.0 * h);
+    ok(std::abs(at_meeting - differenced) / std::abs(differenced) < 1e-9,
+       "and the number it answers with is the difference of the flux");
+  }
   ok(l.roots_.at_equal_potentials(meeting, ps[std::size_t(layer)]) &&
          !l.roots_.at_equal_potentials(balanced, ps[std::size_t(layer)]),
      "and the predicate names that one and not the balance");

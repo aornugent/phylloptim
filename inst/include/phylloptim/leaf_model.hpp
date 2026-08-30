@@ -3571,7 +3571,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   // line in both builds, so this is about the body, not about the call.
   const double dEup_dpsi = dE_from_soil_dpsi_collar(psi, supply_psi_soil());
   double dpsistem_dpsi;
-  if (std::isfinite(dEup_dpsi)) {
+  {
     // The stem carries the flux the soil supplies -- kappa (G(sigma) - G(p)) =
     // E_up(p) -- so the collar response follows from differentiating THAT, with
     // no inverse curve in it and nothing read off a table's slope:
@@ -3589,13 +3589,6 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
     dpsistem_dpsi =
         (dEup_dpsi / leaf_specific_conductance_max_ +
          proportion_of_conductivity(psi)) / f_stem;
-  } else {
-    // Near a branch kink the analytic conductance returns NaN; fall back to a
-    // central difference on the transport, as this path has always done.
-    const double h = 1e-6;
-    dpsistem_dpsi =
-        (find_psi_stem_from_psi_root(psi + h, supply_psi_soil()) -
-         find_psi_stem_from_psi_root(psi - h, supply_psi_soil())) / (2.0 * h);
   }
   dpsistem_dpsi_ = dpsistem_dpsi;
 
