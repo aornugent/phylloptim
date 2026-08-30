@@ -104,8 +104,9 @@ make -C tests/cpp            # builds and runs both suites
 make -C tests/cpp golden     # regenerate the golden file -- see the warning below
 make -C tests/cpp bench      # time the solve AND a trait gradient (not in `make all`)
 
-# compare the golden file with a tolerance instead of bit-exactly. Correct on a
-# platform other than macOS/arm64, wrong as a way to silence a real diff.
+# `make` picks the right comparison for the platform on its own -- bit-exact on
+# macOS/arm64, tolerant elsewhere. Pass this only to force the tolerant run ON the
+# reference platform, which is a way to silence a real diff and almost never right.
 make -C tests/cpp GOLDEN_ARGS=--cross-platform
 ```
 
