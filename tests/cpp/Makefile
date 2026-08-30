@@ -86,9 +86,8 @@ build: test_leaf test_leaf_gradient test_golden
 # Not built or run by `make all` -- it takes a few seconds and measures the
 # machine as much as the code. Run it deliberately when a change might have
 # moved the cost of a solve.
-bench: bench_solve bench_gradient
+bench: bench_solve
 	./bench_solve
-	./bench_gradient
 
 test_leaf: test_leaf.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
@@ -105,9 +104,6 @@ test_golden: test_golden.cpp $(HEADERS)
 bench_solve: bench_solve.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
-bench_gradient: bench_gradient.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
-
 # One-off measurement programs. Not built or run by anything; `make probe_x`
 # builds probe_x.cpp with the suite's own flags so a probe measures the same code
 # the tests do.
@@ -120,4 +116,4 @@ golden: test_golden
 	./test_golden --generate
 
 clean:
-	rm -f test_leaf test_golden bench_solve bench_gradient
+	rm -f test_leaf test_leaf_gradient test_golden bench_solve

@@ -1977,117 +1977,6 @@ void test_energy_balance_stomatal_decoupling() {
      "and it does so more than with the gate off -- the energy balance is why");
 }
 
-// The closed-form fast path (leaf/closed_form.hpp). Two things matter: that it is
-// actually fast, and that its error is characterised honestly rather than asserted
-// to be small.
-void test_closed_form() {
-  printf("closed-form fast path\n");
-  // Reference geometry, matching the companion analysis: collar held at zero,
-  // single layer, kmax from height.
-  const double eta = 12.0, eta_c = 1 - 2 / (1 + eta) + 1 / (1 + 2 * eta);
-  const double theta = 1.0 / 4669.0;
-  // The root network is built ONCE, outside the closure. It does not depend on h
-  // or vpd, and the timing loop below reports a "set_physiology" figure -- if the
-  // architecture model were rebuilt per call that figure would be measuring the
-  // caller's helper as much as the leaf's setter (measured: 0.106 -> 0.243 us,
-  // i.e. more than half the reported cost would have been the helper).
-  const std::vector<double> depth_1m{1.0};
-  const phylloptim::RootNetwork net_1m = fixture::root_network({1.0}, depth_1m);
-  const auto setp = [&](phylloptim::Leaf &l, double h, double vpd) {
-    std::vector<double> ps{0.0}, dp{1.0};
-    l.set_physiology(net_1m, 900.0, ps, dp, 1.0 * theta / (h * eta_c), vpd, 40.0,
-                     25.0, 21.0, 101.3);
-  };
-  phylloptim::Leaf l;
-
-  // Near the wet end, where the leading-order expansion is centred, it should be
-  // very accurate.
-  setp(l, 1.0, 2.0);
-  l.optimise_psi_stem_TF();
-  const double A_wet = l.assim_colimited_;
-  setp(l, 1.0, 2.0);
-  const phylloptim::closed_form::Solution wet = phylloptim::closed_form::solve(l, 1);
-  ok(std::abs(wet.assim / A_wet - 1.0) < 2e-3,
-     "closed form is within 0.2% of the exact solve at h=1 m");
-  ok(phylloptim::closed_form::within_guard(l, wet), "h=1 m passes the guard");
-
-  // Error grows steeply as the leaf moves away from the wet end. These bounds
-  // record measured behaviour -- they are deliberately loose enough to be stable
-  // and tight enough to catch a regression.
-  struct Case {
-    double h, max_err;
-  };
-  for (const Case &cs : {Case{3.0, 2e-3}, Case{8.0, 1.5e-2}, Case{12.0, 4e-2}}) {
-    setp(l, cs.h, 2.0);
-    l.optimise_psi_stem_TF();
-    const double A_ex = l.assim_colimited_;
-    setp(l, cs.h, 2.0);
-    const double A_cf = phylloptim::closed_form::solve(l, 1).assim;
-    ok(std::abs(A_cf / A_ex - 1.0) < cs.max_err,
-       "closed-form error is bounded at h=" + std::to_string(cs.h) + " m");
-  }
-
-  // The guard is coarse, and saying so is the point. It admits ~2% error in A at
-  // h = 12 m (ci/ca ~ 0.55) and only rejects once the error is ~8% (h = 20 m).
-  // So it is a filter on gross failure, not an error bound -- and note that the
-  // heights it rejects are the dominant canopy trees.
-  setp(l, 20.0, 2.0);
-  l.optimise_psi_stem_TF();
-  const double A_tall = l.assim_colimited_;
-  setp(l, 20.0, 2.0);
-  const phylloptim::closed_form::Solution tall = phylloptim::closed_form::solve(l, 1);
-  ok(!phylloptim::closed_form::within_guard(l, tall), "h=20 m is rejected by the guard");
-  ok(std::abs(tall.assim / A_tall - 1.0) > 3e-2,
-     "and it is rejected because the error really is large there");
-
-  // The beta2 = 1/c leaf, where xi is constant and nothing needs solving.
-  phylloptim::Leaf exact_leaf(96.0, 2.680147, 3.898245, 5.870283, 2.680147, 3.898245,
-                        5.870283, 1.0 / 2.680147, 157.44, 0.30, 0.7, 0.99, 1e-3,
-                        default_ncontrol(), 1e-3, 1000, 7.5);
-  ok(phylloptim::closed_form::beta2_is_exact(exact_leaf),
-     "beta2_is_exact recognises beta2 = 1/stem_c");
-  ok(!phylloptim::closed_form::beta2_is_exact(l), "and rejects the default beta2 = 1.5");
-  setp(exact_leaf, 5.0, 1.5);
-  exact_leaf.optimise_psi_stem_TF();
-  const double A_ref = exact_leaf.assim_colimited_;
-  setp(exact_leaf, 5.0, 1.5);
-  const phylloptim::closed_form::Solution ex =
-      phylloptim::closed_form::solve_exact_beta2(exact_leaf);
-  ok(std::isnan(ex.psi_stem),
-     "the explicit form reports no psi_stem -- it never solves for one");
-  ok(std::abs(ex.assim / A_ref - 1.0) < 4e-2,
-     "the explicit form is within a few percent of the exact solve");
-
-  // Timing, reported rather than asserted: absolute microseconds are
-  // machine-dependent, so a hard threshold would be a flaky test.
-  const std::vector<double> hs{1, 2, 3, 5, 8, 12}, ds{0.8, 1.0, 1.5, 2.0};
-  const int reps = 20000;
-  double sink = 0;
-  const auto time_it = [&](phylloptim::Leaf &leaf_ref, auto fn) {
-    const auto t0 = std::chrono::steady_clock::now();
-    for (int r = 0; r < reps; ++r) {
-      setp(leaf_ref, hs[r % 6], ds[r % 4]);
-      sink += fn();
-    }
-    const auto t1 = std::chrono::steady_clock::now();
-    return std::chrono::duration<double, std::micro>(t1 - t0).count() / reps;
-  };
-  const double t_setp = time_it(l, [&] { return l.ca_; });
-  const double t_exact = time_it(l, [&] {
-    l.optimise_psi_stem_TF();
-    return l.assim_colimited_;
-  });
-  const double t_cf =
-      time_it(l, [&] { return phylloptim::closed_form::solve(l, 1).assim; });
-  const double t_expl = time_it(
-      exact_leaf, [&] { return phylloptim::closed_form::solve_exact_beta2(exact_leaf).assim; });
-  printf("    set_physiology %.3f us | exact %.3f us | 1-Newton %.3f us (%.1fx) |"
-         " explicit %.3f us (%.1fx)\n",
-         t_setp, t_exact, t_cf, t_exact / t_cf, t_expl, t_exact / t_expl);
-  ok(t_cf < t_exact, "the closed form is faster than the exact solve");
-  ok(sink != 0.0, "timing loop was not optimised away");
-}
-
 // The carbon -> resistance map (root_network_from_carbon) is the one piece of
 // root *architecture* left in this package; the supply solve itself only ever
 // reads r_R_H_min and r_R_V_sum. Testing it directly is the point of having
@@ -2861,33 +2750,31 @@ void test_out_of_domain_under_rescale() {
 }
 
 // ---------------------------------------------------------------------------
-// THE ENVIRONMENT ROWS
+// THE SHARED OPERATING POINTS
 // ---------------------------------------------------------------------------
-// The gradient's parameter dimension now carries the two quantities plants share
-// -- incident light and the per-layer soil water they draw from -- so these four
-// tests are about the parameter dimension, not about the model. The header block
-// on `par_PPFD` in gradient.hpp has the derivation each of them checks.
+// One trait vector and one way of laying out a soil profile, shared by every
+// check below so that a state reached in one is the state reached in the next.
 
 namespace env {
 
-namespace grad = phylloptim::gradient;
-
-// The suite's trait defaults, in `set_traits`' argument order, then the two
-// non-trait parameters. `resistance` is never perturbed here: these are
-// multi-layer points. Sized from the initialiser and checked, because too few
-// initialisers is legal and zero-fills the rest.
+// The suite's trait defaults, in `set_traits`' argument order. Sized from the
+// initialiser and checked, because too few initialisers is legal and zero-fills
+// the rest.
 const double kTheta[] = {96.0,   2.680147, 3.898245, 5.870283, 2.680147,
                          3.898245, 5.870283, 1.5,    157.44,   0.30,
-                         0.7,    0.99,     7.5,      kRd25,
-                         1.0 * 0.000157 / 5.0, 1e3};
-static_assert(sizeof(kTheta) / sizeof(kTheta[0]) == grad::n_pars);
+                         0.7,    0.99,     7.5,      kRd25};
+static_assert(sizeof(kTheta) / sizeof(kTheta[0]) == phylloptim::n_traits);
+
+// The maximum leaf-specific conductance every point below is driven at. A driver
+// rather than a trait, so it sits on the physiology and not in kTheta.
+const double kKmax = 1.0 * 0.000157 / 5.0;
 
 // `rooted` layers of root carbon spread over `layers` soil layers, drying with
 // depth -- the golden grid's soil, so a point named here is a point that grid
 // already covers.
-grad::Drivers drivers(double psi_soil, double ppfd, double vpd, int layers,
-                      int rooted) {
-  grad::Drivers d;
+fixture::Physiology drivers(double psi_soil, double ppfd, double vpd, int layers,
+                            int rooted) {
+  fixture::Physiology d;
   std::vector<double> ps(layers), depth(layers), root(layers, 0.0);
   for (int i = 0; i < layers; ++i) {
     ps[i] = psi_soil + 0.25 * i;
@@ -2900,6 +2787,7 @@ grad::Drivers drivers(double psi_soil, double ppfd, double vpd, int layers,
   d.PPFD = ppfd;
   d.psi_soil = ps;
   d.soil_depth = depth;
+  d.kmax = kKmax;
   d.atm_vpd = vpd;
   d.ca = 40.0;
   d.leaf_temp = 25.0;
@@ -2908,111 +2796,12 @@ grad::Drivers drivers(double psi_soil, double ppfd, double vpd, int layers,
   return d;
 }
 
-std::vector<int> all_env_pars(int layers) {
-  std::vector<int> pars{grad::par_PPFD};
-  for (int j = 0; j < layers; ++j) {
-    pars.push_back(grad::par_psi_soil_first + j);
-  }
-  return pars;
-}
-
 phylloptim::Leaf fresh() {
   phylloptim::Leaf l;
   return l;
 }
 
-// Apply, solve, and read the point -- which is what a consumer of the row layer
-// does, now that neither entry point solves. `grad::base_point` is the read alone.
-grad::BasePoint solved_base_point(phylloptim::Leaf& l, const grad::Drivers& d,
-                                  bool single, const grad::Settings& s,
-                                  int n_uptake) {
-  grad::apply(l, kTheta, d, single, -1, s.fast_stem_curve);
-  l.find_root_collar_psi();
-  static_cast<void>(n_uptake);
-  return grad::base_point(l);
-}
-
 }  // namespace env
-
-// The strongest available reference: `psi_soil` and `PPFD` are already
-// `set_physiology` arguments, so differencing the WHOLE solve with respect to
-// them needs no new machinery and is independent of the envelope algebra the IFT
-// route uses. Scaled by the largest entry in the same output row, because a
-// derivative that is 1e-10 next to a neighbour of 1 is not a useful denominator.
-//
-// The water rows land in the same band as the existing
-// `leaf_specific_conductance_max` row (measured over the golden grid: 6.4e-04
-// against its 5.4e-04) and for the same reason -- both move the argmax hard, and
-// the composite's dY/dpsi and H are themselves differences taken at a flat
-// maximum. The light row does not move the collar at all and comes in at 1.1e-06.
-void test_environment_rows_match_a_differenced_solve() {
-  printf("environment rows: IFT composite vs a differenced solve\n");
-  namespace grad = phylloptim::gradient;
-  for (int L : {1, 3, 5}) {
-    for (double psi_soil : {1.0, 2.0, 3.0}) {
-      phylloptim::Leaf l = env::fresh();
-      grad::Drivers d = env::drivers(psi_soil, 900.0, 2.0, L, L);
-      const std::vector<int> pars = env::all_env_pars(L);
-      grad::Settings s;
-      grad::Result ift;
-      grad::at(l, env::kTheta, d, false, pars.data(), pars.size(), s, ift);
-      const std::string tag =
-          std::to_string(L) + " layers, psi_soil=" + std::to_string(psi_soil);
-      ok(ift.status == grad::Status::Interior, "interior point, " + tag);
-      ok(ift.used_ift, "the composite ran, " + tag);
-
-      grad::Settings sf = s;
-      sf.method = grad::Method::Fd;
-      grad::Result fd;
-      grad::at(l, env::kTheta, d, false, pars.data(), pars.size(), sf, fd);
-
-      for (int j = 0; j < grad::n_outputs; ++j) {
-        double scale = 0.0;
-        for (std::size_t k = 0; k < pars.size(); ++k) {
-          scale = std::max(scale, std::abs(fd.grad[k * grad::n_outputs + j]));
-        }
-        for (std::size_t k = 0; k < pars.size(); ++k) {
-          const double a = ift.grad[k * grad::n_outputs + j];
-          const double b = fd.grad[k * grad::n_outputs + j];
-          ok(std::abs(a - b) <= 2e-3 * scale,
-             grad::par_name(pars[k], L) + "/" + grad::output_names()[j] +
-                 " agrees with the differenced solve, " + tag);
-        }
-      }
-    }
-  }
-
-  // And on the OTHER supply path (hazard 6), where the whole soil profile is one
-  // potential however long the caller's vector is -- so there is exactly one soil
-  // row, and it is the element the path actually reads.
-  {
-    phylloptim::Leaf l = env::fresh();
-    l.set_supply_single();
-    grad::Drivers d = env::drivers(1.0, 900.0, 2.0, 1, 1);
-    d.root_network = fixture::series_resistance(1e3);
-    ok(grad::n_soil_layers(d, true) == 1, "the single path has one soil row");
-    const std::vector<int> pars{grad::par_PPFD, grad::par_psi_soil_first};
-    grad::Settings s;
-    grad::Result ift, fd;
-    grad::at(l, env::kTheta, d, true, pars.data(), pars.size(), s, ift);
-    grad::Settings sf = s;
-    sf.method = grad::Method::Fd;
-    grad::at(l, env::kTheta, d, true, pars.data(), pars.size(), sf, fd);
-    ok(ift.status == grad::Status::Interior, "interior, single path");
-    for (int j = 0; j < grad::n_outputs; ++j) {
-      const double scale =
-          std::max(std::abs(fd.grad[j]), std::abs(fd.grad[grad::n_outputs + j]));
-      for (std::size_t k = 0; k < pars.size(); ++k) {
-        ok(std::abs(ift.grad[k * grad::n_outputs + j] -
-                    fd.grad[k * grad::n_outputs + j]) <= 2e-3 * scale,
-           grad::par_name(pars[k], 1) + "/" + grad::output_names()[j] +
-               " agrees with the differenced solve, single path");
-      }
-    }
-    ok(std::abs(ift.grad[grad::n_outputs + 0]) > 0.0,
-       "the single path's soil row moves the leaf");
-  }
-}
 
 // The rank-one self-test, and it has real content: psi_soil reaches profit only
 // through uptake, at a price the collar's own first-order condition fixes, so
@@ -3022,15 +2811,15 @@ void test_environment_rows_match_a_differenced_solve() {
 // It also pins WHICH price. `marginal_cost_water_multilayer()` is the lambda the
 // collar solve equalises and the obvious candidate; it is 1.20x to 2.37x too
 // large over the golden grid, because along the soil direction the collar is
-// held fixed and the stem's own cost has not been netted out. See gradient.hpp.
+// held fixed and the stem's own cost has not been netted out. The price this
+// asserts is that lambda less `marginal_cost_water()`.
 void test_environment_water_rows_are_rank_one() {
   printf("environment rows: the water channel is rank one across layers\n");
-  namespace grad = phylloptim::gradient;
   for (int L : {3, 5}) {
     for (double psi_soil : {1.0, 3.0}) {
       phylloptim::Leaf l = env::fresh();
-      grad::Drivers d = env::drivers(psi_soil, 900.0, 2.0, L, L);
-      grad::apply(l, env::kTheta, d, false, -1, true);
+      fixture::Physiology d = env::drivers(psi_soil, 900.0, 2.0, L, L);
+      d.drive(l, env::kTheta);
       l.find_root_collar_psi();
       const double psi_star = l.opt_root_psi_;
       const double lambda_multi = l.marginal_cost_water_multilayer();
@@ -3049,7 +2838,7 @@ void test_environment_water_rows_are_rank_one() {
 
         // dE_up/dpsi_soil_j at the FIXED collar. Uptake is an ordinary smooth
         // function of the soil state, so a difference here is well conditioned.
-        grad::apply(l, env::kTheta, d, false, -1, true);
+        d.drive(l, env::kTheta);
         l.find_root_collar_psi();
         l.E_from_Soil_to_Root_Collar(psi_star, up);
         const double e_up = l.E_up_;
@@ -3060,13 +2849,13 @@ void test_environment_water_rows_are_rank_one() {
         // dprofit/dpsi_soil_j from a differenced SOLVE. Differencing profit
         // against the COLLAR would be the mistake this formulation exists to
         // avoid -- profit is flat there. Against psi_soil it is not.
-        grad::Drivers du = d, dd = d;
+        fixture::Physiology du = d, dd = d;
         du.psi_soil = up;
         dd.psi_soil = dn;
-        grad::apply(l, env::kTheta, du, false, -1, true);
+        du.drive(l, env::kTheta);
         l.find_root_collar_psi();
         const double p_up = l.profit_;
-        grad::apply(l, env::kTheta, dd, false, -1, true);
+        dd.drive(l, env::kTheta);
         l.find_root_collar_psi();
         const double p_dn = l.profit_;
         const double dP = (p_up - p_dn) / (2.0 * h);
@@ -3084,74 +2873,11 @@ void test_environment_water_rows_are_rank_one() {
       // And the bare multilayer lambda is not it, by a wide margin.
       ok(lambda_multi / first > 1.1,
          "the bare multilayer lambda overstates the price, " + tag);
-      grad::apply(l, env::kTheta, d, false, -1, true);
+      d.drive(l, env::kTheta);
     }
   }
 }
 
-// ⚠️ A CORRECT EXACT ZERO. Layers below the deepest rooted one contribute nothing
-// to uptake, so wetting or drying one of them cannot reach the leaf and all four
-// of its rows are exactly 0.0. In this codebase an exact zero is otherwise the
-// signature of a missing accumulator, so it is asserted rather than left to be
-// rediscovered -- and asserting it is also what stops a genuinely missing row
-// from being read as this.
-void test_environment_rows_are_zero_below_the_rooted_layers() {
-  printf("environment rows: an unrooted layer's rows are exactly zero\n");
-  namespace grad = phylloptim::gradient;
-  const int L = 5, rooted = 2;
-  phylloptim::Leaf l = env::fresh();
-  grad::Drivers d = env::drivers(1.0, 900.0, 2.0, L, rooted);
-  ok(d.root_network.r_R_H_min.size() == std::size_t(rooted),
-     "the network is sized to the rooted layers");
-  const std::vector<int> pars = env::all_env_pars(L);
-
-  for (int route = 0; route < 2; ++route) {
-    grad::Settings s;
-    s.method = route == 0 ? grad::Method::Ift : grad::Method::Fd;
-    const std::string tag = route == 0 ? "ift" : "fd";
-    grad::Result r;
-    grad::at(l, env::kTheta, d, false, pars.data(), pars.size(), s, r);
-    for (int j = 0; j < grad::n_outputs; ++j) {
-      // Rooted layers move the leaf...
-      ok(std::abs(r.grad[1 * grad::n_outputs + j]) > 0.0 ||
-             grad::output_names()[j] == "collar",
-         "a rooted layer's " + grad::output_names()[j] + " row is non-zero, " +
-             tag);
-      // ...and unrooted ones cannot.
-      for (int k = rooted; k < L; ++k) {
-        const std::size_t row = std::size_t(1 + k);
-        ok(r.grad[row * grad::n_outputs + j] == 0.0,
-           "psi_soil_" + std::to_string(k + 1) + "/" +
-               grad::output_names()[j] + " is exactly zero, " + tag);
-      }
-    }
-  }
-}
-
-// The rows in parts, assembled by the consumer's own formula, against the totals
-// `at` returns for the same request:
-//
-//   dy_j/du_i = held[j][i] + dy_dp[j] * (-dresidual[i] / residual_slope)
-//
-// What this referees is the FACTORING. Both routes run the same base point and
-// the same two perturbed evaluations per input, so a disagreement here is one of
-// them having changed the algebra rather than the shape. It needs no reference
-// gradient for the same reason the transpose identity does not.
-//
-// At a constrained point `at` differences the whole solve, and the parts are
-// compared against that. The comparison splits, and the split is the content:
-//
-//   * an input that MOVES the bound has no held row -- p* sits one step-in
-//     fraction from the bound, so a step that moves the bound carries p* out of
-//     the perturbed feasible interval. `rows_at` differences the solve for it
-//     too, so the two are the same arithmetic and must agree EXACTLY.
-//   * an input that does not gets a held row plus a bound row that is exactly
-//     zero, and there the two DISAGREE. The parts hold the point at the bound,
-//     which is where the model puts it; `at` differences the solve, whose collar
-//     moves by the solve's own floor -- 5.5e-10 MPa over a whole step, a step-in
-//     of a millionth of the interval's width above the root-find's tolerance.
-//     Divided by the step that is a collar row of 1e-04, so the movement is what
-//     is asserted and the disagreement it produces is reported.
 // The best agreement a DIFFERENCED referee reaches over a sweep of steps, and
 // what it said at one.
 //
@@ -3165,11 +2891,8 @@ void test_environment_rows_are_zero_below_the_rooted_layers() {
 // curvature's difference sits at 1e-10 at four steps and 5.6e-06 at a fifth
 // between them.
 //
-// So the referee is the sweep's best agreement, which is what a plateau is.
-struct Plateau {
-  double best = std::numeric_limits<double>::infinity();
-  double at_one_step = std::numeric_limits<double>::quiet_NaN();
-};
+// So the referee is the sweep's best agreement, and every differenced check below
+// takes it that way rather than at one step.
 
 // Which pair of coordinates the condition is written in, settled by identity
 // rather than by fitting.
@@ -3188,9 +2911,7 @@ struct Plateau {
 // the second term is there, so that is what this reads.
 void test_the_condition_is_the_stem_potential_and_its_collar_response() {
   printf("the condition's two coordinates, and the size of the direct term\n");
-  namespace grad = phylloptim::gradient;
   namespace pl = phylloptim;
-  grad::Settings s;
 
   struct Fixture { const char* what; double psi_soil, ppfd, vpd; int layers; };
   const Fixture fixtures[] = {{"wet", 2.0, 900.0, 2.0, 3},
@@ -3200,10 +2921,10 @@ void test_the_condition_is_the_stem_potential_and_its_collar_response() {
                               {"pinned", 5.72, 900.0, 2.0, 1}};
 
   for (const Fixture& f : fixtures) {
-    grad::Drivers d =
+    fixture::Physiology d =
         env::drivers(f.psi_soil, f.ppfd, f.vpd, f.layers, f.layers);
     pl::Leaf l = env::fresh();
-    grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+    d.drive(l, env::kTheta);
     l.find_root_collar_psi();
     const std::string tag =
         std::string(f.what) + " (" +
@@ -3232,15 +2953,12 @@ void test_the_condition_is_the_stem_potential_and_its_collar_response() {
   }
 }
 
-// The transport's three parameters against the rebuild-and-difference they
-// replace, which is the last differencing the row layer did.
+// ⚠️ A DIFFERENCE OVER THE TRANSPORT'S THREE PARAMETERS REBUILDS A CURVE ON EVERY
+// ARM. That is what makes it the right reference -- the forward model rebuilds too,
+// so the difference is of the model -- and it is also what makes it expensive,
+// which is the whole reason for a closed form.
 //
-// ⚠️ THE DIFFERENCE HERE REBUILDS A CURVE ON EVERY ARM. That is what makes it the
-// right reference -- the forward model rebuilds too, so the difference is of the
-// model -- and it is also what makes it expensive, which is the whole reason for a
-// closed form.
-//
-// They used to disagree, and by enough to be recorded rather than bounded: the
+// The two disagreed once, and by enough to be recorded rather than bounded: the
 // steepness' profit row was out by 4.7e-05 and its condition row by 1.1e-03. The
 // cause was not this derivation. It differentiates the flux balance
 // kappa (G(sigma) - G(p)) = E_up, and the forward model did not use that balance
@@ -3272,20 +2990,17 @@ void test_the_condition_is_the_stem_potential_and_its_collar_response() {
 // say that directly instead of assuming where the floor lands.
 void test_the_transport_leaves_the_flux_where_it_is() {
   printf("the transport moves the potential and not the flux\n");
-  namespace grad = phylloptim::gradient;
   namespace pl = phylloptim;
-  grad::Settings s;
   const int L = 5;
-  grad::Drivers d = env::drivers(1.0, 1500.0, 1.0, L, L);
+  fixture::Physiology d = env::drivers(1.0, 1500.0, 1.0, L, L);
   pl::Leaf l = env::fresh();
-  const grad::BasePoint b = env::solved_base_point(l, d, false, s, L);
+  d.drive(l, env::kTheta);
+  l.find_root_collar_psi();
+  const double p = l.opt_root_psi_;
   bool feasible = false;
-  l.dprofit_droot_collar_psi(b.psi_star, &feasible);
+  l.dprofit_droot_collar_psi(p, &feasible);
   ok(feasible, "the point is evaluable");
-  const double p = b.psi_star;
-  double th[grad::n_pars];
-  grad::Scratch scratch;
-  const double base = grad::par_value(env::kTheta, d, false, grad::par_kmax);
+  const double base = env::kKmax;
 
   double first_sigma = 0.0, last_sigma = 0.0;
   double assim_lo = std::numeric_limits<double>::infinity(), assim_hi = 0.0;
@@ -3295,16 +3010,16 @@ void test_the_transport_leaves_the_flux_where_it_is() {
     const double h = base * rel;
     double sigma[2], assim[2], uptake_total[2];
     for (int side = 0; side < 2; ++side) {
-      grad::set_one(l, th, env::kTheta, d, false, grad::par_kmax,
-                    side == 0 ? base + h : base - h, s.fast_stem_curve, scratch);
+      fixture::Physiology moved = d;
+      moved.kmax = side == 0 ? base + h : base - h;
+      moved.drive(l, env::kTheta);
       l.supply_begin_solve();
-      grad::OutputValues y(L);
-      ok(grad::outputs_at(l, p, y), "the held evaluation answers");
-      sigma[side] = y[grad::out_psi_stem];
-      assim[side] = y[grad::out_assim];
+      ok(l.profit_at_fixed_collar(p).feasible, "the held evaluation answers");
+      sigma[side] = l.opt_psi_stem_;
+      assim[side] = l.assim_colimited_;
       uptake_total[side] = 0.0;
       for (int i = 0; i < L; ++i) {
-        uptake_total[side] += y[grad::out_uptake_first + i];
+        uptake_total[side] += l.soil_consumption_[std::size_t(i)];
       }
     }
     const double d_sigma = (sigma[0] - sigma[1]) / (2.0 * h);
@@ -3332,7 +3047,7 @@ void test_the_transport_leaves_the_flux_where_it_is() {
   static_cast<void>(seen_negative);
   ok(assim_hi > assim_lo * 1e3,
      "assimilation's apparent row spreads by orders across the step");
-  grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+  d.drive(l, env::kTheta);
   // Four decades of step move it by 1.5e-06, which is the coarsest step's own
   // truncation and not a floor: a floor would have shown at the FINEST.
   near(last_sigma, first_sigma, 1e-5,
@@ -3341,13 +3056,11 @@ void test_the_transport_leaves_the_flux_where_it_is() {
 
 void test_the_curves_trait_derivative_is_the_models_own() {
   printf("the closed-form dG/dc against a rebuilt difference of the spline\n");
-  namespace grad = phylloptim::gradient;
   namespace pl = phylloptim;
-  grad::Settings s;
   const int L = 3;
-  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, L, L);
+  fixture::Physiology d = env::drivers(2.0, 900.0, 2.0, L, L);
   pl::Leaf l = env::fresh();
-  grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+  d.drive(l, env::kTheta);
   const double b = l.stem_b, c = l.stem_c;
 
   double worst_dc = 0.0, worst_value = 0.0;
@@ -3358,16 +3071,16 @@ void test_the_curves_trait_derivative_is_the_models_own() {
     worst_value = std::max(worst_value,
                            std::abs(dd.value - value) / std::abs(value));
 
-    double th[grad::n_pars];
-    grad::Scratch scratch;
+    double th[pl::n_traits];
+    std::copy(env::kTheta, env::kTheta + pl::n_traits, th);
     const double h = c * 1e-5;
-    grad::set_one(l, th, env::kTheta, d, false, grad::par_stem_c, c + h,
-                  s.fast_stem_curve, scratch);
+    th[pl::trait_stem_c] = c + h;
+    d.drive(l, th);
     const double up = l.stem_curve_integral(psi);
-    grad::set_one(l, th, env::kTheta, d, false, grad::par_stem_c, c - h,
-                  s.fast_stem_curve, scratch);
+    th[pl::trait_stem_c] = c - h;
+    d.drive(l, th);
     const double dn = l.stem_curve_integral(psi);
-    grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+    d.drive(l, env::kTheta);
     const double rebuilt = (up - dn) / (2.0 * h);
     worst_dc = std::max(worst_dc, std::abs(dd.dc - rebuilt) /
                                      std::max(std::abs(rebuilt), 1e-30));
@@ -3391,13 +3104,12 @@ void test_the_curves_trait_derivative_is_the_models_own() {
 // differenced row is the reference: it is what the model does today.
 void test_the_supplys_mixed_partials_match_a_difference() {
   printf("the supply's mixed partials against a difference of the conductance\n");
-  namespace grad = phylloptim::gradient;
   namespace pl = phylloptim;
-  grad::Settings s;
   const int L = 5;
-  grad::Drivers d = env::drivers(3.0, 1500.0, 0.5, L, L);
+  fixture::Physiology d = env::drivers(3.0, 1500.0, 0.5, L, L);
   pl::Leaf l = env::fresh();
-  const grad::BasePoint b = env::solved_base_point(l, d, false, s, L);
+  d.drive(l, env::kTheta);
+  l.find_root_collar_psi();
   const std::vector<double> psi = l.supply_psi_soil();
   const double p = l.opt_root_psi_;
 
@@ -3418,21 +3130,28 @@ void test_the_supplys_mixed_partials_match_a_difference() {
   std::vector<std::vector<double>> dE, dD;
   l.dE_from_soil_droot_carbon(p, psi, dE, dD);
   double worst_first = 0.0, worst_carbon = 0.0;
-  double th[grad::n_pars];
-  grad::Scratch scratch;
+  double th[pl::n_traits];
+  // The carbon each layer's resistances were built from. The network holds it
+  // split three ways rather than as itself, and the vertical share is a third.
+  std::vector<double> carbon;
+  for (double v : d.root_network.c_r_V) {
+    carbon.push_back(3.0 * v);
+  }
   for (int a = 0; a < L; ++a) {
     double sum_dE = 0.0, sum_dD = 0.0;
     for (int i = 0; i < L; ++i) {
       sum_dE += dE[std::size_t(i)][std::size_t(a)];
       sum_dD += dD[std::size_t(i)][std::size_t(a)];
     }
-    const int par = grad::par_root_carbon_first(L) + a;
-    const double base = grad::root_carbon_of(d, a);
+    const double base = carbon[std::size_t(a)];
     const double h = std::abs(base) * 1e-6;
     double slope[2], total[2];
     for (int side = 0; side < 2; ++side) {
-      grad::set_one(l, th, env::kTheta, d, false, par,
-                    side == 0 ? base + h : base - h, s.fast_stem_curve, scratch);
+      std::vector<double> moved_carbon = carbon;
+      moved_carbon[std::size_t(a)] = side == 0 ? base + h : base - h;
+      fixture::Physiology moved = d;
+      moved.root_network = fixture::root_network(moved_carbon, d.soil_depth);
+      moved.drive(l, env::kTheta);
       slope[side] = l.dE_from_soil_dpsi_collar(p, l.supply_psi_soil());
       l.E_from_Soil_to_Root_Collar(p, l.supply_psi_soil());
       total[side] = l.E_up_;
@@ -3444,7 +3163,7 @@ void test_the_supplys_mixed_partials_match_a_difference() {
         worst_carbon,
         std::abs(sum_dD / ((slope[0] - slope[1]) / (2.0 * h)) - 1.0));
   }
-  grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+  d.drive(l, env::kTheta);
 
   printf("  dE_up/drc %.3g   d2E_up/dp dpsi %.3g   d2E_up/dp drc %.3g\n",
          worst_first, worst_soil, worst_carbon);
@@ -3457,11 +3176,11 @@ void test_the_supplys_mixed_partials_match_a_difference() {
   // that is what the row replaces -- so the difference is of the model rather
   // than of a held curve.
   using Trait = pl::MultiLayerRoots::CurveTrait;
-  const struct { const char* what; int par; Trait trait; } curve[] = {
-      {"root_b", grad::par_root_b, Trait::Position},
-      {"root_c", grad::par_root_c, Trait::Steepness}};
+  const struct { const char* what; int slot; Trait trait; } curve[] = {
+      {"root_b", pl::trait_root_b, Trait::Position},
+      {"root_c", pl::trait_root_c, Trait::Steepness}};
   for (const auto& t : curve) {
-    grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+    d.drive(l, env::kTheta);
     std::vector<double> dE, d2E;
     l.dE_from_soil_droot_curve(p, psi, t.trait, dE, d2E);
     double got_E = 0.0, got_2 = 0.0;
@@ -3469,12 +3188,13 @@ void test_the_supplys_mixed_partials_match_a_difference() {
       got_E += dE[std::size_t(i)];
       got_2 += d2E[std::size_t(i)];
     }
-    const double base = grad::par_value(env::kTheta, d, false, t.par);
+    const double base = env::kTheta[t.slot];
     const double hh = std::abs(base) * 1e-6;
     double total[2], slope[2];
     for (int side = 0; side < 2; ++side) {
-      grad::set_one(l, th, env::kTheta, d, false, t.par,
-                    side == 0 ? base + hh : base - hh, s.fast_stem_curve, scratch);
+      std::copy(env::kTheta, env::kTheta + pl::n_traits, th);
+      th[t.slot] = side == 0 ? base + hh : base - hh;
+      d.drive(l, th);
       // ⚠️ The per-layer integrals are cached against the soil state, and a moved
       // curve invalidates them: without this the difference reads the new curve at
       // the collar and the OLD one at each soil layer, which is a difference of two
@@ -3485,7 +3205,7 @@ void test_the_supplys_mixed_partials_match_a_difference() {
       total[side] = l.E_up_;
       slope[side] = l.dE_from_soil_dpsi_collar(p, l.supply_psi_soil());
     }
-    grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+    d.drive(l, env::kTheta);
     const double want_E = (total[0] - total[1]) / (2.0 * hh);
     const double want_2 = (slope[0] - slope[1]) / (2.0 * hh);
     printf("  %-7s dE_up %14.8g vs %14.8g (%.3g)  existing %14.8g   d2 %.3g\n",
@@ -3502,15 +3222,6 @@ void test_the_supplys_mixed_partials_match_a_difference() {
   }
 }
 
-// The soil state's rows against the differencing they replace, at two steps.
-//
-// TWO, because what is left when the rows are right is the difference's own floor
-// and that is what a second step separates: a truncation error falls as h^2 and
-// this rises as 1/h. Measured over four decades at the wettest fixture, the
-// assimilation and profit rows' disagreement goes 3e-04, 3e-05, 3e-06, 3.1e-07 --
-// exactly 1/h, and exactly the channels that read the concentration's root-find.
-// The conductance, the stem potential and every uptake row, which do not, sit at
-// 1e-09 at every step.
 // What the operating point's condition IS, in the two quantities the ecology
 // weighs against each other: the carbon bought by the water an extra unit of
 // collar pull draws, and the hydraulic cost of the extra tension that pull puts
@@ -3576,9 +3287,7 @@ void probe_table_vs_curve() {
 
 void test_the_condition_is_carbon_bought_against_tension_paid() {
   printf("the condition is the carbon water buys against the tension it costs\n");
-  namespace grad = phylloptim::gradient;
   namespace pl = phylloptim;
-  grad::Settings s;
   struct F { const char* what; double psi_soil, ppfd, vpd; int layers; };
   const F fixtures[] = {{"sodden", 0.5, 900, 2.0, 3}, {"wet", 2.0, 900, 2.0, 3},
                         {"dim", 2.0, 300, 2.0, 3},    {"arid", 2.0, 900, 4.0, 3},
@@ -3586,20 +3295,22 @@ void test_the_condition_is_carbon_bought_against_tension_paid() {
   int checked = 0;
   for (const F& f : fixtures) {
     const int L = f.layers;
-    grad::Drivers d = env::drivers(f.psi_soil, f.ppfd, f.vpd, L, L);
+    fixture::Physiology d = env::drivers(f.psi_soil, f.ppfd, f.vpd, L, L);
     pl::Leaf l = env::fresh();
-    const grad::BasePoint b = env::solved_base_point(l, d, false, s, L);
+    d.drive(l, env::kTheta);
+    l.find_root_collar_psi();
+    const pl::Leaf::OperatingPointKind kind = l.operating_point_kind();
     const std::string tag =
         std::string(f.what) + " (" +
-        pl::Leaf::operating_point_kind_name(b.branch.kind) + ")";
-    if (b.branch.kind != pl::Leaf::OperatingPointKind::Interior) {
+        pl::Leaf::operating_point_kind_name(kind) + ")";
+    if (kind != pl::Leaf::OperatingPointKind::Interior) {
       continue;
     }
     // A collar a little drier than the optimum, so R is a number rather than a
     // zero. The wettest end is the one with room: the dry end runs the transport
     // coordinate off the end of its grid, which is the caller not having asked
     // for a potential that exists.
-    const double collar = b.psi_star * 0.98;
+    const double collar = l.opt_root_psi_ * 0.98;
     bool feasible = false;
     const double R = l.dprofit_droot_collar_psi(collar, &feasible);
     ok(feasible, "the off-optimum collar is evaluable, " + tag);
@@ -3633,23 +3344,6 @@ void test_the_condition_is_carbon_bought_against_tension_paid() {
   ok(checked >= 4, "the identity was checked away from the optimum");
 }
 
-// A shut point's rows against the differencing they replace.
-//
-// At a shut collar the leaf holds the stem at its critical potential and moves no
-// water at all, so profit is respiration plus the cost at that placement:
-//
-//   Pi = -R_d(T) - C(psi_crit; stem_b, stem_c, beta2, scale)
-//
-// Six inputs appear in that expression and twenty do not, so six rows are the
-// cost's own derivatives and twenty are exactly zero. Both halves are checked,
-// because the zeros are the half a wrong row hides behind.
-//
-// ⚠️ THE COLLAR IS NOT CHECKED HERE AND MUST NOT BE. `set_shutdown_state` writes
-// `opt_psi_stem_ = psi_crit` on every exit, which is why the profit rows above hold
-// unconditionally -- but it writes `opt_root_psi_` from the exit's own reason, and
-// the three reasons placement it at three different potentials. `shut_row_covers`
-// refuses a request naming the collar for that reason.
-
 // The supply's SECOND collar derivative, against a difference of its first, over
 // a sweep of steps.
 //
@@ -3675,160 +3369,71 @@ void test_the_condition_is_carbon_bought_against_tension_paid() {
 // The three invariants that were stated and never checked. Each is one loop, and
 // each was a claim about the code that nothing in either suite tested.
 
-// The two classifications of one physical point, and what the numerical one loses.
+// The collar the solve returns is stationary where the point is interior, and is
+// not where a bound placed it. The two populations sit orders apart, which is
+// what a consumer reading the residual rather than the branch is relying on.
 //
-// `Status` is four values derived from the curvature's SIGN and the residual's
-// SIZE; `OperatingPointKind` is a decision tree on what defines the point. The
-// first is the inference the mathematics forbids, and it survives because the
-// calibration route is refereed bit for bit against a captured reference and cannot
-// move. So the question that can be settled before that reference is re-blessed is
-// not whether to merge them, but whether they ever disagree -- and if they do not,
-// what the coarser one throws away.
-//
-// Both halves are asserted, because they say different things. The agreement is
-// what makes the eventual merge a deletion rather than an investigation. The LOSS
-// is why the merge is wanted: three kinds map onto one status, and a consumer
-// holding the status cannot tell a bound it must differentiate from a placement it must
-// not.
-void test_the_two_classifications_of_one_point() {
-  printf("the numerical status against the branch the solve took\n");
-  namespace grad = phylloptim::gradient;
+// ⚠️ THE ZERO-FLUX KINDS ARE NEITHER, and this is why the branch is read from the
+// classification. The marginal profit at such a collar reports itself infeasible
+// and returns a hard 0.0 sentinel, so a test on the residual's size alone lands
+// them on the interior side of any cut. They are skipped by that report, and
+// counted, so their number is visible rather than folded into the interior one.
+void test_interior_optima_are_stationary() {
+  printf("the collar residual at interior optima and at pinned ones\n");
   namespace pl = phylloptim;
   using Kind = pl::Leaf::OperatingPointKind;
-  grad::Settings s;
-
-  // What the status is ALLOWED to be for each kind: a projection, fixed here so a
-  // kind that starts reporting a different one is a failure rather than a new row
-  // in a table nobody reads.
-  auto projection = [](Kind k) -> grad::Status {
-    switch (k) {
-    case Kind::Interior:              return grad::Status::Interior;
-    case Kind::PinnedWet:
-    case Kind::PinnedDryRootCrit:
-    case Kind::PinnedDryRootPsiCrit:
-    // ⚠️ SHADE DEATH IS HERE, and that is the loss stated as code. It is a pin at
-    // the wet bound, so the numerical test lands on "pinned" for the right reason
-    // -- and the status cannot say that the bound it is pinned to is the collar of
-    // zero uptake rather than an optimiser's stopping point, nor that its carbon
-    // half is missing.
-    case Kind::ShadeDeath:            return grad::Status::Pinned;
-    default:                          return grad::Status::NoGradient;
-    }
-  };
-
-  int points = 0, disagreements = 0, kinds_seen = 0;
+  // The band the two populations sit either side of. It needs no scale of its
+  // own: the residual is profit per MPa and the solve drives it to rounding.
+  const double cut = 1e-8;
+  int interior = 0, pinned = 0, refused = 0;
   double worst_interior = 0.0, mildest_pin = 1e300;
-  // The zero-flux kind whose residual is a SENTINEL rather than a derivative, and
-  // whose implied Newton step is therefore exactly zero -- the interior side of the
-  // cut. Counted separately because it is the one case the numerical test gets
-  // wrong, and what it is rescued by is not the test.
-  int sentinel_points = 0, sentinel_took_the_composite = 0;
-  bool seen[16] = {false};
-  std::string first_disagreement;
   for (double T : {25.0, 40.0}) {
     for (double psi = 0.5; psi <= 7.0; psi += 0.5) {
       for (double ppfd : {0.0, 100.0, 900.0}) {
         for (int L : {1, 5}) {
-          grad::Drivers d = env::drivers(psi, ppfd, 2.0, L, L);
+          fixture::Physiology d = env::drivers(psi, ppfd, 2.0, L, L);
           d.leaf_temp = T;
-          // The kind from a solve of its own, so `at`'s perturbations cannot have
-          // moved it by the time it is read.
-          pl::Leaf k = env::fresh();
-          grad::apply(k, env::kTheta, d, false, -1, s.fast_stem_curve);
-          k.find_root_collar_psi();
-          const Kind kind = k.operating_point_kind();
-
-          grad::Result res;
-          int pars[] = {grad::par_vcmax_25};
           pl::Leaf l = env::fresh();
-          bool threw = false;
-          try {
-            grad::at(l, env::kTheta, d, false, pars, 1, s, res);
-          } catch (const std::exception &) {
-            threw = true;
-          }
-          if (threw) {
+          d.drive(l, env::kTheta);
+          l.find_root_collar_psi();
+          const Kind kind = l.operating_point_kind();
+          bool feasible = false;
+          const double resid =
+              std::abs(l.dprofit_droot_collar_psi(l.opt_root_psi_, &feasible));
+          if (!feasible) {
+            ++refused;
             continue;
           }
-          ++points;
-          if (!seen[std::size_t(kind)]) {
-            seen[std::size_t(kind)] = true;
-            ++kinds_seen;
-          }
-          if (res.status != projection(kind)) {
-            ++disagreements;
-            if (first_disagreement.empty()) {
-              first_disagreement =
-                  std::string(pl::Leaf::operating_point_kind_name(kind)) + " read as " +
-                  grad::status_name(res.status);
-            }
-          }
-          // The band the numerical cut sits in. It needs no scale of its own, being
-          // an implied Newton step in MPa -- so what matters is that the two
-          // populations do not overlap it.
-          if (std::isfinite(res.stationarity)) {
-            if (kind == Kind::Interior) {
-              worst_interior = std::max(worst_interior, res.stationarity);
-            } else if (res.stationarity <= s.stationarity_tol) {
-              // The numerical test has called a constrained point stationary.
-              ++sentinel_points;
-              sentinel_took_the_composite += res.used_ift ? 1 : 0;
-            } else {
-              mildest_pin = std::min(mildest_pin, res.stationarity);
-            }
+          if (kind == Kind::Interior) {
+            ++interior;
+            worst_interior = std::max(worst_interior, resid);
+          } else {
+            ++pinned;
+            mildest_pin = std::min(mildest_pin, resid);
           }
         }
       }
     }
   }
-  printf("  %d points, %d kinds, %d disagreements; interior reaches %.3g, the "
-         "mildest optimiser's pin %.3g, cut at %.3g\n",
-         points, kinds_seen, disagreements, worst_interior, mildest_pin,
-         s.stationarity_tol);
-  printf("  %d constrained points read as stationary by the number alone; %d of "
-         "them took the composite\n",
-         sentinel_points, sentinel_took_the_composite);
-  ok(points > 100 && kinds_seen >= 4,
-     "the sweep reaches an interior point, both zero-flux kinds and a pin");
-  ok(disagreements == 0,
-     std::string("the reported status is exactly the branch's projection") +
-         (first_disagreement.empty() ? "" : " -- " + first_disagreement));
-  ok(worst_interior < s.stationarity_tol,
-     "every interior point sits below the cut");
-  ok(mildest_pin > 1e4 * s.stationarity_tol,
-     "and every optimiser's pin sits four orders or more above it");
-
-  // ⚠️ AND THE BAND IS NOT EMPTY, WHICH IS THE ARGUMENT FOR ONE CLASSIFICATION
-  // RATHER THAN TWO. Where radiation is zero, gross assimilation is identically
-  // zero, the marginal profit at the placed collar is a SENTINEL rather than a
-  // derivative, and the implied Newton step is exactly 0 -- the interior side of a
-  // cut whose whole justification is that no point lands there. The curvature
-  // beside it is finite and large, so nothing about the pair says which branch this
-  // is.
-  //
-  // What rescues it is not the classification. The collar channel cannot centre a
-  // difference on a point that sits ON its bound, so the composite is abandoned and
-  // the status is rewritten. That is a second, unrelated refusal doing the work the
-  // number is credited with -- and it is why the two classifications agree above
-  // while only one of them is sound.
-  ok(sentinel_points > 0,
-     "a constrained point reads as stationary from the curvature and residual "
-     "alone, so the numerical cut does not separate the branches");
-  ok(sentinel_took_the_composite == 0,
-     "and none of them takes the composite, because a second refusal catches it");
+  printf("  %d interior points reach %.3g, %d pinned ones start at %.3g, %d "
+         "report no derivative\n",
+         interior, worst_interior, pinned, mildest_pin, refused);
+  ok(interior > 0 && pinned > 0, "the sweep reaches both populations");
+  ok(worst_interior < cut,
+     "every interior collar satisfies dprofit == 0 to solver precision");
+  ok(mildest_pin > 1e4 * cut,
+     "and every pinned one is held there by its bound, not by the condition");
 }
 
 void test_the_supply_answers_at_the_two_coincidences() {
   printf("the supply's derivatives at a gravity-balanced layer and at atmospheric\n");
-  namespace grad = phylloptim::gradient;
   namespace pl = phylloptim;
-  grad::Settings s;
 
   // A collar placed exactly on one layer's gravity balance, which is where a
   // one-layer plant that has stopped drawing water sits.
-  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
+  fixture::Physiology d = env::drivers(2.0, 900.0, 2.0, 3, 3);
   pl::Leaf l = env::fresh();
-  grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+  d.drive(l, env::kTheta);
   l.find_root_collar_psi();
   const std::vector<double> &ps = l.supply_psi_soil();
   const int layer = 1;
@@ -3846,8 +3451,8 @@ void test_the_supply_answers_at_the_two_coincidences() {
   ok(std::isfinite(l.d2E_from_soil_dpsi_collar2(balanced, ps)),
      "and its collar derivative too");
 
-  // Against a difference of the flux, over a sweep of steps for `Plateau`'s
-  // reason. The referee is the model's own uptake at a held soil state, which
+  // Against a difference of the flux, over a sweep of steps for the reason above.
+  // The referee is the model's own uptake at a held soil state, which
   // shares no code with the derivative.
   double best = std::numeric_limits<double>::infinity();
   for (int e = 3; e <= 7; ++e) {
@@ -3910,9 +3515,9 @@ void test_the_supply_answers_at_the_two_coincidences() {
   for (double psi : psi_soils) {
     for (double ppfd : ppfds) {
       for (int layers : layer_counts) {
-        grad::Drivers dd = env::drivers(psi, ppfd, 2.0, layers, layers);
+        fixture::Physiology dd = env::drivers(psi, ppfd, 2.0, layers, layers);
         pl::Leaf probe = env::fresh();
-        grad::apply(probe, env::kTheta, dd, false, -1, s.fast_stem_curve);
+        dd.drive(probe, env::kTheta);
         probe.find_root_collar_psi();
         ++points;
         const double p = probe.opt_root_psi_;
@@ -3945,16 +3550,14 @@ void test_the_supply_answers_at_the_two_coincidences() {
 
 void test_the_supplys_second_collar_derivative() {
   printf("the supply's second collar derivative against a difference of its first\n");
-  namespace grad = phylloptim::gradient;
-  grad::Settings s;
   double worst = 0.0;
   std::string worst_where;
   int compared = 0;
   for (double psi : {0.5, 1.0, 2.0, 3.0, 4.0}) {
     for (int layers : {1, 3, 5}) {
-      grad::Drivers d = env::drivers(psi, 900.0, 2.0, layers, layers);
+      fixture::Physiology d = env::drivers(psi, 900.0, 2.0, layers, layers);
       phylloptim::Leaf l = env::fresh();
-      grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+      d.drive(l, env::kTheta);
       l.find_root_collar_psi();
       const double p = l.opt_root_psi_;
       const double closed = l.d2E_from_soil_dpsi_collar2(p, l.supply_psi_soil());
@@ -3985,10 +3588,12 @@ void test_the_supplys_second_collar_derivative() {
 
   // The single path's flux is linear in the difference over a constant
   // resistance, so its conductance does not move with the collar at all.
-  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 1, 1);
+  fixture::Physiology d = env::drivers(2.0, 900.0, 2.0, 1, 1);
+  // That constant resistance, which is the whole network this path reads.
+  d.root_network = fixture::series_resistance(1e3);
   phylloptim::Leaf single = env::fresh();
   single.set_supply_single(0.0);
-  grad::apply(single, env::kTheta, d, true, -1, s.fast_stem_curve);
+  d.drive(single, env::kTheta);
   single.find_root_collar_psi();
   ok(single.d2E_from_soil_dpsi_collar2(single.opt_root_psi_,
                                        single.supply_psi_soil()) == 0.0,
@@ -4015,8 +3620,6 @@ void test_the_supplys_second_collar_derivative() {
 // from the same assembly the solve roots, and this is what says so.
 void test_the_marginals_collar_slope_against_a_difference() {
   printf("the marginal's collar slope against a difference of the marginal\n");
-  namespace grad = phylloptim::gradient;
-  grad::Settings s;
   double worst = 0.0;
   std::string worst_where;
   int compared = 0;
@@ -4024,9 +3627,9 @@ void test_the_marginals_collar_slope_against_a_difference() {
   for (double psi : {0.5, 1.0, 2.0, 3.0, 4.0}) {
     for (int layers : {1, 3, 5}) {
       for (double ppfd : {150.0, 900.0}) {
-        grad::Drivers d = env::drivers(psi, ppfd, 2.0, layers, layers);
+        fixture::Physiology d = env::drivers(psi, ppfd, 2.0, layers, layers);
         phylloptim::Leaf l = env::fresh();
-        grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+        d.drive(l, env::kTheta);
         l.find_root_collar_psi();
         if (l.operating_point_kind() !=
             phylloptim::Leaf::OperatingPointKind::Interior) {
@@ -4098,10 +3701,7 @@ void test_the_marginals_collar_slope_against_a_difference() {
 void test_where_the_mean_conductivity_should_stop_differencing() {
   printf("the mean conductivity: divided difference against the midpoint\n");
   phylloptim::Leaf l = env::fresh();
-  namespace grad = phylloptim::gradient;
-  grad::Settings s;
-  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
-  grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+  env::drivers(2.0, 900.0, 2.0, 3, 3).drive(l, env::kTheta);
 
   // One suction well inside the curve's domain, and spans shrinking around it.
   const double centre = 2.0;
@@ -4131,11 +3731,8 @@ void test_where_the_mean_conductivity_should_stop_differencing() {
 // on a century stand reached a span of 5.6e-08 and cost the whole gradient.
 void test_the_supply_derivatives_stay_smooth_into_a_coincidence() {
   printf("the supply's collar derivatives closing on a layer's potential\n");
-  namespace grad = phylloptim::gradient;
-  grad::Settings s;
-  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
   phylloptim::Leaf l = env::fresh();
-  grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+  env::drivers(2.0, 900.0, 2.0, 3, 3).drive(l, env::kTheta);
   const std::vector<double> soil = l.supply_psi_soil();
 
   // Approach layer 0's potential from the dry side, straddling the 1e-5 crossover.
@@ -4193,11 +3790,8 @@ void test_the_supply_derivatives_stay_smooth_into_a_coincidence() {
 // enough to be noticed at.
 void test_the_layer_mean_against_a_higher_order_average() {
   printf("the layer-mean family against a 15-point average\n");
-  namespace grad = phylloptim::gradient;
-  grad::Settings s;
-  grad::Drivers d = env::drivers(2.0, 900.0, 2.0, 3, 3);
   phylloptim::Leaf l = env::fresh();
-  grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+  env::drivers(2.0, 900.0, 2.0, 3, 3).drive(l, env::kTheta);
   auto& r = l.roots_;
 
   // Fifteen nodes, generated here by Newton on the Legendre polynomial, so the
@@ -4303,16 +3897,14 @@ void test_the_layer_mean_against_a_higher_order_average() {
 // closed-form second derivative, which is computed by a different route entirely.
 void test_the_templated_supply_derivative_against_both_routes() {
   printf("the templated dE_up/dp: against the double form and against d2\n");
-  namespace grad = phylloptim::gradient;
   namespace pl = phylloptim;
-  grad::Settings s;
   double worst_value = 0.0, worst_slope = 0.0;
   int compared = 0;
   for (double psi : {0.5, 1.0, 2.0, 3.0}) {
     for (int layers : {1, 3, 5}) {
-      grad::Drivers d = env::drivers(psi, 900.0, 2.0, layers, layers);
+      fixture::Physiology d = env::drivers(psi, 900.0, 2.0, layers, layers);
       pl::Leaf l = env::fresh();
-      grad::apply(l, env::kTheta, d, false, -1, s.fast_stem_curve);
+      d.drive(l, env::kTheta);
       l.find_root_collar_psi();
       const double p = l.opt_root_psi_;
       const std::vector<double>& soil = l.supply_psi_soil();
@@ -4358,24 +3950,22 @@ void test_the_templated_supply_derivative_against_both_routes() {
 
 void test_the_two_zero_flux_kinds_are_two_points() {
   printf("the two zero-flux kinds are two points, and the placement says which\n");
-  namespace grad = phylloptim::gradient;
   namespace pl = phylloptim;
-  grad::Settings s;
   const int L = 5;
 
   // Shade death is reached by LIGHT and not by water, so the fixture is a wet
   // soil in the dark. No moisture sweep finds this branch.
-  grad::Drivers dark = env::drivers(2.0, 0.0, 2.0, L, L);
+  fixture::Physiology dark = env::drivers(2.0, 0.0, 2.0, L, L);
   pl::Leaf shaded = env::fresh();
-  grad::apply(shaded, env::kTheta, dark, false, -1, s.fast_stem_curve);
+  dark.drive(shaded, env::kTheta);
   shaded.find_root_collar_psi();
   ok(shaded.operating_point_kind() == pl::Leaf::OperatingPointKind::ShadeDeath,
      "an unlit leaf on wet soil reaches shade death");
 
   // A dry soil in full light is the other kind, on the same trait vector.
-  grad::Drivers dry = env::drivers(7.0, 900.0, 2.0, L, L);
+  fixture::Physiology dry = env::drivers(7.0, 900.0, 2.0, L, L);
   pl::Leaf parched = env::fresh();
-  grad::apply(parched, env::kTheta, dry, false, -1, s.fast_stem_curve);
+  dry.drive(parched, env::kTheta);
   parched.find_root_collar_psi();
   ok(parched.operating_point_kind() ==
          pl::Leaf::OperatingPointKind::HydraulicShutdown,
@@ -4510,16 +4100,10 @@ void test_the_two_zero_flux_kinds_are_two_points() {
   // movement. Only the numerator vanishes at that collar, so nothing about it was
   // ever 0/0; with the refusal gone the bound has a row at every layer count and
   // the point's movement is reported rather than folded into a re-solve.
-  std::vector<int> ins;
-  for (int par = 0; par < grad::n_pars_total(1); ++par) {
-    if (par != grad::par_resistance) {
-      ins.push_back(par);
-    }
-  }
   for (int layers : {1, 2, 5}) {
-    grad::Drivers thin = env::drivers(2.0, 0.0, 2.0, layers, layers);
+    fixture::Physiology thin = env::drivers(2.0, 0.0, 2.0, layers, layers);
     pl::Leaf probe = env::fresh();
-    grad::apply(probe, env::kTheta, thin, false, -1, s.fast_stem_curve);
+    thin.drive(probe, env::kTheta);
     probe.find_root_collar_psi();
     const pl::Leaf::BoundRow wet = probe.bound_row(pl::Leaf::WhichBound::Wet);
     ok(wet.finite, std::string("the wet bound has a row at ") +
@@ -4632,7 +4216,6 @@ int main() {
   test_energy_balance_collar_solve_is_measured();
   test_energy_balance_gate_off_is_inert();
   test_energy_balance_stomatal_decoupling();
-  test_closed_form();
   test_single_potential();
   test_leaf_on_single_potential();
   test_root_network_from_carbon();
@@ -4644,9 +4227,7 @@ int main() {
   test_bad_input_throws();
   test_out_of_domain_names_the_spline();
   test_out_of_domain_under_rescale();
-  test_environment_rows_match_a_differenced_solve();
   test_environment_water_rows_are_rank_one();
-  test_environment_rows_are_zero_below_the_rooted_layers();
   test_the_curves_trait_derivative_is_the_models_own();
   test_the_transport_leaves_the_flux_where_it_is();
   test_the_condition_is_the_stem_potential_and_its_collar_response();
@@ -4654,7 +4235,7 @@ int main() {
   probe_root_curve_slope();
   probe_table_vs_curve();
   test_the_condition_is_carbon_bought_against_tension_paid();
-  test_the_two_classifications_of_one_point();
+  test_interior_optima_are_stationary();
   test_the_supply_answers_at_the_two_coincidences();
   test_the_supplys_second_collar_derivative();
   test_the_marginals_collar_slope_against_a_difference();

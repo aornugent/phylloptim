@@ -58,6 +58,35 @@ struct Soil {
   std::vector<double> depth;
 };
 
+// The ten values `set_physiology` takes, so a test drives a leaf without
+// spelling that argument list at every site.
+struct Physiology {
+  phylloptim::RootNetwork root_network;
+  double PPFD = 0.0;
+  std::vector<double> psi_soil;
+  std::vector<double> soil_depth;
+  double kmax = 0.0;
+  double atm_vpd = 0.0;
+  double ca = 0.0;
+  double leaf_temp = 0.0;
+  double atm_o2_kpa = 0.0;
+  double atm_kpa = 0.0;
+
+  void drive(phylloptim::Leaf& l) const {
+    l.set_physiology(root_network, PPFD, psi_soil, soil_depth, kmax, atm_vpd, ca,
+                     leaf_temp, atm_o2_kpa, atm_kpa);
+  }
+
+  // Traits first: set_traits returns the leaf to its just-constructed state, and
+  // set_physiology is what re-derives vcmax_/jmax_/R_d_ behind the temperature
+  // cache it cleared. The other order solves at the first vcmax the leaf ever saw
+  // and reports plausible numbers throughout.
+  void drive(phylloptim::Leaf& l, const double* theta) const {
+    l.set_traits(theta);
+    drive(l);
+  }
+};
+
 // A seed is not a thing on a plain double, and these are built at one to make the
 // passive inputs an implicit node takes.
 template <class T>

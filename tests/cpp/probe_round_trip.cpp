@@ -5,7 +5,6 @@
 #include "root_network.hpp"
 #include <cstdio>
 #include <cmath>
-namespace grad = phylloptim::gradient;
 int main() {
   phylloptim::Leaf l;
   double worst = 0.0, worst_at = 0.0;

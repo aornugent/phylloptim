@@ -30,6 +30,7 @@
 
 #include <phylloptim.hpp>
 
+#include "leaf_inputs.hpp"
 #include "root_network.hpp"
 
 #include <algorithm>
@@ -38,17 +39,15 @@
 #include <string>
 #include <vector>
 
-namespace grad = phylloptim::gradient;
-
 namespace {
 
 const double kTheta[] = {96.0,     2.680147, 3.898245, 5.870283, 2.680147,
                          3.898245, 5.870283, 1.5,      157.44,   0.30,
-                         0.7,      0.99,     7.5,      1.44,
-                         1.0 * 0.000157 / 5.0, 1e3};
+                         0.7,      0.99,     7.5,      1.44};
 
-grad::Drivers drivers(double psi_soil, double ppfd, double vpd, int layers) {
-  grad::Drivers d;
+fixture::Physiology drivers(double psi_soil, double ppfd, double vpd,
+                            int layers) {
+  fixture::Physiology d;
   std::vector<double> ps(layers), depth(layers), root(layers);
   for (int i = 0; i < layers; ++i) {
     ps[i] = psi_soil + 0.25 * i;
@@ -59,6 +58,7 @@ grad::Drivers drivers(double psi_soil, double ppfd, double vpd, int layers) {
   d.PPFD = ppfd;
   d.psi_soil = ps;
   d.soil_depth = depth;
+  d.kmax = 1.0 * 0.000157 / 5.0;
   d.atm_vpd = vpd;
   d.ca = 40.0;
   d.leaf_temp = 25.0;
@@ -82,10 +82,9 @@ void incidence() {
     for (double ppfd : ppfds) {
       for (double vpd : vpds) {
         for (int layers : layer_counts) {
-          const grad::Drivers d = drivers(psi, ppfd, vpd, layers);
+          const fixture::Physiology d = drivers(psi, ppfd, vpd, layers);
           phylloptim::Leaf l;
-          const grad::Settings s;
-          grad::apply(l, kTheta, d, false, -1, s.fast_stem_curve);
+          d.drive(l, kTheta);
           l.find_root_collar_psi();
           ++points;
           const int kind = int(l.operating_point_kind());
@@ -173,10 +172,9 @@ Layer general(const phylloptim::MultiLayerRoots& r, double s, double p, int i) {
 
 void limits() {
   std::printf("\n=== B. THE EQUAL-POTENTIALS LIMIT ===\n");
-  const grad::Drivers d = drivers(2.0, 900.0, 2.0, 3);
+  const fixture::Physiology d = drivers(2.0, 900.0, 2.0, 3);
   phylloptim::Leaf l;
-  const grad::Settings s;
-  grad::apply(l, kTheta, d, false, -1, s.fast_stem_curve);
+  d.drive(l, kTheta);
   l.find_root_collar_psi();
   const phylloptim::MultiLayerRoots& r = l.roots_;
   const int i = 1;
@@ -251,10 +249,9 @@ void limits() {
 
 void the_two_that_need_nothing() {
   std::printf("\n=== C. THE TWO THAT NEED NO LIMIT ===\n");
-  const grad::Drivers d = drivers(2.0, 900.0, 2.0, 3);
+  const fixture::Physiology d = drivers(2.0, 900.0, 2.0, 3);
   phylloptim::Leaf l;
-  const grad::Settings s;
-  grad::apply(l, kTheta, d, false, -1, s.fast_stem_curve);
+  d.drive(l, kTheta);
   l.find_root_collar_psi();
   const phylloptim::MultiLayerRoots& r = l.roots_;
   const int i = 1;

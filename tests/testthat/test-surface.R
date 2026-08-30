@@ -486,10 +486,9 @@ test_that("root_network_from_carbon() reproduces the leaf's own layer thickness"
 })
 
 test_that("root_network_from_carbon() is homogeneous of degree 1 in each beta", {
-  # The claim made in leaf_traits()' and leaf_gradient()'s documentation, where it
-  # is what a caller who wants a beta_R_* gradient is told to rely on. Asserted so
-  # the claim cannot rot: scaling one constant scales one vector and leaves the
-  # other alone.
+  # The claim leaf_traits()' documentation makes, and what a caller differencing a
+  # beta_R_* relies on. Asserted so it cannot rot: scaling one constant scales one
+  # vector and leaves the other alone.
   carbon <- c(3, 6, 1)
   depth <- 1:3
   base <- root_network_from_carbon(carbon, soil_depth = depth)

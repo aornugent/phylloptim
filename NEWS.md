@@ -1,5 +1,25 @@
 # phylloptim 0.3.0
 
+## The R-composed trait gradient is removed
+
+`leaf_gradient()`, `leaf_batch()`, `leaf_gradient_batch()`, `gradient_par_names()`
+and `print.leaf_batch` are gone, with `<phylloptim/gradient.hpp>`,
+`<phylloptim/closed_form.hpp>` and `vignette("fitting")`. **A caller that needs
+derivatives of a solved operating point has to compute them itself.**
+
+It was two implementations of one algorithm -- `R/gradient.R` and a C++
+transcription required to reproduce it bit-for-bit, which is why that header
+forbade reassociation and fused multiply-add and sequenced every difference by
+hand. `plant`, the only consumer, reaches the leaf's derivatives through its own
+tape and called none of it.
+
+`set_traits()` is unaffected and lives in `R/leaf-model.R`. The trait vector it
+places is `phylloptim::trait_table` in `<phylloptim/leaf_model.hpp>` -- fourteen
+entries, with `phylloptim::n_traits`, `trait_of()` and one `trait_<name>` constant
+each. It replaces `phylloptim::gradient::par_table`, which was sixteen: the two
+extras were quantities a calibration fits rather than traits `set_traits` places,
+and `leaf_specific_conductance_max` is an argument to `set_physiology()`.
+
 ## The stem curve carries its own derivative
 
 The stem cumulative-transpiration curve is read for its value and its slope: the

@@ -36,9 +36,9 @@ const double kTheta = 0.000157, kKs = 1.0, kH = 5.0, kAreaLeaf = 0.05;
 
 // One layer, so the coincidence is the whole of what the collar sees.
 void set_up(pl::Leaf& l, const std::vector<double>& psi_soil) {
-  double theta[pl::gradient::n_traits];
+  double theta[pl::n_traits];
   std::copy(kBase, kBase + 13, theta);
-  theta[pl::gradient::par_R_d_25] = 1.44;
+  theta[pl::trait_R_d_25] = 1.44;
   l.set_traits(theta);
   const std::size_t n = psi_soil.size();
   std::vector<double> root(n, 1.0 / kAreaLeaf / double(n)), depth;

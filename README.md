@@ -52,22 +52,11 @@ bare-leaf user (no root-mass profile to construct) and is what makes comparison
 one ψ_soil, so you have to be able to hold the supply side fixed. [PLAN.md](PLAN.md)
 item 7b.
 
-**Fast and differentiable, so it is built for calibration.** A full hydraulic
-solve costs ~3 µs, and derivatives are analytic rather than finite differences:
-forward-mode AD (XAD) for the collar potential, and `leaf_gradient()` for the
-traits, by differentiating the optimality condition. That combination is what
-calibration wants — gradient-based optimisers and Hamiltonian samplers need many
-evaluations *and* clean gradients, and finite-differencing a nested root-find is
-exactly the case where numerical gradients are noisiest.
-
-One honest caveat, and one correction this paragraph used to get wrong. The caveat
-is that there is still no calibration vignette in the package ([PLAN.md](PLAN.md)
-item 12), though the fit that drove the gradient work exists outside it. The
-correction: trait gradients are **done**, and they did not need the templated
-`Leaf<T>` this paragraph pointed at — that item is closed unbuilt. What they
-needed was the implicit function theorem, which is cheaper and gives the
-active-set classification a drought calibration actually has to have. See
-[Trait gradients](#trait-gradients) below and [PLAN.md](PLAN.md) item 11e.
+**Fast, and analytic where it counts.** A full hydraulic solve costs ~3 µs, and
+the derivative of profit with respect to the collar potential is forward-mode AD
+(XAD) rather than a finite difference. That is what lets the solve state its own
+first-order condition instead of searching a flat maximum, and it is what a model
+tracking acclimation reads directly out of the leaf.
 
 ## Status
 
@@ -316,73 +305,9 @@ set_drivers(l, psi_soil = 1.5,
 `root_network_from_carbon()` — a stand-in rather than a recommendation. It is
 written out in `set_drivers()`' body so it can be seen and replaced.
 
-### Trait gradients
-
-`leaf_gradient()` gives the derivatives of the solved outputs with respect to the
-traits, which is what a gradient-based optimiser or a Hamiltonian sampler wants:
-
-```r
-g <- leaf_gradient(psi_soil = 2.0, PPFD = 900,
-                   pars = c("vcmax_25", "stem_b", "cost_scale_TF24"))
-g$gradient   # rows: parameters.  columns: A, gc, psi_stem, collar, profit
-g$method     # "ift" or "fd" -- see below
-```
-
-`pars` is not restricted to traits: `leaf_specific_conductance_max` and, on the
-single-potential path, `resistance` are differentiable too, because a calibration
-fits them and nothing in the derivation cares whether a parameter is a trait.
-
-```r
-leaf_gradient(psi_soil = 1.5, PPFD = 900,
-              supply = leaf_supply_single(),
-              root_network = series_resistance(1e4),
-              pars = c("leaf_specific_conductance_max", "resistance"))
-```
-
-These are not finite differences of the solve. The outputs are evaluated at the
-profit-maximising collar potential, so a trait moves them both directly and by
-moving that optimum — and for `cost_scale_TF24`, `beta2`, `stem_b` and `stem_c`
-the second route is **100%** of the answer. Differentiating the optimality
-condition rather than the solved output gets both terms exactly.
-
-That derivation assumes the optimum is interior, and at the dry end it often is
-not: with the optimum pinned to the edge of the feasible range the formula returns
-a confidently wrong number, off by up to seven orders of magnitude. So the
-assumption is **tested** at every point and the function falls back to
-differencing the solve where it fails. `g$method` reports which route ran and
-`g$status` reports why.
-
-Whether this is *faster* than letting your optimiser difference the objective
-depends on your parameterisation, and the two counts that decide it are easy to
-conflate. Differencing costs `2 ×` the number of parameters **the optimiser is
-moving**; this costs one pass plus a term in the number of parameters **the leaf
-has** — `length(pars)`. They are equal only if you fit traits directly. Pooling, a
-hierarchy, or any derived parameter makes the first much larger than the second,
-which is where this route wins; `vignette("fitting")` measures both regimes and
-`?leaf_gradient` has the cost model. ⚠️ **Always pass `pars`** — the default is all
-fourteen, which is the most expensive request there is.
-
-**For a fit, use `leaf_gradient_batch()`.** It is the same gradient, composed in C++
-and vectorised over observations, so a likelihood evaluation crosses the R boundary
-once instead of 112 times per observation — **363 → 10.6 µs per observation** at four
-differentiated parameters (`length(pars)`), 22×.
-
-```r
-b <- leaf_batch(psi_soil = obs$psi_soil, PPFD = obs$PPFD)   # once per fit
-g <- leaf_gradient_batch(b, traits, pars = c("vcmax_25", "stem_b"))
-g$gradient   # [observation, parameter, output]
-g$status     # per observation: "interior", "pinned", "no-gradient" or "error"
-```
-
-The likelihood and your parameterisation Jacobian stay in R, vectorised over
-observations: the likelihood is your model, and the chain rule belongs where the win
-is — this returns `dY/dθ` for the four parameters the leaf has, and you map your own
-onto them. ⚠️ Nothing about the gradient got faster; the boundary was removed from
-under it, so the figure needs a batch to be realised.
-
-To vary traits yourself, `set_traits()` replaces them on an existing leaf — much
-cheaper than rebuilding one, and the only correct way to do it, since a trait
-change invalidates derived state that is not obvious from the outside:
+`set_traits()` replaces the traits on an existing leaf — much cheaper than
+rebuilding one, and the only correct way to do it, since a trait change
+invalidates derived state that is not obvious from the outside:
 
 ```r
 l <- leaf_model()
@@ -428,15 +353,14 @@ Two costs worth knowing because they surprise people:
 - **Constructing a `Leaf` from R costs ~204 µs** — 70 solves — and only ~32 µs of
   that is the two vulnerability splines; the rest is R-side object construction
   over ~60 active bindings. So construct once and reuse. `leaf_solve(reuse = TRUE)`
-  is the default for this reason, and [`set_traits()`](#trait-gradients) exists so
-  that a trait sweep need not reconstruct either.
+  is the default for this reason, and `set_traits()` exists so that a trait sweep
+  need not reconstruct either.
 - **`set_traits()` is ~0.02 µs unless you change `stem_b`, `stem_c`, `root_b` or
   `root_c`, and 21.8 µs if you do**, because those four own the pre-integrated
   vulnerability splines and it rebuilds one. That is 8× a solve, in C++, where
   batching cannot help — worth knowing before writing a sweep over a vulnerability
   curve. Most of it is the incomplete gamma function seeding 101 knots, not the
-  spline machinery. `leaf_gradient()` sidesteps it for `stem_b`, which is
-  homogeneous: see `fast_stem_curve` in `?leaf_gradient`.
+  spline machinery.
 
 ### As a dependency of another R package
 

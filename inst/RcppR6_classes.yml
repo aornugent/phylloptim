@@ -310,20 +310,17 @@ Leaf:
     # The leaf_model.hpp declaration has the full reasoning; it is the same
     # judgement as supply_kind above, reached from a different direction.
     #
-    # This exists so a calibration loop can perturb a trait without rebuilding the
-    # R object: measured, constructing a Leaf from R costs ~204 us against ~4 us to
-    # re-trait and re-drive an existing one, and that ratio -- not the choice of
-    # gradient formula -- is what dominates a finite-difference gradient in R.
-    # Move stem_b without rebuilding the stem vulnerability spline, for a gradient
-    # in it (PLAN 11f). The curve is homogeneous of degree 1 in stem_b, so the
-    # spline for another stem_b is this one with its argument rescaled -- measured
-    # to reproduce a rebuilt spline to 0-3e-16. There is no such identity for
-    # stem_c, which is why only one parameter is here.
+    # Move stem_b without rebuilding the stem vulnerability spline. The curve is
+    # homogeneous of degree 1 in stem_b, so the spline for another stem_b is this
+    # one with its argument rescaled -- measured to reproduce a rebuilt spline to
+    # 0-3e-16. There is no such identity for stem_c, which is why only one
+    # parameter is here.
+    #
+    # A sweep over stem_b is what this is for: constructing a Leaf from R costs
+    # ~204 us against ~4 us to re-trait and re-drive an existing one.
     #
     # ⚠️ Leaves the splines built at a different stem_b on purpose, and does not
-    # clear the solved outputs; set_traits() is the way back. Bound because
-    # leaf_gradient() is in R -- not because a user should reach for it, which is
-    # why its documentation is on leaf_gradient() rather than here.
+    # clear the solved outputs; set_traits() is the way back.
     perturb_stem_b:
       return_type: void
       args: [stem_b: double]

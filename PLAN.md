@@ -20,6 +20,15 @@ the user-visible history.
 
 ## Status, 2026-08-05
 
+⚠️ **The R-composed trait gradient is gone from this branch, and three rows below
+describe a product that is no longer here.** `leaf_gradient()`, `leaf_batch()`,
+`leaf_gradient_batch()`, `gradient.hpp`, `closed_form.hpp` and `vignettes/fitting.Rmd`
+were deleted: plant reaches the leaf's derivatives through its own tape, and the
+second implementation those had to agree with bit-for-bit had no other consumer. So
+#4's `stem_c` rebuild, #74's `stem_b` shortcut and #12's calibration demonstration
+are all questions about a path that would have to be rebuilt before they could be
+asked. `set_traits()` survives, in `R/leaf-model.R`.
+
 ### Remaining
 
 | issue | item | what | note |

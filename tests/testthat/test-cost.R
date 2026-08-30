@@ -85,8 +85,7 @@ test_that("series_resistance() does not reach C++ after the first call", {
 
 test_that("leaf_solve() crosses the boundary a bounded number of times per row", {
   # Not a time: a count of solves. `reuse = TRUE` must build ONE Leaf for the whole
-  # sweep, which is the other 155-us-per-call trap on this surface (issue #52 is the
-  # same cost in leaf_gradient()).
+  # sweep, which is the other 155-us-per-call trap on this surface.
   n1 <- count_calls("Leaf__ctor", leaf_solve(psi_soil = rep(1.5, 4)))
   n2 <- count_calls("Leaf__ctor", leaf_solve(psi_soil = rep(1.5, 32)))
   expect_identical(n1, n2)      # constant in the number of rows
@@ -96,74 +95,6 @@ test_that("leaf_solve() crosses the boundary a bounded number of times per row",
   # test above is no longer testing anything.
   expect_gt(count_calls("Leaf__ctor",
                         leaf_solve(psi_soil = rep(1.5, 8), reuse = FALSE)), 4L)
-})
-
-test_that("leaf_gradient(x =) constructs no Leaf at all", {
-  # #52. Construction is ~146 us, about 40% of a one-parameter gradient, and `x`
-  # exists to remove it from a per-observation loop. The guard is a COUNT: reuse must
-  # construct zero, however many gradients are taken, or the argument is decorative.
-  tr <- leaf_traits()
-  l <- leaf_model(traits = tr)
-  leaf_gradient(psi_soil = 2.0, x = l, traits = tr, pars = "vcmax_25")   # warm
-
-  n <- count_calls("Leaf__ctor", {
-    for (i in 1:5) {
-      leaf_gradient(psi_soil = 2.0, x = l, traits = tr, pars = "vcmax_25")
-    }
-  })
-  expect_identical(n, 0L)
-
-  # And without `x` it constructs exactly one per call -- if that stopped being true
-  # the test above would be measuring nothing.
-  n <- count_calls("Leaf__ctor", {
-    for (i in 1:5) {
-      leaf_gradient(psi_soil = 2.0, traits = tr, pars = "vcmax_25")
-    }
-  })
-  expect_identical(n, 5L)
-})
-
-test_that("leaf_gradient_batch() crosses the boundary once, whatever N is", {
-  # ⚠️ THIS IS THE WHOLE CLAIM OF #4 STAGE 2, AND IT IS COUNTABLE. A four-parameter
-  # gradient through `leaf_gradient()` crosses the boundary 112 times per
-  # observation and spends 1.5% of its time in the model. The batch composes the
-  # composite in C++ instead, so the crossing count must be CONSTANT IN N -- one
-  # call into `gradient_batch_run`, per call and not per row. A timing assertion
-  # would not say this: it would drift with the machine, and it would still pass if
-  # the count went back to being per-row on a fast day.
-  b1 <- leaf_batch(psi_soil = rep(1.5, 4), PPFD = 900)
-  b2 <- leaf_batch(psi_soil = rep(1.5, 64), PPFD = 900)
-  pars <- c("vcmax_25", "stem_b", "cost_scale_TF24", "beta2")
-  leaf_gradient_batch(b1, pars = pars)                       # warm anything lazy
-
-  n1 <- count_calls("gradient_batch_run", leaf_gradient_batch(b1, pars = pars))
-  n2 <- count_calls("gradient_batch_run", leaf_gradient_batch(b2, pars = pars))
-  expect_identical(n1, 1L)
-  expect_identical(n2, 1L)                      # 16x the rows, the same one call
-
-  # ⚠️ AND NO MODEL WORK LEAKED BACK TO R, which is the stronger statement and the
-  # one that would catch a future "small" convenience added to the R wrapper. Every
-  # per-perturbation primitive `leaf_gradient()` reaches through -- the setter, the
-  # solve, the two gradient evaluations -- must be called ZERO times by the batch,
-  # for any N. A single one of these appearing in the R path is the regression this
-  # file exists for, at 11 crossings per parameter per observation.
-  for (sym in c("Leaf__set_traits", "Leaf__set_physiology",
-                "Leaf__find_root_collar_psi", "Leaf__evaluate_root_collar_psi",
-                "Leaf__dprofit_droot_collar_psi", "Leaf__operating_point_values",
-                "Leaf__perturb_stem_b", "Leaf__ctor", "RootNetwork__ctor",
-                "root_network_from_carbon")) {
-    expect_identical(count_calls(sym, leaf_gradient_batch(b2, pars = pars)), 0L,
-                     label = sym)
-  }
-
-  # `leaf_batch()` is where the per-observation R work is allowed to live, because
-  # it runs once per fit rather than once per likelihood evaluation -- but it must
-  # still build exactly ONE Leaf, not one per observation (#52's trap on a new
-  # surface), and reach the drivers' C++ side exactly once.
-  expect_identical(count_calls("Leaf__ctor",
-                               leaf_batch(psi_soil = rep(1.5, 64))), 1L)
-  expect_identical(count_calls("gradient_batch_prepare",
-                               leaf_batch(psi_soil = rep(1.5, 64))), 1L)
 })
 
 test_that("a driven row costs a bounded multiple of a trivial .Call", {

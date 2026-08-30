@@ -2271,73 +2271,6 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// gradient_par_names
-std::vector<std::string> gradient_par_names();
-RcppExport SEXP _phylloptim_gradient_par_names() {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    rcpp_result_gen = Rcpp::wrap(gradient_par_names());
-    return rcpp_result_gen;
-END_RCPP
-}
-// gradient_output_names
-std::vector<std::string> gradient_output_names();
-RcppExport SEXP _phylloptim_gradient_output_names() {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    rcpp_result_gen = Rcpp::wrap(gradient_output_names());
-    return rcpp_result_gen;
-END_RCPP
-}
-// gradient_batch_prepare
-SEXP gradient_batch_prepare(Rcpp::List root_network, Rcpp::List psi_soil, Rcpp::List soil_depth, Rcpp::NumericVector PPFD, Rcpp::NumericVector atm_vpd, Rcpp::NumericVector ca, Rcpp::NumericVector leaf_temp, Rcpp::NumericVector atm_o2_kpa, Rcpp::NumericVector atm_kpa);
-RcppExport SEXP _phylloptim_gradient_batch_prepare(SEXP root_networkSEXP, SEXP psi_soilSEXP, SEXP soil_depthSEXP, SEXP PPFDSEXP, SEXP atm_vpdSEXP, SEXP caSEXP, SEXP leaf_tempSEXP, SEXP atm_o2_kpaSEXP, SEXP atm_kpaSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< Rcpp::List >::type root_network(root_networkSEXP);
-    Rcpp::traits::input_parameter< Rcpp::List >::type psi_soil(psi_soilSEXP);
-    Rcpp::traits::input_parameter< Rcpp::List >::type soil_depth(soil_depthSEXP);
-    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type PPFD(PPFDSEXP);
-    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type atm_vpd(atm_vpdSEXP);
-    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type ca(caSEXP);
-    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type leaf_temp(leaf_tempSEXP);
-    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type atm_o2_kpa(atm_o2_kpaSEXP);
-    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type atm_kpa(atm_kpaSEXP);
-    rcpp_result_gen = Rcpp::wrap(gradient_batch_prepare(root_network, psi_soil, soil_depth, PPFD, atm_vpd, ca, leaf_temp, atm_o2_kpa, atm_kpa));
-    return rcpp_result_gen;
-END_RCPP
-}
-// gradient_batch_check
-void gradient_batch_check(SEXP drivers);
-RcppExport SEXP _phylloptim_gradient_batch_check(SEXP driversSEXP) {
-BEGIN_RCPP
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< SEXP >::type drivers(driversSEXP);
-    gradient_batch_check(drivers);
-    return R_NilValue;
-END_RCPP
-}
-// gradient_batch_run
-Rcpp::List gradient_batch_run(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, SEXP drivers, Rcpp::NumericMatrix theta, Rcpp::IntegerVector pars, double step, double stationarity_tol, std::string method, bool fast_stem_curve);
-RcppExport SEXP _phylloptim_gradient_batch_run(SEXP obj_SEXP, SEXP driversSEXP, SEXP thetaSEXP, SEXP parsSEXP, SEXP stepSEXP, SEXP stationarity_tolSEXP, SEXP methodSEXP, SEXP fast_stem_curveSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
-    Rcpp::traits::input_parameter< SEXP >::type drivers(driversSEXP);
-    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type theta(thetaSEXP);
-    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type pars(parsSEXP);
-    Rcpp::traits::input_parameter< double >::type step(stepSEXP);
-    Rcpp::traits::input_parameter< double >::type stationarity_tol(stationarity_tolSEXP);
-    Rcpp::traits::input_parameter< std::string >::type method(methodSEXP);
-    Rcpp::traits::input_parameter< bool >::type fast_stem_curve(fast_stem_curveSEXP);
-    rcpp_result_gen = Rcpp::wrap(gradient_batch_run(obj_, drivers, theta, pars, step, stationarity_tol, method, fast_stem_curve));
-    return rcpp_result_gen;
-END_RCPP
-}
 // root_network_from_carbon
 phylloptim::RootNetwork root_network_from_carbon(const std::vector<double>& root_carbon_per_leaf_area, const std::vector<double>& soil_depth, double beta_R_H, double beta_R_V);
 RcppExport SEXP _phylloptim_root_network_from_carbon(SEXP root_carbon_per_leaf_areaSEXP, SEXP soil_depthSEXP, SEXP beta_R_HSEXP, SEXP beta_R_VSEXP) {
@@ -2552,11 +2485,6 @@ static const R_CallMethodDef CallEntries[] = {
     {"_phylloptim_Leaf__lambda_molar__get", (DL_FUNC) &_phylloptim_Leaf__lambda_molar__get, 1},
     {"_phylloptim_Leaf__lambda_multilayer__get", (DL_FUNC) &_phylloptim_Leaf__lambda_multilayer__get, 1},
     {"_phylloptim_Leaf__g1_eff__get", (DL_FUNC) &_phylloptim_Leaf__g1_eff__get, 1},
-    {"_phylloptim_gradient_par_names", (DL_FUNC) &_phylloptim_gradient_par_names, 0},
-    {"_phylloptim_gradient_output_names", (DL_FUNC) &_phylloptim_gradient_output_names, 0},
-    {"_phylloptim_gradient_batch_prepare", (DL_FUNC) &_phylloptim_gradient_batch_prepare, 9},
-    {"_phylloptim_gradient_batch_check", (DL_FUNC) &_phylloptim_gradient_batch_check, 1},
-    {"_phylloptim_gradient_batch_run", (DL_FUNC) &_phylloptim_gradient_batch_run, 8},
     {"_phylloptim_root_network_from_carbon", (DL_FUNC) &_phylloptim_root_network_from_carbon, 4},
     {NULL, NULL, 0}
 };

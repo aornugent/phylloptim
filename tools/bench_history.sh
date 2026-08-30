@@ -18,7 +18,7 @@ mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 hdr=$(cd "$HERE" && Rscript tools/bench_user_cost.R --tsv --reps 1 2>/dev/null | head -1)
-printf 'commit\tsubject\t%s\tcpp_solve_us\tcpp_grad_ift_us\tcpp_grad_fd_us\n' "$hdr"
+printf 'commit\tsubject\t%s\tcpp_solve_us\n' "$hdr"
 
 for sha in "$@"; do
   subj=$(git -C "$HERE" log -1 --format=%s "$sha" | cut -c1-40)
@@ -48,15 +48,11 @@ for sha in "$@"; do
   fi
 
   # C++ side: built from the worktree, so it measures that commit's headers.
-  cpp_solve=NA; cpp_ift=NA; cpp_fd=NA
+  cpp_solve=NA
   if make -C "$wt/tests/cpp" bench_solve >/dev/null 2>&1; then
     cpp_solve=$("$wt/tests/cpp/bench_solve" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+ us/solve' | grep -oE '^[0-9.]+')
   fi
-  if make -C "$wt/tests/cpp" bench_gradient >/dev/null 2>&1; then
-    line=$("$wt/tests/cpp/bench_gradient" 2>/dev/null | grep -E '^vcmax_25' | head -1)
-    cpp_fd=$(awk '{print $2}' <<<"$line"); cpp_ift=$(awk '{print $3}' <<<"$line")
-  fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(git -C "$HERE" rev-parse --short "$sha")" "$subj" "$rrow" "${cpp_solve:-NA}" "${cpp_ift:-NA}" "${cpp_fd:-NA}"
+  printf '%s\t%s\t%s\t%s\n' "$(git -C "$HERE" rev-parse --short "$sha")" "$subj" "$rrow" "${cpp_solve:-NA}"
   git -C "$HERE" worktree remove --force "$wt" 2>/dev/null
 done

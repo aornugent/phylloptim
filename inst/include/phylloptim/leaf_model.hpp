@@ -3,7 +3,6 @@
 #define PHYLLOPTIM_LEAF_MODEL_HPP_
 
 #include <phylloptim/constants.hpp>
-#include <phylloptim/inputs.hpp>
 #include <phylloptim/util.hpp>
 #include <phylloptim/uniroot.hpp>
 #include <phylloptim/optimize.hpp>
@@ -26,6 +25,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -42,6 +42,48 @@ namespace phylloptim {
 using tangent = odelia::ode::tangent_scalar<double>;
 using odelia::ode::derivative_along;
 using odelia::ode::seed_direction;
+
+// The fourteen traits, in the order `set_traits` places them and `leaf_traits()`
+// names them.
+//
+// ⚠️ R INDEXES THESE POSITIONS, so a reordering silently sets the wrong trait.
+inline constexpr std::array<std::string_view, 14> trait_table{{
+    "vcmax_25", "stem_c", "stem_b", "psi_crit", "root_c", "root_b",
+    "root_psi_crit", "beta2", "jmax_25", "a", "curv_fact_elec_trans",
+    "curv_fact_colim", "cost_scale_TF24", "R_d_25"}};
+
+inline constexpr int n_traits = static_cast<int>(trait_table.size());
+
+// A trait's index, found in the list that names it. Every constant below is this,
+// so an index and the name it stands for cannot be written down in two places --
+// and a name the list does not hold is not a constant expression, so a
+// misspelling is a compile error at the constant rather than a -1 nobody checks.
+inline constexpr int trait_of(std::string_view name) {
+  for (std::size_t i = 0; i < trait_table.size(); ++i) {
+    if (trait_table[i] == name) {
+      return static_cast<int>(i);
+    }
+  }
+  util::stop("trait_of: `" + std::string(name) + "` is not a trait");
+  return -1;
+}
+
+// Every index by name, so nothing indexes `theta` with a bare integer.
+inline constexpr int trait_vcmax_25 = trait_of("vcmax_25");
+inline constexpr int trait_stem_c = trait_of("stem_c");
+inline constexpr int trait_stem_b = trait_of("stem_b");
+inline constexpr int trait_psi_crit = trait_of("psi_crit");
+inline constexpr int trait_root_c = trait_of("root_c");
+inline constexpr int trait_root_b = trait_of("root_b");
+inline constexpr int trait_root_psi_crit = trait_of("root_psi_crit");
+inline constexpr int trait_beta2 = trait_of("beta2");
+inline constexpr int trait_jmax_25 = trait_of("jmax_25");
+inline constexpr int trait_a = trait_of("a");
+inline constexpr int trait_curv_fact_elec_trans =
+    trait_of("curv_fact_elec_trans");
+inline constexpr int trait_curv_fact_colim = trait_of("curv_fact_colim");
+inline constexpr int trait_cost_scale_TF24 = trait_of("cost_scale_TF24");
+inline constexpr int trait_R_d_25 = trait_of("R_d_25");
 
 // The parameters profit answers for, at one scalar. WHERE the leaf is operating
 // is not among them: the collar, the stem potential and the intercellular CO2
@@ -756,39 +798,39 @@ public:
   // resets both caches and requires set_physiology() before the next solve, exactly
   // as a fresh Leaf would. That last part is not conservatism: the derived
   // photosynthetic parameters really are unknown until the drivers are re-supplied.
-  // The traits, in the order gradient::par_table numbers them. One argument, so
+  // The traits, in the order trait_table names them. One argument, so
   // that order is not also spelled by fourteen parameter positions here and
   // fourteen argument positions at every caller.
   void set_traits(const double* theta);
   void set_traits(const std::vector<double>& theta) {
-    odelia::util::check_length(theta.size(), std::size_t(gradient::n_traits));
+    odelia::util::check_length(theta.size(), std::size_t(n_traits));
     set_traits(theta.data());
   }
 
   // The fourteen as separate values, for a caller that holds them that way: the R
   // binding and the tests. Each is PLACED BY THE NAME OF ITS INDEX, so this is the
-  // one spelling of the order that a reader can check against par_table without
+  // one spelling of the order that a reader can check against trait_table without
   // counting positions -- and the only one left.
   void set_traits(double vcmax_25, double stem_c, double stem_b, double psi_crit,
                   double root_c, double root_b, double root_psi_crit,
                   double beta2, double jmax_25, double a,
                   double curv_fact_elec_trans, double curv_fact_colim,
                   double cost_scale_TF24, double R_d_25) {
-    double theta[gradient::n_traits];
-    theta[gradient::par_vcmax_25] = vcmax_25;
-    theta[gradient::par_stem_c] = stem_c;
-    theta[gradient::par_stem_b] = stem_b;
-    theta[gradient::par_psi_crit] = psi_crit;
-    theta[gradient::par_root_c] = root_c;
-    theta[gradient::par_root_b] = root_b;
-    theta[gradient::par_root_psi_crit] = root_psi_crit;
-    theta[gradient::par_beta2] = beta2;
-    theta[gradient::par_jmax_25] = jmax_25;
-    theta[gradient::par_a] = a;
-    theta[gradient::par_curv_fact_elec_trans] = curv_fact_elec_trans;
-    theta[gradient::par_curv_fact_colim] = curv_fact_colim;
-    theta[gradient::par_cost_scale_TF24] = cost_scale_TF24;
-    theta[gradient::par_R_d_25] = R_d_25;
+    double theta[n_traits];
+    theta[trait_vcmax_25] = vcmax_25;
+    theta[trait_stem_c] = stem_c;
+    theta[trait_stem_b] = stem_b;
+    theta[trait_psi_crit] = psi_crit;
+    theta[trait_root_c] = root_c;
+    theta[trait_root_b] = root_b;
+    theta[trait_root_psi_crit] = root_psi_crit;
+    theta[trait_beta2] = beta2;
+    theta[trait_jmax_25] = jmax_25;
+    theta[trait_a] = a;
+    theta[trait_curv_fact_elec_trans] = curv_fact_elec_trans;
+    theta[trait_curv_fact_colim] = curv_fact_colim;
+    theta[trait_cost_scale_TF24] = cost_scale_TF24;
+    theta[trait_R_d_25] = R_d_25;
     set_traits(theta);
   }
 
@@ -2378,20 +2420,20 @@ inline void Leaf::check_psi_magnitudes(double psi_crit, double stem_b,
 inline void Leaf::set_traits(const double* theta) {
   // Each trait taken by the name of its index, so a member and the slot it is
   // read from are written down beside each other.
-  const double vcmax_25_ = theta[gradient::par_vcmax_25];
-  const double stem_c_ = theta[gradient::par_stem_c];
-  const double stem_b_ = theta[gradient::par_stem_b];
-  const double psi_crit_ = theta[gradient::par_psi_crit];
-  const double root_c_ = theta[gradient::par_root_c];
-  const double root_b_ = theta[gradient::par_root_b];
-  const double root_psi_crit_ = theta[gradient::par_root_psi_crit];
-  const double beta2_ = theta[gradient::par_beta2];
-  const double jmax_25_ = theta[gradient::par_jmax_25];
-  const double a_ = theta[gradient::par_a];
-  const double curv_fact_elec_trans_ = theta[gradient::par_curv_fact_elec_trans];
-  const double curv_fact_colim_ = theta[gradient::par_curv_fact_colim];
-  const double cost_scale_TF24_ = theta[gradient::par_cost_scale_TF24];
-  const double R_d_25_ = theta[gradient::par_R_d_25];
+  const double vcmax_25_ = theta[trait_vcmax_25];
+  const double stem_c_ = theta[trait_stem_c];
+  const double stem_b_ = theta[trait_stem_b];
+  const double psi_crit_ = theta[trait_psi_crit];
+  const double root_c_ = theta[trait_root_c];
+  const double root_b_ = theta[trait_root_b];
+  const double root_psi_crit_ = theta[trait_root_psi_crit];
+  const double beta2_ = theta[trait_beta2];
+  const double jmax_25_ = theta[trait_jmax_25];
+  const double a_ = theta[trait_a];
+  const double curv_fact_elec_trans_ = theta[trait_curv_fact_elec_trans];
+  const double curv_fact_colim_ = theta[trait_curv_fact_colim];
+  const double cost_scale_TF24_ = theta[trait_cost_scale_TF24];
+  const double R_d_25_ = theta[trait_R_d_25];
 
   check_psi_magnitudes(psi_crit_, stem_b_, root_b_, root_psi_crit_);
 

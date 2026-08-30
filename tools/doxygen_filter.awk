@@ -4,10 +4,11 @@
 # WHY THIS EXISTS. Doxygen only treats `///`, `//!`, `/** */` and `/*! */` as
 # documentation; an ordinary `//` comment is invisible to it. Every comment in
 # this package is an ordinary `//` comment, and they are the substantive part --
-# the FMA-contraction note in `hydraulic_cost_Sperry`, the four "do not get this
-# wrong" warnings in closed_form.hpp, the two-vulnerability-curves hazard at the
-# `stem_b`/`stem_c` declarations. Rendering the API without them would render the
-# half a reader can already get from the signatures.
+# the FMA-contraction note in `hydraulic_cost_Sperry`, the "do not get this wrong"
+# warning on `dprofit_droot_collar_psi`'s `feasible` flag, the
+# two-vulnerability-curves hazard at the `stem_b`/`stem_c` declarations. Rendering
+# the API without them would render the half a reader can already get from the
+# signatures.
 #
 # The alternative -- rewriting `//` to `///` across ten headers -- is a large
 # diff through exactly the files that feature/api-cleanup (PR #15) rewrites, for

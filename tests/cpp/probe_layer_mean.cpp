@@ -46,9 +46,9 @@ const double kBase[13] = {96.0, 2.680147, 3.898245, 5.870283, 2.680147, 3.898245
 const double kTheta = 0.000157, kKs = 1.0, kH = 5.0, kAreaLeaf = 0.05;
 
 void set_up(pl::Leaf& l) {
-  double theta[pl::gradient::n_traits];
+  double theta[pl::n_traits];
   std::copy(kBase, kBase + 13, theta);
-  theta[pl::gradient::par_R_d_25] = 1.44;
+  theta[pl::trait_R_d_25] = 1.44;
   l.set_traits(theta);
   std::vector<double> root{1.0 / kAreaLeaf}, psi_soil{2.0}, depth{1.0};
   l.set_physiology(fixture::root_network(root, depth), 900.0, psi_soil, depth,

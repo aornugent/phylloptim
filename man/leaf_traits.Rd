@@ -78,10 +78,10 @@ named accordingly, because they were once an unmarked `b`/`c` pair alongside
 root-ARCHITECTURE model, which the leaf no longer runs -- it takes the
 resistances. They are arguments to [root_network_from_carbon()] now.
 
-The cost is real and worth stating: [leaf_gradient()] can no longer
-differentiate with respect to either. Perturbing them is cheap, because
-[root_network_from_carbon()] is homogeneous of degree 1 in each, but the
-derivative of a solved output still needs two solves either side.
+The cost is real and worth stating: a derivative with respect to either is a
+finite difference over two solves. Perturbing them is cheap, because
+[root_network_from_carbon()] is homogeneous of degree 1 in each, but the two
+solves are not.
 }
 
 \examples{

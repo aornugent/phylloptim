@@ -8,10 +8,6 @@ Read alongside:
 
 - **[README.md](../README.md)** — what it is and how to use it
 - **[PLAN.md](../PLAN.md)** — status table, then the reasoning behind every open issue
-- **[`vignettes/fitting.Rmd`](../vignettes/fitting.Rmd)** — ⚠️ read *"Fitting a
-  different collection of parameters"* before answering anything about `pars`:
-  what a different collection costs, which parameters return exactly zero and
-  why, which are unreachable, and what a new study has to write itself
 - **[COMPARISON.md](../COMPARISON.md)** — how this differs from `plantecophys`, `tealeaves`, `bigleaf`
 - **[issues](https://github.com/traitecoevo/phylloptim/issues)** — the work queue; PLAN.md is the *why* behind each
 
@@ -35,16 +31,8 @@ inst/include/phylloptim/
                                layer_thickness() is the dz definition both sides share
   single_potential.hpp         SinglePotential: the other supply path — one ψ_soil
                                and a constant series resistance
-  gradient.hpp                 the trait gradient, composed here and batched over
-                               observations (#4 stage 2). A SECOND implementation
-                               of R/gradient.R, required to agree with it
-                               BIT-FOR-BIT -- so no reassociation, no fused
-                               multiply-add (see `rounded()`), and every
-                               difference names its halves first because C++ does
-                               not sequence `f(a) - f(b)` and R does
   vulnerability.hpp            the Weibull cumulative-integral builder, shared by both
   constants.hpp                physical constants as inline constexpr
-  closed_form.hpp              fast approximate solver, default off, not wired in
   quadrature.hpp               adaptive Simpson (replaced plant's compiled QAG)
   util.hpp                     R-free stop()/sentinels
   uniroot.hpp, optimize.hpp    1-D root finders and optimisers
@@ -57,17 +45,7 @@ inst/RcppR6_classes.yml        the R bindings' source of truth. Edit this, then
 src/, R/                       the R layer. Depends downward on inst/include/;
                                nothing there depends back on it
 R/leaf-model.R                 the friendly surface: leaf_traits/leaf_control,
-                               leaf_model/set_drivers, leaf_solve
-R/gradient.R                   set_traits() and leaf_gradient() -- trait
-                               gradients by the implicit function theorem, with
-                               the active-set guard. Read its header before
-                               believing anything about its speed. ⚠️ THE
-                               REFERENCE IMPLEMENTATION: gradient.hpp is required
-                               to reproduce it bit-for-bit, so its arithmetic
-                               order is load-bearing
-R/gradient-batch.R             leaf_batch() and leaf_gradient_batch() -- the same
-                               gradient over N observations in ONE crossing.
-                               22x/observation; PLAN 11g
+                               leaf_model/set_drivers/set_traits, leaf_solve
 tests/cpp/                     plain-C++ suite, no R, no framework
 tests/cpp/root_network.hpp     the suite's root-architecture fixture: the two
                                ex-Leaf-default beta_R_* constants, in ONE place
@@ -75,23 +53,10 @@ tests/cpp/root_network.hpp     the suite's root-architecture fixture: the two
 tests/cpp/golden/              bit-exact regression baseline, 576 operating points
                                -- one 288-point state grid at 25 and 40 C
 tests/cpp/bench_solve.cpp      timing harness for the collar solve (hazard 5)
-tests/cpp/bench_gradient.cpp   timing harness for a TRAIT GRADIENT: the IFT
-                               composite against differencing the solve, with
-                               no R in the way. PLAN 11e
+tests/cpp/leaf_inputs.hpp      the suite's driving fixture: the ten values
+                               set_physiology takes, and the seeded LeafInputs an
+                               implicit node is asked for
 tests/testthat/                the R layer's tie-back to the golden points
-tests/testthat/gradient_golden.tsv
-                               recorded trait gradients, five rows, hex floats.
-                               The guard the C++-versus-R equality test cannot
-                               be: a change applied to BOTH passes that one.
-                               Regenerate with tools/gradient_golden.R, on
-                               macOS/arm64, and only deliberately. ⚠️ Bit-exact
-                               on that platform only, like tests/cpp/golden/ --
-                               these are derivatives of argmax-evaluated outputs,
-                               so they inherit its sqrt-amplified class and
-                               disagree cross-platform by up to 1.3e-3 -- ten
-                               times the solved outputs, because a finite
-                               difference divides the solver floor by the step
-                               and `R_d_25`'s step is the smallest here
 tests/validate/                R scripts comparing against plant (needs R)
 CMakeLists.txt                 the no-R build: C++ and Python consumers, and the
                                thing that makes "does not need R" runnable
@@ -239,9 +204,9 @@ Publishing is off until someone sets the repo variable `PUBLISH_DOCS=true`.
 
 ## Cost: the one thing the golden file cannot see
 
-`tests/cpp/bench_solve.cpp` and `bench_gradient.cpp` cover the C++ side.
-**`tools/bench_user_cost.R` covers the R side** — one solve, N solves, and a
-gradient — and `tools/bench_history.sh` runs all of them against a list of commits.
+`tests/cpp/bench_solve.cpp` covers the C++ side.
+**`tools/bench_user_cost.R` covers the R side** — one solve and N solves — and
+`tools/bench_history.sh` runs both against a list of commits.
 `tests/testthat/test-cost.R` is the guard, and `tools/cost-baseline.tsv` the recorded
 table. PLAN has the numbers.
 
@@ -260,17 +225,9 @@ Three rules, each of which was learned by getting it wrong:
    default through `root_network_from_carbon()`, the single one through
    `RootNetwork__ctor`. Counting the wrong one returns 0 forever and the test passes
    while measuring nothing. That mistake is in this file's history.
-3. ⚠️ **A count beats a time whenever one is available, and for the batch gradient
-   one always is.** `leaf_gradient_batch()`'s whole claim is that it crosses the
-   boundary ONCE per call rather than 112 times per observation, and that is
-   countable: `test-cost.R` asserts one `gradient_batch_run` for any N, and **zero**
-   calls to any of the nine per-perturbation primitives the R route reaches through.
-   A timing assertion would not say this — it drifts with the machine, and it would
-   still pass if the count went back to being per-row on a fast day.
-4. ⚠️ **Measure the entry point the USER calls.** #66 nearly doubled
-   `leaf_gradient()` (286× → 539× a `.Call`) while `set_drivers()` and `leaf_solve()`
-   were flat. Both of those were measured and pronounced "at parity"; the gradient
-   path was not in any harness, and a calibration uses the gradient path.
+3. ⚠️ **Measure the entry point the USER calls.** A claim of parity on
+   `set_drivers()` and `leaf_solve()` says nothing about a path that is in no
+   harness, and #66 nearly doubled one that was not.
 
 ⚠️ **`tools/bench_history.sh` refuses commits before #47**, and the reason is worth
 knowing before you write any harness that installs an old commit: they declare
@@ -723,17 +680,16 @@ the per-cause split and the tolerance bands go in the first PR comment — see
 
    - **From R**, constructing a `Leaf` costs **204 µs** — 33 solves — of which only
      ~32 µs is the two splines; the rest is R-side object construction over ~60
-     active bindings. That, not the choice of gradient formula, is what dominates a
-     finite-difference gradient in R. `set_traits` exists to avoid it.
+     active bindings. That is what dominates any R loop over traits, and
+     `set_traits` exists to avoid it.
    - **In C++**, `set_traits` costs **0.02 µs** normally and **21.8 µs** when it
      rebuilds a vulnerability curve — **3.5× a whole solve**. So a gradient loop
      over `stem_b`, `stem_c`, `root_b` or `root_c` is dominated by spline
      reconstruction, and no amount of cleverness in the derivative touches it.
 
-   `make -C tests/cpp bench_gradient` measures both arms. ⚠️ **Do not carry the R
-   conclusion into C++**: PLAN 11e retracted a projected speedup on an R
-   measurement and then had to un-retract half of it, because with the boundary
-   removed the same composite wins 4.4× on the eleven traits that touch no spline.
+   ⚠️ **Do not carry the R conclusion into C++.** A projected speedup taken on an
+   R measurement was retracted and then half un-retracted: with the boundary out of
+   the way the same composite wins 4.4× on the eleven traits that touch no spline.
 
 
 ## Validating against plant

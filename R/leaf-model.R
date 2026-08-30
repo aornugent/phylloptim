@@ -99,10 +99,10 @@
 ##' root-ARCHITECTURE model, which the leaf no longer runs -- it takes the
 ##' resistances. They are arguments to [root_network_from_carbon()] now.
 ##'
-##' The cost is real and worth stating: [leaf_gradient()] can no longer
-##' differentiate with respect to either. Perturbing them is cheap, because
-##' [root_network_from_carbon()] is homogeneous of degree 1 in each, but the
-##' derivative of a solved output still needs two solves either side.
+##' The cost is real and worth stating: a derivative with respect to either is a
+##' finite difference over two solves. Perturbing them is cheap, because
+##' [root_network_from_carbon()] is homogeneous of degree 1 in each, but the two
+##' solves are not.
 ##'
 ##' @return A `leaf_traits` object; a named list.
 ##' @seealso [leaf_control()], [leaf_model()], [leaf_solve()]
@@ -137,6 +137,55 @@ leaf_traits <- function(vcmax_25 = 96,
     stop("leaf_traits(): R_d_25 must be non-negative", call. = FALSE)
   }
   structure(out, class = c("leaf_traits", "list"))
+}
+
+##' Replace the traits on an existing leaf
+##'
+##' Changes the traits of a `Leaf` in place, leaving [leaf_control()]'s numerical
+##' settings alone. This is the fast path for anything that varies traits --
+##' calibration, sensitivity analysis, a trait response curve -- because
+##' constructing a `Leaf` from R costs about fifty times as much as solving one.
+##'
+##' @section You must set the drivers again afterwards:
+##' This returns the leaf to its just-constructed state, so [set_drivers()] has to
+##' be called before the next solve. That is not caution: `vcmax_`, `jmax_` and
+##' `R_d_` are derived from the traits inside `set_physiology()`, so they are
+##' genuinely unknown until the drivers are re-supplied.
+##'
+##' The reason it is a function rather than fourteen assignable fields is that
+##' `leaf$vcmax_25 <- x` could not be made correct. Three separate pieces of
+##' derived state go stale on a bare trait write: the two pre-integrated
+##' vulnerability splines, the solved operating point, and -- least visibly --
+##' `vcmax_`/`jmax_`/`R_d_`, which `set_physiology()` computes behind a cache keyed
+##' on leaf temperature and O2 alone. That last one means the obvious repair,
+##' "change the trait and then set the drivers again", silently does not work.
+##'
+##' @param x a `Leaf`, from [leaf_model()]
+##' @param traits a [leaf_traits()] object
+##'
+##' @return `x`, invisibly.
+##' @seealso [leaf_model()], [leaf_traits()], [set_drivers()]
+##' @examples
+##' l <- leaf_model()
+##' set_traits(l, leaf_traits(vcmax_25 = 120))
+##' set_drivers(l, psi_soil = 2.0, PPFD = 900)
+##' l$find_root_collar_psi()
+##' operating_point(l)
+##' @export
+set_traits <- function(x, traits) {
+  if (!inherits(x, "Leaf")) {
+    stop("`x` must be a Leaf, from leaf_model()", call. = FALSE)
+  }
+  if (!inherits(traits, "leaf_traits")) {
+    stop("`traits` must come from leaf_traits()", call. = FALSE)
+  }
+  # Positional, in the C++ argument order, for the same reason leaf_model() is:
+  # the ordering is written down once rather than at every call site.
+  x$set_traits(traits$vcmax_25, traits$stem_c, traits$stem_b, traits$psi_crit,
+               traits$root_c, traits$root_b, traits$root_psi_crit, traits$beta2,
+               traits$jmax_25, traits$a, traits$curv_fact_elec_trans,
+               traits$curv_fact_colim, traits$cost_scale_TF24, traits$R_d_25)
+  invisible(x)
 }
 
 ##' Numerical settings for a leaf solve
@@ -217,10 +266,7 @@ leaf_control <- function(GSS_tol_abs = 1e-3,
 ##' Neither function takes a resistance. The soil-to-collar resistance is a
 ##' per-call **driver** on both paths, supplied to [set_drivers()] as
 ##' `root_network` — [root_network_from_carbon()] on the multi-layer path,
-##' [series_resistance()] on this one. It used to be an argument here, so the same
-##' quantity arrived at construction on one path and per call on the other, and
-##' `resistance` was the only differentiable parameter whose setter reset the whole
-##' object.
+##' [series_resistance()] on this one.
 ##'
 ##' ⚠️ **`gravity_head` is the one asymmetry left, and it is deliberate.** The
 ##' multi-layer path derives a per-layer head from the depth profile it is handed
@@ -567,15 +613,11 @@ set_drivers <- function(x,
 
 # Validate and default the drivers, without applying them.
 #
-# WHY THIS IS SPLIT OUT. `leaf_gradient()` re-drives the leaf once per
-# perturbation -- eleven times for a four-parameter gradient -- and all of this
-# validation and defaulting produces the same answer every time bar the one
-# parameter being moved. Resolving once and applying many times is worth ~12% of a
-# gradient (see PLAN), but only if there is ONE definition of the rules: the
-# defaults here are load-bearing (1 m layers, the nominal networks, the
-# single-path placeholder depth) and a second copy in the gradient code would be
-# free to drift from this one silently. So the gradient calls this, not a
-# reimplementation of it.
+# WHY THIS IS SPLIT OUT. A caller that re-drives one leaf many times resolves the
+# rules once and applies them many times, and there is ONE definition of them: the
+# defaults here are load-bearing (1 m layers, the nominal networks, the single-path
+# placeholder depth) and a second copy would be free to drift from this one
+# silently.
 .resolve_drivers <- function(x, psi_soil, PPFD, soil_depth, root_network,
                              leaf_specific_conductance_max, atm_vpd, ca,
                              leaf_temp, atm_o2_kpa, atm_kpa) {

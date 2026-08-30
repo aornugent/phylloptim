@@ -41,7 +41,6 @@
 #include <string>
 #include <vector>
 
-namespace grad = phylloptim::gradient;
 using phylloptim::Leaf;
 using phylloptim::LeafInputs;
 using phylloptim::tangent;
@@ -57,8 +56,8 @@ int crossed = 0;
 const double kRd25 = 1.44;
 const double kTheta[] = {96.0,     2.680147, 3.898245, 5.870283, 2.680147,
                          3.898245, 5.870283, 1.5,      157.44,   0.30,
-                         0.7,      0.99,     7.5,      kRd25,
-                         1.0 * 0.000157 / 5.0, 1e3};
+                         0.7,      0.99,     7.5,      kRd25};
+const double kKmax = 1.0 * 0.000157 / 5.0;
 
 // The states the leaf answers in, chosen to reach every branch its solve has.
 struct State {
@@ -95,7 +94,7 @@ const State kStates[] = {
     {"shade",   2.0,    1.0, 2.0, 25.0, 3},
     // The root's own limit, brought in ahead of the stem's so the dry bound has
     // a reason to pick it.
-    {"root-pin", 2.0,  900.0, 2.0, 25.0, 3, grad::par_root_psi_crit, 3.0},
+    {"root-pin", 2.0,  900.0, 2.0, 25.0, 3, phylloptim::trait_root_psi_crit, 3.0},
 };
 
 fixture::Soil soil_of(const State& st) {
@@ -107,14 +106,15 @@ fixture::Soil soil_of(const State& st) {
   return soil;
 }
 
-grad::Drivers drivers_of(const State& st, const fixture::Soil& soil) {
-  grad::Drivers d;
+fixture::Physiology drivers_of(const State& st, const fixture::Soil& soil) {
+  fixture::Physiology d;
   for (int i = 0; i < st.layers; ++i) {
     d.psi_soil.push_back(st.psi_soil + 0.25 * i);
   }
   d.soil_depth = soil.depth;
   d.root_network = fixture::root_network(soil.carbon, soil.depth);
   d.PPFD = st.ppfd;
+  d.kmax = kKmax;
   d.atm_vpd = st.vpd;
   d.ca = 40.0;
   d.leaf_temp = st.leaf_temp;
@@ -126,21 +126,20 @@ grad::Drivers drivers_of(const State& st, const fixture::Soil& soil) {
 // Which entry of theta a named trait is, or -1 where the input is not a trait.
 int trait_slot(Input which) {
   switch (which) {
-    case Input::vcmax_25: return grad::par_vcmax_25;
-    case Input::jmax_25: return grad::par_jmax_25;
-    case Input::quantum_yield: return grad::par_a;
-    case Input::curv_elec: return grad::par_curv_fact_elec_trans;
-    case Input::curv_colim: return grad::par_curv_fact_colim;
-    case Input::respiration: return grad::par_R_d_25;
-    case Input::kmax: return grad::par_kmax;
-    case Input::stem_b: return grad::par_stem_b;
-    case Input::stem_c: return grad::par_stem_c;
-    case Input::beta2: return grad::par_beta2;
-    case Input::cost_scale: return grad::par_cost_scale_TF24;
-    case Input::psi_crit: return grad::par_psi_crit;
-    case Input::root_b: return grad::par_root_b;
-    case Input::root_c: return grad::par_root_c;
-    case Input::root_psi_crit: return grad::par_root_psi_crit;
+    case Input::vcmax_25: return phylloptim::trait_vcmax_25;
+    case Input::jmax_25: return phylloptim::trait_jmax_25;
+    case Input::quantum_yield: return phylloptim::trait_a;
+    case Input::curv_elec: return phylloptim::trait_curv_fact_elec_trans;
+    case Input::curv_colim: return phylloptim::trait_curv_fact_colim;
+    case Input::respiration: return phylloptim::trait_R_d_25;
+    case Input::stem_b: return phylloptim::trait_stem_b;
+    case Input::stem_c: return phylloptim::trait_stem_c;
+    case Input::beta2: return phylloptim::trait_beta2;
+    case Input::cost_scale: return phylloptim::trait_cost_scale_TF24;
+    case Input::psi_crit: return phylloptim::trait_psi_crit;
+    case Input::root_b: return phylloptim::trait_root_b;
+    case Input::root_c: return phylloptim::trait_root_c;
+    case Input::root_psi_crit: return phylloptim::trait_root_psi_crit;
     default: return -1;
   }
 }
@@ -152,6 +151,7 @@ double base_of(const State& st, const fixture::Soil& soil, Input which,
   if (slot >= 0) return kTheta[slot];
   switch (which) {
     case Input::ppfd: return st.ppfd;
+    case Input::kmax: return kKmax;
     case Input::psi_soil: return st.psi_soil + 0.25 * layer;
     case Input::root_carbon: return soil.carbon[std::size_t(layer)];
     default: return 0.0;
@@ -164,8 +164,8 @@ double base_of(const State& st, const fixture::Soil& soil, Input which,
 bool held_outputs(const State& st, Input which, int layer, double moved,
                   double collar, std::vector<double>& out) {
   fixture::Soil soil = soil_of(st);
-  double theta[grad::n_pars];
-  for (int i = 0; i < grad::n_pars; ++i) theta[i] = kTheta[i];
+  double theta[phylloptim::n_traits];
+  for (int i = 0; i < phylloptim::n_traits; ++i) theta[i] = kTheta[i];
   if (st.slot >= 0) theta[st.slot] = st.value;
   const int slot = trait_slot(which);
   if (slot >= 0) {
@@ -174,15 +174,15 @@ bool held_outputs(const State& st, Input which, int layer, double moved,
   if (which == Input::root_carbon) {
     soil.carbon[std::size_t(layer)] = moved;
   }
-  grad::Drivers d = drivers_of(st, soil);
+  fixture::Physiology d = drivers_of(st, soil);
   if (which == Input::ppfd) d.PPFD = moved;
+  if (which == Input::kmax) d.kmax = moved;
   if (which == Input::psi_soil) d.psi_soil[std::size_t(layer)] = moved;
 
   Leaf l;
-  const grad::Settings s;
   phylloptim::Leaf::FixedCollarEval at;
   try {
-    grad::apply(l, theta, d, false, -1, s.fast_stem_curve);
+    d.drive(l, theta);
     at = l.profit_at_fixed_collar(collar);
   } catch (const std::exception&) {
     return false;
@@ -218,13 +218,12 @@ int main() {
 
   for (const State& st : kStates) {
     const fixture::Soil soil = soil_of(st);
-    const grad::Drivers d = drivers_of(st, soil);
-    double theta0[grad::n_pars];
-    for (int i = 0; i < grad::n_pars; ++i) theta0[i] = kTheta[i];
+    const fixture::Physiology d = drivers_of(st, soil);
+    double theta0[phylloptim::n_traits];
+    for (int i = 0; i < phylloptim::n_traits; ++i) theta0[i] = kTheta[i];
     if (st.slot >= 0) theta0[st.slot] = st.value;
     Leaf l;
-    const grad::Settings s;
-    grad::apply(l, theta0, d, false, -1, s.fast_stem_curve);
+    d.drive(l, theta0);
     try {
       l.find_root_collar_psi();
     } catch (const std::exception& e) {
@@ -361,12 +360,11 @@ int main() {
   int bound_rows = 0;
   for (const State& st : kStates) {
     const fixture::Soil soil = soil_of(st);
-    double theta0[grad::n_pars];
-    for (int i = 0; i < grad::n_pars; ++i) theta0[i] = kTheta[i];
+    double theta0[phylloptim::n_traits];
+    for (int i = 0; i < phylloptim::n_traits; ++i) theta0[i] = kTheta[i];
     if (st.slot >= 0) theta0[st.slot] = st.value;
     Leaf l;
-    const grad::Settings s;
-    grad::apply(l, theta0, drivers_of(st, soil), false, -1, s.fast_stem_curve);
+    drivers_of(st, soil).drive(l, theta0);
     try { l.find_root_collar_psi(); } catch (const std::exception&) { continue; }
 
     const Leaf::WhichBound arms[] = {Leaf::WhichBound::Wet,
@@ -377,18 +375,19 @@ int main() {
       auto bound_of = [&](Input which, int layer, double moved,
                           double& into) -> bool {
         fixture::Soil sl = soil_of(st);
-        double th[grad::n_pars];
-        for (int i = 0; i < grad::n_pars; ++i) th[i] = kTheta[i];
+        double th[phylloptim::n_traits];
+        for (int i = 0; i < phylloptim::n_traits; ++i) th[i] = kTheta[i];
         if (st.slot >= 0) th[st.slot] = st.value;
         const int slot = trait_slot(which);
         if (slot >= 0) th[slot] = moved;
         if (which == Input::root_carbon) sl.carbon[std::size_t(layer)] = moved;
-        grad::Drivers dd = drivers_of(st, sl);
+        fixture::Physiology dd = drivers_of(st, sl);
         if (which == Input::ppfd) dd.PPFD = moved;
+        if (which == Input::kmax) dd.kmax = moved;
         if (which == Input::psi_soil) dd.psi_soil[std::size_t(layer)] = moved;
         Leaf m;
         try {
-          grad::apply(m, th, dd, false, -1, s.fast_stem_curve);
+          dd.drive(m, th);
           if (arm == Leaf::WhichBound::DryRootPsiCrit) {
             into = m.supply_psi_crit();
             return true;

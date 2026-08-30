@@ -40,10 +40,7 @@ network compares two things at once.
 Neither function takes a resistance. The soil-to-collar resistance is a
 per-call **driver** on both paths, supplied to [set_drivers()] as
 `root_network` — [root_network_from_carbon()] on the multi-layer path,
-[series_resistance()] on this one. It used to be an argument here, so the same
-quantity arrived at construction on one path and per call on the other, and
-`resistance` was the only differentiable parameter whose setter reset the whole
-object.
+[series_resistance()] on this one.
 
 ⚠️ **`gravity_head` is the one asymmetry left, and it is deliberate.** The
 multi-layer path derives a per-layer head from the depth profile it is handed
