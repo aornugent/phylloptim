@@ -600,10 +600,17 @@ public:
   // cheap over a LONG interval, where a fixed rule is not accurate -- the curve has a
   // weak singularity at the surface, and across the whole domain seven nodes reach
   // only 8.3e-07. The sum is exact over a SHORT one, where the difference cancels.
-  // Measured in probe_layer_mean, both are better than 1e-11 anywhere between spans
-  // of 1e-3 and 1e-1, so this sits on a wide plateau; the three constants it replaced
-  // each sat at the worst point of the pair they switched between.
-  static constexpr double layer_mean_direct_below = 1e-3;
+  // ⚠️ 5e-3 IS THE OLD MIXED THRESHOLD, AND THAT IS NOT A COINCIDENCE. The three
+  // constants it replaces were 1e-5, 5e-4 and 5e-3, one per quantity, because a
+  // divided difference degrades a decade earlier at each order. A single threshold
+  // has to be the LOOSEST of them or the quantity that needed the loosest regresses:
+  // at 1e-3 the mixed second derivative reads 8.53e-06 against the old scheme's
+  // 4.97e-07, seventeen times worse, while the other three improve. At 5e-3 nothing
+  // regresses -- the mixed term matches the old scheme exactly, and the mean, the
+  // bound derivative and the pure second improve by 33x, 6300x and 176x. Measured in
+  // probe_layer_mean; the century forward run is 32.94 s against a 32.4-32.8 s
+  // baseline, so the accuracy is free.
+  static constexpr double layer_mean_direct_below = 5e-3;
 
   // True where the average is formed directly. Both bounds above the surface,
   // because below it the integrand is the constant 1 and the curve has a corner
