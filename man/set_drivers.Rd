@@ -102,11 +102,9 @@ body rather than buried in a signature: a nominal 20 kg C m^-2 leaf through
 MPa s (mol H2O)^-1 m^2 leaf series resistance on the single-potential one.
 Both are stand-ins, not recommendations.
 
-`soil_depth` is the one argument that is genuinely multi-layer-only, and
-passing it on the single-potential path is an error rather than ignored: there
-is no depth profile there for anything to read. That is also why
-[leaf_supply_single()] keeps `gravity_head` — see its documentation for the one
-remaining asymmetry between the two paths, and why it is left in place.
+A leaf built with [leaf_supply_single()] carries its own single layer, so
+passing `soil_depth` to it is an error rather than ignored: the depth is
+already named, and two spellings of it could disagree.
 }
 
 \examples{

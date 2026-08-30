@@ -132,8 +132,6 @@ int main(int argc, char **argv) {
   const std::vector<Point> pts = grid();
 
   std::vector<phylloptim::Leaf> leaves(pts.size());
-  for (phylloptim::Leaf &l : leaves) {
-  }
 
   double checksum = 0.0;
   double best = 1e300;

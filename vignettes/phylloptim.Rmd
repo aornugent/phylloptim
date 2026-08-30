@@ -186,9 +186,10 @@ that script return a plausible wrong number instead.
 ## A bare leaf: one soil potential, one resistance
 
 Everything above went through the multi-layer root network, which is what plant
-uses. The other supply path collapses the whole soil-to-collar journey into a
-single resistance — and note that it is driven through **the same `root_network`
-argument**, because both paths take their resistances as a per-call driver:
+uses. At one layer with no vulnerability-weighted horizontal term, that network
+is a single soil-to-collar resistance — and note that it is driven through **the
+same `root_network` argument**, because the resistances are a per-call driver
+either way:
 
 ```{r}
 leaf_solve(psi_soil = 1.5, PPFD = 900,
@@ -198,12 +199,14 @@ leaf_solve(psi_soil = 1.5, PPFD = 900,
   select(psi_soil, psi_stem, collar, A, gc, g1_eff)
 ```
 
-No depth profile, and one number instead of a per-layer network. `soil_depth` is
-the only argument that differs between the two paths, and passing it here is an
-error rather than ignored: there is no depth profile for anything to read. The
-resistance is **per unit leaf area**, because nothing in this model is allowed to
-scale with plant size. Raising it makes water harder to get and the leaf closes
-down:
+No depth profile, and one number instead of a per-layer network. The one layer's
+thickness is `leaf_supply_single()`'s only argument, and it is also its
+gravitational head — a layer's head is `gravity_head * z_soil_mid` — so the
+default of zero lifts water nowhere, which is what a bare leaf wants. It is named
+there and nowhere else: passing `soil_depth` to the solve as well is an error
+rather than ignored, because two spellings of it could disagree. The resistance is
+**per unit leaf area**, because nothing in this model is allowed to scale with
+plant size. Raising it makes water harder to get and the leaf closes down:
 
 ```{r, fig.height = 3.4}
 tibble(resistance = 10^seq(2.5, 4.5, length.out = 25)) |>
@@ -223,18 +226,6 @@ This path is also what makes comparison against other optimality models
 meaningful: Medlyn, Prentice least-cost and Cowan-Farquhar are all formulated
 against a *single* soil potential, so comparing them against a multi-layer root
 network would compare two things at once.
-
-The choice is made when the leaf is built, not afterwards. There is no
-`leaf$supply_kind <- "single"`:
-
-```{r, error = TRUE}
-l <- leaf_model()
-l$supply_kind <- "single"
-```
-
-Flipping the tag alone would leave the other path's state configured and silently
-ignored — so instead both `leaf_supply_*()` reconfigure the object completely,
-and the object can never be in a state where the tag and the supply disagree.
 
 ## Multiple soil layers
 
@@ -318,9 +309,6 @@ solving `dprofit = 0` keeps.
   same solve is available from a C++ program or a Python extension. See the
   README.
 - `COMPARISON.md` sets this against `plantecophys`, `tealeaves` and `bigleaf`.
-- Both supply paths now take resistances, through the same `root_network`
-  argument, so a caller with measured or fitted resistances never has to go
-  through a root carbon model to reach a leaf. The one asymmetry left is
-  `gravity_head`, which `leaf_supply_single()` still takes as configuration
-  because this path has no depth profile to derive it from — see its
-  documentation.
+- The leaf takes its resistances through the `root_network` argument on either
+  path, so a caller with measured or fitted resistances never has to go through a
+  root carbon model to reach a leaf.

@@ -8,7 +8,6 @@
 #include <phylloptim/optimize.hpp>
 #include <phylloptim/quadrature.hpp>
 #include <phylloptim/roots.hpp>
-#include <phylloptim/single_potential.hpp>
 #include <phylloptim/vulnerability.hpp>
 
 #include <odelia/implicit_node.hpp>
@@ -249,140 +248,20 @@ public:
   // now spell them `roots_.psi_soil_` etc. (see PLAN 7b-iii stage 4).
   MultiLayerRoots roots_;
 
-  // The alternative supply path (issue #2 stage 2/3). Both alternatives are held
-  // as members and selected by `supply_kind_` -- measured free, where
-  // std::variant costs +1.0%; see PLAN 7b-iii stage 2 for the numbers and for why
-  // a predictable branch in front of an already-out-of-line call disappears into
-  // it. SinglePotential is four doubles plus a one-element vector, so carrying it
-  // unused costs tens of bytes per Leaf.
-  SinglePotential single_;
-  enum class SupplyKind { MultiLayer, SinglePotential };
-  // Default MultiLayer: every existing caller, plant included, keeps today's
-  // behaviour bit-for-bit without knowing this exists.
-  SupplyKind supply_kind_ = SupplyKind::MultiLayer;
-
-  // --- choosing the supply path (issue #32) ----------------------------------
-  //
-  // TWO ENTRY POINTS, NOT A SETTABLE TAG, and the difference matters. Assigning
-  // supply_kind_ on its own leaves the other path's state configured and
-  // silently ignored; assign it back and that state is now stale rather than
-  // absent. PLAN 7b-iii flagged this as the footgun to design around before
-  // exposing any of it to R, where a settable field is the obvious thing to
-  // reach for. Each of these leaves the object in a state where the tag and the
-  // supply agree, and there is no intermediate state in which they do not.
-  //
-  // Both CLEAR the solved state, so set_physiology() must be called again
-  // afterwards. That is not an inconvenience being papered over -- the two paths
-  // read different inputs, so any state carried across would be answering a
-  // question about the other model.
-  void set_supply_multilayer() {
-    supply_kind_ = SupplyKind::MultiLayer;
-    single_.clear();
-    setup_clean_leaf();
-  }
-
-  // ⚠️ THIS TAKES NO RESISTANCE, and that is the point of the change that
-  // introduced this comment. The soil-to-collar resistance is a per-call DRIVER on
-  // both supply paths now: it arrives through `set_physiology`, out of the same
-  // `RootNetwork` the multi-layer path is given (see
-  // SinglePotential::set_supply_resistances). Before, the multi-layer path took its
-  // resistances per call and this one took its resistance at construction, so the
-  // same quantity arrived at two different times depending on which path was in
-  // force -- and `resistance` was the only differentiable parameter whose setter
-  // reset the whole object, because it had to come back through here.
-  //
-  // `gravity_head` is the head to lift water to the collar in MPa, and IS still
-  // configuration. That is the one asymmetry left, and it is not laziness: the
-  // multi-layer path derives a per-layer head from the depth profile it is handed
-  // (gravity_head * z_soil_mid), and this path has no depth profile to derive one
-  // from. A bare leaf also wants zero rather than a geometric default, which the
-  // multi-layer rule cannot express. A caller who does want the multi-layer rule
-  // for one layer of thickness d passes `gravity_head = <gravity head> * d / 2`.
-  void set_supply_single(double gravity_head = 0.0) {
-    if (!std::isfinite(gravity_head) || gravity_head < 0.0) {
-      util::stop("set_supply_single needs a finite, non-negative gravity_head in "
-                 "MPa; got " + util::to_string(gravity_head));
-    }
-    supply_kind_ = SupplyKind::SinglePotential;
-    setup_clean_leaf();
-    // grav_head_ is configuration and clear() spares it, so this must come after
-    // setup_clean_leaf. resistance_ used to need the same treatment and no longer
-    // does -- it is a driver, clear() resets it, and set_physiology re-supplies it.
-    single_.grav_head_ = gravity_head;
-  }
-
-  // Which path is in force, as a string, because the enum has no R
-  // representation and a bare integer would be a worse one.
-  std::string supply_kind_name() const {
-    return supply_kind_ == SupplyKind::MultiLayer ? "multilayer" : "single";
-  }
-
-  // --- supply dispatch -------------------------------------------------------
-  // The four points where the two paths differ. Everything else in the solve is
-  // supply-agnostic and goes through the vector of signed potentials below,
-  // which both paths provide -- that is what keeps this stage off the three
-  // R-facing signatures that thread it (find_root_psi, find_psi_stem_from_psi_root,
-  // E_from_Soil_to_Root_Collar).
-  //
-  // ⚠️ Those three take the soil state as an argument, and #25 changed what the
-  // argument MEANS (positive suctions, not signed potentials) without changing
-  // any signature. An R caller passing the old `-psi_soil` would get a silently
-  // wrong answer, so each of them validates the vector is non-negative and stops
-  // if not -- see require_suction_vector.
-  double supply_begin_solve() {
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer: return roots_.begin_solve();
-      default:                     return single_.begin_solve();
-    }
-  }
+  double supply_begin_solve() { return roots_.begin_solve(); }
   // The current soil state, as positive suction magnitudes. Threaded through
   // E_column, find_root_psi and find_psi_stem_from_psi_root.
-  const std::vector<double>& supply_psi_soil() const {
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer: return roots_.psi_soil_;
-      default:                     return single_.psi_soil_vec_;
-    }
-  }
-  // Driest collar potential the supply path can be asked about, positive
-  // magnitude. For roots it is the root vulnerability limit; a constant-
-  // conductance path has no such limit, so the stem's psi_crit binds instead.
-  double supply_psi_crit() const {
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer: return roots_.root_psi_crit;
-      default:                     return psi_crit;
-    }
-  }
-  // The single soil potential the psi_soil_[0]-style solvers (optimise_psi_stem_*)
-  // work against, positive magnitude. Those solvers already require exactly one
-  // layer, so this is the same value either way -- it just stops them reaching
-  // into MultiLayerRoots for it.
-  double supply_psi_soil_scalar() const {
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer: return roots_.psi_soil_[0];
-      default:                     return single_.psi_soil_;
-    }
-  }
-  bool supply_is_single_layer() const {
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer: return roots_.psi_soil_.size() == 1;
-      default:                     return true;
-    }
-  }
-  // A layer's root carbon, off the leaf's own network. The single path has none:
-  // it carries a series resistance and no root architecture.
-  double supply_root_carbon(int layer) const {
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer: return roots_.root_carbon(layer);
-      default:                     return util::na_value;
-    }
-  }
+  const std::vector<double>& supply_psi_soil() const { return roots_.psi_soil_; }
+  // Driest collar potential the supply can be asked about, positive magnitude:
+  // the root vulnerability limit.
+  double supply_psi_crit() const { return roots_.root_psi_crit; }
+  // The one soil potential the psi_soil_[0]-style solvers (optimise_psi_stem_*)
+  // work against, positive magnitude. They already require exactly one layer, and
+  // this is what stops them reaching into MultiLayerRoots for it.
+  double supply_psi_soil_scalar() const { return roots_.psi_soil_[0]; }
+  bool supply_is_single_layer() const { return roots_.psi_soil_.size() == 1; }
   int supply_n_layers() const {
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer:
-        return static_cast<int>(roots_.soil_number_of_depths_);
-      default:
-        return single_.n_layers();
-    }
+    return static_cast<int>(roots_.soil_number_of_depths_);
   }
 
   // psi_from_E
@@ -1040,14 +919,7 @@ public:
   // into them by name after crown integration (PLAN 7b-ii trap 1).
   void E_from_Soil_to_Root_Collar(double T_collar, const std::vector<double>& psi_soil) {
     require_suction_vector(psi_soil, "E_from_Soil_to_Root_Collar");
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer:
-        roots_.uptake_at(T_collar, psi_soil, soil_consumption_, E_up_);
-        break;
-      default:
-        single_.uptake_at(T_collar, psi_soil, soil_consumption_, E_up_);
-        break;
-    }
+    roots_.uptake_at(T_collar, psi_soil, soil_consumption_, E_up_);
   }
   void find_root_collar_psi();
   // Shared setup for the root-collar solve: builds the soil-side caches, handles
@@ -1088,48 +960,9 @@ public:
   };
   FixedCollarEval profit_at_fixed_collar(double collar);
 
-  // A feasibility bound's own derivative. Both bounds are roots of residuals the
-  // leaf already evaluates, so the implicit function theorem gives the row
-  // without differentiating the search that found it:
-  //
-  //   dB/du = -(dR/du) / (dR/dx)
-  //
-  // WHICH bound decides the residual, and they are different functions:
-  //   Wet             R0(x) = E_up(x, psi)                    -- no stem terms
-  //   DryRootCrit     R(x)  = E_up(x, psi) - kappa*[G(psi_crit) - G(x)]
-  //   DryRootPsiCrit  the bound IS a registered constant       -- the row is +1
-  //
-  // Both steepnesses are here, and for a while neither was: they reshape their
-  // vulnerability curve rather than scaling it, so they have no homogeneity
-  // identity and their rows were taken by rebuilding the grid and differencing
-  // it. What replaced that is the incomplete gamma's shape series, which comes
-  // out of the same loop as the integral's value.
+  // Which feasibility bound on the collar: the wet end where uptake vanishes,
+  // and the dry end's two limits. bound_at gives the condition behind each.
   enum class WhichBound { Wet, DryRootCrit, DryRootPsiCrit };
-  struct BoundRow {
-    std::vector<double> d_dpsi_soil;      // per layer
-    std::vector<double> d_droot_carbon;   // per layer
-    double d_dkappa = 0.0;
-    double d_dpsi_crit = 0.0;             // the STEM's
-    double d_droot_psi_crit = 0.0;        // the ROOT's, and only the dry arm has it
-    double d_dstem_b = 0.0;
-    // The root curve's two parameters. They enter BOTH bounds by the same route
-    // -- the layer mean-conductivity integral inside total uptake -- because the
-    // stem half of the dry residual does not read either.
-    double d_droot_b = 0.0;
-    double d_droot_c = 0.0;
-    // The stem curve's steepness, and only the dry arm has it: the wet bound is
-    // total uptake, which no stem property enters.
-    double d_dstem_c = 0.0;
-    // dR/dx: the theorem's denominator, and the guard. For the dry arm it is a
-    // sum of two strictly positive terms so it cannot change sign, but it can
-    // approach zero in deep drought -- so a consumer guards on the amplification
-    // it produces rather than on its sign, and gets it back here to do that
-    // without recomputing.
-    double residual_slope = 0.0;
-    double bound = 0.0;                   // where the row was taken
-    bool finite = false;
-  };
-
 
 
   // The same, flattened for the R boundary: [feasible, profit, uptake_1 ...].
@@ -1293,134 +1126,6 @@ public:
   // existed, was tested against a difference, and had no production caller.
   double marginal_collar_slope(const ProfitInputs<double>& in) const;
 
-
-  // What the soil state reaches, and it reaches all of it through total uptake:
-  // at a frozen collar the stem potential is the transport read of
-  // E_up/kappa + G(p), and the concentration, the conductance, the cost and
-  // profit all sit downstream of that. So a soil potential's or a layer carbon's
-  // row is one of these times its own supply derivative, and the two supply
-  // derivatives it needs are closed form.
-  //
-  // The condition takes two of them, because it reads the state through the stem
-  // potential AND through the stem potential's collar response:
-  //
-  //   dR/du = dcondition * dE_up/du  +  dprofit * d2E_up/dp du
-  //
-  // ⚠️ WRITTEN IN (psi_stem, dpsi_stem/dpsi), NOT IN (E_up, dE_up/dpsi). The two
-  // pairs span the same directions, so no rank test separates them and a
-  // coefficient derived in the second reproduces every supply direction while
-  // being short by the collar's direct route into the stomatal conductance.
-  // Written this way that route is inside condition_slope, where it is one term
-  // of a number that can be checked against a difference of the condition.
-  //
-  // dcondition is the only second-order field and is left missing where
-  // condition_slope refuses; the rest describe the branch wherever the last
-  // marginal-profit evaluation recorded one.
-  struct UptakeRows {
-    double dassim = util::na_value;
-    double dstom_cond = util::na_value;
-    double dpsistem = util::na_value;
-    // dProfit/dE_up at the held collar. It is ALSO dR/d(dE_up/dpsi): uptake's
-    // collar slope reaches the condition only through dpsi_stem/dpsi, and the
-    // condition's response to that is the stem's own marginal profit, so both
-    // are that times dpsistem.
-    double dprofit = util::na_value;
-    double dcondition = util::na_value;
-  };
-
-  // Every output's response to the collar potential, at the traits and the
-  // drivers the solve was given. Differencing the outputs across p* measures
-  // this; here it is read off what the marginal-profit evaluation recorded.
-  //
-  // ⚠️ A DIFFERENCE CANNOT BE CENTRED AT A PINNED POINT, which is where the
-  // constrained rows need this most: p* sits a millionth of the bracket from its
-  // bound, so one arm is outside the feasible interval and no shrinking brings it
-  // back. Read this way the response exists wherever the point does.
-  //
-  // The collar's own response is not a field. It is 1 by identity, and a stored
-  // copy of it is a number that could disagree with what it is.
-  //
-  // `duptake` is in kg, as every supply derivative in this class is, where the
-  // reported per-layer output is the soil's own consumption in mol.
-  struct CollarRows {
-    double dassim = util::na_value;
-    double dstom_cond = util::na_value;
-    double dpsistem = util::na_value;
-    double dprofit = util::na_value;
-    std::vector<double> duptake;
-  };
-
-
-  // The three parameters of the TRANSPORT, whose rows were the last taken by
-  // rebuilding a curve and differencing it.
-  //
-  // At a frozen collar the flux through the stem IS the flux the soil supplies --
-  // kappa (G(sigma) - G(p)) = E_up(p) -- and the soil reads no stem property, so
-  // all three of these move the stem potential and leave the flux where it is.
-  // Everything downstream of the flux therefore holds: measured over a step, the
-  // conductance, the concentration and assimilation hold to 5e-10 and the uptake
-  // to exactly zero, while sigma and profit move. So the whole held row is the
-  // hydraulic cost, which is the one thing past the flux that reads sigma.
-  //
-  // The condition's row is the cost too, for the reason at the definition.
-  //
-  // False with the energy-balance gate on, for the reason the other readers refuse
-  // there.
-  enum class TransportTrait { Conductance, Position, Steepness };
-  struct TransportTraitRows {
-    double dpsistem = util::na_value;
-    double dprofit = util::na_value;
-    double dmarginal = util::na_value;
-  };
-
-
-  // The three photosynthesis traits, whose rows come off two second-order passes
-  // rather than six re-solves.
-  //
-  // At a frozen collar these move nothing but assimilation: the stem potential,
-  // the stomatal conductance and the hydraulic cost are all fixed, and the only
-  // thing that responds is the intercellular CO2 the residual places. So with
-  // g_ci = A'*umol_to_mol + gc*inv_atm and K = (ca - ci)*inv_atm/g_ci,
-  //
-  //   dci/dtheta  = -(dA/dtheta) * umol_to_mol / g_ci
-  //   dprofit     =  (dA/dtheta) * gc * inv_atm / g_ci
-  //   dmarginal   =  (dA'/dtheta) * D * K + A' * D * dK/dtheta
-  //
-  // with D the collar's route into gc, which carries no trait. dA'/dtheta needs
-  // the mixed second partial and A'', and both come from the assimilation kernel
-  // seeded twice -- the model's own algebra, not a hand-kept second copy.
-  //
-  // Six traits, four passes, because the family shares its intermediates.
-  // `a`, curv_fact_elec_trans and jmax_25 reach assimilation only through the
-  // electron transport, so ONE pass in that direction serves all three and they
-  // enter as dJ/dtheta. curv_fact_colim reaches it only through the
-  // colimitation and vcmax_25 only through the rubisco-limited rate, one pass
-  // each. R_d_25 needs no pass at all: dark respiration is subtracted from the
-  // colimitation, so dA/dR_d_ is exactly -1 and d2A/dR_d_ dci exactly 0.
-  //
-  // The three that carry a temperature-derived scalar -- vcmax_, jmax_, R_d_ --
-  // reach it from their _25 trait through a factor that does not depend on the
-  // trait, since both Arrhenius forms are the reference value times a function
-  // of temperature. So the chain is the derived value over the trait, exactly.
-  //
-  // Their frozen-collar uptake rows are exactly zero, for the cost traits'
-  // reason: at a fixed collar a carbon-side trait moves no water.
-  //
-  // On the compensation-point branch gross assimilation is identically zero, so
-  // none of them reaches profit at all and every row here is zero -- except
-  // R_d_25, which is what net assimilation is reduced BY, and so still carries
-  // its own row there.
-  struct PhotoTraitRows {
-    double dprofit_da, dprofit_dcurv_elec, dprofit_dcurv_colim;
-    double dprofit_dvcmax_25, dprofit_djmax_25, dprofit_dR_d_25;
-    double dmarginal_da, dmarginal_dcurv_elec, dmarginal_dcurv_colim;
-    double dmarginal_dvcmax_25, dmarginal_djmax_25, dmarginal_dR_d_25;
-    // Radiation is not a trait, and it belongs here anyway: it reaches
-    // assimilation through the electron transport and through nothing else, which
-    // is the family `a` and the transport curvature are in, so its rows come off
-    // the pass already taken in that direction for the cost of one more seed.
-    double dprofit_dPPFD, dmarginal_dPPFD;
-  };
   // The profit-maximising collar potential within [bound_a, bound_b], by a
   // safeguarded root-find on dprofit == 0 (PLAN 11a). Returns a bound when the
   // optimum is pinned to it, which is the case on 42 of the 240 feasible
@@ -1436,12 +1141,7 @@ public:
   double dE_from_soil_dpsi_collar(double T_collar,
                                   const std::vector<double>& psi_soil) const {
     require_suction_vector(psi_soil, "dE_from_soil_dpsi_collar");
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer:
-        return roots_.duptake_dpsi(T_collar, psi_soil);
-      default:
-        return single_.duptake_dpsi(T_collar, psi_soil);
-    }
+    return roots_.duptake_dpsi(T_collar, psi_soil);
   }
   // The collar derivative of that conductance. It is what turns the condition's
   // slope in the collar into a statement rather than a difference: the transport
@@ -1451,84 +1151,7 @@ public:
   double d2E_from_soil_dpsi_collar2(double T_collar,
                                     const std::vector<double>& psi_soil) const {
     require_suction_vector(psi_soil, "d2E_from_soil_dpsi_collar2");
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer:
-        return roots_.d2uptake_dpsi2(T_collar, psi_soil);
-      default:
-        return single_.d2uptake_dpsi2(T_collar, psi_soil);
-    }
-  }
-  // Per-layer d(E_i)/d(psi_soil[i]), the soil counterpart of the conductance
-  // above. Diagonal, so one entry per layer is the whole of it. Same NaN-at-a-
-  // kink contract; see MultiLayerRoots::duptake_dpsi_soil.
-  void dE_from_soil_dpsi_soil(double T_collar,
-                              const std::vector<double>& psi_soil,
-                              std::vector<double>& out) {
-    require_suction_vector(psi_soil, "dE_from_soil_dpsi_soil");
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer:
-        roots_.duptake_dpsi_soil(T_collar, psi_soil, out);
-        break;
-      default:
-        single_.duptake_dpsi_soil(T_collar, psi_soil, out);
-        break;
-    }
-  }
-  // d2(E_i)/d(collar suction) d(psi_soil[i]), the collar derivative of the
-  // conductance above. Diagonal for its reason. The single path's flux is linear
-  // in the difference over a constant resistance, so there it is exactly zero.
-  void d2E_from_soil_dpsi_collar_dpsi_soil(double T_collar,
-                                           const std::vector<double>& psi_soil,
-                                           std::vector<double>& out) {
-    require_suction_vector(psi_soil, "d2E_from_soil_dpsi_collar_dpsi_soil");
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer:
-        roots_.d2uptake_dpsi_dpsi_soil(T_collar, psi_soil, out);
-        break;
-      default:
-        out.assign(psi_soil.size(), 0.0);
-        break;
-    }
-  }
-  // d(E_i)/d(root carbon in layer a) and its collar derivative, both lower
-  // triangular. Root carbon is the multi-layer architecture's input; the single
-  // path has no carbon profile to move and both blocks come back empty.
-  void dE_from_soil_droot_carbon(double T_collar,
-                                 const std::vector<double>& psi_soil,
-                                 std::vector<std::vector<double>>& dE_drc,
-                                 std::vector<std::vector<double>>& dD_drc) {
-    require_suction_vector(psi_soil, "dE_from_soil_droot_carbon");
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer:
-        roots_.duptake_droot_carbon(T_collar, psi_soil, dE_drc, dD_drc);
-        break;
-      default:
-        dE_drc.clear();
-        dD_drc.clear();
-        break;
-    }
-  }
-  using SupplyCurveTrait = MultiLayerRoots::CurveTrait;
-  // d(E_i)/d(a root curve parameter) and its collar derivative, per layer and in
-  // kg. Both are closed form: the curve reaches the supply through one integral,
-  // and that integral's trait derivatives are Euler's identity and the incomplete
-  // gamma's shape series. The single path has no root curve to move.
-  void dE_from_soil_droot_curve(double T_collar,
-                                const std::vector<double>& psi_soil,
-                                SupplyCurveTrait trait,
-                                std::vector<double>& dE,
-                                std::vector<double>& d2E) {
-    require_suction_vector(psi_soil, "dE_from_soil_droot_curve");
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer:
-        roots_.duptake_droot_curve_by_layer(T_collar, psi_soil, trait, dE);
-        roots_.d2uptake_dpsi_droot_curve(T_collar, psi_soil, trait, d2E);
-        break;
-      default:
-        dE.assign(psi_soil.size(), 0.0);
-        d2E.assign(psi_soil.size(), 0.0);
-        break;
-    }
+    return roots_.d2uptake_dpsi2(T_collar, psi_soil);
   }
   // Shut-down operating point used by the find_root_collar_psi early-exits: stem
   // held at psi_crit (no transpiration), paying only respiration + hydraulic
@@ -1738,8 +1361,7 @@ public:
   T stem_integral_at(const T& psi, const ProfitInputs<T>& in) const;
 
   // The water the soil delivers at a collar, at one scalar, against the soil
-  // state the solve cached. Both supply paths answer the same question, so a
-  // caller differentiating the collar asks one thing rather than branching.
+  // state the solve cached.
   //
   // This is the ONLY route the collar reaches the carbon side by: the stomatal
   // conductance is proportional to the flux and the stem potential is what
@@ -1749,21 +1371,8 @@ public:
                    std::vector<T>& per_layer) const {
     per_layer.assign(static_cast<std::size_t>(supply_n_layers()), T(0.0));
     T out = T(0.0);
-    if (supply_kind_ == SupplyKind::MultiLayer) {
-      roots_.uptake(collar, supply, per_layer, out);
-      return out;
-    }
-    if constexpr (std::is_same_v<T, double>) {
-      single_.uptake_at(collar, supply.psi_soil, per_layer, out);
-      return out;
-    } else {
-      // Refused rather than answered with zeros. The single-potential path's
-      // resistance is a parameter of its own and no differentiated caller is on
-      // that path; a silent zero row here would read as an insensitivity.
-      util::stop("E_from_soil_at: the single-potential supply path has no "
-                 "differentiated form; the multi-layer one is what a gradient "
-                 "runs on");
-    }
+    roots_.uptake(collar, supply, per_layer, out);
+    return out;
   }
 
   // This leaf's own supply state, as the view the quadrature takes. No copies.
@@ -1928,19 +1537,6 @@ public:
   template <typename T>
   T hydraulic_cost_TF_slope_kernel(T psi_stem, T b, T c, T beta, T scale) const;
 
-  // dC/d(psi_stem, stem_b, stem_c, beta2, cost_scale) at a stem potential.
-  //
-  // A zero-flux operating point pays only respiration and this cost -- profit is
-  // -R_d - C(psi_crit), reading neither soil nor light -- so these ARE its trait
-  // rows, and every environment row there is exactly zero.
-  struct HydraulicCostRow {
-    double d_dpsi_stem = 0.0;
-    double d_dstem_b = 0.0;
-    double d_dstem_c = 0.0;
-    double d_dbeta2 = 0.0;
-    double d_dcost_scale = 0.0;
-    bool finite = false;
-  };
   double assim_minus_stom_cond_CO2(double x, double psi_stem, double psi_upstream);
   // The energy-balance correction to the above, zero when the gate is off. Kept
   // out of line so that adding it cannot change FMA contraction in the inlined
@@ -1950,7 +1546,6 @@ public:
                                      double dgc_dpsistem, double dgc_dpsi,
                                      double dpsistem_dpsi, double dT_dE,
                                      double Tleaf);
-  BoundRow bound_row(WhichBound which);
   double psi_stem_to_ci(double psi_stem, double psi_upstream);
   // `ci_known` is the intercellular CO2 an earlier solve found at this same
   // state. Every no-flux branch fixes ci itself, so it is read at the one place a
@@ -2185,8 +1780,7 @@ public:
   };
 
   // Read-only on purpose: the tag is an output of the solve, and a settable one
-  // would be a way to disagree with it. Same argument as `supply_kind_`'s two
-  // entry points above, one step further.
+  // would be a way to disagree with it.
   // Which limit won the dry bound. Recorded where the min is taken, because a
   // min is the one operation that destroys the information a consumer needs
   // afterwards: the two arms are different functions of the inputs.
@@ -2526,14 +2120,6 @@ inline void Leaf::setup_clean_leaf() {
   theta_fc_ = util::na_value;
   theta_ = util::na_value;
   roots_.clear(); // soil state, geometry and the root resistance network
-  // BOTH supply paths, not just the active one. Hazard 8 is that an output a
-  // code path declines to write becomes the previous solve's value, and a Leaf
-  // that has been switched between paths (set_supply_single / _multilayer) is
-  // exactly the case where the inactive one's stale soil state could come back.
-  // clear() leaves grav_head_ alone -- it is the single path's one remaining piece
-  // of configuration, and wiping it here would make set_supply_single
-  // order-dependent. resistance_ IS cleared, because it is a driver now.
-  single_.clear();
   soil_consumption_.clear(); // soil consumption mol  m^-2 s^-1;
 
   transpiration_cached_ = false; // invalidate transpiration() memo
@@ -2598,17 +2184,7 @@ inline void Leaf::set_physiology(const RootNetwork& root_network, double PPFD, c
    umol_per_mol_to_Pa_ = atm_kpa_ * kPa_to_Pa * umol_to_mol;
    atm_o2_kpa_ = atm_o2_kpa;
    PPFD_ = PPFD;
-   switch (supply_kind_) {
-     case SupplyKind::MultiLayer:
-       roots_.set_soil_state(psi_soil, soil_depth);
-       break;
-     default:
-       // One potential; the depth profile and the root-mass profile are not
-       // this path's business, and the caller's vectors are simply not read
-       // beyond element 0.
-       single_.set_soil_state(psi_soil[0]);
-       break;
-   }
+   roots_.set_soil_state(psi_soil, soil_depth);
 
    leaf_specific_conductance_max_ = leaf_specific_conductance_max;
    // conductance changed -> invalidate the transpiration() memo
@@ -2661,21 +2237,11 @@ inline void Leaf::set_physiology(const RootNetwork& root_network, double PPFD, c
 
   // The supply resistances, handed over as given. #33 moved the carbon ->
   // resistance step out to the caller, so this is a validated copy rather than a
-  // model evaluation. BOTH paths are served from the one argument: the
-  // single-potential path reads `r_R_V_sum[0]` as its series resistance, which is
-  // that field's own meaning with one layer and no horizontal term. That is what
-  // makes the calling convention independent of which path is in force.
+  // model evaluation.
   //
-  // It stays HERE, after set_soil_state, because the multi-layer length check
-  // needs the soil profile placed first.
-  switch (supply_kind_) {
-    case SupplyKind::MultiLayer:
-      roots_.set_root_network(root_network);
-      break;
-    default:
-      single_.set_supply_resistances(root_network);
-      break;
-  }
+  // It stays HERE, after set_soil_state, because the network's length check needs
+  // the soil profile placed first.
+  roots_.set_root_network(root_network);
 
   // Set up vector of root water uptake from layer. Stays on Leaf: plant writes
   // the crown-integrated value back into leaf.soil_consumption_ by name.
@@ -3452,6 +3018,13 @@ inline Leaf::FixedCollarEval Leaf::profit_at_fixed_collar(double collar) {
   return out;
 }
 
+// Post-prepare body of evaluate_root_collar_psi (see header). Kept as a separate
+// entry point so callers that evaluate several collar potentials within one step
+// (the centred finite difference, #530) can run prepare_collar_solve once and
+// reuse the soil-side caches across every profit eval. The clamp into
+// [bound_a, bound_b] is identical to evaluate_root_collar_psi's, so near a
+// boundary a perturbed potential collapses onto the boundary -- which is exactly
+// how the FD path degrades gracefully to a one-sided difference.
 inline double Leaf::profit_at_collar_psi(double target_opt_root_psi,
                                   double bound_a, double bound_b){
     if (target_opt_root_psi < bound_a || target_opt_root_psi > bound_b) {
@@ -5177,150 +4750,6 @@ inline double Leaf::dprofit_energy_balance_term(
   const double damping = (gc * inv_atm - dgc_dT * (ca_ - ci) * inv_atm) / g_ci;
 
   return A_T * tau * damping;
-}
-
-// Post-prepare body of evaluate_root_collar_psi (see header). Kept as a separate
-// entry point so callers that evaluate several collar potentials within one step
-// (the centred finite difference, #530) can run prepare_collar_solve once and
-// reuse the soil-side caches across every profit eval. The clamp into
-// [bound_a, bound_b] is identical to evaluate_root_collar_psi's, so near a
-// boundary a perturbed potential collapses onto the boundary -- which is exactly
-// how the FD path degrades gracefully to a one-sided difference.
-inline Leaf::BoundRow Leaf::bound_row(WhichBound which) {
-  const std::vector<double>& psi_soil = supply_psi_soil();
-  const std::size_t n = psi_soil.size();
-  BoundRow row;
-  row.d_dpsi_soil.assign(n, 0.0);
-  row.d_droot_carbon.assign(n, 0.0);
-
-  if (which == WhichBound::DryRootPsiCrit) {
-    // The bound is a registered constant, so it moves with nothing except
-    // itself. Exact, and the cheapest row here.
-    //
-    // ⚠️ THIS ARM RETURNS BEFORE THE SHARED CONVERSION at the end of the
-    // function, so the value stored here must ALREADY be the quotient
-    // -(dR/du)/(dR/dx) that every other field only becomes down there. The
-    // residual is R(x) = x - root_psi_crit, so the raw partial is -1 and the
-    // slope is 1, and the row is -(-1)/1 = +1. It read -1 -- the raw partial,
-    // never divided or negated -- for as long as nothing differenced it, which
-    // is the sign of this row backwards for every consumer. A future arm added
-    // above the conversion block has to do its own division here too, or return
-    // through it.
-    row.bound = supply_psi_crit();
-    row.d_droot_psi_crit = 1.0;
-    row.residual_slope = 1.0;
-    row.finite = true;
-    return row;
-  }
-
-  // find_root_psi probes collars, and every probe writes E_up_ and
-  // soil_consumption_ on its way past. Those describe the OPERATING POINT for
-  // whoever solved it, so this restores them: a row is a read, and a read that
-  // moves the outputs is the cross-plant channel hazard 8 is about.
-  const std::vector<double> saved_consumption = soil_consumption_;
-  const double saved_E_up = E_up_;
-  const double wettest = supply_begin_solve();
-  const double x =
-      find_root_psi(wettest, psi_soil, which == WhichBound::Wet ? 0 : 1);
-  row.bound = x;
-  auto restore = [&]() -> void {
-    soil_consumption_ = saved_consumption;
-    E_up_ = saved_E_up;
-  };
-  if (!std::isfinite(x)) {
-    restore();
-    return row;
-  }
-
-  // Common to both: the residual is total uptake, so its state partials are
-  // uptake's. dE_from_soil_dpsi_soil is diagonal, so entry j IS dE_up/dpsi_j.
-  const double dEup_dx = dE_from_soil_dpsi_collar(x, psi_soil);
-  // The root curve reaches total uptake through the layer mean-conductivity
-  // integral and nothing else, so each of these is the whole of that parameter's
-  // residual partial for either bound. The single path has no root curve.
-  const bool multi = supply_kind_ == SupplyKind::MultiLayer;
-  const double dEup_droot_b =
-      multi ? roots_.duptake_droot_curve(x, psi_soil,
-                                         MultiLayerRoots::CurveTrait::Position)
-            : 0.0;
-  const double dEup_droot_c =
-      multi ? roots_.duptake_droot_curve(x, psi_soil,
-                                         MultiLayerRoots::CurveTrait::Steepness)
-            : 0.0;
-  std::vector<double> dEup_dpsi;
-  dE_from_soil_dpsi_soil(x, psi_soil, dEup_dpsi);
-  // Root carbon is the multi-layer architecture's input; the single-potential
-  // path is given a series resistance and has no carbon profile to move.
-  std::vector<std::vector<double>> dE_drc, dD_drc;
-  const bool has_root_carbon = supply_kind_ == SupplyKind::MultiLayer;
-  if (has_root_carbon) {
-    roots_.duptake_droot_carbon(x, psi_soil, dE_drc, dD_drc);
-  }
-
-  double slope = dEup_dx;
-  if (which == WhichBound::DryRootCrit) {
-    // The stem's half of the residual. G'(x) is positive, so this can only make
-    // the denominator larger -- which is why the sign is safe and the magnitude
-    // is not.
-    slope += transport_slope(x);
-    row.d_dkappa =
-        -(stem_curve_integral(psi_crit, "Leaf::bound_row") -
-          stem_curve_integral(x, "Leaf::bound_row"));
-    row.d_dpsi_crit =
-        -transport_slope(psi_crit);
-    row.d_dstem_b =
-        -leaf_specific_conductance_max_ *
-        (stem_curve_integral_dstem_b(psi_crit, "Leaf::bound_row") -
-         stem_curve_integral_dstem_b(x, "Leaf::bound_row"));
-    // The steepness reaches the same difference of cumulative integrals, from
-    // the series rather than from Euler's identity. Taken at the traits the
-    // spline was built at, so it is the derivative of the value this residual
-    // reads and not of a nearby curve.
-    const VulnerabilityIntegralDerivatives G_crit =
-        cumulative_vulnerability_integral_derivatives_at(psi_crit, stem_b,
-                                                         stem_c);
-    const VulnerabilityIntegralDerivatives G_x =
-        cumulative_vulnerability_integral_derivatives_at(x, stem_b, stem_c);
-    row.d_dstem_c =
-        -leaf_specific_conductance_max_ * (G_crit.dc - G_x.dc);
-  }
-  row.residual_slope = slope;
-  if (!std::isfinite(slope) || slope == 0.0) {
-    restore();
-    return row;
-  }
-
-  // Every entry is the same quotient: minus the residual's partial over the
-  // residual's slope. The fields above still hold the raw partials at this
-  // point, so the conversion happens once, here.
-  row.d_droot_b = dEup_droot_b;
-  row.d_droot_c = dEup_droot_c;
-  bool ok = std::isfinite(row.d_dkappa) && std::isfinite(row.d_dpsi_crit) &&
-            std::isfinite(row.d_dstem_b) && std::isfinite(row.d_dstem_c) &&
-            std::isfinite(row.d_droot_b) && std::isfinite(row.d_droot_c);
-  for (std::size_t j = 0; j < n && ok; ++j) {
-    double dEup_drc = 0.0;
-    if (has_root_carbon) {
-      for (std::size_t i = 0; i < n; ++i) {
-        dEup_drc += dE_drc[i][j];
-      }
-    }
-    if (!std::isfinite(dEup_dpsi[j]) || !std::isfinite(dEup_drc)) {
-      ok = false;
-      break;
-    }
-    row.d_dpsi_soil[j] = -dEup_dpsi[j] / slope;
-    row.d_droot_carbon[j] = -dEup_drc / slope;
-  }
-  row.d_dkappa = -row.d_dkappa / slope;
-  row.d_dpsi_crit = -row.d_dpsi_crit / slope;
-  row.d_dstem_b = -row.d_dstem_b / slope;
-  row.d_dstem_c = -row.d_dstem_c / slope;
-  row.d_droot_b = -row.d_droot_b / slope;
-  row.d_droot_c = -row.d_droot_c / slope;
-  row.finite = ok;
-  restore();
-  return row;
 }
 
 } // namespace phylloptim

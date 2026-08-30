@@ -289,8 +289,11 @@ leaf_solve(psi_soil = 1.5, PPFD = 900,
            root_network = series_resistance(1e3))
 ```
 
-The path is chosen when the leaf is built and cannot be flipped afterwards: a
-settable tag would leave the other path's state configured and silently ignored.
+That is the multi-layer network at one layer with no vulnerability-weighted
+horizontal term: `series_resistance()` puts the whole path in `r_R_V_sum` and
+leaves `r_R_H_min` at zero, so the layer's resistance is the series one. The
+supply belongs to the model rather than to the drivers, so it is named once in
+`leaf_model()` and there is no settable field for it.
 
 On the **multi-layer** path the leaf takes the per-layer resistances, so a caller
 with measured or fitted ones can state them directly:

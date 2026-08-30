@@ -58,9 +58,10 @@ assimilation by percent, not by rounding.}
 \item{control}{a [leaf_control()] object}
 
 \item{supply}{how water reaches the root collar: [leaf_supply_multilayer()]
-(the default) or [leaf_supply_single()]. On the single-potential path
-`soil_depth` and `root_network` must be omitted, and each `psi_soil` is one
-value rather than a profile.}
+(the default) or [leaf_supply_single()]. Under the latter each `psi_soil` is
+one value rather than a profile, and `soil_depth` is omitted -- it is named
+by [leaf_supply_single()] instead. `root_network` is how the resistance
+arrives either way; [series_resistance()] builds the one-layer form.}
 
 \item{reuse}{solve every row with one `Leaf` object (`TRUE`) or construct a
 fresh one per row (`FALSE`, the default). Reuse is faster because the two

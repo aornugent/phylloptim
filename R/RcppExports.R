@@ -185,14 +185,6 @@ Leaf__solve_medlyn_ci_analytical <- function(obj_) {
     invisible(.Call('_phylloptim_Leaf__solve_medlyn_ci_analytical', PACKAGE = 'phylloptim', obj_))
 }
 
-Leaf__set_supply_multilayer <- function(obj_) {
-    invisible(.Call('_phylloptim_Leaf__set_supply_multilayer', PACKAGE = 'phylloptim', obj_))
-}
-
-Leaf__set_supply_single <- function(obj_, gravity_head) {
-    invisible(.Call('_phylloptim_Leaf__set_supply_single', PACKAGE = 'phylloptim', obj_, gravity_head))
-}
-
 Leaf__setup_transpiration <- function(obj_, resolution) {
     invisible(.Call('_phylloptim_Leaf__setup_transpiration', PACKAGE = 'phylloptim', obj_, resolution))
 }
@@ -759,22 +751,6 @@ Leaf__theta___get <- function(obj_) {
 
 Leaf__theta___set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__theta___set', PACKAGE = 'phylloptim', obj_, value))
-}
-
-Leaf__supply_kind__get <- function(obj_) {
-    .Call('_phylloptim_Leaf__supply_kind__get', PACKAGE = 'phylloptim', obj_)
-}
-
-Leaf__single_resistance___get <- function(obj_) {
-    .Call('_phylloptim_Leaf__single_resistance___get', PACKAGE = 'phylloptim', obj_)
-}
-
-Leaf__single_gravity_head___get <- function(obj_) {
-    .Call('_phylloptim_Leaf__single_gravity_head___get', PACKAGE = 'phylloptim', obj_)
-}
-
-Leaf__single_psi_soil___get <- function(obj_) {
-    .Call('_phylloptim_Leaf__single_psi_soil___get', PACKAGE = 'phylloptim', obj_)
 }
 
 Leaf__lambda__get <- function(obj_) {

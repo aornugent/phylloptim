@@ -68,7 +68,7 @@ All on `master`. One line each; the PR holds the reasoning.
 | **3** | plant consumes this package: `feature/consume-leaf-package` compiles and passes | plant #591 (open), issue #9 |
 | **4** | The include graph is R-free, and the guarantee is *directional* | [#19](https://github.com/traitecoevo/phylloptim/pull/19), [#22](https://github.com/traitecoevo/phylloptim/pull/22) |
 | **5** | XAD stays as it is — forward mode only, so nothing links | below |
-| **6**, 6a–6c, 6d stages 0–3 | The R interface: bindings, a usable surface, the single-potential path | [#30](https://github.com/traitecoevo/phylloptim/pull/30), issues #5, #32 |
+| **6**, 6a–6c, 6d stages 0–3 | The R interface: bindings, a usable surface, the bare-leaf entry point | [#30](https://github.com/traitecoevo/phylloptim/pull/30), issues #5, #32 |
 | **7b**, 7b-i–iii | The supply path is swappable, and the dispatch measured free | [#17](https://github.com/traitecoevo/phylloptim/pull/17), [#18](https://github.com/traitecoevo/phylloptim/pull/18), issue #2 |
 | **8** | λ and `g1_eff` reported, and the multi-layer λ identity verified | ⚠️ tail open as #50 |
 | **9** | Closed-form fast path, default off, accuracy characterised | below — ⚠️ φ still unmeasured |
@@ -312,12 +312,12 @@ anything that fits this model will meet them, and two of them suggest what the
 package should offer.
 
 - **`kmax` and the soil-to-collar series resistance are not separately identifiable
-  from leaf water potential.** Only their total is. On the single-potential path that
-  means the split between plant and soil share is whatever the prior says, and it
-  should never be reported as an estimate. ⚠️ This bore on #33, which is now done:
-  the multi-layer path takes `r_R_H_min` and `r_R_V_sum` directly, so the resistances
-  are statable rather than derivable-only, and `RootNetwork()` is the entry point for
-  a caller who has measured or fitted them.
+  from leaf water potential.** Only their total is. Where the whole soil-to-collar
+  path is one resistance that means the split between plant and soil share is
+  whatever the prior says, and it should never be reported as an estimate.
+  ⚠️ This bore on #33, which is now done: the leaf takes `r_R_H_min` and `r_R_V_sum`
+  directly, so the resistances are statable rather than derivable-only, and
+  `RootNetwork()` is the entry point for a caller who has measured or fitted them.
 - **`cost_scale_TF24` and `beta2` are confounded by the algebra of the cost itself.**
   The TF24 cost is `cost_scale · (1 − k)^beta2`, so at fixed cost
   `d(log cost_scale)/d(log beta2) = −beta2 · <log(1 − k)>`. The ridge is therefore
@@ -484,19 +484,30 @@ derivative still costs two solves, and there is no `pars` name for it. The recor
 values (`beta_R_H`: collar 8.1973e-06, A −2.8802e-04) are kept in a comment in
 `test-gradient.R` for anyone checking a hand-rolled route.
 
-### The two supply paths, made consistent — DONE
+### One supply path — DONE
 
-`set_physiology` takes the soil-to-collar resistances on **both** paths, from the
-same `RootNetwork` argument. The multi-layer path took its resistances per call and
-the single path took its resistance at construction, so the same quantity arrived at
-a different time depending on which path was in force — and `resistance` was the
-only differentiable parameter whose setter called `setup_clean_leaf()` and reset the
-object. `leaf_supply_single()` loses `resistance`; `series_resistance()` is its
-driver-side counterpart. Bit-identical on both paths over 18 operating points.
+`set_physiology` takes the soil-to-collar resistances from one `RootNetwork`
+argument, whatever the supply: `root_network_from_carbon()` builds it from a carbon
+profile, `series_resistance()` from a single resistance. Bit-identical over 18
+operating points, and it takes the resistance out of the leaf's construction — it
+was the only differentiable parameter whose setter called `setup_clean_leaf()`.
 
-`gravity_head` is left as the single path's one piece of configuration, on purpose:
-the multi-layer rule derives it from a depth profile this path does not have, and a
-bare leaf wants zero rather than a geometric default.
+**One supply class, because the measurement left nothing for a second to do.**
+`MultiLayerRoots` at one layer with `r_R_H_min = 0` evaluates
+`E = (T_collar - psi - grav)/r_R_V_sum[0]` — the same three operations in the same
+order as a dedicated single-potential class. The supply is bit-identical over 362
+comparisons at 86 collar potentials, and 108 whole solves agree to **6.6e-10**, the
+solver floor.
+
+⚠️ **The one genuine difference was the dry bound, and it is a behaviour choice.**
+`supply_psi_crit()` is the **root's** critical potential. Taking the stem's
+`psi_crit` there instead moves profit by **5.5** and changes the operating-point
+kind in 9 of 108 solves — wherever `root_psi_crit != psi_crit`. At this package's
+defaults they are equal, so no fixture built on the defaults can see it.
+
+`soil_depth` is `leaf_supply_single()`'s one argument, and it is the gravitational
+head: a layer's head is `gravity_head * z_soil_mid`, so the head is read off the
+profile at one layer exactly as at many, and zero is what a bare leaf wants.
 
 ⚠️ **A measurement caution that cost real time.** The first before/after comparison
 reported a 1.22e-10 difference AND that the same build was nondeterministic between
@@ -773,13 +784,11 @@ and 10b both listed it. It is a finiteness guard on the Arrhenius block, not a
 tunable: making it settable lets a caller produce non-finite photosynthetic
 parameters and get NaNs back with no indication why.
 
-**Stage 3's footgun was designed out rather than documented.** There is no settable
-supply tag at any level; `set_supply_multilayer()` / `set_supply_single()` each
-reconfigure completely and clear the solved state; `supply_kind`,
-`single_resistance_` and `single_gravity_head_` are bound **read-only**, and a test
-asserts the assignments fail. `setup_clean_leaf()` clears **both** paths' soil state,
-and `set_drivers()` **refuses** `soil_depth` / `root_carbon_per_leaf_area` on the
-single path rather than ignoring them.
+**Stage 3's footgun was designed out rather than documented.** The supply is named
+once, in `leaf_model()`, and there is no settable field for it at any level.
+`set_drivers()` **refuses** a `soil_depth` or a multi-layer `psi_soil` on the
+single-potential path rather than ignoring them: the depth is already named in
+`leaf_supply_single()`, and two spellings of it could disagree.
 
 ## 7b. The supply path — and the multi-layer λ identity
 
@@ -820,7 +829,7 @@ breaks the `plant::Leaf` alias and ~**12,000 lines** of generated RcppR6.
 3. Pointer identity (`&psi_soil == &psi_soil_inverted_`) was the likeliest place to
    lose bit-identity; `roots.hpp` no longer depends on it to be fast.
 4. ⚠️ **`duptake_dpsi` returning NaN is a contract, not a failure** — hazard 6 has
-   this in full, including the five-method interface a third supply path must
+   this in full, including the five-method interface another supply path must
    implement.
 
 ## 7b-iii. Staging — and the dispatch measurement
@@ -838,14 +847,14 @@ plant today. Do not "fix" it without checking that.
 
 ⚠️ **This block is what hazard 6 points at, and the recipe exists nowhere else.**
 
-Re-measured against the post-stage-1 structure with `SinglePotential` as a genuine
-second alternative, all three arms executing the same `MultiLayerRoots` code
+Re-measured against the post-stage-1 structure with a second supply class as a
+genuine alternative, all three arms executing the same `MultiLayerRoots` code
 (identical bench checksum, so only the *reach* varied), 10 interleaved rounds at
 reps=2000:
 
 | option | measured | vs direct | verdict |
 |---|---|---|---|
-| direct call | 3.507 µs | — | baseline, not an option once there are two paths |
+| direct call | 3.507 µs | — | baseline, and what one supply path gets |
 | **enum tag + `switch`** | **3.478 µs** | **−0.8%** | **free.** At or below the direct call in all 10 rounds |
 | `std::variant` + `std::visit` | 3.542 µs | +1.0% | real, but a third of the +2.6% the older table claimed |
 | template `Leaf<Supply>` | — | — | rejected: breaks the `plant::Leaf` alias and ~12,000 lines of RcppR6 |
@@ -863,9 +872,9 @@ predicts worse than a direct branch. Visible in the binary:
 ⚠️ **Reproducing this: the tag must be runtime-unknowable.** Set it from a constant
 and the branch constant-folds, every arm measures zero, and it looks like a free
 lunch that is not one. The measurement above set it from `argc`. Verify before
-believing any arm: `nm -C bench | grep -c SinglePotential` should be 0 for the direct
-arm and non-zero for the others — if the dispatch folded, the unused path's symbol
-disappears entirely.
+believing any arm: `nm -C bench | grep -c <the second supply class>` should be 0 for
+the direct arm and non-zero for the others — if the dispatch folded, the unused
+path's symbol disappears entirely.
 
 The surviving argument for `std::variant` is that it makes an invalid state
 unrepresentable. Worth 1.0% only if that risk is real; revisit at three or four
@@ -937,7 +946,7 @@ binding it. Fifteen are bound now.
 that was safe is a **homogeneity property** rather than a coincidence: every term in
 `r_R` is inversely linear in root carbon, so `r_R` is homogeneous of degree −1 in the
 carbon vector, and scaling carbon by `1/A` scales `r_R` by exactly `A`. Consequence:
-**`SinglePotential::resistance_` is per unit leaf area.** The residual 2 ULP is
+**the soil-to-collar series resistance is per unit leaf area.** The residual 2 ULP is
 reassociation.
 
 **Still open, and here rather than in an issue.**
@@ -1321,7 +1330,7 @@ observation per fit, so the defaults have one definition.
 ### The three rules that make bit-for-bit possible, and the one that was not obvious
 
 The acceptance test is that the C++ composite reproduces `leaf_gradient()` **exactly**
-— 0 mismatches over 15 multi-layer and 10 single-potential operating points × three
+— 0 mismatches over 15 multi-layer and 10 single-layer operating points × three
 methods, including every pinned and shut-down row and the rows where forcing `ift`
 raises an error in R. A tolerance would have let a transcription slip hide inside the
 solver's own ~1e-09 floor. Three things had to be deliberate:

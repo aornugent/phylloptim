@@ -32,7 +32,6 @@
 #include <phylloptim/optimize.hpp>
 #include <phylloptim/quadrature.hpp>
 #include <phylloptim/roots.hpp>
-#include <phylloptim/single_potential.hpp>
 #include <phylloptim/uniroot.hpp>
 #include <phylloptim/util.hpp>
 #include <phylloptim/vulnerability.hpp>

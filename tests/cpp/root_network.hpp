@@ -36,13 +36,13 @@ root_network(const std::vector<double>& root_carbon_per_leaf_area,
       beta_R_H, beta_R_V);
 }
 
-// The single-potential path's driver: one series resistance, and no
-// vulnerability-weighted horizontal term. The SAME RootNetwork the multi-layer
-// path takes -- `r_R_V_sum` already means "series resistance to the collar", so
-// this is that field with one layer, which is why one set_physiology argument
-// serves both paths.
+// One rooted layer whose whole resistance to the collar is `r`: the horizontal
+// term is zero, so the vulnerability-weighted mean drops out and uptake is Ohm's
+// law in the collar-to-soil difference. `set_root_network` requires the two
+// vectors to agree in length, so the zero is written rather than left out.
 inline phylloptim::RootNetwork series_resistance(double r) {
   phylloptim::RootNetwork out;
+  out.r_R_H_min.assign(1, 0.0);
   out.r_R_V_sum.assign(1, r);
   return out;
 }

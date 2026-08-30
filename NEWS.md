@@ -1,5 +1,54 @@
 # phylloptim 0.3.0
 
+## There is one supply path, because the two were the same model
+
+`SinglePotential` and `<phylloptim/single_potential.hpp>` are gone, with the
+`Leaf::SupplyKind` tag, the `supply_kind_` member and the sixteen
+`switch (supply_kind_)` sites that read it. `MultiLayerRoots` is the supply.
+
+They computed the same number. `SinglePotential` had
+`E = (T_collar - psi_soil - grav)/R`; the multi-layer path has
+`E_i = (T_collar - psi_i - grav_z_i)/r_R` with
+`r_R = r_R_H_min[i]/mean_f + r_R_V_sum[i]`, and at `r_R_H_min = 0` that is exactly
+`r_R_V_sum[0]` -- the same three operations in the same order. Measured: the supply
+is **bit-identical** over 362 comparisons at 86 collar potentials, and 108 whole
+solves agree to **6.6e-10**, the solver's own floor.
+
+**The R surface keeps its shape.** `leaf_supply_single()` and
+`leaf_supply_multilayer()` are still the `supply` argument of `leaf_model()` and
+`leaf_solve()`, and a bare leaf still solves as it did:
+
+```r
+leaf_solve(psi_soil = 1.5, PPFD = 900, supply = leaf_supply_single(),
+           root_network = series_resistance(1e3))
+```
+
+`series_resistance(r)` keeps its signature and now also sets `r_R_H_min = 0`, which
+makes what it hands back a valid one-layer network rather than one path's private
+argument.
+
+* **`leaf_supply_single(gravity_head)` becomes `leaf_supply_single(soil_depth)`.**
+  The gravitational head *is* the depth -- a layer's head is
+  `gravity_head * z_soil_mid` -- so naming a depth names the head, in the model's
+  own vocabulary. The default `soil_depth = 0` lifts water nowhere, which is what a
+  bare leaf wants and exactly what `gravity_head = 0` did.
+* **The `Leaf` bindings `supply_kind`, `single_resistance_`,
+  `single_gravity_head_` and `single_psi_soil_` are gone**, with the R6 methods
+  `$set_supply_single()` and `$set_supply_multilayer()` and the C++
+  `set_supply_single()` / `set_supply_multilayer()` behind them. A bare leaf's state
+  reads off the ordinary bindings: `psi_soil_`, `soil_depth_`, `r_R_V_sum`,
+  `r_R_H_min`.
+
+⚠️ **One behaviour changes, at the dry bound.** `supply_psi_crit()` returned the
+stem's `psi_crit` on the single-potential path and the root's `root_psi_crit` on
+the multi-layer one, and the root's limit is what survives. Where those two traits
+differ the difference is worth **5.5 in profit**, and 99 of 108 solves reach the
+same operating-point kind rather than all 108. At this package's defaults
+`psi_crit == root_psi_crit`, so no fixture built on them can see it. It reaches a
+caller who set `root_psi_crit != psi_crit` and drove a leaf through
+`leaf_supply_single()`: that leaf is now bounded by the root's limit, like every
+other.
+
 ## The R-composed trait gradient is removed
 
 `leaf_gradient()`, `leaf_batch()`, `leaf_gradient_batch()`, `gradient_par_names()`

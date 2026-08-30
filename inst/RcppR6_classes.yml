@@ -248,23 +248,6 @@ Leaf:
     # They read the solved state, so they are meaningful only after
     # find_root_collar_psi(). Reading one before that gets whatever the
     # NA-sentinel arithmetic produces, in keeping with every other output here.
-    # --- which soil -> root-collar supply path is in force (issue #32) -------
-    #
-    # READ-ONLY, all three, and that is the design rather than caution. The
-    # footgun PLAN 7b-iii flagged is that assigning the tag leaves the other
-    # path's state configured and silently ignored, so there is no settable
-    # `supply_kind` here at all -- the only way to change it is
-    # set_supply_multilayer() / set_supply_single(), which leave the tag and the
-    # supply agreeing. `gravity_head` is read-only for a weaker reason: setting it
-    # while the multi-layer path is active would do nothing, which is a confusing
-    # thing to allow. `single_resistance_` is read-only for the STRONGER reason --
-    # it is a per-call driver now, so a write here would be overwritten by the next
-    # set_physiology and is exactly the stale-state trap hazard 8 describes.
-    supply_kind: {type: "std::string", access: member, name_cpp: supply_kind_name}
-    single_resistance_: {type: double, access: field, name_cpp: "single_.resistance_", readonly: true}
-    single_gravity_head_: {type: double, access: field, name_cpp: "single_.grav_head_", readonly: true}
-    single_psi_soil_: {type: double, access: field, name_cpp: "single_.psi_soil_", readonly: true}
-
     lambda: {type: double, access: member, name_cpp: marginal_cost_water}
     lambda_molar: {type: double, access: member, name_cpp: marginal_cost_water_molar}
     lambda_multilayer: {type: double, access: member, name_cpp: marginal_cost_water_multilayer}
@@ -307,8 +290,7 @@ Leaf:
     # vulnerability splines describing the previous curve, and -- worst -- leaves
     # vcmax_/jmax_/R_d_ stale, because set_physiology derives them behind a cache
     # keyed on (leaf_temp, atm_o2_kpa) alone and so takes the hit on the next call.
-    # The leaf_model.hpp declaration has the full reasoning; it is the same
-    # judgement as supply_kind above, reached from a different direction.
+    # The leaf_model.hpp declaration has the full reasoning.
     #
     # Move stem_b without rebuilding the stem vulnerability spline. The curve is
     # homogeneous of degree 1 in stem_b, so the spline for another stem_b is this
@@ -472,21 +454,6 @@ Leaf:
     # through the constructor gets them rebuilt there -- but a caller reaching in
     # to change stem_b/root_b afterwards does not, and would otherwise be stuck
     # with splines for the old curve. See the note in setup_transpiration.
-    # --- choosing the supply path (issue #32) --------------------------------
-    #
-    # Two entry points rather than a settable tag. Each leaves the object in a
-    # state where the tag and the supply state agree; there is no intermediate
-    # state in which they disagree, which is what a bindable `supply_kind_`
-    # would have created. Both clear the solved state, so set_physiology() has
-    # to be called again -- the two paths read different inputs, so anything
-    # carried across would be answering a question about the other model.
-    set_supply_multilayer:
-      return_type: void
-      args: []
-    set_supply_single:
-      return_type: void
-      args: [gravity_head: double]
-
     setup_transpiration:
       return_type: void
       args: [resolution: double]

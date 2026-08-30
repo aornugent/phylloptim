@@ -5,63 +5,57 @@
 \alias{leaf_supply_multilayer}
 \title{Choose how water reaches the root collar}
 \usage{
-leaf_supply_single(gravity_head = 0)
+leaf_supply_single(soil_depth = 0)
 
 leaf_supply_multilayer()
 }
 \arguments{
-\item{gravity_head}{head required to lift water to the collar, MPa. Zero by
-default, which is right for a bare leaf that is not thinking about rooting
-depth. See the section above for why this, alone, is not a driver.}
+\item{soil_depth}{thickness of the single layer, m. Zero by default, which
+lifts water nowhere — right for a bare leaf that is not thinking about
+rooting depth.}
 }
 \value{
 A `leaf_supply` object, for the `supply` argument of [leaf_model()]
   and [leaf_solve()].
 }
 \description{
-Two supply paths, and the choice belongs with the model rather than with the
+A soil profile of one or more layers, each with its own water potential,
+feeding a root network. The choice belongs with the model rather than with the
 drivers, so it is made once in [leaf_model()].
 }
 \details{
-`leaf_supply_multilayer()` is the default and is what plant uses: a soil
-profile of one or more layers, each with its own water potential, feeding a
-root network whose resistances are derived from a root carbon profile.
+`leaf_supply_multilayer()` is the default and is what plant uses: the network
+resistances are derived from a root carbon profile by
+[root_network_from_carbon()].
 
-`leaf_supply_single()` collapses the whole soil-to-collar path to **one
-resistance**. This is what a leaf physiologist arriving from `plantecophys`
-or `tealeaves` actually has: a soil water potential and no root-mass profile.
-It is also what makes comparison against other optimality models meaningful,
-since Medlyn, Prentice least-cost and Cowan-Farquhar are all formulated
-against a single soil potential — comparing them against a multi-layer root
-network compares two things at once.
+`leaf_supply_single()` is the same model at one layer with no
+vulnerability-weighted horizontal term, which collapses the whole soil-to-collar
+path to **one resistance**. This is what a leaf physiologist arriving from
+`plantecophys` or `tealeaves` actually has: a soil water potential and no
+root-mass profile. It is also what makes comparison against other optimality
+models meaningful, since Medlyn, Prentice least-cost and Cowan-Farquhar are all
+formulated against a single soil potential — comparing them against a
+multi-layer root network compares two things at once.
 }
-\section{Both paths are configured the same way, and take the same drivers}{
+\section{The resistance is a driver, and so is the depth}{
 
 Neither function takes a resistance. The soil-to-collar resistance is a
-per-call **driver** on both paths, supplied to [set_drivers()] as
-`root_network` — [root_network_from_carbon()] on the multi-layer path,
-[series_resistance()] on this one.
+per-call **driver**, supplied to [set_drivers()] as `root_network` —
+[root_network_from_carbon()] for a carbon profile, [series_resistance()] for a
+bare leaf.
 
-⚠️ **`gravity_head` is the one asymmetry left, and it is deliberate.** The
-multi-layer path derives a per-layer head from the depth profile it is handed
-(`gravity_head * z_soil_mid`); this path has no depth profile to derive one
-from, and a bare leaf wants **zero** rather than a geometric default — which is
-precisely the caller `leaf_supply_single()` exists for. Making it a driver here
-would mean either inventing a depth for a leaf that has none, or adding a
-second supply-shaped argument to [set_drivers()] that only one path reads. If
-you do want the multi-layer rule for a single layer of thickness `d`, pass
-`gravity_head = 0.00981 * d / 2`.
+The gravitational head is the depth: a layer's head is
+`gravity_head * z_soil_mid`, so `soil_depth = 0` is a leaf that lifts water
+nowhere, which is what a bare leaf wants, and a layer of thickness `d` carries
+the head that thickness implies. One rule, and the head is read off the profile
+rather than named twice.
 }
 
 \section{Why this is not a settable field}{
 
-The obvious R interface would be `leaf$supply_kind <- "single"`. It is not
-offered, because flipping the tag on its own leaves the other path's state
-configured and silently ignored, and flipping back makes it stale rather than
-absent. Both entry points here reconfigure the object completely, so the tag
-and the supply state can never disagree. The cost is that switching clears
-the solved state and the drivers must be set again — which is honest, since
-the two paths read different inputs.
+The obvious R interface would be `leaf$supply <- "single"`. It is not offered:
+both entry points here configure the object completely, so what the leaf is
+driven with and what it reports can never disagree.
 }
 
 \examples{

@@ -29,9 +29,8 @@ inst/include/phylloptim/
                                model NOTHING HERE CALLS: since #33 set_physiology
                                takes the resistances and the caller runs the model.
                                layer_thickness() is the dz definition both sides share
-  single_potential.hpp         SinglePotential: the other supply path — one ψ_soil
-                               and a constant series resistance
-  vulnerability.hpp            the Weibull cumulative-integral builder, shared by both
+  vulnerability.hpp            the Weibull cumulative-integral builder, shared by the
+                               stem and root curves
   constants.hpp                physical constants as inline constexpr
   quadrature.hpp               adaptive Simpson (replaced plant's compiled QAG)
   util.hpp                     R-free stop()/sentinels
@@ -547,34 +546,34 @@ the per-cause split and the tolerance bands go in the first PR comment — see
 
    Before arguing from inlining, check: `nm -C test_golden | grep <fn>`. No symbol
    means inlined; a symbol plus `bl` call sites in `objdump -d` means it is not.
-6. **There are TWO supply paths, chosen by `Leaf::supply_kind_`.** `MultiLayerRoots`
-   (default) and `SinglePotential`. Both are held as members and selected by an
-   enum, which measured **free** where `std::variant` cost +1.0% — a predictable
-   branch in front of an already-out-of-line call disappears into it. Don't
-   "tidy" this into a variant without re-measuring; PLAN 7b-iii stage 2 has the
-   numbers and the reproduction recipe, including the trap that a
-   compile-time-known tag folds the branch away and reports a false zero.
+6. **The supply is one class, `MultiLayerRoots`, reached by a direct call — and it
+   is still pluggable.** A bare leaf is that class at one layer with
+   `r_R_H_min = 0`, which is the same three operations in the same order as a
+   dedicated single-potential class: measured bit-identical, and PLAN "One supply
+   path" has the numbers and the one behaviour the reconciliation had to choose.
 
-   When adding a third path, the contract is five methods — `begin_solve`,
+   The interface a second supply implements is five methods — `begin_solve`,
    `uptake`/`uptake_at`, `duptake_dpsi`, the collar-potential bound, and the layer
    count — plus one rule: **`duptake_dpsi` returning NaN means "fall back to
    finite differences", so returning 0 or throwing silently degrades TF24f's
-   acclimation gradient.** A path with no branch kinks simply never returns it.
+   acclimation gradient.** A supply with no branch kinks simply never returns it.
 
-   `set_physiology`'s `RootNetwork` argument **is** part of the contract now, and a
-   sixth method with it: `set_supply_resistances`. Both paths take their
-   soil-to-collar resistances from that one argument, so the calling convention does
-   not depend on which path is in force. `MultiLayerRoots` reads one `r_R_H_min` and
-   one `r_R_V_sum` per rooted layer; `SinglePotential` reads `r_R_V_sum[0]` as its
-   series resistance and **refuses** a non-zero `r_R_H_min` rather than ignoring it.
-   A third path must accept the argument and validate what it can use.
+   `set_physiology`'s `RootNetwork` argument **is** part of that contract, and a
+   sixth method with it: `set_root_network`. The resistances arrive through
+   that one argument whatever the supply, so the calling convention does not depend
+   on which is in force; `MultiLayerRoots` reads one `r_R_H_min` and one
+   `r_R_V_sum` per rooted layer. Anything added beside it must accept the argument
+   and validate what it can use. The gravitational head comes with them rather than
+   as configuration: a layer's head is `gravity_head * z_soil_mid`, so naming a
+   layer's depth names its head, at one layer and at many.
 
-   ⚠️ **`gravity_head` is the one thing that is still configuration on the single
-   path**, via `set_supply_single(gravity_head)`, and that is deliberate rather than
-   unfinished: the multi-layer path derives a per-layer head from the depth profile
-   it is given, and a path with no depth profile has nothing to derive one from —
-   while a bare leaf wants zero rather than a geometric default. Do not "finish the
-   job" by inventing a depth for it.
+   ⚠️ **Dispatch here is measured, so do not pick one by taste.** An enum tag and a
+   `switch` in front of the call measured **free** where `std::variant` cost +1.0%:
+   a predictable branch in front of an already-out-of-line call disappears into it,
+   and `std::visit` cannot match that because it emits indirect thunks. PLAN 7b-iii
+   stage 2 has the table, the reproduction recipe, and the trap that makes the whole
+   comparison worthless — a compile-time-known tag folds the branch away and every
+   arm reports a false zero.
 7. **Moving a public member is a plant API break, because RcppR6 binds fields by
    name.** plant's `inst/RcppR6_classes.yml` lists most of `Leaf`'s state as
    `access: field`, and the generator emits `obj_->psi_soil_` — a getter *and* a

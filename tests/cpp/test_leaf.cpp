@@ -1121,119 +1121,13 @@ void test_soil_conductance_is_positive() {
   }
 }
 
-// The soil counterpart: d(E_i)/d(psi_soil[i]) per layer, which is what prices a
-// soil-potential row. Differencing E_up in one layer's potential isolates that
-// layer's derivative exactly, because the block is DIAGONAL -- so a disagreement
-// here is either the derivative or the diagonality claim, and both are worth
-// failing on.
-void test_soil_potential_derivative() {
-  printf("dE_i/d(psi_soil_i) per layer\n");
+// The per-layer collar conductance, which a stand adjoint needs because each
+// layer is a separate write into the shared soil. Its own check is that the
+// parts are the whole: the total is the sum in layer order, so this is exact
+// equality and not a tolerance.
+void test_the_per_layer_conductances_sum_to_the_total() {
+  printf("the per-layer collar conductances against their total\n");
   Drivers d;
-  for (int layers : {1, 3, 5}) {
-    std::vector<double> ps(layers), depth(layers);
-    for (int i = 0; i < layers; ++i) { ps[i] = 1.0 + 0.25 * i; depth[i] = 1.0 * (i + 1); }
-    phylloptim::Leaf l = make_leaf(d, ps, depth);
-    l.find_root_collar_psi();
-    const std::string at = " at " + std::to_string(layers) + " layers";
-
-    std::vector<double> dE(layers, 0.0);
-    l.dE_from_soil_dpsi_soil(l.opt_root_psi_, l.roots_.psi_soil_, dE);
-
-    const double h = 1e-7;
-    std::vector<double> buf(l.soil_consumption_.size(), 0.0);
-    for (int i = 0; i < layers; ++i) {
-      std::vector<double> psi_up = l.roots_.psi_soil_, psi_dn = l.roots_.psi_soil_;
-      psi_up[std::size_t(i)] += h;
-      psi_dn[std::size_t(i)] -= h;
-      double up = 0.0, dn = 0.0;
-      l.roots_.uptake_at(l.opt_root_psi_, psi_up, buf, up);
-      l.roots_.uptake_at(l.opt_root_psi_, psi_dn, buf, dn);
-      near(dE[std::size_t(i)], (up - dn) / (2.0 * h), 1e-5,
-           "layer " + std::to_string(i) + " matches a central difference" + at);
-    }
-
-    // A drier soil supplies less water, so every rooted layer's row is negative.
-    for (int i = 0; i < layers; ++i) {
-      ok(dE[std::size_t(i)] < 0.0, "layer " + std::to_string(i) + " is negative" + at);
-    }
-
-    // And it is NOT minus the collar conductance. The two moving bounds sit at
-    // different points on a non-linear vulnerability curve, so the integral
-    // terms do not cancel; writing the soil row as -duptake_dpsi would be the
-    // easy mistake and this is what refuses it.
-    const double S = l.dE_from_soil_dpsi_collar(l.opt_root_psi_, l.roots_.psi_soil_);
-    double summed = 0.0;
-    for (double v : dE) { summed += v; }
-    ok(std::abs(summed + S) > 1e-12 * std::abs(S),
-       "the soil rows are not minus the collar conductance" + at);
-  }
-}
-
-// d2(E_i)/d(collar) d(psi_soil_i), which a stand adjoint needs and the forward
-// model does not.
-//
-// TWO REFERENCES, AND THEY ARE INDEPENDENT OF EACH OTHER. A mixed second
-// derivative can be reached down either side, and the two sides are different
-// functions here: dE_i/d(psi_soil_i) is the soil-end quotient rule and
-// dE_up/d(collar) is the collar-end one, and they differ by more than a sign
-// because the two endpoints sit at different points on a non-linear
-// vulnerability curve. So differencing each in the OTHER variable gives two
-// routes that share no arithmetic, and agreeing with both is a much stronger
-// statement than agreeing with either.
-//
-// The second route differences the TOTAL, which is what makes it a check on the
-// diagonality claim as well: sum_i d2E_i/dT dpsi_j is d2E_j/dT dpsi_j only
-// because no layer reads another's potential.
-void test_uptake_mixed_second_derivative() {
-  printf("d2(E_i)/d(collar) d(psi_soil_i) against both of its own first derivatives\n");
-  Drivers d;
-  for (int layers : {1, 3, 5}) {
-    std::vector<double> ps(layers), depth(layers);
-    for (int i = 0; i < layers; ++i) { ps[i] = 1.0 + 0.25 * i; depth[i] = 1.0 * (i + 1); }
-    phylloptim::Leaf l = make_leaf(d, ps, depth);
-    l.find_root_collar_psi();
-    const double T = l.opt_root_psi_;
-    const std::vector<double> psi = l.roots_.psi_soil_;
-    const std::string at = " at " + std::to_string(layers) + " layers";
-
-    std::vector<double> d2(layers, 0.0);
-    l.roots_.d2uptake_dpsi_dpsi_soil(T, psi, d2);
-    for (int i = 0; i < layers; ++i) {
-      ok(std::isfinite(d2[std::size_t(i)]),
-         "layer " + std::to_string(i) + " is finite" + at);
-    }
-
-    // Route one: difference the soil row in the collar.
-    const double hT = 1e-6 * std::max(1.0, std::abs(T));
-    std::vector<double> up(layers, 0.0), dn(layers, 0.0);
-    l.dE_from_soil_dpsi_soil(T + hT, psi, up);
-    l.dE_from_soil_dpsi_soil(T - hT, psi, dn);
-    for (int i = 0; i < layers; ++i) {
-      near(d2[std::size_t(i)],
-           (up[std::size_t(i)] - dn[std::size_t(i)]) / (2.0 * hT), 1e-5,
-           "layer " + std::to_string(i) +
-               " matches a difference of the soil row in the collar" + at);
-    }
-
-    // Route two: difference the collar row in the soil. It is the total, so this
-    // also asserts that layer j's potential reaches no other layer's flux.
-    for (int i = 0; i < layers; ++i) {
-      const double h = 1e-6 * std::max(1.0, std::abs(psi[std::size_t(i)]));
-      std::vector<double> pu = psi, pd = psi;
-      pu[std::size_t(i)] += h;
-      pd[std::size_t(i)] -= h;
-      const double su = l.roots_.duptake_dpsi(T, pu);
-      const double sd = l.roots_.duptake_dpsi(T, pd);
-      near(d2[std::size_t(i)], (su - sd) / (2.0 * h), 1e-5,
-           "layer " + std::to_string(i) +
-               " matches a difference of the collar row in the soil" + at);
-    }
-  }
-
-  // The per-layer collar conductance, which a stand adjoint needs because each
-  // layer is a separate write into the shared soil. Its own check is that the
-  // parts are the whole: the total is the sum in layer order, so this is exact
-  // equality and not a tolerance.
   for (int layers : {1, 3, 5}) {
     std::vector<double> ps(layers), depth(layers);
     for (int i = 0; i < layers; ++i) { ps[i] = 1.0 + 0.25 * i; depth[i] = 1.0 * (i + 1); }
@@ -1253,18 +1147,6 @@ void test_uptake_mixed_second_derivative() {
     summed *= phylloptim::kg_per_mol_h2o;
     near(summed, l.dE_from_soil_dpsi_collar(T, l.roots_.psi_soil_), 1e-14,
          "the per-layer conductances sum to the total" + at);
-  }
-
-  // The kink contract is the union of the two first derivatives' kinks, because
-  // a second derivative needs BOTH endpoints off theirs. A collar sitting on a
-  // layer's potential is the one every caller meets.
-  {
-    std::vector<double> ps{1.0, 1.5}, depth{1.0, 2.0};
-    phylloptim::Leaf l = make_leaf(d, ps, depth);
-    std::vector<double> out;
-    l.roots_.d2uptake_dpsi_dpsi_soil(ps[0], l.roots_.psi_soil_, out);
-    ok(!out.empty() && std::isnan(out[0]),
-       "a collar on a layer's own potential refuses the whole vector");
   }
 }
 
@@ -1977,172 +1859,49 @@ void test_energy_balance_stomatal_decoupling() {
      "and it does so more than with the gate off -- the energy balance is why");
 }
 
+// The whole soil-to-collar path as one series resistance at the surface: one
+// rooted layer, no horizontal term, and at depth 0 no gravitational head either.
+void test_a_bare_leaf_is_a_one_layer_network() {
+  printf("a bare leaf is a one-layer network at the surface\n");
+  Drivers d;
+  // Per unit leaf area, like every other input to the leaf (hazard 4).
+  const double kR = 1.0e3;
+  std::vector<double> psi_soil{2.0}, depth{0.0};
+
+  phylloptim::Leaf l;
+  l.set_physiology(fixture::series_resistance(kR), d.PPFD, psi_soil, depth,
+                   d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
+                   d.atm_o2_kpa, d.atm_kpa);
+  l.find_root_collar_psi();
+
+  ok(l.roots_.grav_head_z_.size() == 1u, "the profile is one layer");
+  ok(l.roots_.grav_head_z_[0] == 0.0, "with no head to lift water through");
+  ok(l.soil_consumption_.size() == 1u,
+     "the consumption buffer is sized to that layer");
+  ok(l.operating_point_kind() == phylloptim::Leaf::OperatingPointKind::Interior,
+     "the solve finds an interior optimum");
+  near(l.opt_root_psi_, 2.8301538, 1e-6, "opt_root_psi_");
+  near(l.profit_, 3.6217811, 1e-6, "profit_");
+
+  // Ohm's law, bit-exactly: with r_R_H_min zero the vulnerability-weighted mean
+  // drops out and the series resistance is the whole of it.
+  for (double collar : {1.0, 2.5, 3.0, 4.0, 5.5}) {
+    l.E_from_Soil_to_Root_Collar(collar, l.supply_psi_soil());
+    const double ohm = (collar - psi_soil[0]) / kR * phylloptim::kg_per_mol_h2o;
+    ok(l.E_up_ == ohm,
+       "uptake is the Ohm's-law flux at a collar of " + std::to_string(collar));
+  }
+  // A collar wetter than the soil pushes water back into it. Losing this sign is
+  // how hydraulic redistribution silently becomes extra uptake.
+  l.E_from_Soil_to_Root_Collar(1.0, l.supply_psi_soil());
+  ok(l.E_up_ < 0.0, "a collar wetter than the soil loses water to it");
+}
+
 // The carbon -> resistance map (root_network_from_carbon) is the one piece of
 // root *architecture* left in this package; the supply solve itself only ever
 // reads r_R_H_min and r_R_V_sum. Testing it directly is the point of having
 // pulled it out of MultiLayerRoots -- and it is why the map stayed here rather
 // than moving to plant, where the golden file could not reach it.
-// The second supply path (issue #2 stage 3). Not wired into Leaf yet -- it exists
-// so the concept in stage 2 has two real alternatives to dispatch between, and so
-// the dispatch measurement was made against a genuine second type rather than a
-// stub the optimiser could see through.
-// A whole Leaf solving through SinglePotential (issue #2 stage 2). This is the
-// point of the whole item: the gas-exchange core is supply-agnostic, so swapping
-// the supply path should change the operating point and nothing else.
-void test_leaf_on_single_potential() {
-  printf("Leaf solving on the single-potential supply path\n");
-  Drivers d;
-
-  phylloptim::Leaf l;
-  l.set_supply_single();
-
-  // ⚠️ THE SAME CALL AS THE MULTI-LAYER PATH, which is the point. The resistance
-  // is a per-call driver on both paths now, carried by the RootNetwork argument;
-  // it used to be a set_supply_single() constructor-style argument. 1.0e3 is per
-  // unit leaf area, i.e. the old 2.0e4 * 0.05.
-  std::vector<double> psi_soil{1.0}, depth{1.0};
-  l.set_physiology(fixture::series_resistance(1.0e3), d.PPFD, psi_soil, depth,
-                   d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
-                   d.atm_o2_kpa, d.atm_kpa);
-  l.find_root_collar_psi();
-
-  ok(std::isfinite(l.profit_), "single-potential solve gives a finite profit");
-  ok(std::isfinite(l.opt_psi_stem_), "and a finite stem potential");
-  ok(l.opt_psi_stem_ > 0.0 && l.opt_psi_stem_ <= l.psi_crit,
-     "stem potential is a positive magnitude within psi_crit");
-  ok(l.opt_root_psi_ >= 0.0, "collar potential is stored as a positive magnitude");
-  ok(l.assim_colimited_ > 0.0, "the leaf assimilates");
-  ok(l.soil_consumption_.size() == 1u,
-     "the consumption buffer is sized to one layer, not the caller's vector");
-
-  // The collar must sit between the soil and the stem: water runs downhill.
-  const double collar_mag = l.opt_root_psi_;
-  ok(collar_mag >= psi_soil[0] - 1e-9 && collar_mag <= l.opt_psi_stem_ + 1e-9,
-     "collar potential lies between soil and stem");
-
-  // Drier soil must cost carbon here too -- the same contract the multi-layer
-  // path is held to, which is what makes the two comparable at all.
-  phylloptim::Leaf dry;
-  dry.set_supply_single();
-  std::vector<double> psi_dry{3.0};
-  dry.set_physiology(fixture::series_resistance(1.0e3), d.PPFD, psi_dry, depth,
-                     d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
-                     d.atm_o2_kpa, d.atm_kpa);
-  dry.find_root_collar_psi();
-  ok(dry.profit_ < l.profit_, "drier soil yields less profit");
-
-  // A larger series resistance is a worse-supplied plant, so it must not do
-  // better. This is the knob the multi-layer path spends root carbon to lower.
-  phylloptim::Leaf tight;
-  tight.set_supply_single();
-  tight.set_physiology(fixture::series_resistance(1.0e4), d.PPFD, psi_soil, depth,
-                       d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
-                       d.atm_o2_kpa, d.atm_kpa);
-  tight.find_root_collar_psi();
-  ok(tight.profit_ <= l.profit_, "a higher series resistance does not help");
-
-  // And the default is unchanged: a Leaf nobody configures is multi-layer.
-  phylloptim::Leaf plain;
-  ok(plain.supply_kind_ == phylloptim::Leaf::SupplyKind::MultiLayer,
-     "the supply path defaults to multi-layer");
-}
-
-void test_single_potential() {
-  printf("single-potential supply path\n");
-  phylloptim::SinglePotential sp;
-  sp.set_soil_state(1.5);        // positive magnitude, -MPa
-  // resistance_ is PER UNIT LEAF AREA, like every other input to the leaf.
-  sp.resistance_ = 1.0e3;
-
-  // begin_solve reports the only suction; there is nothing to flip (#25).
-  near(sp.begin_solve(), 1.5, 1e-14, "begin_solve returns the soil suction");
-  ok(sp.n_layers() == 1, "single potential writes exactly one layer");
-
-  // Ohm's law, and the sign that matters: a collar drier than the soil -- a
-  // LARGER suction now -- draws water UP (positive uptake).
-  std::vector<double> consumption(1, 0.0);
-  double E_up = 0.0;
-  sp.uptake(2.5, consumption, E_up);
-  ok(E_up > 0.0, "a collar drier than the soil draws water up");
-  near(E_up, (2.5 - 1.5) / sp.resistance_ * phylloptim::kg_per_mol_h2o,
-       1e-14, "uptake is the Ohm's-law flux");
-  ok(consumption[0] > 0.0, "per-layer consumption is filled");
-
-  // A collar WETTER than the soil pushes water back into it. Losing this sign is
-  // how hydraulic redistribution silently becomes extra uptake.
-  sp.uptake(0.5, consumption, E_up);
-  ok(E_up < 0.0, "a collar wetter than the soil loses water to it");
-
-  // The analytic derivative must match a central difference on uptake, and stay
-  // finite everywhere -- unlike MultiLayerRoots there are no branch kinks, so it
-  // never asks the caller for a finite-difference fallback.
-  const double h = 1e-6, p0 = 2.5;
-  double up = 0.0, dn = 0.0;
-  sp.uptake(p0 + h, consumption, up);
-  sp.uptake(p0 - h, consumption, dn);
-  const double fd = (up - dn) / (2.0 * h);
-  near(sp.duptake_dpsi(), fd, 1e-8, "analytic duptake_dpsi matches FD");
-  ok(sp.duptake_dpsi() > 0.0,
-     "duptake_dpsi is a positive conductance: uptake rises as the collar pulls harder");
-
-  // An UNSET resistance would be an infinite or NaN flux; it is rejected, not
-  // returned. The default is now the NA sentinel rather than zero, because the
-  // resistance became a per-call driver -- an unset one means set_physiology was
-  // never called, which is the same class of mistake as an unset psi_soil.
-  phylloptim::SinglePotential bad;
-  bad.set_soil_state(1.0);
-  bad.begin_solve();
-  bool threw = false;
-  try {
-    bad.uptake(2.0, consumption, E_up);
-  } catch (const std::exception &) {
-    threw = true;
-  }
-  ok(threw, "an unset resistance throws rather than returning an infinity");
-
-  // --- the driver entry point, and its two guards ---------------------------
-  // set_supply_resistances is what makes the two supply paths take the same
-  // set_physiology argument, so what it accepts and refuses is the contract.
-  phylloptim::SinglePotential drv;
-  drv.set_supply_resistances(fixture::series_resistance(2.5e3));
-  near(drv.resistance_, 2.5e3, 1e-14,
-       "the series resistance is read from r_R_V_sum[0]");
-
-  // A network for the OTHER path carries a vulnerability-weighted horizontal
-  // term this path cannot apply. Ignoring it would silently drop a resistance the
-  // caller meant to use, so it is refused.
-  threw = false;
-  try {
-    drv.set_supply_resistances(fixture::root_network({20.0}, {1.0}));
-  } catch (const std::exception &) {
-    threw = true;
-  }
-  ok(threw, "a multi-layer network is refused, not silently reinterpreted");
-  near(drv.resistance_, 2.5e3, 1e-14,
-       "and the refusal leaves the previous resistance intact");
-
-  // More than one layer is the other path's shape too.
-  threw = false;
-  try {
-    phylloptim::RootNetwork two;
-    two.r_R_V_sum.assign(2, 1.0e3);
-    drv.set_supply_resistances(two);
-  } catch (const std::exception &) {
-    threw = true;
-  }
-  ok(threw, "two layers are refused on a one-potential path");
-
-  // And a non-positive resistance is caught at the boundary rather than inside a
-  // root-find, which is why this entry point validates at all.
-  threw = false;
-  try {
-    drv.set_supply_resistances(fixture::series_resistance(0.0));
-  } catch (const std::exception &) {
-    threw = true;
-  }
-  ok(threw, "a zero series resistance is refused at the boundary");
-}
-
 void test_root_network_from_carbon() {
   printf("root architecture: carbon -> resistance\n");
   const double beta_H = 3.4e2, beta_V = 9.4e3, dz = 0.5;
@@ -3092,136 +2851,6 @@ void test_the_curves_trait_derivative_is_the_models_own() {
          worst_dc);
 }
 
-// The eight carbon-side traits have closed-form rows, and this is what says
-// whether they are right. At a frozen collar each reaches profit through
-// assimilation or through the hydraulic cost and through nothing else, so its
-// held row is one of `photo_trait_rows`' or `cost_trait_rows`' `dprofit_`
-// entries, and at an interior point -- where stationarity is the condition --
-// the condition's gradient is the matching `dmarginal_`.
-//
-// ⚠️ NEITHER READER HAS A CALLER ANYWHERE, tests included, so until this ran
-// nothing had compared them with the solve they claim to describe. The
-// differenced row is the reference: it is what the model does today.
-void test_the_supplys_mixed_partials_match_a_difference() {
-  printf("the supply's mixed partials against a difference of the conductance\n");
-  namespace pl = phylloptim;
-  const int L = 5;
-  fixture::Physiology d = env::drivers(3.0, 1500.0, 0.5, L, L);
-  pl::Leaf l = env::fresh();
-  d.drive(l, env::kTheta);
-  l.find_root_collar_psi();
-  const std::vector<double> psi = l.supply_psi_soil();
-  const double p = l.opt_root_psi_;
-
-  std::vector<double> got;
-  l.d2E_from_soil_dpsi_collar_dpsi_soil(p, psi, got);
-  double worst_soil = 0.0;
-  for (int j = 0; j < L; ++j) {
-    const double h = 1e-6;
-    std::vector<double> up = psi, dn = psi;
-    up[std::size_t(j)] += h;
-    dn[std::size_t(j)] -= h;
-    const double want = (l.dE_from_soil_dpsi_collar(p, up) -
-                         l.dE_from_soil_dpsi_collar(p, dn)) / (2.0 * h);
-    worst_soil = std::max(worst_soil,
-                          std::abs(got[std::size_t(j)] / want - 1.0));
-  }
-
-  std::vector<std::vector<double>> dE, dD;
-  l.dE_from_soil_droot_carbon(p, psi, dE, dD);
-  double worst_first = 0.0, worst_carbon = 0.0;
-  double th[pl::n_traits];
-  // The carbon each layer's resistances were built from. The network holds it
-  // split three ways rather than as itself, and the vertical share is a third.
-  std::vector<double> carbon;
-  for (double v : d.root_network.c_r_V) {
-    carbon.push_back(3.0 * v);
-  }
-  for (int a = 0; a < L; ++a) {
-    double sum_dE = 0.0, sum_dD = 0.0;
-    for (int i = 0; i < L; ++i) {
-      sum_dE += dE[std::size_t(i)][std::size_t(a)];
-      sum_dD += dD[std::size_t(i)][std::size_t(a)];
-    }
-    const double base = carbon[std::size_t(a)];
-    const double h = std::abs(base) * 1e-6;
-    double slope[2], total[2];
-    for (int side = 0; side < 2; ++side) {
-      std::vector<double> moved_carbon = carbon;
-      moved_carbon[std::size_t(a)] = side == 0 ? base + h : base - h;
-      fixture::Physiology moved = d;
-      moved.root_network = fixture::root_network(moved_carbon, d.soil_depth);
-      moved.drive(l, env::kTheta);
-      slope[side] = l.dE_from_soil_dpsi_collar(p, l.supply_psi_soil());
-      l.E_from_Soil_to_Root_Collar(p, l.supply_psi_soil());
-      total[side] = l.E_up_;
-    }
-    worst_first = std::max(
-        worst_first,
-        std::abs(sum_dE / ((total[0] - total[1]) / (2.0 * h)) - 1.0));
-    worst_carbon = std::max(
-        worst_carbon,
-        std::abs(sum_dD / ((slope[0] - slope[1]) / (2.0 * h)) - 1.0));
-  }
-  d.drive(l, env::kTheta);
-
-  printf("  dE_up/drc %.3g   d2E_up/dp dpsi %.3g   d2E_up/dp drc %.3g\n",
-         worst_first, worst_soil, worst_carbon);
-  ok(worst_first <= 1e-6, "the carbon block sums to the total's own row");
-  ok(worst_soil <= 1e-6, "the soil mixed partial is the conductance's own");
-  ok(worst_carbon <= 1e-6, "and so is the carbon one");
-
-  // The root curve's two parameters, which reach the supply through the layer's
-  // mean conductivity integral and nothing else. Both arms REBUILD the grid --
-  // that is what the row replaces -- so the difference is of the model rather
-  // than of a held curve.
-  using Trait = pl::MultiLayerRoots::CurveTrait;
-  const struct { const char* what; int slot; Trait trait; } curve[] = {
-      {"root_b", pl::trait_root_b, Trait::Position},
-      {"root_c", pl::trait_root_c, Trait::Steepness}};
-  for (const auto& t : curve) {
-    d.drive(l, env::kTheta);
-    std::vector<double> dE, d2E;
-    l.dE_from_soil_droot_curve(p, psi, t.trait, dE, d2E);
-    double got_E = 0.0, got_2 = 0.0;
-    for (int i = 0; i < L; ++i) {
-      got_E += dE[std::size_t(i)];
-      got_2 += d2E[std::size_t(i)];
-    }
-    const double base = env::kTheta[t.slot];
-    const double hh = std::abs(base) * 1e-6;
-    double total[2], slope[2];
-    for (int side = 0; side < 2; ++side) {
-      std::copy(env::kTheta, env::kTheta + pl::n_traits, th);
-      th[t.slot] = side == 0 ? base + hh : base - hh;
-      d.drive(l, th);
-      // ⚠️ The per-layer integrals are cached against the soil state, and a moved
-      // curve invalidates them: without this the difference reads the new curve at
-      // the collar and the OLD one at each soil layer, which is a difference of two
-      // models. Every production path reaches this through the collar solve, which
-      // places it; a check that perturbs and reads directly has to placement it itself.
-      l.supply_begin_solve();
-      l.E_from_Soil_to_Root_Collar(p, l.supply_psi_soil());
-      total[side] = l.E_up_;
-      slope[side] = l.dE_from_soil_dpsi_collar(p, l.supply_psi_soil());
-    }
-    d.drive(l, env::kTheta);
-    const double want_E = (total[0] - total[1]) / (2.0 * hh);
-    const double want_2 = (slope[0] - slope[1]) / (2.0 * hh);
-    printf("  %-7s dE_up %14.8g vs %14.8g (%.3g)  existing %14.8g   d2 %.3g\n",
-           t.what, got_E, want_E, std::abs(got_E / want_E - 1.0),
-           l.roots_.duptake_droot_curve(
-               p, psi,
-               t.trait == Trait::Position
-                   ? phylloptim::MultiLayerRoots::CurveTrait::Position
-                   : phylloptim::MultiLayerRoots::CurveTrait::Steepness),
-           std::abs(got_2 / want_2 - 1.0));
-    near(got_E, want_E, 1e-5, std::string("the supply's row in ") + t.what);
-    near(got_2, want_2, 1e-4,
-         std::string("and its collar derivative in ") + t.what);
-  }
-}
-
 // What the operating point's condition IS, in the two quantities the ecology
 // weighs against each other: the carbon bought by the water an extra unit of
 // collar pull draws, and the hydraulic cost of the extra tension that pull puts
@@ -3502,16 +3131,13 @@ void test_the_supply_answers_at_the_two_coincidences() {
     ok(std::abs(at_meeting - differenced) / std::abs(differenced) < 1e-9,
        "and the number it answers with is the difference of the flux");
   }
-  ok(l.roots_.at_equal_potentials(meeting, ps[std::size_t(layer)]) &&
-         !l.roots_.at_equal_potentials(balanced, ps[std::size_t(layer)]),
-     "and the predicate names that one and not the balance");
 
-  // No state the grid reaches refuses. This is the count that decided not to
-  // write the equal-potentials limit: the balance is reached, the meeting is not.
+  // No state the grid reaches refuses a conductance, and the gravity balance is
+  // among the states it reaches.
   const double psi_soils[] = {0.5, 1.0, 2.0, 3.0, 3.5, 4.0, 5.0, 6.0, 7.0};
   const double ppfds[] = {0.0, 10.0, 100.0, 900.0, 1500.0};
   const int layer_counts[] = {1, 2, 3, 5};
-  int points = 0, refused = 0, balanced_points = 0, meeting_points = 0;
+  int points = 0, refused = 0, balanced_points = 0;
   for (double psi : psi_soils) {
     for (double ppfd : ppfds) {
       for (int layers : layer_counts) {
@@ -3529,22 +3155,15 @@ void test_the_supply_answers_at_the_two_coincidences() {
             break;
           }
         }
-        for (int i = 0; i < probe.roots_.max_soil_layer; ++i) {
-          if (probe.roots_.at_equal_potentials(p, pp[std::size_t(i)])) {
-            ++meeting_points;
-            break;
-          }
-        }
         if (!std::isfinite(probe.dE_from_soil_dpsi_collar(p, pp))) {
           ++refused;
         }
       }
     }
   }
-  printf("  %d operating points: %d gravity-balanced, %d at a meeting, %d refuse\n",
-         points, balanced_points, meeting_points, refused);
+  printf("  %d operating points: %d gravity-balanced, %d refuse\n",
+         points, balanced_points, refused);
   ok(balanced_points > 0, "the grid reaches the gravity balance");
-  ok(meeting_points == 0, "and reaches no collar that meets a layer's potential");
   ok(refused == 0, "so nothing in the grid refuses a conductance any more");
 }
 
@@ -3585,19 +3204,6 @@ void test_the_supplys_second_collar_derivative() {
   printf("  %d states, worst %.3g%s\n", compared, worst, worst_where.c_str());
   ok(compared >= 12, "every state's second derivative is a number");
   ok(worst <= 1e-5, "and it is the difference of the first it replaces");
-
-  // The single path's flux is linear in the difference over a constant
-  // resistance, so its conductance does not move with the collar at all.
-  fixture::Physiology d = env::drivers(2.0, 900.0, 2.0, 1, 1);
-  // That constant resistance, which is the whole network this path reads.
-  d.root_network = fixture::series_resistance(1e3);
-  phylloptim::Leaf single = env::fresh();
-  single.set_supply_single(0.0);
-  d.drive(single, env::kTheta);
-  single.find_root_collar_psi();
-  ok(single.d2E_from_soil_dpsi_collar2(single.opt_root_psi_,
-                                       single.supply_psi_soil()) == 0.0,
-     "the single path's is exactly zero");
 }
 
 // The two zero-flux kinds are two points, and the placement is what tells them apart.
@@ -3736,7 +3342,7 @@ void test_the_supply_derivatives_stay_smooth_into_a_coincidence() {
   const std::vector<double> soil = l.supply_psi_soil();
 
   // Approach layer 0's potential from the dry side, straddling the 1e-5 crossover.
-  // Stops at 2e-08, above the at_equal_potentials guard, which still answers NaN.
+  // Stops at a span of 2e-08.
   const double target = soil[0];
   double prev1 = 0.0, prev2 = 0.0;
   double worst_jump1 = 0.0, worst_jump2 = 0.0;
@@ -4092,22 +3698,16 @@ void test_the_two_zero_flux_kinds_are_two_points() {
   ok(pl::derivative_along(parched_along.profit) == 0.0,
      "a hydraulic shutdown has no collar channel, exactly");
 
-  // ⚠️ ONE LAYER IS THE CASE THAT USED TO REFUSE, and it is where two of these
-  // items meet. The wet bound is the collar at which total uptake vanishes; with a
-  // SINGLE layer that is the collar at which its numerator vanishes, which is the
-  // gravity balance -- and the supply refused every derivative there, so the bound
-  // had no row and a shade-death point placed on it could not report its own
-  // movement. Only the numerator vanishes at that collar, so nothing about it was
-  // ever 0/0; with the refusal gone the bound has a row at every layer count and
-  // the point's movement is reported rather than folded into a re-solve.
+  // ⚠️ ONE LAYER IS WHERE TWO OF THESE ITEMS MEET. The wet bound is the collar
+  // at which total uptake vanishes; with a SINGLE layer that is also the collar
+  // at which its numerator vanishes, which is the gravity balance. Only the
+  // numerator vanishes there, so nothing about that collar is 0/0 and a
+  // shade-death point placed on it reports its own outputs at every layer count.
   for (int layers : {1, 2, 5}) {
     fixture::Physiology thin = env::drivers(2.0, 0.0, 2.0, layers, layers);
     pl::Leaf probe = env::fresh();
     thin.drive(probe, env::kTheta);
     probe.find_root_collar_psi();
-    const pl::Leaf::BoundRow wet = probe.bound_row(pl::Leaf::WhichBound::Wet);
-    ok(wet.finite, std::string("the wet bound has a row at ") +
-                       std::to_string(layers) + " layer(s)");
     ok(probe.operating_point_kind() == pl::Leaf::OperatingPointKind::ShadeDeath,
        std::string("and shade death is what the solve calls it at ") +
            std::to_string(layers) + " layer(s)");
@@ -4121,10 +3721,11 @@ void test_the_two_zero_flux_kinds_are_two_points() {
     }
     const pl::LeafInputs<double> in = fixture::leaf_inputs<double>(
         probe, fixture::Input::None, 0, soil);
-    const auto draw = probe.supply_draw_at<double>(wet.bound, in.supply);
+    const auto draw =
+        probe.supply_draw_at<double>(probe.opt_root_psi_, in.supply);
     const double placed = probe.bound_at<double>(
-        pl::Leaf::WhichBound::Wet, wet.bound, in, draw);
-    ok(placed == wet.bound,
+        pl::Leaf::WhichBound::Wet, probe.opt_root_psi_, in, draw);
+    ok(placed == probe.opt_root_psi_,
        std::string("and the collar at ") + std::to_string(layers) +
            " layer(s) is the wet bound itself");
     const pl::Leaf::LeafOutputs<double> got =
@@ -4201,8 +3802,7 @@ int main() {
   test_collar_solve_refuses_rather_than_guessing();
   test_collar_argmax_is_smooth_in_a_trait();
   test_soil_conductance_is_positive();
-  test_soil_potential_derivative();
-  test_uptake_mixed_second_derivative();
+  test_the_per_layer_conductances_sum_to_the_total();
   test_marginal_price_water();
   test_root_vulnerability_is_bounded_past_its_grid();
   test_root_psi_crit_clamp_binds();
@@ -4216,8 +3816,7 @@ int main() {
   test_energy_balance_collar_solve_is_measured();
   test_energy_balance_gate_off_is_inert();
   test_energy_balance_stomatal_decoupling();
-  test_single_potential();
-  test_leaf_on_single_potential();
+  test_a_bare_leaf_is_a_one_layer_network();
   test_root_network_from_carbon();
   test_temperature_parameters_are_settable();
   test_temperature_params_invalidate_cache();
@@ -4231,7 +3830,6 @@ int main() {
   test_the_curves_trait_derivative_is_the_models_own();
   test_the_transport_leaves_the_flux_where_it_is();
   test_the_condition_is_the_stem_potential_and_its_collar_response();
-  test_the_supplys_mixed_partials_match_a_difference();
   probe_root_curve_slope();
   probe_table_vs_curve();
   test_the_condition_is_carbon_bought_against_tension_paid();

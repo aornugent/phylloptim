@@ -355,39 +355,17 @@ test_that("operating_point() reports lambda and g1_eff from the solved state", {
   expect_gt(diff(range(live$g1_eff)) / mean(live$g1_eff), 0.1)
 })
 
-test_that("the supply path can be chosen, and reports which is in force", {
-  expect_identical(leaf_model()$supply_kind, "multilayer")
-
-  single <- leaf_model(supply = leaf_supply_single(gravity_head = 0.05))
-  expect_identical(single$supply_kind, "single")
-  expect_identical(single$single_gravity_head_, 0.05)
-  # The resistance is a DRIVER now, so it is unset until set_drivers() runs -- the
-  # same way psi_soil is, and the change this test exists to pin.
-  expect_true(is.na(single$single_resistance_))
+test_that("a bare leaf carries its own single layer, and its resistance is a driver", {
+  single <- leaf_model(supply = leaf_supply_single(soil_depth = 0.1))
+  # The resistance is a driver, so it is unset until set_drivers() runs -- the same
+  # way psi_soil is.
+  expect_length(single$psi_soil_, 0L)
   set_drivers(single, psi_soil = 1.5, root_network = series_resistance(1e3))
-  expect_identical(single$single_resistance_, 1e3)
-})
-
-test_that("there is no state in which the tag and the supply disagree", {
-  # The footgun PLAN 7b-iii flagged, and the reason this is two entry points
-  # rather than a settable field: assigning the tag alone would leave the other
-  # path's state configured and silently ignored. So the tag must not be
-  # assignable at all, and the resistance must not be settable behind the tag's
-  # back either.
-  l <- leaf_model()
-  expect_error(l$supply_kind <- "single", "read-only")
-  expect_error(l$single_resistance_ <- 1e3, "read-only")
-
-  # Switching after the drivers are set must not leave the previous path's
-  # solved state lying around to be read as if it belonged to the new one.
-  set_drivers(l, psi_soil = 2.0, PPFD = 900)
-  l$find_root_collar_psi()
-  expect_true(is.finite(l$profit_))
-
-  l$set_supply_single(0)
-  expect_identical(l$supply_kind, "single")
-  expect_false(is.finite(l$profit_))
-  expect_length(l$psi_soil_, 0L)
+  expect_identical(single$psi_soil_, 1.5)
+  expect_identical(single$soil_depth_, 0.1)
+  # One layer, and no vulnerability-weighted horizontal term.
+  expect_identical(single$r_R_V_sum, 1e3)
+  expect_identical(single$r_R_H_min, 0)
 })
 
 test_that("the single-potential path solves, and responds to its resistance", {
@@ -417,39 +395,42 @@ test_that("the single path refuses inputs it would otherwise ignore", {
   # kind of thing that produces a plausible wrong number, so it errors.
   l <- leaf_model(supply = leaf_supply_single())
   expect_error(set_drivers(l, psi_soil = c(1, 2)), "single value")
-  # `soil_depth` is the one argument that stays multi-layer-only: this path has no
-  # depth profile for anything to read.
-  expect_error(set_drivers(l, psi_soil = 1, soil_depth = 1),
-               "no depth profile to read")
+  # The depth is named by leaf_supply_single(), so naming it again here would be
+  # two spellings of one number.
+  expect_error(set_drivers(l, psi_soil = 1, soil_depth = 1), "name it twice")
 
-  # But `root_network` is now USED here rather than refused, which is the
-  # consistency change: it is the same argument on both paths. What is refused is a
-  # network built for the OTHER path -- a vulnerability-weighted horizontal term
-  # this path cannot apply, which would otherwise be silently dropped.
-  expect_error(
-    set_drivers(l, psi_soil = 1,
-                root_network = root_network_from_carbon(20, soil_depth = 1)),
-    "r_R_H_min must be empty or zero")
+  # A network with a vulnerability-weighted horizontal term is a one-layer network
+  # like any other, and it is applied rather than refused -- it resists more than
+  # the bare series one, which is what having the term means.
+  bare <- leaf_solve(psi_soil = 1.5, PPFD = 900, supply = leaf_supply_single(),
+                     root_network = series_resistance(1e3))
+  rooted <- leaf_solve(psi_soil = 1.5, PPFD = 900, supply = leaf_supply_single(),
+                       root_network = root_network_from_carbon(20,
+                                                               soil_depth = 1))
+  expect_true(is.finite(rooted$A))
+  expect_lt(rooted$A, bare$A)
+  # A two-layer network against a one-layer profile indexes past the soil state,
+  # so it is refused by length rather than by which supply asked.
   expect_error(
     set_drivers(l, psi_soil = 1,
                 root_network = RootNetwork(r_R_V_sum = c(1e3, 2e3))),
-    "exactly one series resistance")
+    "rooted layers but the soil profile")
   expect_error(set_drivers(l, psi_soil = 1, root_network = list(a = 1)),
                "must be a RootNetwork")
 
   expect_error(series_resistance(0), "must be positive")
   expect_error(series_resistance(-1), "must be positive")
-  expect_error(leaf_supply_single(gravity_head = -1), "non-negative")
+  expect_error(leaf_supply_single(soil_depth = -1), "non-negative")
   expect_error(leaf_model(supply = list(kind = "single")),
                "must come from leaf_supply")
 })
 
-test_that("gravity_head costs the leaf water, on the single path", {
+test_that("depth costs the leaf water, because the head is the depth", {
   flat <- leaf_solve(psi_soil = 1.5, PPFD = 900,
                      supply = leaf_supply_single(),
                      root_network = series_resistance(1e3))
   uphill <- leaf_solve(psi_soil = 1.5, PPFD = 900,
-                       supply = leaf_supply_single(gravity_head = 0.5),
+                       supply = leaf_supply_single(soil_depth = 0.5),
                        root_network = series_resistance(1e3))
   expect_lt(uphill$A, flat$A)
 })
@@ -573,10 +554,10 @@ test_that("the default-root-network memo cannot go stale", {
 
   # The same for the single-potential path's cached empty network: reused across
   # calls, and reuse must not carry state.
-  s1 <- leaf_model(supply = leaf_supply_single(1e3))
+  s1 <- leaf_model(supply = leaf_supply_single())
   set_drivers(s1, psi_soil = 1.5); s1$find_root_collar_psi()
   first <- operating_point(s1)
-  s2 <- leaf_model(supply = leaf_supply_single(1e3))
+  s2 <- leaf_model(supply = leaf_supply_single())
   set_drivers(s2, psi_soil = 1.5); s2$find_root_collar_psi()
   expect_identical(operating_point(s2), first)
 })
@@ -601,7 +582,7 @@ test_that("series_resistance() copies its prototype rather than mutating it", {
   # And the shape is the real struct's, not a hand-written list that could drift.
   expect_identical(sort(names(a)), sort(names(RootNetwork())))
   expect_s3_class(a, "RootNetwork")
-  expect_length(a$r_R_H_min, 0L)
+  expect_identical(a$r_R_H_min, 0)
 
   # It must still drive a solve identically to the constructor route it replaced.
   by_ctor <- leaf_model(supply = leaf_supply_single())
