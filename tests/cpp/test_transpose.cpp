@@ -1,4 +1,4 @@
-// PROBE: the transpose identity, which needs no reference gradient and no
+// The transpose identity, which needs no reference gradient and no
 // differencing.
 //
 //     <v, J u>  ==  <J^T v, u>
@@ -19,8 +19,11 @@
 // exactly the mistake the identity exists to catch, so that arm MUST fail. A test that
 // passes both ways is measuring nothing.
 //
-//   make -C tests/cpp CXX=g++ ODELIA_INC=../../../odelia/inst/include \
-//        ODELIA_SRC=../../../odelia/src probe_transpose && ./probe_transpose
+// Run by `make -C tests/cpp`, with the rest of the suite.
+//
+// ⚠️ The control is printed but NOT asserted: a state where the collar carries no
+// rows reports "control is silent" and still passes. So this measures the
+// identity, and the control tells a reader whether the state had anything to say.
 
 #include <phylloptim.hpp>
 

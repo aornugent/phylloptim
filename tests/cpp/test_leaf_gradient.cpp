@@ -20,9 +20,18 @@
 // So the collar is held, and held in the MIDDLE of the feasible interval rather
 // than at the operating point: an optimum sitting on a bound leaves the interval
 // on half of every perturbation, and a reference that refuses half its steps is
-// not one. The collar's own row is refereed where it is a statement about the
-// model: probe_marginal_tangent for the interior condition, probe_bound_tangent
-// for the three bounds.
+// not one.
+//
+// The three BOUNDS are refereed below, against a difference of the bound's own
+// solve, for all of Wet, DryRootCrit and DryRootPsiCrit.
+//
+// ⚠️ THE INTERIOR CONDITION HAS NO INDEPENDENT REFERENCE. marginal_collar_slope
+// is the one derivative that crosses into plant as a plain number, and nothing
+// differences the model to check it. test_transpose holds it to the transpose
+// identity, which is a consistency check: a slope wrong in the forward and
+// reverse directions the same way satisfies the identity and reads as correct.
+// An independent check means the analytic route -- the closed forms assembled
+// away from this code -- and it is not written.
 //
 // The named inputs, the named states, both outputs. A difference cannot resolve
 // arbitrarily small numbers, so the budget is what the difference itself can

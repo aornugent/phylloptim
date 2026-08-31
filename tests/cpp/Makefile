@@ -79,9 +79,10 @@ endif
 all: build
 	./test_leaf
 	./test_leaf_gradient
+	./test_transpose
 	./test_golden $(GOLDEN_ARGS)
 
-build: test_leaf test_leaf_gradient test_golden
+build: test_leaf test_leaf_gradient test_transpose test_golden
 
 # Not built or run by `make all` -- it takes a few seconds and measures the
 # machine as much as the code. Run it deliberately when a change might have
@@ -96,6 +97,12 @@ test_leaf: test_leaf.cpp $(HEADERS)
 # re-solves the whole leaf four times per input per state -- and it is the one
 # thing that referees the derivative against something that is not itself.
 test_leaf_gradient: test_leaf_gradient.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
+
+# The transpose identity, which needs no reference gradient: one tangent against
+# one sweep. It is the only thing here that can see a wrong SUPPLIED row, since a
+# difference of the recorded step cannot. 0.01 s.
+test_transpose: test_transpose.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
 test_golden: test_golden.cpp $(HEADERS)
@@ -116,4 +123,4 @@ golden: test_golden
 	./test_golden --generate
 
 clean:
-	rm -f test_leaf test_leaf_gradient test_golden bench_solve
+	rm -f test_leaf test_leaf_gradient test_transpose test_golden bench_solve
