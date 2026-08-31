@@ -1169,11 +1169,10 @@ public:
   // want to probe the supply function away from the current soil state (the
   // R-facing Leaf::E_from_Soil_to_Root_Collar).
   //
-  // The `&psi_soil == &psi_soil_` test is what used to select the
-  // cached path for every caller, including the hot one. It is kept here only so
-  // this entry point cannot change behaviour for a caller that happens to hand
-  // back psi_soil_ itself; the hot path above no longer depends on
-  // address identity to be fast. PLAN 7b-ii trap 3.
+  // The `&psi_soil == &psi_soil_` test selects the cached soil-side path. It is
+  // kept here only so this entry point cannot change behaviour for a caller that
+  // happens to hand back psi_soil_ itself; the hot path above does not need
+  // address identity to be fast.
   void uptake_at(double T_collar, const std::vector<double>& psi_soil,
                  std::vector<double>& soil_consumption, double& E_up) const {
     const SupplyAt<double> at_scalar{psi_soil, network_.r_R_H_min,
@@ -1365,18 +1364,13 @@ private:
     const double G_at_T_collar =
         use_integral_cache ? root_vuln_integral_at(collar_at) : 0.0;
 
-    // GUARD POLICY (the per-layer isfinite/stop guards here were added while
-    // debugging the #485 drought-NaN, now fixed at source by the soil residual-
-    // moisture floor). Most were defensive and redundant, so they have been
-    // removed from this hot loop; the remaining two are load-bearing:
-    //   * the equal-potentials f_ri <= 0 check below: it USED to be the only
-    //     thing standing between a deep-drought layer and the negative
-    //     conductivity the curve's extrapolant produced past its
-    //     domain -- negative-but-FINITE r_R, so a wrong-sign E_i the post-loop
-    //     isfinite(E_up) net would not catch. That case is now prevented at
-    //     source: root_vuln_at clamps its argument to the last knot, so f_ri is
-    //     bounded below by the last knot's ~1% (issue #1). The check stays as a
-    //     cheap assertion on that, not as the enforcement.
+    // GUARD POLICY: no per-layer isfinite/stop guards in this hot loop, and DO
+    // NOT add them. Two guards are load-bearing:
+    //   * the equal-potentials f_ri <= 0 check below: a negative f_ri gives a
+    //     negative-but-FINITE r_R, hence a wrong-sign E_i that the post-loop
+    //     isfinite(E_up) check does not catch. root_vuln_at clamps its argument
+    //     to the last knot, which bounds f_ri below by that knot's ~1%, so the
+    //     check is a cheap assertion on that clamp, not the enforcement.
     //   * the post-loop isfinite(E_up) check: any non-finite produced anywhere
     //     in the loop propagates into the sum and is caught there once per call.
     // Everything else is provably safe to drop on the valid path: psi_soil is

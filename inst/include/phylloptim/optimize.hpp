@@ -117,13 +117,12 @@ double brent_fmin(Function f, double ax, double bx, double tol,
 // the argmax does not feed a gradient (the single-layer leaf optimisers), prefer
 // brent_fmin, which was measured ~2.3-2.6x faster there.
 //
-// ⚠️ **The production collar solver no longer uses this** -- PLAN 11a replaced it
-// with a safeguarded root-find on the first-order condition
-// (Leaf::maximise_profit_over_collar), and this is now only that solver's fallback
-// for the case where neither bracket endpoint has a usable gradient. The reasoning
-// this comment used to give -- that the collar argmax feeds the demographic
-// growth-rate gradient and so must vary smoothly with plant state -- was right
-// about the requirement and wrong about which solver meets it best:
+// ⚠️ **The production collar solver does not use this.** It root-finds the
+// first-order condition instead (Leaf::maximise_profit_over_collar), and this is
+// only that solver's fallback for the case where neither bracket endpoint has a
+// usable gradient. The collar argmax does feed the demographic growth-rate
+// gradient and so must vary smoothly with plant state; that requirement is what
+// rules this out rather than what recommends it:
 //
 //   * A fixed iteration COUNT is not smoothness. Golden section terminates on
 //     bracket WIDTH, so it resolves the argmax only to `tol` and the residual

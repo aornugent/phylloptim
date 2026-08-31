@@ -295,14 +295,14 @@ public:
   double collar_interval_min_width;
   // Knots in each vulnerability curve, and the ONE place the count is chosen: both
   // constructors and set_traits' rebuild read it, so a leaf cannot be built on one
-  // curve and rebuilt onto another. The default constructor used to hardcode 100
-  // beside this member, which is exactly how that happened.
+  // curve and rebuilt onto another. DO NOT hardcode the count anywhere else, in
+  // a constructor or beside this member.
   //
-  // ⚠️ IT IS NO LONGER SET BY THE GRID'S OWN ERROR, and what moved is the read
-  // rather than the count. Every channel of both tables is a closed form -- G, its
-  // slope f, and f's own slope -- so both are read as quintics: h^6 in the value
-  // and h^5 in the slope. What the rows follow is the SLOPE, which measured h^3
-  // against an h^4 value read, so the slope column is the one that decides.
+  // ⚠️ IT IS NOT SET BY THE GRID'S OWN ERROR. Every channel of both tables is a
+  // closed form -- G, its slope f, and f's own slope -- so both are read as
+  // quintics: h^6 in the value and h^5 in the slope. What the rows follow is the
+  // SLOPE, one order behind the value in either read, so the slope column is the
+  // one that decides.
   // Measured against the closed form, worst over every span:
   //
   //   knots   cubic value   quint value   cubic slope   quint slope   quint KB
@@ -314,10 +314,10 @@ public:
   //     800     1.834e-12     2.220e-15     1.622e-09     1.251e-12       18.8
   //    1600     1.155e-13     2.220e-15     2.033e-10     2.144e-12       37.5
   //
-  // 1600 was the count a CUBIC read needed to bring the rows to the differenced
-  // reference's own floor of 2e-09 to 4e-09, and it reached it on the slope
-  // column's 2.033e-10. A quintic passes that at 100 knots and sits 60x below it at
-  // 200, so by the old rule this would now be 200.
+  // A CUBIC read needs 1600 to bring the rows to the differenced reference's own
+  // floor of 2e-09 to 4e-09, reaching it on the slope column's 2.033e-10. A
+  // quintic passes that at 100 knots and sits 60x below it at 200, so a rule set
+  // by the read's error would put this at 200.
   //
   // ⚠️ IT IS NOT, AND WHAT SETS IT IS THE ROWS RATHER THAN EITHER READ. Reducing it
   // moves the knot SPACING, and two row checks follow the spacing and not G's own
@@ -494,8 +494,8 @@ public:
   double E_up_;
 
   // dpsi_stem/dpsi at the collar the marginal profit was last evaluated at. The
-  // transport's whole response to the collar, formed there and previously
-  // discarded; the condition's gradient is written in it.
+  // transport's whole response to the collar, formed there and kept: the
+  // condition's gradient is written in it.
   double dpsistem_dpsi_ = util::na_value;
 
   // The marginal profit's two coefficients at that same collar: its response to
@@ -2437,13 +2437,13 @@ inline void Leaf::set_shutdown_state(double root_collar) {
   // immediately; it is the only one that does, and it says so there.
   operating_point_kind_ = OperatingPointKind::HydraulicShutdown;
 
-  // Write the flux outputs too. Before this they were left holding whatever the
-  // PREVIOUS solve on this object put there, and set_physiology did not reset them
-  // either (setup_clean_leaf runs from the constructors only) -- so a reused Leaf
-  // reported the previous plant's water and carbon use after a shutdown. plant
-  // holds one persistent Leaf per TF24_Strategy and drives every node, height and
-  // timestep through it, and soil_consumption_ feeds the patch water balance, so
-  // this was a live water-balance error on the dry margin. plant #578, #577.
+  // Write the flux outputs too. DO NOT skip them: set_physiology does not reset
+  // them (setup_clean_leaf runs from the constructors only), so they would still
+  // hold whatever the PREVIOUS solve on this object put there, and a reused Leaf
+  // would report the previous plant's water and carbon use after a shutdown.
+  // plant holds one persistent Leaf per TF24_Strategy and drives every node,
+  // height and timestep through it, and soil_consumption_ feeds the patch water
+  // balance, so that is a silent water-balance error on the dry margin.
   //
   // The values are the ones consistent with the profit already set above: the leaf
   // is holding at psi_crit, so it moves no water at all, but it IS respiring --
@@ -2659,18 +2659,18 @@ if(assim_max_ < 0){
 }
 
 // The profit-maximising collar potential, by solving the first-order condition
-// dprofit/dpsi == 0 instead of searching profit itself (PLAN 11a). Assumes
+// dprofit/dpsi == 0 instead of searching profit itself. Assumes
 // prepare_collar_solve has run, so the soil-side caches are placed and every
 // gradient evaluation below can go straight to dprofit_at_collar_psi.
 //
-// WHY this replaced golden section, in one line each -- PLAN 11a has the numbers:
+// ⚠️ DO NOT SEARCH PROFIT ITSELF BY GOLDEN SECTION, in one line each:
 //
 //  * Golden section resolves the argmax only to GSS_tol_abs (1e-3), leaving the
 //    returned collar ~1e-4 MPa from the true stationary point with an offset that
-//    wanders as the comparison sequence flips. That offset IS the staircase that
-//    made trait derivatives unusable.
-//  * The damage was not merely a staircase. For traits in the hydraulic path the
-//    wandering offset DOMINATED the real trait response, so the argmax came back
+//    wanders as the comparison sequence flips. That offset IS a staircase in the
+//    trait derivatives, and makes them unusable.
+//  * The damage is not merely a staircase. For traits in the hydraulic path the
+//    wandering offset DOMINATES the real trait response, so the argmax comes back
 //    smooth, plausible and SIGN-INVERTED (root_b: -2.6e-03 where the truth is
 //    +2.6e-04). Arbitrated against a 20001-point derivative-free scan of profit.
 //  * It cannot be fixed downstream. No finite-difference step size and no amount
@@ -3128,15 +3128,14 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
     return 0.0;  // shut-down / infeasible: no informative gradient
   }
 
-  // ⚠️ E1: PLACE THE TEMPERATURE PARAMETERS AT THIS CANDIDATE. Without this the
+  // ⚠️ PLACE THE TEMPERATURE PARAMETERS AT THIS CANDIDATE. Without this the
   // whole derivative below is evaluated at the AIR-temperature baseline, because
   // nothing on this path calls set_leaf_states_rates_from_psi_stem and
   // set_physiology gates its temperature cache on !use_energy_balance_. The
-  // objective meanwhile is evaluated at Tleaf(E(psi)). So the solver was
-  // root-finding the first-order condition of a different model from the one it
-  // reported: measured before this landed, |dprofit| at the returned collar
-  // reached 5.76 against the non-EB path's 5.6e-15, and the collar sat up to
-  // 0.83 MPa from the true argmax.
+  // objective meanwhile is evaluated at Tleaf(E(psi)), so the solver then
+  // root-finds the first-order condition of a different model from the one it
+  // reports: |dprofit| at the returned collar reaches 5.76 against the non-EB
+  // path's 5.6e-15, and the collar sits up to 0.83 MPa from the true argmax.
   //
   // Same call order as set_leaf_states_rates_from_psi_stem uses, deliberately:
   // transpiration first, then the temperature update, then the ci solve, so the
@@ -4524,9 +4523,9 @@ inline S Leaf::collar_at(const LeafInputs<S>& in,
       // and an output the envelope theorem spares does not read the collar at all.
       // ⚠️ NOT ON THE DOUBLE PATH. implicit_value_reported short-circuits at double
       // -- there is no tape to record against -- but C++ evaluates its arguments
-      // first, and dM/dp costs a closed-form assembly of the whole marginal. The
-      // forward model was paying for it per interior operating point and discarding
-      // it: measured at 191 s against 32 s on a century stand before this line.
+      // first, and dM/dp costs a closed-form assembly of the whole marginal. Call
+      // it on the double path and the forward model pays that per interior
+      // operating point and discards it: 191 s against 32 s on a century stand.
       // Recording-only, so both arms place the same collar.
       if constexpr (std::is_same_v<S, double>) {
         collar = S(opt_root_psi_);
@@ -4668,10 +4667,10 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
 //    cooling back toward the optimum. That is the decoupling mechanism, and its
 //    sign is the sharpest available test that this term is right.
 //
-// `dgc_dT` is a named zero rather than an omission: stom_cond_CO2 currently
-// divides by the prescribed AIR vpd, so gc does not depend on Tleaf. Wiring
-// leaf-to-air VPD (PLAN 13.1) makes it non-zero and this becomes a one-line
-// change instead of a re-derivation.
+// `dgc_dT` is a named zero rather than an omission: stom_cond_CO2 divides by the
+// prescribed AIR vpd, so gc does not depend on Tleaf. Wiring leaf-to-air VPD
+// makes it non-zero, and naming it keeps that a one-line change instead of a
+// re-derivation.
 inline double Leaf::dprofit_energy_balance_term(
     double ci, double gc, double g_ci, double inv_atm, double gc_const,
     double dgc_dpsistem, double dgc_dpsi, double dpsistem_dpsi, double dT_dE,
@@ -4727,7 +4726,7 @@ inline double Leaf::dprofit_energy_balance_term(
   const double dE_dpsi = (dgc_dpsistem * dpsistem_dpsi + dgc_dpsi) / gc_const;
   const double tau = dT_dE * dE_dpsi;
 
-  const double dgc_dT = 0.0;  // see the note above; non-zero once PLAN 13.1 lands
+  const double dgc_dT = 0.0;  // see the note above; non-zero with leaf-to-air VPD
   const double damping = (gc * inv_atm - dgc_dT * (ca_ - ci) * inv_atm) / g_ci;
 
   return A_T * tau * damping;
