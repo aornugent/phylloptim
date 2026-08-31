@@ -33,8 +33,8 @@ enum clamp_site {
   // extreme non-equilibrium transpiration cannot drive the Arrhenius block
   // non-finite. Reached only with use_energy_balance on.
   CLAMP_LEAF_TEMPERATURE,
-  // A collar potential projected into the feasible interval. The unclamped
-  // alternative for a frozen-collar partial is profit_at_fixed_collar, which
+  // A collar potential projected into the feasible interval. For a partial taken
+  // at a held collar the unclamped alternative is profit_at_fixed_collar, which
   // refuses instead; this one is for a tracked collar being nudged.
   CLAMP_COLLAR_POTENTIAL,
   CLAMP_SITE_COUNT

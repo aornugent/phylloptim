@@ -311,12 +311,6 @@ public:
   double root_b = 3.898245;       // -MPa
   double root_psi_crit = 5.870283; // -MPa
 
-  // NOTE: beta_R_H and beta_R_V used to live here. They are parameters of the
-  // root-architecture model, not of water transport, and since #33 this class
-  // takes resistances rather than the carbon they were applied to -- so they are
-  // arguments to root_network_from_carbon and members of whoever owns that
-  // model. In plant that is TF24_Strategy.
-
   // G(m) = int_0^m f_r(s) ds, indexed by magnitude m = -psi, carrying a value, a
   // slope and a curvature at every knot -- all three the closed form's. Lets
   // uptake() obtain the mean conductivity over a potential interval from 2 evals
@@ -805,12 +799,11 @@ public:
   // mixed second derivative of the uptake needs. The same sum as the value with
   // the curve's CURVATURE under it and one weight from each end.
   //
-  // ⚠️ THIS USED TO CARRY A HAND-DERIVED f''/6, AND THE 6 WAS THE WHOLE DIFFICULTY.
-  // An expansion about the midpoint gives f''/4 - f''/12 for this and f''/3 for the
-  // pure one below, and an f''/4 written for either is a bounded but real error in a
-  // leading term that only a second hand derivation finds. Under the sum there is
-  // nothing to derive: the weights are where the nodes sit, so the limits come out
-  // rather than being put in.
+  // ⚠️ DO NOT REPLACE THE SUM WITH A HAND-DERIVED COEFFICIENT. An expansion about
+  // the midpoint gives f''/4 - f''/12 here and f''/3 for the pure one below, and an
+  // f''/4 written for either is a bounded but real error in a leading term that only
+  // a second hand derivation finds. Under the sum the weights are where the nodes
+  // sit, so the limits come out rather than being put in.
   double layer_mean_dbound_mixed(double lo, double hi, double mean) const {
     const double span = hi - lo;
     if (average_directly(span, lo)) {
@@ -863,10 +856,9 @@ public:
     // how they are bounded past the knots -- the conductivity read clamps its
     // argument to the last knot, the integral is capped at G(inf) -- so beyond the
     // domain only the integral's own derivative stays consistent with the value the
-    // mean was formed from (issue #1; the reasoning is #527's, and the
-    // "both clamp-to-last-value" it used to cite was never true of either). Below the
-    // surface the bound is in the f_r == 1 part, contributed linearly, so the slope
-    // is 1. This choice used to be made at each caller; it is made here now.
+    // mean was formed from. Below the surface the bound is in the f_r == 1 part,
+    // contributed linearly, so the slope is 1. Chosen here rather than at each
+    // caller.
     const double at = high_moves ? hi : lo;
     const double f_at = (at > 0.0) ? root_vuln_integral_deriv_at(at) : 1.0;
     return high_moves ? (f_at - mean) / span : (mean - f_at) / span;
@@ -1065,13 +1057,12 @@ public:
   // reads them, but plant exposes them through RcppR6, so they are carried
   // rather than dropped. They are removal candidates with item 6.
   //
-  // ⚠️ TAKES const& AND COPY-ASSIGNS, WHERE IT USED TO TAKE BY VALUE AND MOVE.
-  // The move was right when the caller built a throwaway network per call; it is
-  // WRONG now that the caller holds one as a member and refills it, because
-  // moving would empty the caller's buffers and force root_network_from_carbon to
-  // reallocate all five vectors on the next call -- reintroducing exactly the
-  // +0.074 us the in-place overload exists to avoid. Copy-assigning into
-  // already-sized vectors allocates nothing on either side once both are warm.
+  // ⚠️ TAKES const& AND COPY-ASSIGNS. DO NOT CHANGE IT TO BY-VALUE AND MOVE: the
+  // caller holds one network as a member and refills it, so moving empties the
+  // caller's buffers and forces root_network_from_carbon to reallocate all five
+  // vectors on the next call -- +0.074 us, which is what the in-place overload
+  // exists to avoid. Copy-assigning into already-sized vectors allocates nothing
+  // on either side once both are warm.
   // A layer's root carbon, recovered from the network that was built out of it.
   // The network holds the carbon split three ways rather than the carbon, and the
   // vertical third is the half to read it back from. NA rather than zero for an

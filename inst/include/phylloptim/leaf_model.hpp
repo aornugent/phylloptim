@@ -1012,14 +1012,14 @@ public:
   // ways: TF24f consumes the return value directly as an ODE rate
   // (`dpsi/dt = k_acclim * dprofit`, plant/src/tf24f_strategy.cpp), so a NaN
   // would propagate into plant's state vector where 0.0 correctly means "do not
-  // acclimate this step"; NaN already carries a *different* contract on the
-  // neighbouring derivative (hazard 6: `duptake_dpsi` returning NaN means "fall
-  // back to finite differences"), and overloading it would make the two
-  // indistinguishable; and defaulting to nullptr leaves every existing call site
+  // acclimate this step"; NaN already means something *else* on the neighbouring
+  // derivative (`duptake_dpsi` returning NaN means "fall back to finite
+  // differences"), and overloading it would make the two indistinguishable; and
+  // defaulting to nullptr leaves every existing call site
   // and the generated R binding untouched.
   double dprofit_droot_collar_psi(double opt_root_psi, bool* feasible = nullptr);
-  // Post-prepare body of dprofit_droot_collar_psi, with the same `feasible`
-  // contract. Assumes the supply path's per-solve caches are already placed, so
+  // Post-prepare body of dprofit_droot_collar_psi, with `feasible` meaning the
+  // same thing. Assumes the supply path's per-solve caches are already placed, so
   // the collar solve can share ONE supply_begin_solve across all ~10 of its
   // gradient evaluations instead of re-placing per call -- the same saving #530
   // made for the finite-difference path, and it matters here because
@@ -1135,9 +1135,9 @@ public:
   double maximise_profit_over_collar(double bound_a, double bound_b);
   // Analytic d(E_up_)/d(collar suction) -- a CONDUCTANCE, positive by
   // construction now that both sides are magnitudes (#25). Thin forwarder to
-  // roots_.duptake_dpsi; see there for the derivation and for the NaN-at-a-kink
-  // contract. Used only on the TF24f acclimation gradient path, not the base
-  // TF24 value path.
+  // roots_.duptake_dpsi; see there for the derivation and for why a kink returns
+  // NaN. Used only on the TF24f acclimation gradient path, not the base TF24
+  // value path.
   double dE_from_soil_dpsi_collar(double T_collar,
                                   const std::vector<double>& psi_soil) const {
     require_suction_vector(psi_soil, "dE_from_soil_dpsi_collar");
@@ -1147,7 +1147,7 @@ public:
   // slope in the collar into a statement rather than a difference: the transport
   // response V is (E_up'(p)/kappa + f(p))/f(sigma), so differentiating it in the
   // collar reads this and the vulnerability curve's own slope and nothing else.
-  // Same NaN-at-a-kink contract as the conductance.
+  // Returns NaN at a kink, as the conductance does.
   double d2E_from_soil_dpsi_collar2(double T_collar,
                                     const std::vector<double>& psi_soil) const {
     require_suction_vector(psi_soil, "d2E_from_soil_dpsi_collar2");
@@ -1378,14 +1378,8 @@ public:
   // This leaf's own supply state, as the view the quadrature takes. No copies.
   SupplyAt<double> held_supply() const { return roots_.held_supply(); }
 
-  // Everything a consumer asks the leaf for, at one scalar.
-  //
-  // ⚠️ `point` USED TO BE HERE, and it went because the distinction it carried was
-  // one nothing acted on. It reported a collar the theorem could not place, and it
-  // was filled by ONE of collar_at's five arms -- the interior one -- while the
-  // other four threw. Its single reader turned it into `refuse(...)`, which is
-  // exactly what the catch around the throws does. Two mechanisms, one outcome, and
-  // a field on every LeafOutputs to carry the difference between them.
+  // Everything a consumer asks the leaf for, at one scalar. A collar the theorem
+  // cannot place is reported by throwing, not by a field here.
   template <class S>
   struct LeafOutputs {
     S profit{};
@@ -1911,12 +1905,6 @@ inline const char* Leaf::operating_point_kind_name(OperatingPointKind kind) {
 }
 
 
-// `namespace detail` used to live here, holding templated REPLICAS of the profit
-// algebra whose comment claimed they "mirror Leaf::assim_colimited and
-// Leaf::hydraulic_cost_TF exactly". One of them did not -- see the `_kernel`
-// declarations in the class. They are deleted: the real functions are now
-// templated on their scalar type, so tangent differentiates the model itself and the
-// mirror cannot drift because there is no mirror.
 inline Leaf::Leaf()
     :
     vcmax_25(96), // umol m^-2 s^-1 
@@ -2585,15 +2573,11 @@ if(assim_max_ < 0){
     bound_a = root_zero_E;
     // The dry end of the feasible interval is whichever limit binds FIRST: the
     // continuity root, or the potential at which root conductivity is down to 5%.
-    // Both are positive magnitudes, so that is a min (#24, plant #584).
+    // Both are positive magnitudes, so that is a min.
     //
-    // This line used to read std::max(-root_crit, -root_psi_crit) -- a magnitude
-    // compared against a signed potential, so the second term was always negative
-    // and the clamp could never bind. The master solver's comment has claimed the
-    // bracket is "clamped to root_psi_crit" throughout; it now is. In magnitudes
-    // the correct form is the obvious one and the trap is gone, which is the
-    // clearest argument for #25 there is: the bug was a property of having two
-    // representations, not of this line.
+    // ⚠️ Both terms must be magnitudes. Comparing a magnitude against a signed
+    // potential makes the second term always negative, so the clamp never binds
+    // and the bracket is not clamped to root_psi_crit while reading as if it is.
     // std::min returns its SECOND argument only when that is strictly smaller,
     // so this ternary reproduces the tie-break rather than guessing at it.
     dry_bound_arm_ = supply_psi_crit() < root_crit ? DryBoundArm::RootPsiCrit
@@ -2996,7 +2980,7 @@ inline Leaf::FixedCollarEval Leaf::profit_at_fixed_collar(double collar) {
   double bound_a, bound_b;
   if (!prepare_collar_solve(bound_a, bound_b)) {
     // Feasibility fixed the operating point on its own, so there is no interval
-    // for a collar to be held inside and no frozen-collar partial to take.
+    // for a collar to be held inside and no partial to take at a held collar.
     return out;
   }
   if (collar < bound_a || collar > bound_b) {
@@ -3110,9 +3094,6 @@ inline double Leaf::marginal_collar_slope(const ProfitInputs<double>& in) const 
 
 inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   const double psi = opt_root_psi;
-  // gstar_Pa used to be precomputed here and threaded into the tangent replicas. The
-  // kernels read gamma_ and umol_per_mol_to_Pa_ themselves, which is one fewer
-  // place for the two sides to disagree.
   // Infeasible until the two exits below have been passed; see the header for why
   // the 0.0 they return must be distinguishable from a genuine stationary point.
   if (feasible != nullptr) {
@@ -3362,15 +3343,15 @@ inline double Leaf::peak_arrh_curve(double Ea, double ref_value, double leaf_tem
 }
 
 // Recompute the temperature-dependent photosynthetic parameters at a given leaf
-// temperature. The arithmetic (and order) is exactly the inline block that used
-// to live in set_physiology, so the non-PM path is bit-identical; extracting it
-// lets the PM path recompute per operating-point Tleaf. electron_transport_ also
-// depends on the per-call PPFD_ and is (re)computed here from the just-updated
-// jmax_ -- on the non-PM cache-hit path set_physiology refreshes it separately.
+// temperature, so the PM path can do it per operating-point Tleaf.
+//
+// ⚠️ The arithmetic and its ORDER must stay in step with set_physiology's non-PM
+// path, which is bit-identical to this and does not go through here.
+// electron_transport_ also depends on the per-call PPFD_ and is (re)computed here
+// from the just-updated jmax_; on the non-PM cache-hit path set_physiology
+// refreshes it separately.
 //
 // R_d comes from R_d_25 and the declining Q10, so it RISES with temperature.
-// It used to be a fraction of vcmax_(T) and therefore fell above the thermal
-// optimum, which was the wrong direction (#41).
 
 // Every scalar update_temperature_dependent_params() below reads, in one place so
 // the cache key and the computation cannot drift apart.
