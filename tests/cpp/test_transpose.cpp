@@ -21,9 +21,17 @@
 //
 // Run by `make -C tests/cpp`, with the rest of the suite.
 //
-// ⚠️ The control is printed but NOT asserted: a state where the collar carries no
-// rows reports "control is silent" and still passes. So this measures the
-// identity, and the control tells a reader whether the state had anything to say.
+// The control is ASSERTED, per arm, in both directions. Where the collar is
+// placed by a rule that reads the inputs, holding it passive must change the
+// answer; where the stomata are shut and the collar does not move, holding it
+// must change nothing. Either expectation broken is a failure, so the identity
+// cannot pass by measuring nothing. `arm_of` is the classification, and it has
+// no `default:` -- a new operating-point kind stops the build until someone says
+// which of the three it is.
+//
+// The arms reached are asserted too. Evidence about the interior condition is
+// not evidence about a bound, so a fixture that stops reaching one has narrowed
+// the check without narrowing what it claims.
 
 #include <phylloptim.hpp>
 
@@ -49,6 +57,51 @@ int failures = 0;
 // Which operating-point kinds the sweep actually reached. The identity is only
 // evidence about the arms it ran on, so the census is part of the result.
 std::vector<std::string> seen_kinds;
+
+// A control below this is "silent": holding the collar passive changed nothing.
+// The identity itself passes below 1e-10, so a live control at this floor still
+// sits three orders above what the check can resolve.
+const double kControlFloor = 1e-7;
+double min_live_control = 1.0;    // how close a live control came to the floor
+double max_silent_control = 0.0;  // how close a silent one came to it
+
+// Whether the collar carries derivative rows on this arm, which is what decides
+// what the control MUST do. Holding the collar passive has to change the answer
+// wherever the collar is placed by a rule that reads the inputs, and has to
+// change nothing where the collar does not move at all.
+//
+// No `default:`, so -Werror=switch refuses a new kind until someone says which
+// of the three it is.
+enum class Arm { CarriesRows, NoRows, Refuses };
+
+Arm arm_of(pl::Leaf::OperatingPointKind kind) {
+  switch (kind) {
+    // The collar is placed by a rule that reads the inputs: the interior
+    // condition, or one of the three bounds. PinnedDryRootPsiCrit places it AT
+    // the trait, so it moves with root_psi_crit. ShadeDeath uses the wet bound,
+    // and its per-layer consumptions are not zero -- they sum to zero.
+    case pl::Leaf::OperatingPointKind::Interior:
+    case pl::Leaf::OperatingPointKind::PinnedWet:
+    case pl::Leaf::OperatingPointKind::PinnedDryRootCrit:
+    case pl::Leaf::OperatingPointKind::PinnedDryRootPsiCrit:
+    case pl::Leaf::OperatingPointKind::ShadeDeath:
+      return Arm::CarriesRows;
+    // The stomata are shut: the collar does not move and no water is drawn, so
+    // holding it has to be indistinguishable from letting it run.
+    case pl::Leaf::OperatingPointKind::HydraulicShutdown:
+      return Arm::NoRows;
+    // collar_at throws on these, so at_state takes its `threw` exit and never
+    // asks. Reaching the check on one of them is itself the finding.
+    case pl::Leaf::OperatingPointKind::Unsolved:
+    case pl::Leaf::OperatingPointKind::Determined:
+    case pl::Leaf::OperatingPointKind::InfeasibleBracket:
+    case pl::Leaf::OperatingPointKind::Prescribed:
+    case pl::Leaf::OperatingPointKind::SolverRefused:
+    case pl::Leaf::OperatingPointKind::NonFiniteGradient:
+      return Arm::Refuses;
+  }
+  return Arm::Refuses;
+}
 
 const double kBase[13] = {96.0, 2.680147, 3.898245, 5.870283, 2.680147, 3.898245,
                           5.870283, 1.5, 157.44, 0.30, 0.7, 0.99, 7.5};
@@ -201,18 +254,38 @@ void at_state(int layers, double psi0, double ppfd, int draws, Stream& rng) {
     return;
   }
 
-  // The control must be far from agreeing. If holding the collar changes nothing
-  // then the collar carries no rows here, and this state proves nothing either way.
-  const bool live = worst_control > 1e-6;
+  // The identity, and the control that says whether this state could have shown
+  // the identity failing. Both are asserted: a silent control on an arm that
+  // carries rows means the reverse side stopped reading the collar, and every
+  // state would then agree at 1e-16 while measuring nothing.
+  const Arm arm = arm_of(l.operating_point_kind());
+  const bool live = worst_control > kControlFloor;
   const bool ok = worst < 1e-10;
-  if (!ok) ++failures;
-  std::printf("  %d layer  psi0 %-5.2f ppfd %-6.0f %-22s  worst %.3e  %s",
-              layers, psi0, ppfd, kind, worst, ok ? "ok" : "FAIL");
-  if (live) {
-    std::printf("   (control %.2e, held collar disagrees)\n", worst_control);
-  } else {
-    std::printf("   (collar carries no rows here; control is silent)\n");
+  bool control_ok = true;
+  const char* why = "";
+  switch (arm) {
+    case Arm::CarriesRows:
+      control_ok = live;
+      why = live ? "held collar disagrees" : "SILENT, but this arm places the collar";
+      // Only the passing side, so the margin printed at the end is the weakest
+      // control that actually separated, not one that failed to.
+      if (live) min_live_control = std::min(min_live_control, worst_control);
+      break;
+    case Arm::NoRows:
+      control_ok = !live;
+      why = live ? "LIVE, but the collar does not move here" : "silent, as it must be";
+      if (!live) max_silent_control = std::max(max_silent_control, worst_control);
+      break;
+    case Arm::Refuses:
+      control_ok = false;
+      why = "this kind should have thrown before reaching the check";
+      break;
   }
+  if (!ok || !control_ok) ++failures;
+  std::printf("  %d layer  psi0 %-5.2f ppfd %-6.0f %-22s  worst %.3e  %s"
+              "   (control %.2e, %s)\n",
+              layers, psi0, ppfd, kind, worst,
+              (ok && control_ok) ? "ok" : "FAIL", worst_control, why);
 }
 
 }  // namespace
@@ -238,6 +311,29 @@ int main() {
                    seen_kinds.end());
   std::printf("\n  kinds reached:");
   for (const std::string& k : seen_kinds) std::printf(" %s", k.c_str());
+  std::printf("\n");
+
+  // The census is asserted, not just printed. The identity is evidence about the
+  // arms it ran on, so a fixture that stops reaching one of these has narrowed
+  // the check without narrowing what it claims.
+  for (const char* want : {"interior", "pinned-wet", "pinned-dry-root-crit",
+                           "hydraulic-shutdown"}) {
+    if (std::find(seen_kinds.begin(), seen_kinds.end(), std::string(want)) ==
+        seen_kinds.end()) {
+      std::printf("  MISSING ARM: no state reached %s\n", want);
+      ++failures;
+    }
+  }
+
+  // The margins on the control, so a floor that is drifting toward the numbers
+  // it separates is visible before it stops separating them.
+  std::printf("\n  control floor %.0e:  weakest live %.2e (%.0fx above)",
+              kControlFloor, min_live_control,
+              min_live_control / kControlFloor);
+  if (max_silent_control > 0.0) {
+    std::printf(",  strongest silent %.2e (%.0fx below)", max_silent_control,
+                kControlFloor / max_silent_control);
+  }
   std::printf("\n\n%s\n", failures == 0 ? "all ok" : "FAILURES");
   return failures == 0 ? 0 : 1;
 }
