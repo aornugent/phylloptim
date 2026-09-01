@@ -80,9 +80,11 @@ all: build
 	./test_leaf
 	./test_leaf_gradient
 	./test_transpose
+	./test_supplied_rows
 	./test_golden $(GOLDEN_ARGS)
 
-build: test_leaf test_leaf_gradient test_transpose test_golden
+build: test_leaf test_leaf_gradient test_transpose test_supplied_rows \
+       test_golden
 
 # Not built or run by `make all` -- it takes a few seconds and measures the
 # machine as much as the code. Run it deliberately when a change might have
@@ -105,6 +107,12 @@ test_leaf_gradient: test_leaf_gradient.cpp $(HEADERS)
 test_transpose: test_transpose.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
+# The two derivatives the leaf hands over as plain numbers, against a difference of
+# the forward model each describes. A difference of anything downstream is
+# identically zero on those columns, so this is the only place they can be caught.
+test_supplied_rows: test_supplied_rows.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
+
 test_golden: test_golden.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
@@ -123,4 +131,5 @@ golden: test_golden
 	./test_golden --generate
 
 clean:
-	rm -f test_leaf test_leaf_gradient test_transpose test_golden bench_solve
+	rm -f test_leaf test_leaf_gradient test_transpose test_supplied_rows \
+	      test_golden bench_solve
