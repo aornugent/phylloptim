@@ -12,6 +12,7 @@
 #include <phylloptim/vulnerability.hpp>
 
 #include <odelia/interpolator.hpp>
+#include <odelia/with_slope.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1104,7 +1105,80 @@ public:
   // Which cost curve a psi_stem derivative differentiates. The cost enters the
   // chain through exactly ONE quantity -- dC/dpsi_stem -- so this selects that
   // and nothing else.
-  enum class CostCurve { TF24, CF77, JS22, CMax, SOX, JW26, ProfitMax, TF24_floor };
+
+
+  // A value and its response in the collar potential, travelling as one pair.
+  template <class T> using pair = odelia::with_slope<T>;
+
+  // What the leaf hands over: the objective plant bills, and the water it drew
+  // from each layer. At any scalar, because both re-enter plant's chain.
+  template <class T>
+  struct LeafOutputs {
+    T profit{};
+    std::vector<T> uptake;
+  };
+
+  // The same two, at double, plus whether the collar could be evaluated at all.
+  // DERIVES rather than repeating them.
+  //
+  // The flag is not an error channel and should not become one: an infeasible
+  // collar is an EXPECTED outcome on a sweep -- 1536 of the golden file's 5184
+  // rows refuse -- so unwinding for it would be the wrong shape. This is the same
+  // convention the `_checked` readers use, under a name that says which collar.
+  struct FixedCollarEval : LeafOutputs<double> {
+    bool feasible = false;
+  };
+
+  // The soil's draw at ONE collar, with the collar it was taken at, so a flux
+  // from one and a slope from another cannot be paired. check_draw enforces that
+  // at every read rather than trusting the caller.
+  //
+  // ⚠️ TWO DIFFERENT PAIRINGS, DELIBERATELY. `flux` and its collar slope are both
+  // active, so they are a pair. The per-layer draws are active but their collar
+  // slopes are SUPPLIED at double -- taking the supply again at a live collar
+  // would record the whole of it a second time -- so those are implicit_value's
+  // shape, not the pair's, and flattening both into one would lose that.
+  template <class S>
+  struct SupplyDraw {
+    double at = 0.0;
+    pair<S> flux;
+    std::vector<S> uptake;
+    std::vector<double> duptake_dp;
+  };
+
+  // ---- the differentiable surface's coordinates ------------------------------
+  //
+  // A coordinate is a value AND its response in the collar potential, so the two
+  // travel as one. Written as separate scalars they were seeded from separate
+  // places, and a first attempt that moved only the collar disagreed with a
+  // difference by 40 to 100 per cent -- dM/dp is directional, and five
+  // coordinates move together or the assembly differentiates nothing.
+
+  // What profit needs: the stem potential the collar determines, and the
+  // intercellular CO2 that goes with it.
+  template <class T>
+  struct CollarCoords {
+    pair<T> sigma;
+    pair<T> ci;
+  };
+
+  // What the marginal needs: those two, plus the collar itself and the stem's
+  // flux. DERIVES rather than repeating the pair above -- written out separately
+  // they were two structs differing by two members, and a sigma from one with a
+  // ci from another was a thing that compiled.
+  //
+  // ⚠️ FOUR MEMBERS, NOT FIVE. What used to be a separate `dEup_dp` field IS
+  // `transpiration.slope`: the stem's flux and the soil-to-collar conductance are
+  // one quantity at two orders, which a flat struct of bare scalars could only say
+  // in a comment. p.slope is 1 by construction.
+  template <class T>
+  struct CollarPoint : CollarCoords<T> {
+    pair<T> p;
+    pair<T> transpiration;
+  };
+
+  enum class CostCurve {
+ TF24, CF77, JS22, CMax, SOX, JW26, ProfitMax, TF24_floor };
 
   // ⚠️ THE ONE ABSTRACTION THAT MAKES EVERY MODEL THE SAME MODEL.
   //
@@ -1593,6 +1667,11 @@ public:
   template <typename T> T assim_electron_limited_kernel(T ci) const;
   template <typename T> T assim_colimited_kernel(T ci) const;
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
+
+  // G(psi) at any scalar: the table's value at the passive point, carrying the
+  // query slope and the two TRAIT rows the closed form gives exactly.
+  template <class S>
+  S stem_integral_at(const S& psi, const leaf_pars<S>& pars) const;
 
   // The pack as this leaf currently stands. The double path passes this where the
   // active path passes a seeded copy, so both reach the kernels the same way and
@@ -2212,6 +2291,39 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
   setup_clean_leaf();
 }
 
+
+
+// ⚠️ THE ROWS ARE IN (P50, c), NOT (b, c). stem_b is derived, so a row in it
+// describes a parameter this model does not have -- and set_traits re-derives b
+// from P50 on every call, so a seed in b reaches nothing at all. The chain is
+// exact: with L = ln 2 and b = P50 * L^(-1/c),
+//
+//     db/dP50 = b / P50            db/dc = b * ln(L) / c^2
+//
+// so dG/dP50 is dG/db times the first, and dG/dc is the partial at fixed b plus
+// dG/db times the second.
+//
+// The VALUE is the table's, not the closed form's: the solve ran on the table, so
+// a value from the curve would place the operating point somewhere else. Every
+// bracket below is exactly zero at the recording point, so the number is
+// untouched and only the tape sees the rows.
+template <class S>
+inline S Leaf::stem_integral_at(const S& psi, const leaf_pars<S>& pars) const {
+  using odelia::util::to_passive;
+  const double at = to_passive(psi);
+  const double P50 = to_passive(pars[par_stem_P50]);
+  const double c = to_passive(pars[par_stem_c]);
+  const double b = weibull_b_from_P50(P50, c);
+  const VulnerabilityIntegralDerivatives d =
+      cumulative_vulnerability_integral_derivatives_at(at, b, c);
+  const double db_dP50 = b / P50;
+  const double db_dc = b * std::log(std::log(2.0)) / (c * c);
+  const S step = psi - S(at);
+  return S(stem_curve_integral(at, "Leaf::stem_integral_at")) +
+         S(d.dpsi) * step +
+         S(d.db * db_dP50) * (pars[par_stem_P50] - S(P50)) +
+         S(d.dc + d.db * db_dc) * (pars[par_stem_c] - S(c));
+}
 
 inline leaf_pars<double> Leaf::passive_pars() const {
   leaf_pars<double> p{};
