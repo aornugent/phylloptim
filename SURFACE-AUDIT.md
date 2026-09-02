@@ -142,16 +142,41 @@ factored into `reference_value x response`. They ARE exactly linear in the
 reference value, so the factoring is algebraically free -- and it reassociates,
 which costs the bit-identity that makes the double path checkable.
 
-## The measurement that changed how these are checked
+## The measurement that changed how these are checked -- and the wrong turn in it
 
 `dsigma/dcollar` is 1 + 9e-6. Comparing it against a difference agrees to 7
-digits while the informative part -- the 9e-6 -- is 8 per cent wrong, because
-sigma comes from an inverse spline whose round-trip dominates it. Raising the
-spline resolution settles which is right: the residual goes 2.7e-10 to 2.2e-15
-and the difference converges ONTO the closed form (8.3e-02 to 4.2e-06) while the
-closed form itself moves 0.03 per cent.
+digits while the informative part -- the 9e-6 -- was 8 per cent out, so the first
+lesson stands: **compare the quantity that carries the information, not the one
+that is easy to print.**
 
-**So graft.hpp's rule is not a preference, it is measured: the derivative of the
-fit is not the derivative of the curve.** And it is why `test_transpose` was
-ported before the assembly rather than after -- at the shipped resolution it is
-the only referee these slopes have.
+⚠️ **THE SECOND CONCLUSION DRAWN HERE WAS WRONG AND IS CORRECTED.** It read: a
+difference of the model cannot referee these slopes at the shipped resolution,
+because sigma comes from an inverse spline whose round-trip dominates them, and
+the closed form is right. The evidence was a resolution sweep in which the
+difference converged onto the closed form.
+
+That sweep was real and the inference was not. Table and curve coincide as the
+resolution rises, so convergence is consistent with EITHER being right; it
+cannot separate them. What separates them is that **the solve ran on the table**,
+so the operating point is the table's argmax and the closed form is a different
+function that is not stationary there. Reading graft.hpp as "take the curve" got
+its rule backwards -- the rule is that the VALUE is the table's, precisely
+because the solve ran on it, and only the ROWS come from the curve.
+
+The cost of the mistake was visible and specific: `M` read 6.4e-02 at a collar
+where the solve had driven upstream's own `dprofit` to 1e-12. The envelope
+omission -- dropping `M * dp/dtheta` at an interior point BECAUSE M is zero
+there -- was not true of that number.
+
+Fixed by using what upstream already had, in three places:
+`stem_curve_integral_inverse_deriv` for sigma's response,
+`stem_curve_integral_deriv` through `graft_curve` for every conductivity, and
+the SOIL DRAW as the point the inverse is read at. `marginal_at` is then
+bit-identical to `dprofit_at_collar_psi`, and a difference of the model referees
+the slopes at the shipped resolution: 9.4e-12 and 1.5e-06.
+
+**The lens question caught all three.** Each was a quantity this surface had
+spelled for itself -- `1/f(sigma)`, the closed-form conductivity, the stem
+flux -- where upstream had the one the model actually uses. Asking "what does
+upstream already have for this" is not only a way to delete code; here it was
+the difference between a correct gradient and a plausible one.

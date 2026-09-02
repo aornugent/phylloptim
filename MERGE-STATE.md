@@ -31,6 +31,7 @@ path is checked against, and #89, #90 and #131 built on it.
 | `551f177` | `duptake_dpsi` one body three entries; `supply_draw_at` |
 | `bf3c47a` | upstream's kernels take their parameters; `collar_coords_at` with both halves of each pair |
 | `6e3fd6a` | the transpose identity, over the surface that exists |
+| `ab444bf` | `profit_at` / `outputs_at` / `marginal_at`. profit and the draws bit-identical to the solve's own; the marginal bit-identical to upstream's `dprofit_at_collar_psi` |
 
 Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
 (RECORDED-DECISIONS.md) and `f9c06de` (`with_slope` moved in). plant carries
@@ -38,9 +39,9 @@ Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
 
 ## What is left, in dependency order
 
-1. **`profit_at<K,S>`, `outputs_at`, `marginal_assembled<K,S>`** (returning a
-   scalar now that `CollarCoords` carries both halves), **`marginal_at`**,
-   **`marginal_collar_slope`**.
+1. **`marginal_collar_slope`** -- dM/dp, the curvature the interior derivation
+   divides by, as a FIRST derivative of `marginal_at` rather than a second of the
+   objective.
 2. **`test_supplied_rows`** -- the two rows no difference of the recorded step
    can referee.
 3. **`bound_at`** at TWO arms, **`collar_at`** taking the curvature per 33e0048,
@@ -71,11 +72,16 @@ Then, for the active path, the row against whatever upstream computes the same
 quantity by -- and where nothing does, the transpose identity, which needs no
 reference at all.
 
-⚠️ **A DIFFERENCE OF THE MODEL IS NOT ALWAYS THE REFEREE.** `dsigma/dcollar` is
-1 + 9e-6, and the informative part is that 9e-6 -- so a check that compares the
-whole number agrees to 7 digits while the part that matters is 8 per cent wrong.
-Compare the quantity that carries the information, not the one that is easy to
-print.
+⚠️ **COMPARE THE QUANTITY THAT CARRIES THE INFORMATION.** `dsigma/dcollar` is
+1 + 9e-6, and the informative part is that 9e-6 -- so a check on the whole number
+agrees to 7 digits while the part that matters was 8 per cent wrong.
+
+⚠️ **AN EARLIER REVISION SAID A DIFFERENCE OF THE MODEL COULD NOT REFEREE THESE
+SLOPES. IT CAN, AND IT WAS RIGHT WHILE THE ASSEMBLY WAS WRONG.** See
+SURFACE-AUDIT.md; the short version is that the solve ran on the TABLE, so the
+table's value is the one every partial takes and only the rows come from the
+curve. `marginal_at` is bit-identical to upstream's `dprofit_at_collar_psi` now,
+and the slopes agree with a difference at the shipped resolution.
 
 ## The golden files, correctly attributed
 
@@ -114,10 +120,14 @@ should not sit here long.
   upstream's convention and plant depends on it.
 * **The rows are in `(P50, c)`.** `graft.hpp` carries the chain; a row in `b` or
   `psi_crit` reaches nothing, because `set_traits` re-derives them.
-* **ci is placed from the STEM flux, not the soil draw.** T1 holds only to the
-  stem splines' round-trip -- measured 6.7e-04 apart at a converged interior
-  point -- so the two are different quantities and reading the wrong one is a
-  finite, plausible error.
+* **THE TWO FLUXES ARE DIFFERENT QUANTITIES AND EACH HAS ITS OWN READER.** The
+  stem flux `kmax*(G(sigma)-G(collar))` and the soil draw `E_up` agree only to
+  the stem splines' round-trip, measured 6.7e-04 apart at a converged interior
+  point. `gc`, and so ci, is built from the STEM one; the inverse that PLACED
+  sigma is read at the SOIL one. Swapping either is finite and plausible.
+* **Every partial takes the TABLE's conductivity with the CURVE's rows**, through
+  `graft_curve`, because the solve ran on the table. The closed form's value
+  there makes M non-zero at the collar the solve placed.
 * **A nested active is built by assigning into its value.** `nested(inner)`
   strips the inner rows where it compiles at all, giving a slope that is right at
   double and zero in every trait.
