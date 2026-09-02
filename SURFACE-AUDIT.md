@@ -105,3 +105,53 @@ Three refactors in a row -- extracting `rows_in_P50`, then `graft_integral`, the
 routing `stem_integral_at` through it -- left the verified numbers unchanged to
 the digit: 2.12e-07 and 1.84e-07. Same digits is the check that an abstraction is
 the thing that was already there, rather than a rewrite wearing its name.
+
+---
+
+# The lens, applied again on the way through the surface
+
+Same question, same two outcomes. Thirteen for thirteen now.
+
+## Dissolved -- a spelling of something that exists
+
+| coined | what it already is |
+|---|---|
+| `duptake_dpsi_at` | an OVERLOAD of upstream's `duptake_dpsi`, on the argument that already distinguishes them. Upstream's name plus a `SupplyAt<T>`, exactly as `uptake_at` took one -- so the second name buys nothing |
+| `E_from_soil_at` | two statements: size a vector, call `uptake_at`. `supply_draw_at` was its only caller and does both |
+| `assim_colimited_slope_kernel` | a TANGENT THROUGH `assim_colimited_kernel`, which is how upstream takes A' at double. A hand-written twin is a second definition of one function, free to disagree while every value stays finite |
+| `electron_transport_kernel` | a `leaf_pars<T>` overload of upstream's own `electron_transport()`, whose arguments were already explicit |
+| `MarginalParts` | its two extra fields ARE `sigma.slope` and `ci.slope`, and now live there. `marginal_assembled` returns a scalar |
+
+## Kept -- carries an invariant
+
+| | what it prevents |
+|---|---|
+| `SupplyDraw` + `supply_draw_at` | the only way to make one, so the flux, its collar slope and the per-layer draws cannot come from different collars; `check_draw` refuses a stale one at every read |
+| `CollarCoords` with both halves | a consumer seeded from separate places can pair a value from one point with a slope from another. A first attempt that moved only the collar disagreed with a difference by 40 to 100 per cent |
+| `transpiration_at` | upstream's `transpiration()` given its parameters, and the name that keeps the STEM flux distinct from the soil draw -- two quantities that agree only to the splines' round-trip, where reading the wrong one was 8 per cent in `dci/dcollar` |
+
+## What the lens produced rather than deleted, again
+
+**Upstream's kernels take their parameters.** The member-reading forms stay and
+forward to them, so there is no parallel copy -- and the pack form is what
+carries a trait's row. The alternative was a second family of kernels beside
+upstream's, which is the shape this rule exists to refuse.
+
+The temperature responses are templated by pure substitution rather than
+factored into `reference_value x response`. They ARE exactly linear in the
+reference value, so the factoring is algebraically free -- and it reassociates,
+which costs the bit-identity that makes the double path checkable.
+
+## The measurement that changed how these are checked
+
+`dsigma/dcollar` is 1 + 9e-6. Comparing it against a difference agrees to 7
+digits while the informative part -- the 9e-6 -- is 8 per cent wrong, because
+sigma comes from an inverse spline whose round-trip dominates it. Raising the
+spline resolution settles which is right: the residual goes 2.7e-10 to 2.2e-15
+and the difference converges ONTO the closed form (8.3e-02 to 4.2e-06) while the
+closed form itself moves 0.03 per cent.
+
+**So graft.hpp's rule is not a preference, it is measured: the derivative of the
+fit is not the derivative of the curve.** And it is why `test_transpose` was
+ported before the assembly rather than after -- at the shipped resolution it is
+the only referee these slopes have.
