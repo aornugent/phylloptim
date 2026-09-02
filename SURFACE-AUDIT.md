@@ -215,3 +215,35 @@ in the same commit that broke them: a rename that missed one site, a lost
 a call carrying an argument this branch's design had removed. A merge that
 cannot be built hides all four equally, and the syntax-only sweep over all 27
 translation units is what surfaced them.
+
+---
+
+# What only the consumer could find
+
+Three defects survived every check in this package and were caught by plant. Each
+is worth knowing as a CLASS, because the same blindness is easy to rebuild.
+
+**A vector sized by the wrong count.** `duptake_dpsi`'s per-layer rows were as
+long as the deepest ROOTED layer where the uptake they graft onto is as long as
+the soil profile. Every fixture here puts carbon in every layer, so the two
+counts coincided and 63 differenced rows agreed perfectly. plant runs
+shallow-rooted plants. The test drives each profile twice now -- roots through it,
+and roots reaching only the top layer -- and asserts the LENGTH, not only the
+entries.
+
+**A pack filled with zeros.** Thirteen of nineteen slots were set and the rest
+left at zero rather than the model's values -- a wrong VALUE, not a missing row.
+Nothing here reads those slots, because they belong to cost curves this surface
+does not cover. plant's ladder asks that every trait either has a column or is
+refused BY NAME, and named one.
+
+**A refusal that costs more than it says.** Returning NaN from the curvature at a
+collar within a step of a bound reads locally like a careful admission. In plant
+it refuses the whole SWEEP: `ranges` comes back zero and the gradient is never
+produced, so one awkward point costs a stand's gradient. A one-sided difference
+is the answer there.
+
+The common shape: **this package's fixtures are regular where its consumer's
+states are not.** Every layer rooted, every collar interior, every parameter
+read. The cheapest guard against it is to drive one fixture that is irregular in
+each of those ways, which is what the two new sweeps now do.
