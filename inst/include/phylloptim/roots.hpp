@@ -384,7 +384,16 @@ public:
     // Leaf::setup_transpiration. Its limit is zero, which is unusable as the
     // divisor it becomes, so root_vuln_at clamps the argument to the last knot
     // instead and this setting is what stops any other reading being possible.
-    root_vuln_from_psi.init(x_psi_root, y_f_r);
+    // df_r/dpsi in closed form, so the interpolant is handed both halves rather
+    // than choosing slopes from the values -- see Leaf::setup_transpiration for
+    // what a shape-preserving rule costs a reader of the slope. f_r'(0) = 0 for
+    // root_c > 1, which the expression gives exactly at psi = 0.
+    std::vector<double> y_f_r_slope(x_psi_root.size());
+    for (size_t i = 0; i < x_psi_root.size(); ++i) {
+      const double u = x_psi_root[i] / root_b;
+      y_f_r_slope[i] = -y_f_r[i] * (root_c / root_b) * std::pow(u, root_c - 1.0);
+    }
+    root_vuln_from_psi.init(x_psi_root, y_f_r, y_f_r_slope);
     root_vuln_from_psi.set_extrapolate(false);
 
     // Integral: extrapolation stays ON, under a ceiling. Its limit is finite and
@@ -396,7 +405,9 @@ public:
     // Do not set this false "to match" the conductivity spline: odelia's deriv()
     // has no extrapolation check where eval() does, so eval would throw while
     // deriv went on extrapolating.
-    root_vuln_integral_from_psi.init(x_psi_root, y_integral);
+    // dG_root/dpsi IS f_r by the fundamental theorem, and y_f_r is already built
+    // above -- so this pair costs nothing beyond passing it.
+    root_vuln_integral_from_psi.init(x_psi_root, y_integral, y_f_r);
     root_vuln_integral_from_psi.set_extrapolate(true);
 
     // The last knot, NOT vulnerability_psi_max: the knot loop advances by
