@@ -2316,13 +2316,12 @@ inline S Leaf::stem_integral_at(const S& psi, const leaf_pars<S>& pars) const {
   const double b = weibull_b_from_P50(P50, c);
   const VulnerabilityIntegralDerivatives d =
       cumulative_vulnerability_integral_derivatives_at(at, b, c);
-  const double db_dP50 = b / P50;
-  const double db_dc = b * std::log(std::log(2.0)) / (c * c);
+  const TraitRows rows = rows_in_P50(d.db, d.dc, b, c);
   const S step = psi - S(at);
   return S(stem_curve_integral(at, "Leaf::stem_integral_at")) +
          S(d.dpsi) * step +
-         S(d.db * db_dP50) * (pars[par_stem_P50] - S(P50)) +
-         S(d.dc + d.db * db_dc) * (pars[par_stem_c] - S(c));
+         S(rows.dP50) * (pars[par_stem_P50] - S(P50)) +
+         S(rows.dc) * (pars[par_stem_c] - S(c));
 }
 
 inline leaf_pars<double> Leaf::passive_pars() const {
