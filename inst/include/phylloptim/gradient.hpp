@@ -61,65 +61,27 @@
 namespace phylloptim {
 namespace gradient {
 
-// --- the parameter enumeration, which R indexes into --------------------------
-//
-// The fifteen traits in `Leaf::set_traits`' argument order, then the two
-// quantities a calibration fits that are not traits: the conductance driver and
-// the single-potential path's series resistance.
-//
-// ⚠️ R INDEXES THESE POSITIONS, so a reordering silently differentiates the wrong
-// parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
-// them with R's, so the two cannot drift apart without a failure.
-inline constexpr int n_traits = 15;
-inline constexpr int n_pars = 19;
+// Re-exported here under the names this namespace's callers already use, so the
+// move is not a rename. One definition, in the model; two ways to reach it.
+using phylloptim::n_traits;
+using phylloptim::n_pars;
+using phylloptim::par_vcmax_25;   using phylloptim::par_stem_c;
+using phylloptim::par_stem_P50;   using phylloptim::par_root_c;
+using phylloptim::par_root_P50;   using phylloptim::par_TF24_beta2;
+using phylloptim::par_jmax_25;    using phylloptim::par_a;
+using phylloptim::par_curv_fact_elec_trans;
+using phylloptim::par_curv_fact_colim;
+using phylloptim::par_TF24_cost_scale; using phylloptim::par_R_d_25;
+using phylloptim::par_JS22_gamma; using phylloptim::par_CMax_a;
+using phylloptim::par_CMax_b;     using phylloptim::par_kmax;
+using phylloptim::par_resistance; using phylloptim::par_CF77_lambda;
+using phylloptim::par_TF24_floor_lambda_o;
 
-// Every index by name, so nothing below indexes `theta` with a bare integer.
-// The first `n_traits` are `set_traits`' arguments in its order, which is also
-// `leaf_traits()`'; the two non-traits follow and take a relative step.
-inline constexpr int par_vcmax_25 = 0;
-inline constexpr int par_stem_c = 1;
-inline constexpr int par_stem_P50 = 2;
-inline constexpr int par_root_c = 3;
-inline constexpr int par_root_P50 = 4;
-inline constexpr int par_TF24_beta2 = 5;
-inline constexpr int par_jmax_25 = 6;
-inline constexpr int par_a = 7;
-inline constexpr int par_curv_fact_elec_trans = 8;
-inline constexpr int par_curv_fact_colim = 9;
-inline constexpr int par_TF24_cost_scale = 10;
-inline constexpr int par_R_d_25 = 11;
-inline constexpr int par_JS22_gamma = 12;
-inline constexpr int par_CMax_a = 13;
-inline constexpr int par_CMax_b = 14;
-// ⚠️ THESE MOVE WHENEVER A TRAIT IS ADDED, and bumping them is the whole cost.
-// They are the non-traits and they sit AFTER the contiguous trait block, which is
-// a readability convention rather than a constraint now: R's
-// `.gradient_theta_matrix()` addresses EVERY column by name, including these.
-// It used to take the traits as "everything but the last two", which is what made
-// the ordering load-bearing; that is fixed. What is still load-bearing is the
-// ORDER ITSELF -- R passes integer positions into this enumeration, so appending
-// is safe and reordering silently differentiates the wrong parameter, and
-// `test-gradient-batch.R` compares this enumeration against R's copy.
-inline constexpr int par_kmax = 15;
-inline constexpr int par_resistance = 16;
-// Cowan-Farquhar's prescribed marginal value of water. A pure APPEND after the two
-// existing non-traits, which is only safe because R addresses theta's non-trait
-// columns by NAME rather than by position -- a positional rule ("everything but
-// the last two") reads this as `resistance`.
-//
-// ⚠️ AVAILABLE FOR ONE MODEL. It is CF77's only parameter and every other curve's
-// lambda is EMERGENT, derived from that curve's own parameters rather than set. So
-// `.gradient_available_pars()` offers it only for CF77 and refuses it elsewhere,
-// naming the model -- the same treatment `resistance` gets on the wrong supply path.
-inline constexpr int par_CF77_lambda = 17;
-// TF24_floor's price of water at zero transpiration, on exactly the same footing:
-// an append after the non-traits, available for ONE model, and refused elsewhere
-// by `.gradient_available_pars()` with the model named.
-//
-// ⚠️ IT IS THE SECOND MODEL-SPECIFIC SLOT, so "the CF77 one" has stopped being a
-// safe way to talk about this class. R's `.gradient_model_pars()` is the single
-// table that says which model owns which slot; there is no second copy here.
-inline constexpr int par_TF24_floor_lambda_o = 18;
+// The parameter enumeration now lives in leaf_model.hpp, beside the set_traits
+// whose argument order it IS. It was here while only this file indexed it; the
+// differentiable surface indexes it too, and a list two headers can disagree
+// about is the hazard the comment above it warns of.
+
 
 inline const std::vector<std::string>& par_names() {
   static const std::vector<std::string> names{

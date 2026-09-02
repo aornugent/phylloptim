@@ -23,6 +23,83 @@
 
 namespace phylloptim {
 
+// --- the parameter enumeration, which R indexes into --------------------------
+//
+// The fifteen traits in `Leaf::set_traits`' argument order, then the two
+// quantities a calibration fits that are not traits: the conductance driver and
+// the single-potential path's series resistance.
+//
+// ⚠️ R INDEXES THESE POSITIONS, so a reordering silently differentiates the wrong
+// parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
+// them with R's, so the two cannot drift apart without a failure.
+inline constexpr int n_traits = 15;
+inline constexpr int n_pars = 19;
+
+// Every index by name, so nothing below indexes `theta` with a bare integer.
+// The first `n_traits` are `set_traits`' arguments in its order, which is also
+// `leaf_traits()`'; the two non-traits follow and take a relative step.
+inline constexpr int par_vcmax_25 = 0;
+inline constexpr int par_stem_c = 1;
+inline constexpr int par_stem_P50 = 2;
+inline constexpr int par_root_c = 3;
+inline constexpr int par_root_P50 = 4;
+inline constexpr int par_TF24_beta2 = 5;
+inline constexpr int par_jmax_25 = 6;
+inline constexpr int par_a = 7;
+inline constexpr int par_curv_fact_elec_trans = 8;
+inline constexpr int par_curv_fact_colim = 9;
+inline constexpr int par_TF24_cost_scale = 10;
+inline constexpr int par_R_d_25 = 11;
+inline constexpr int par_JS22_gamma = 12;
+inline constexpr int par_CMax_a = 13;
+inline constexpr int par_CMax_b = 14;
+// ⚠️ THESE MOVE WHENEVER A TRAIT IS ADDED, and bumping them is the whole cost.
+// They are the non-traits and they sit AFTER the contiguous trait block, which is
+// a readability convention rather than a constraint now: R's
+// `.gradient_theta_matrix()` addresses EVERY column by name, including these.
+// It used to take the traits as "everything but the last two", which is what made
+// the ordering load-bearing; that is fixed. What is still load-bearing is the
+// ORDER ITSELF -- R passes integer positions into this enumeration, so appending
+// is safe and reordering silently differentiates the wrong parameter, and
+// `test-gradient-batch.R` compares this enumeration against R's copy.
+inline constexpr int par_kmax = 15;
+inline constexpr int par_resistance = 16;
+// Cowan-Farquhar's prescribed marginal value of water. A pure APPEND after the two
+// existing non-traits, which is only safe because R addresses theta's non-trait
+// columns by NAME rather than by position -- a positional rule ("everything but
+// the last two") reads this as `resistance`.
+//
+// ⚠️ AVAILABLE FOR ONE MODEL. It is CF77's only parameter and every other curve's
+// lambda is EMERGENT, derived from that curve's own parameters rather than set. So
+// `.gradient_available_pars()` offers it only for CF77 and refuses it elsewhere,
+// naming the model -- the same treatment `resistance` gets on the wrong supply path.
+inline constexpr int par_CF77_lambda = 17;
+// TF24_floor's price of water at zero transpiration, on exactly the same footing:
+// an append after the non-traits, available for ONE model, and refused elsewhere
+// by `.gradient_available_pars()` with the model named.
+//
+// ⚠️ IT IS THE SECOND MODEL-SPECIFIC SLOT, so "the CF77 one" has stopped being a
+// safe way to talk about this class. R's `.gradient_model_pars()` is the single
+// table that says which model owns which slot; there is no second copy here.
+inline constexpr int par_TF24_floor_lambda_o = 18;
+
+
+// The differentiable parameters, as one array indexed by the enumeration above.
+//
+// THIS IS THE INPUT PACK, and it is deliberately not a struct of named fields.
+// A struct would be a fourth spelling of an order that set_traits, leaf_traits()
+// and par_names() already spell three times, and every field would have to be
+// listed again in a walk for seeding -- which is how a parameter gets added to
+// the model and silently omitted from its gradient. Indexed by `par_*` the
+// access reads the same (`pars[par_kmax]`, not `pars[15]`) and there is one list.
+//
+// ⚠️ IT CARRIES THE TRAITS, NOT THE QUANTITIES DERIVED FROM THEM. stem_b and
+// psi_crit are functions of (stem_P50, stem_c) and are derived where they are
+// used, so a seed in stem_P50 reaches them by the chain rule rather than by a
+// caller remembering to move three numbers together. Passing the derived pair
+// instead is what lets a curve be stated twice and the two disagree.
+template <class S> using leaf_pars = std::array<S, n_pars>;
+
 class Leaf {
 public:
   //anonymous Leaf function as in canopy.h
@@ -1516,6 +1593,11 @@ public:
   template <typename T> T assim_electron_limited_kernel(T ci) const;
   template <typename T> T assim_colimited_kernel(T ci) const;
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
+
+  // The pack as this leaf currently stands. The double path passes this where the
+  // active path passes a seeded copy, so both reach the kernels the same way and
+  // there is one call convention rather than a member-reading twin.
+  leaf_pars<double> passive_pars() const;
   double assim_minus_stom_cond_CO2(double x, double psi_stem, double psi_upstream);
   double psi_stem_to_ci(double psi_stem, double psi_upstream);
   void set_leaf_states_rates_from_psi_stem(double psi_stem, double psi_upstream);
@@ -2128,6 +2210,34 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
   // which is all of it bar `CF77_lambda_` and `TF24_floor_lambda_o` -- caller inputs,
   // left standing on purpose (#96, see their declarations).
   setup_clean_leaf();
+}
+
+
+inline leaf_pars<double> Leaf::passive_pars() const {
+  leaf_pars<double> p{};
+  p[par_vcmax_25] = vcmax_25;
+  p[par_stem_c] = stem_c;
+  p[par_stem_P50] = stem_P50;
+  p[par_root_c] = roots_.root_c;
+  p[par_root_P50] = roots_.root_P50;
+  p[par_TF24_beta2] = TF24_beta2;
+  p[par_jmax_25] = jmax_25;
+  p[par_a] = a;
+  p[par_curv_fact_elec_trans] = curv_fact_elec_trans;
+  p[par_curv_fact_colim] = curv_fact_colim;
+  p[par_TF24_cost_scale] = TF24_cost_scale;
+  p[par_R_d_25] = R_d_25;
+  p[par_JS22_gamma] = JS22_gamma;
+  p[par_CMax_a] = CMax_a;
+  p[par_CMax_b] = CMax_b;
+  p[par_kmax] = leaf_specific_conductance_max_;
+  // The single-potential path's series resistance. Empty on the layered route,
+  // where the resistances are per layer and this slot has no scalar to hold.
+  p[par_resistance] = roots_.network_.r_R_V_sum.empty() ? util::na_value
+                                    : roots_.network_.r_R_V_sum.front();
+  p[par_CF77_lambda] = CF77_lambda_;
+  p[par_TF24_floor_lambda_o] = TF24_floor_lambda_o;
+  return p;
 }
 
 // set various states and physiology parameters obtained from TF24 to NA to clean leaf object
