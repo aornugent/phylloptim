@@ -1859,6 +1859,37 @@ public:
   template <CostCurve K>
   double marginal_collar_slope();
 
+  // The collar this solve left, at whatever scalar the caller wants, from
+  // whatever pins it. The kind chooses which condition closes the system and
+  // nothing else.
+  //
+  // A caller that has already taken marginal_collar_slope() -- to refuse on a
+  // curvature it cannot divide by -- passes it as `interior_curvature` rather
+  // than letting this take it again: it is the same call with the same argument,
+  // and it costs two model evaluations.
+  template <CostCurve K, class S>
+  S collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
+              double interior_curvature =
+                  std::numeric_limits<double>::quiet_NaN()) const;
+
+  // The conditions that pin a collar. Neither is a second derivative, so each is
+  // an ordinary implicit value: the residual's own slope at the bound, and the
+  // residual at S for the rest.
+  //
+  // ⚠️ THE ROOT'S 5% POTENTIAL IS NOT ONE OF THEM. It used to be a third arm,
+  // live only while root_psi_crit was a FREE TRAIT and the bound was therefore
+  // that trait. Under (P50, c) it is derived, so it is an ordinary expression the
+  // chain differentiates itself and there is no theorem to apply. The arm
+  // dissolves; what survives is the recorded selector saying which limit bound.
+  template <CostCurve K, class S>
+  S bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
+             const leaf_pars<S>& pars) const;
+
+  // The ROOT curve's critical potential, derived from its trait pair exactly as
+  // the stem's is.
+  template <class S>
+  S root_psi_crit_at(const leaf_pars<S>& pars) const;
+
 
   // The pack as this leaf currently stands. The double path passes this where the
   // active path passes a seeded copy, so both reach the kernels the same way and
@@ -2281,6 +2312,11 @@ private:
   // worst failure shape available here. Defaulting the reset to Unsolved means a
   // path that forgets reports "unclassified" instead.
   OperatingPointKind operating_point_kind_ = OperatingPointKind::Unsolved;
+  // Which limit closed the dry end, recorded where the comparison is made.
+  // BoundaryCrit alone does not say: the bracket takes whichever of the
+  // continuity root and the root's 5% potential binds first, and the two are
+  // closed by different conditions.
+  bool dry_bound_is_root_limit_ = false;
 };
 
 // Human-readable tag. The switch has no default, so a missing name is a -Wswitch
@@ -3140,6 +3176,14 @@ if(assim_max_ < 0){
     // clearest argument for #25 there is: the bug was a property of having two
     // representations, not of this line.
     bound_b = std::min(root_crit, supply_psi_crit());
+    // ⚠️ WHICH LIMIT WON IS A SELECTOR, SO IT IS RECORDED HERE RATHER THAN
+    // RE-DECIDED LATER. It is piecewise constant in the traits, and the two
+    // limits are closed by DIFFERENT conditions -- the continuity root by T1 with
+    // the stem at psi_crit, the root's own 5% potential by an expression the
+    // chain differentiates itself. Re-deriving it on the active pass would mean
+    // repeating a root-find, and differentiating the comparison would manufacture
+    // a jump the model does not have.
+    dry_bound_is_root_limit_ = !(root_crit < supply_psi_crit());
 
     // ⚠️ The clamp can INVERT the interval, and nothing handled that before,
     // because with the clamp dead it could not happen. bound_a is root_zero_E, the
@@ -5200,6 +5244,17 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
     const SupplyDraw<S>& draw, const leaf_pars<S>& pars) const {
   using odelia::util::to_passive;
   check_draw(to_passive(collar), draw);
+  // ⚠️ THERE IS NO OPERATING POINT TO PLACE AT A SHUTDOWN. The stem is held at
+  // psi_crit, no water moves, and ci is the compensation point rather than a
+  // root of T2 -- so both residuals are conditions the model did not solve, and
+  // dT2/dci is a cancellation of two vanishing terms. Refused here, by name,
+  // rather than left to implicit_value's non-finite-denominator guard, which
+  // reports a fold in a caller that never asked for one. outputs_at has the
+  // branch that answers at this kind.
+  if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown) {
+    util::stop("Leaf::collar_coords_at: no operating point to place at a "
+               "hydraulic shutdown; outputs_at answers there instead");
+  }
 
   // ⚠️ THE RESIDUALS SEE A HELD COLLAR, AND THE COLLAR'S CHANNEL IS ADDED BACK AS
   // ONE SUPPLIED SLOPE. That is the split RECORDED-DECISIONS states, and here it
@@ -5303,6 +5358,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   const S ca_minus_ci = S(ca_) - ci_h;
   const S dci_dsigma = (dgc_dsigma * ca_minus_ci * inv) / g_ci;
   const S dci_dp_expl = (dgc_dp * ca_minus_ci * inv) / g_ci;
+
   const S dci_dp = dci_dsigma * V + dci_dp_expl;
 
   // The step is exactly zero in VALUE, so both coordinates are the residuals'
@@ -5419,6 +5475,133 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
   return A_prime * at.ci.slope - C_prime * at.sigma.slope;
 }
 
+template <class S>
+inline S Leaf::root_psi_crit_at(const leaf_pars<S>& pars) const {
+  const S c = pars[par_root_c];
+  const S b = phylloptim::weibull_b_from_P50<S>(pars[par_root_P50], c);
+  return b * pow(S(std::log(1.0 / k_crit_fraction)), 1.0 / c);
+}
+
+template <Leaf::CostCurve K, class S>
+inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
+                        const leaf_pars<S>& pars) const {
+  using odelia::util::to_passive;
+  check_draw(bound_x, draw);
+  const Leaf& leaf = *this;
+
+  // Both arms move water, so both slopes are the supply's own conductance at the
+  // bound, which the model states analytically rather than differencing.
+  //
+  // ⚠️ EXCEPT ON A KINK, WHERE THE ANALYTIC FORM REFUSES BY CONTRACT. A wet bound
+  // is the collar at which uptake vanishes, and for a single rooted layer that is
+  // exactly the gravity-balance point -- one of the three places duptake_dpsi
+  // returns NaN because its general-branch derivative is not valid across them.
+  // Hazard 6 says a NaN there means fall back to a difference, and this is a
+  // caller that has to: propagating it reaches implicit_value, which refuses a
+  // non-finite denominator and stops. The bound is a real operating point, so the
+  // answer is the difference rather than a refusal.
+  double dflux_dx = to_passive(draw.flux.slope);
+  if (!std::isfinite(dflux_dx)) {
+    const std::size_t n = static_cast<std::size_t>(supply_n_layers());
+    std::vector<double> soil_at;
+    soil_at.reserve(n);
+    for (int i = 0; i < supply_n_layers(); ++i) {
+      soil_at.push_back(roots_.psi_soil_[std::size_t(i)]);
+    }
+    const double step = 1e-6;
+    std::vector<double> lay(n, 0.0);
+    double up = 0.0, down = 0.0;
+    roots_.uptake_at(bound_x + step, soil_at, lay, up);
+    roots_.uptake_at(bound_x - step, soil_at, lay, down);
+    dflux_dx = (up - down) / (2.0 * step);
+  }
+
+  if (wet) {
+    // The residual IS the draw: uptake vanishes at this collar. implicit_value
+    // evaluates at the passive bound, and the draw was taken there, so
+    // re-recording the supply would put the same expression on the tape twice.
+    return odelia::implicit_value<S>(
+        bound_x, dflux_dx, [&](const S&) -> S { return draw.flux.value; });
+  }
+
+  // The dry end is T1 with the stem held at ITS critical potential: the collar at
+  // which the soil delivers exactly what the column can still carry. The stem is
+  // held there, so only the second integral and the flux move with the collar.
+  //
+  // ⚠️ THE SLOPE IS THE TABLE'S, like every other conductivity on this surface,
+  // because the model's own bracket was placed with it.
+  const double dT_dx =
+      -to_passive(pars[par_kmax]) * stem_curve_integral_deriv(bound_x) -
+      dflux_dx;
+  return odelia::implicit_value<S>(
+      bound_x, dT_dx, [&](const S& x) -> S {
+        return pars[par_kmax] *
+                   (leaf.template stem_integral_at<S>(psi_crit_at<S>(pars),
+                                                      pars) -
+                    leaf.template stem_integral_at<S>(x, pars)) -
+               draw.flux.value;
+      });
+}
+
+// An interior point is the only kind whose condition is a second derivative, so
+// it is the only one that needs a curvature handed to it; every other kind's
+// condition is first order and composes here.
+template <Leaf::CostCurve K, class S>
+inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
+                         double interior_curvature) const {
+  check_draw(opt_root_psi_, draw);
+  S collar = S(opt_root_psi_);
+  switch (operating_point_kind_) {
+    case OperatingPointKind::Interior: {
+      // Closed by the RESIDUAL, like every other kind here. dM/dp is what the
+      // theorem divides by; every parameter row is taped from M itself rather
+      // than handed over as numbers from a second-order pass over a different
+      // assembly.
+      //
+      // ⚠️ NOT ON THE DOUBLE PATH. At double every term of implicit_value
+      // vanishes and this IS opt_root_psi_ -- but C++ evaluates the arguments
+      // first, and the curvature costs two model evaluations. Charging the
+      // forward model for a derivative it discards is what made a century stand
+      // 191 s against 32 s.
+      if constexpr (!std::is_same_v<S, double>) {
+        Leaf& self = const_cast<Leaf&>(*this);
+        const double curvature =
+            std::isnan(interior_curvature)
+                ? self.template marginal_collar_slope<K>()
+                : interior_curvature;
+        collar = odelia::implicit_value<S>(
+            opt_root_psi_, curvature, [&](const S& y) -> S {
+              return marginal_at<K, S>(y, draw, pars);
+            });
+      }
+      break;
+    }
+    // Shade death sits ON the wet bound: both potentials at the collar where
+    // uptake vanishes, so the bound is the point and it moves with the soil.
+    case OperatingPointKind::BoundarySoil:
+    case OperatingPointKind::ShadeDeath:
+      collar = bound_at<K, S>(true, opt_root_psi_, draw, pars);
+      break;
+    case OperatingPointKind::BoundaryCrit:
+      // Which limit closed it was recorded where the comparison was made. The
+      // root's own 5% potential is an expression; the continuity root is a
+      // residual.
+      collar = dry_bound_is_root_limit_
+                   ? root_psi_crit_at<S>(pars)
+                   : bound_at<K, S>(false, opt_root_psi_, draw, pars);
+      break;
+    case OperatingPointKind::HydraulicShutdown:
+      // The stem holds at its critical potential and nothing defines the collar
+      // at all, so it does not move.
+      break;
+    default:
+      util::stop(std::string("Leaf::collar_at: no operating point to place at "
+                             "one that is ") +
+                 operating_point_kind_name(operating_point_kind_));
+  }
+  return collar;
+}
+
 template <Leaf::CostCurve K>
 inline double Leaf::marginal_collar_slope() {
   const double p0 = opt_root_psi_;
@@ -5431,8 +5614,20 @@ inline double Leaf::marginal_collar_slope() {
   const double up = dprofit_at_collar_psi<K>(p0 + h, &up_ok);
   const double down = dprofit_at_collar_psi<K>(p0 - h, &down_ok);
   // Back to the point the solve placed, because this drove the model away from
-  // it. evaluate_root_collar_psi leaves exactly what find_root_collar_psi did.
+  // it.
+  //
+  // ⚠️ AND THE KIND HAS TO BE PUT BACK BY HAND. evaluate_root_collar_psi restores
+  // every NUMBER -- collar, stem potential, ci, profit, every layer's draw, bit
+  // for bit -- and then tags the point `prescribed`, because from its side that
+  // is what it is. collar_at switches on the kind, so leaving it there turns a
+  // solved interior point into one with no condition to place it at: the failure
+  // is a throw, not a wrong number, and it surfaces in a caller that never asked
+  // for a curvature.
+  const OperatingPointKind kind0 = operating_point_kind_;
+  const bool dry0 = dry_bound_is_root_limit_;
   evaluate_root_collar_psi_for<K>(p0);
+  operating_point_kind_ = kind0;
+  dry_bound_is_root_limit_ = dry0;
   if (!up_ok || !down_ok || !std::isfinite(up) || !std::isfinite(down)) {
     // The same convention duptake_dpsi uses at a kink: a caller that cannot get
     // a curvature here has to know that, not be handed a zero it will divide by.

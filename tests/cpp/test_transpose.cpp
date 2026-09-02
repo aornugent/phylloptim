@@ -15,12 +15,15 @@
 // collar responses either: sigma comes from an inverse spline whose round-trip
 // dominates dsigma/dcollar - 1. This can.
 //
-// ⚠️ THE COLLAR IS HELD. Every quantity here is placed AT a collar rather than
-// deciding one, so the collar carries no rows and there is no envelope reasoning
-// to check yet. The live-collar arm, and the control that holds it passive on
-// one side only, arrive with collar_at -- until then this checks the two
-// residual lifts, the grafts underneath them, the supply path and the objective,
-// which is what exists to be checked.
+// ⚠️ THE CONTROL IS THE POINT. The collar is LIVE -- placed by collar_at, so it
+// carries the rows of whatever condition pins it -- and the second arm holds it
+// passive on the REVERSE side only, which is exactly the envelope mistake. That
+// arm MUST fail: a test that passes both ways is measuring nothing, so the
+// control is asserted rather than reported.
+//
+// Where the collar genuinely does not move -- a hydraulic shutdown holds the stem
+// at psi_crit and nothing defines the collar at all -- holding it must change
+// NOTHING, and that is asserted too. Either expectation broken is a failure.
 //
 // Run by `make -C tests/cpp`, with the rest of the suite.
 
@@ -35,6 +38,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <stdexcept>
 
 namespace pl = phylloptim;
 using T = odelia::ode::tangent_scalar<double>;
@@ -119,22 +123,26 @@ Inputs<S> inputs_of(const pl::Leaf& l) {
 
 // <v, J u>: one tangent, every input seeded at once.
 double forward_side(const pl::Leaf& l, const std::vector<double>& u,
-                    const std::vector<double>& v) {
+                    const std::vector<double>& v, double curvature,
+                    bool has_coords) {
   Inputs<T> in = inputs_of<T>(l);
   std::vector<T*> f = in.flat();
   for (std::size_t k = 0; k < f.size(); ++k) {
     odelia::ode::seed_direction(*f[k], u[k]);
   }
   const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), in.supply());
-  const auto co = l.collar_coords_at<T>(l.opt_psi_stem_, l.ci_,
-                                        T(l.opt_root_psi_), draw, in.pars);
-  const auto o = l.outputs_at<pl::Leaf::CostCurve::TF24, T>(
-      T(l.opt_root_psi_), draw, in.pars);
+  const T collar =
+      l.collar_at<pl::Leaf::CostCurve::TF24, T>(draw, in.pars, curvature);
+  const auto o = l.outputs_at<pl::Leaf::CostCurve::TF24, T>(collar, draw, in.pars);
 
-  double acc = v[0] * odelia::ode::derivative_along(co.sigma.value) +
-               v[1] * odelia::ode::derivative_along(co.ci.value) +
-               v[2] * odelia::ode::derivative_along(draw.flux.value) +
+  double acc = v[2] * odelia::ode::derivative_along(draw.flux.value) +
                v[3] * odelia::ode::derivative_along(o.profit);
+  if (has_coords) {
+    const auto co =
+        l.collar_coords_at<T>(l.opt_psi_stem_, l.ci_, collar, draw, in.pars);
+    acc += v[0] * odelia::ode::derivative_along(co.sigma.value) +
+           v[1] * odelia::ode::derivative_along(co.ci.value);
+  }
   for (std::size_t i = 0; i < o.uptake.size(); ++i) {
     acc += v[4 + i] * odelia::ode::derivative_along(o.uptake[i]);
   }
@@ -143,7 +151,8 @@ double forward_side(const pl::Leaf& l, const std::vector<double>& u,
 
 // <J^T v, u>: one recording, one sweep.
 double reverse_side(const pl::Leaf& l, const std::vector<double>& u,
-                    const std::vector<double>& v) {
+                    const std::vector<double>& v, double curvature,
+                    bool hold_collar, bool has_coords) {
   Tape tape;
   Inputs<A> in = inputs_of<A>(l);
   std::vector<A*> f = in.flat();
@@ -151,15 +160,18 @@ double reverse_side(const pl::Leaf& l, const std::vector<double>& u,
   tape.newRecording();
 
   auto draw = l.supply_draw_at<A>(A(l.opt_root_psi_), in.supply());
-  auto co = l.collar_coords_at<A>(l.opt_psi_stem_, l.ci_, A(l.opt_root_psi_),
-                                  draw, in.pars);
-  auto o = l.outputs_at<pl::Leaf::CostCurve::TF24, A>(A(l.opt_root_psi_), draw,
-                                                      in.pars);
+  A collar = l.collar_at<pl::Leaf::CostCurve::TF24, A>(draw, in.pars, curvature);
+  // The control: strip the collar's rows on THIS side only.
+  if (hold_collar) collar = A(odelia::util::to_passive(collar));
+  auto o = l.outputs_at<pl::Leaf::CostCurve::TF24, A>(collar, draw, in.pars);
 
-  tape.registerOutput(co.sigma.value);
-  xad::derivative(co.sigma.value) = v[0];
-  tape.registerOutput(co.ci.value);
-  xad::derivative(co.ci.value) = v[1];
+  if (has_coords) {
+    auto co = l.collar_coords_at<A>(l.opt_psi_stem_, l.ci_, collar, draw, in.pars);
+    tape.registerOutput(co.sigma.value);
+    xad::derivative(co.sigma.value) = v[0];
+    tape.registerOutput(co.ci.value);
+    xad::derivative(co.ci.value) = v[1];
+  }
   tape.registerOutput(draw.flux.value);
   xad::derivative(draw.flux.value) = v[2];
   tape.registerOutput(o.profit);
@@ -177,16 +189,47 @@ double reverse_side(const pl::Leaf& l, const std::vector<double>& u,
   return acc;
 }
 
+// Whether the collar carries rows on this arm, which is what decides what the
+// control MUST do. Holding it passive has to change the answer wherever the
+// collar is placed by a rule that reads the inputs, and has to change nothing
+// where the collar does not move at all.
+//
+// No `default:`, so -Werror=switch refuses a new kind until someone says which
+// of the three it is.
+enum class Arm { CarriesRows, NoRows, Refuses };
+
+Arm arm_of(pl::Leaf::OperatingPointKind kind) {
+  switch (kind) {
+    // Placed by a rule that reads the inputs: the interior condition, or one of
+    // the two bounds.
+    case pl::Leaf::OperatingPointKind::Interior:
+    case pl::Leaf::OperatingPointKind::BoundarySoil:
+    case pl::Leaf::OperatingPointKind::BoundaryCrit:
+    case pl::Leaf::OperatingPointKind::ShadeDeath:
+      return Arm::CarriesRows;
+    // The stem holds at psi_crit and nothing defines the collar at all.
+    case pl::Leaf::OperatingPointKind::HydraulicShutdown:
+      return Arm::NoRows;
+    case pl::Leaf::OperatingPointKind::Unsolved:
+    case pl::Leaf::OperatingPointKind::Determined:
+    case pl::Leaf::OperatingPointKind::Prescribed:
+    case pl::Leaf::OperatingPointKind::SolverRefused:
+    case pl::Leaf::OperatingPointKind::NonFiniteGradient:
+      return Arm::Refuses;
+  }
+  return Arm::Refuses;
+}
+
+// A control below this is "silent": holding the collar passive changed nothing.
+// The identity itself passes below 1e-10, so a live control at this floor still
+// sits three orders above what the check can resolve.
+const double kControlFloor = 1e-7;
+int seen_carry = 0, seen_norows = 0;
+
 void check(int layers, double psi0, double ppfd, double leaf_temp,
            unsigned long seed) {
   pl::Leaf l = set_up(layers, psi0, ppfd, leaf_temp);
   l.find_root_collar_psi();
-  if (l.operating_point_kind() == pl::Leaf::OperatingPointKind::SolverRefused ||
-      l.operating_point_kind() ==
-          pl::Leaf::OperatingPointKind::NonFiniteGradient) {
-    return;
-  }
-
   Stream rng{seed};
   const std::size_t nin = pl::n_pars + 3 * std::size_t(layers);
   const std::size_t nout = 4 + std::size_t(layers);
@@ -194,8 +237,41 @@ void check(int layers, double psi0, double ppfd, double leaf_temp,
   for (double& x : u) x = rng.next();
   for (double& x : v) x = rng.next();
 
-  const double fwd = forward_side(l, u, v);
-  const double rev = reverse_side(l, u, v);
+  const Arm arm = arm_of(l.operating_point_kind());
+  if (arm == Arm::Refuses) return;
+  const double curvature =
+      l.operating_point_kind() == pl::Leaf::OperatingPointKind::Interior
+          ? l.marginal_collar_slope<pl::Leaf::CostCurve::TF24>()
+          : std::numeric_limits<double>::quiet_NaN();
+  if (l.operating_point_kind() == pl::Leaf::OperatingPointKind::Interior &&
+      !std::isfinite(curvature)) {
+    return;  // no curvature to divide by; collar_at would refuse too
+  }
+
+  const bool has_coords =
+      l.operating_point_kind() != pl::Leaf::OperatingPointKind::HydraulicShutdown;
+  const double fwd = forward_side(l, u, v, curvature, has_coords);
+  const double rev = reverse_side(l, u, v, curvature, false, has_coords);
+
+  // The control, on the reverse side only.
+  const double held = reverse_side(l, u, v, curvature, true, has_coords);
+  const double scale_c = std::max(std::abs(rev), 1e-300);
+  const double moved = std::abs(rev - held) / scale_c;
+  if (arm == Arm::CarriesRows) {
+    ++seen_carry;
+    ok(moved > kControlFloor,
+       "CONTROL: holding the collar must change the answer where it is placed "
+       "by a rule -- kind=" +
+           std::string(l.operating_point_kind_name(l.operating_point_kind())) +
+           " moved=" + std::to_string(moved));
+  } else {
+    ++seen_norows;
+    ok(moved <= kControlFloor,
+       "CONTROL: holding the collar must change nothing where it does not move "
+       "-- kind=" +
+           std::string(l.operating_point_kind_name(l.operating_point_kind())) +
+           " moved=" + std::to_string(moved));
+  }
   const double scale = std::max(std::abs(fwd), std::abs(rev));
   const double rel = (scale > 0.0) ? std::abs(fwd - rev) / scale : 0.0;
   ++compared;
@@ -209,10 +285,12 @@ void check(int layers, double psi0, double ppfd, double leaf_temp,
 }  // namespace
 
 int main() {
-  printf("the transpose identity at a held collar\n");
+  printf("the transpose identity, with the collar live\n");
   unsigned long seed = 12345;
   for (int layers : {1, 3, 5}) {
-    for (double psi0 : {0.5, 1.0, 2.0, 3.0}) {
+    // Dry enough to reach a hydraulic shutdown, which is the arm the control's
+    // other half needs -- the sweep asserts below that it got there.
+    for (double psi0 : {0.5, 1.0, 2.0, 3.0, 5.0, 7.0}) {
       for (double ppfd : {100.0, 1500.0}) {
         for (double leaf_temp : {25.0, 40.0}) {
           check(layers, psi0, ppfd, leaf_temp, seed += 7919);
@@ -224,7 +302,13 @@ int main() {
          worst);
   // The identity is only evidence about the points it ran on, so a fixture that
   // stops reaching them has narrowed the check without narrowing the claim.
-  ok(compared >= 40, "the sweep reached at least 40 operating points");
-  printf("%d checks, %d failures\n", compared + 1, failures);
+  printf("    arms reached: %d placed by a rule, %d with no collar to move\n",
+         seen_carry, seen_norows);
+  // The identity is only evidence about the arms it ran on, and the control is
+  // only evidence where both expectations were exercised.
+  ok(compared >= 20, "the sweep reached at least 20 operating points");
+  ok(seen_carry > 0, "the sweep reached an arm whose collar carries rows");
+  ok(seen_norows > 0, "the sweep reached an arm whose collar does not move");
+  printf("%d checks, %d failures\n", compared + seen_carry + seen_norows + 3, failures);
   return failures == 0 ? 0 : 1;
 }
