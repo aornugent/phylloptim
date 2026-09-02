@@ -14,6 +14,8 @@
 
 #include <odelia/interpolator.hpp>
 #include <odelia/with_slope.hpp>
+#include <odelia/tangent.hpp>
+#include <odelia/implicit_node.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1625,8 +1627,15 @@ public:
   double E_column(double x, const std::vector<double>& psi_soil, double psi_leaf);
   double E_column_zero(double x, const std::vector<double>& psi_soil);
   
-  double arrh_curve(double Ea, double ref_value, double leaf_temp) const;
-  double peak_arrh_curve(double Ea, double ref_value, double leaf_temp, double H_d, double d_S) const;
+  // The two temperature responses, at any scalar. Both are exactly LINEAR in
+  // ref_value and every other argument is fixed physiology, so on the active path
+  // the response is a passive factor and the reference value is what carries the
+  // row. Templated rather than factored into that product because the operation
+  // order is what keeps the double instantiation bit-identical to the member it
+  // replaced.
+  template <typename T> T arrh_curve(T Ea, T ref_value, T leaf_temp) const;
+  template <typename T>
+  T peak_arrh_curve(T Ea, T ref_value, T leaf_temp, T H_d, T d_S) const;
 
   // --- Penman-Monteith leaf energy balance (minimal core; #523) ---------------
   // Recompute the temperature-dependent photosynthetic parameters (vcmax_,
@@ -1727,10 +1736,72 @@ public:
   template <typename T> T assim_colimited_kernel(T ci) const;
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
 
+  // The same kernels against a caller's parameter pack, for the path that needs
+  // rows in the traits.
+  //
+  // ⚠️ FROM THE PACK, NOT THE MEMBERS. At double the two are the same numbers, so
+  // a member read answers correctly and differentiates to a silent ZERO in every
+  // trait it touches -- which is a plausible gradient, in every column at once.
+  // The atmospheric constants and the fixed physiology stay members, because
+  // nothing differentiates them.
+  //
+  // The temperature responses are re-run rather than read off vcmax_ / jmax_ /
+  // R_d_, and that is what carries a trait's row from its reference value at 25 C
+  // to the value at this leaf's temperature. Each is exactly linear in that
+  // reference value, so the response contributes a factor and the trait carries
+  // the row.
+  template <typename T> T vcmax_at(const leaf_pars<T>& pars) const;
+  template <typename T> T jmax_at(const leaf_pars<T>& pars) const;
+  template <typename T> T respiration_at(const leaf_pars<T>& pars) const;
+  template <typename T> T electron_transport_at(const leaf_pars<T>& pars) const;
+  template <typename T>
+  T assim_colimited_kernel(const T& ci, const leaf_pars<T>& pars) const;
+  // dA/dci, by a TANGENT THROUGH THE KERNEL ABOVE rather than a slope written
+  // out beside it. Upstream takes A' this way at double for exactly the reason it
+  // matters here: a hand-written twin is a second definition of one function,
+  // free to disagree with it by an amount that stays finite and plausible in
+  // every column. At a nested tangent this is the same statement one order up.
+  template <typename T>
+  T assim_slope_at(const T& ci, const leaf_pars<T>& pars) const;
+
+  // The STEM's flux at a held stem potential and collar: kmax * (G(sigma) -
+  // G(collar)), which is upstream's `transpiration()` given its parameters.
+  //
+  // ⚠️ THIS IS NOT THE SOIL DRAW, and the difference is the whole reason ci has
+  // to read this one. T1 says the stem carries what the soil delivers, but the
+  // collar solve satisfies it only to its own tolerance -- measured 6.7e-04
+  // apart at a converged interior point -- and the model places ci from
+  // stom_cond_CO2, which is built from THIS flux. Differentiating a residual
+  // the model did not solve returns a number rather than an error, and the
+  // number was 3 to 10 per cent wrong in dci/dcollar with every value finite.
+  template <typename T>
+  T transpiration_at(const T& sigma, const T& collar,
+                     const leaf_pars<T>& pars) const;
+  template <typename T>
+  T proportion_of_conductivity_kernel(const T& psi,
+                                      const leaf_pars<T>& pars) const;
+  template <typename T>
+  T hydraulic_cost_TF_kernel(const T& psi_stem, const leaf_pars<T>& pars) const;
+
   // G(psi) at any scalar: the table's value at the passive point, carrying the
   // query slope and the two TRAIT rows the closed form gives exactly.
   template <class S>
   S stem_integral_at(const S& psi, const leaf_pars<S>& pars) const;
+
+  // The two conditions that place the operating point at a held collar, and both
+  // halves of each coordinate.
+  //
+  //   T1  kmax * (G(sigma) - G(collar)) - E_up = 0   places the stem potential
+  //   T2  A(ci) * k1 - gc * (ca - ci) * k2   = 0     places the intercellular CO2
+  //
+  // gc is proportional to the flux, so it is derived from the draw here rather
+  // than passed: two spellings of one fact is a place they can disagree. The DRAW
+  // rather than a bare flux, so a flux and a slope from different collars cannot
+  // be paired -- check_draw refuses that before anything reads it.
+  template <class S>
+  CollarCoords<S> collar_coords_at(double sigma_star, double ci_star,
+                                   const S& collar, const SupplyDraw<S>& draw,
+                                   const leaf_pars<S>& pars) const;
 
   // The pack as this leaf currently stands. The double path passes this where the
   // active path passes a seeded copy, so both reach the kernels the same way and
@@ -4107,16 +4178,16 @@ inline double Leaf::dprofit_energy_balance_term(
          (A_T * gc * inv_atm + A_prime * dgc_dT * (ca_ - ci) * inv_atm) / g_ci;
 }
 
-inline double Leaf::arrh_curve(double Ea, double ref_value, double leaf_temp) const {
-
-
+template <typename T>
+inline T Leaf::arrh_curve(T Ea, T ref_value, T leaf_temp) const {
   return ref_value*exp(Ea*((leaf_temp+C_to_K) - (25 + C_to_K))/((25 + C_to_K)*gas_constant*(leaf_temp+C_to_K)));
 }
 
-inline double Leaf::peak_arrh_curve(double Ea, double ref_value, double leaf_temp, double H_d, double d_S) const {
-  double arrh = arrh_curve(Ea, ref_value, leaf_temp);
-  double arg2 = 1 + exp((d_S*(25 + C_to_K) - H_d)/(gas_constant*(25 + C_to_K)));
-  double arg3 = 1 + exp((d_S*(leaf_temp + C_to_K) - H_d)/(gas_constant*(leaf_temp + C_to_K)));
+template <typename T>
+inline T Leaf::peak_arrh_curve(T Ea, T ref_value, T leaf_temp, T H_d, T d_S) const {
+  T arrh = arrh_curve<T>(Ea, ref_value, leaf_temp);
+  T arg2 = 1 + exp((d_S*(25 + C_to_K) - H_d)/(gas_constant*(25 + C_to_K)));
+  T arg3 = 1 + exp((d_S*(leaf_temp + C_to_K) - H_d)/(gas_constant*(leaf_temp + C_to_K)));
 
   return arrh * arg2/arg3;
 }
@@ -4953,6 +5024,207 @@ inline double Leaf::g1_eff() const {
 template <typename T>
 inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem) const {
   return TF24_cost_scale * pow((1 - proportion_of_conductivity_kernel(psi_stem)), TF24_beta2);
+}
+
+// ---- the same kernels, against a caller's parameter pack -------------------
+//
+// Each is its member-reading twin above with every differentiated quantity taken
+// from `pars` instead. At double the pack holds exactly what the members hold
+// (passive_pars builds it from them), and the operation order is unchanged, so
+// these instantiate to the same numbers bit for bit.
+
+template <typename T>
+inline T Leaf::vcmax_at(const leaf_pars<T>& pars) const {
+  return peak_arrh_curve<T>(T(vcmax_ha_), pars[par_vcmax_25],
+                            T(leaf_temp_), T(vcmax_H_d_), T(vcmax_d_S_));
+}
+
+template <typename T>
+inline T Leaf::jmax_at(const leaf_pars<T>& pars) const {
+  T j = peak_arrh_curve<T>(T(jmax_ha_), pars[par_jmax_25],
+                           T(leaf_temp_), T(jmax_H_d_), T(jmax_d_S_));
+  // The thermal cost reads leaf temperature and two thresholds, none of which is
+  // a trait, so it is a factor here rather than a term carrying rows.
+  if (use_thermal_cost_) {
+    j *= 1.0 - thermal_cost_at(leaf_temp_);
+  }
+  return j;
+}
+
+template <typename T>
+inline T Leaf::respiration_at(const leaf_pars<T>& pars) const {
+  const double q10 =
+      rd_q10_intercept_ - rd_q10_slope_ * (leaf_temp_ + 25.0) / 2.0;
+  return pars[par_R_d_25] *
+         T(std::pow(q10, (leaf_temp_ - 25.0) / 10.0));
+}
+
+template <typename T>
+inline T Leaf::electron_transport_at(const leaf_pars<T>& pars) const {
+  const T a_at = pars[par_a];
+  const T jm = jmax_at<T>(pars);
+  const T curv = pars[par_curv_fact_elec_trans];
+  return (a_at * PPFD_ + jm -
+          sqrt(pow(a_at * PPFD_ + jm, 2) - 4 * curv * a_at * PPFD_ * jm)) /
+         (2 * curv);
+}
+
+template <typename T>
+inline T Leaf::assim_colimited_kernel(const T& ci,
+                                      const leaf_pars<T>& pars) const {
+  // gamma_ and km_ are temperature responses of fixed physiology -- no trait
+  // reaches either -- so they stay members.
+  const T vc = vcmax_at<T>(pars);
+  const T J = electron_transport_at<T>(pars);
+  const T curv = pars[par_curv_fact_colim];
+  const T rubisco = (vc * (ci - gamma_ * umol_per_mol_to_Pa_)) / (ci + km_);
+  const T electron =
+      J / 4 *
+      ((ci - gamma_ * umol_per_mol_to_Pa_) /
+       (ci + 2 * gamma_ * umol_per_mol_to_Pa_));
+  return (rubisco + electron -
+          sqrt(pow(rubisco + electron, 2) - 4 * curv * rubisco * electron)) /
+             (2 * curv) -
+         respiration_at<T>(pars);
+}
+
+template <typename T>
+inline T Leaf::transpiration_at(const T& sigma, const T& collar,
+                                const leaf_pars<T>& pars) const {
+  return pars[par_kmax] * (stem_integral_at<T>(sigma, pars) -
+                           stem_integral_at<T>(collar, pars));
+}
+
+template <typename T>
+inline T Leaf::assim_slope_at(const T& ci, const leaf_pars<T>& pars) const {
+  using nested = odelia::ode::tangent_scalar<T>;
+  leaf_pars<nested> np;
+  for (std::size_t i = 0; i < np.size(); ++i) np[i] = nested(pars[i]);
+  nested c = nested(ci);
+  odelia::ode::seed_direction(c, 1.0);
+  return odelia::ode::derivative_along(
+      assim_colimited_kernel<nested>(c, np));
+}
+
+// The curve itself is closed form, so the (P50, c) chain comes out of the one
+// derivation rather than a graft: only the pre-integrated G(psi) is tabulated and
+// needs its rows supplied (stem_integral_at).
+template <typename T>
+inline T Leaf::proportion_of_conductivity_kernel(const T& psi,
+                                                 const leaf_pars<T>& pars) const {
+  const T c = pars[par_stem_c];
+  const T b = phylloptim::weibull_b_from_P50<T>(pars[par_stem_P50], c);
+  return exp(-pow((psi / b), c));
+}
+
+template <typename T>
+inline T Leaf::hydraulic_cost_TF_kernel(const T& psi_stem,
+                                        const leaf_pars<T>& pars) const {
+  return pars[par_TF24_cost_scale] *
+         pow((1 - proportion_of_conductivity_kernel<T>(psi_stem, pars)),
+             pars[par_TF24_beta2]);
+}
+
+template <class S>
+inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
+    double sigma_star, double ci_star, const S& collar,
+    const SupplyDraw<S>& draw, const leaf_pars<S>& pars) const {
+  using odelia::util::to_passive;
+  check_draw(to_passive(collar), draw);
+
+  // ⚠️ THE LEAF-TO-AIR DEFICIT AND THE SETTABLE RATIO, which is what
+  // stom_cond_CO2 divides by. With the energy balance off vpd_leaf_ IS atm_vpd_,
+  // so a check with the gate off cannot tell them apart -- and with it on they
+  // differ by up to 1.52x.
+  const double gc_per_flux =
+      atm_kpa_ * kg_to_mol_h2o / vpd_leaf_ / H2O_CO2_stom_diff_ratio_;
+  const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
+  const Leaf& leaf = *this;
+  const leaf_pars<double> at_pars = passive_pars();
+
+  // The flux at the LIVE collar. The draw holds it at the passive one carrying
+  // its own rows; what is missing is the channel through the collar moving, and
+  // that is the one recorded slope. At the operating point the step is exactly
+  // zero, so this is the draw's flux bit for bit.
+  const S step = collar - S(draw.at);
+  const S flux = draw.flux.value + draw.flux.slope * step;
+
+  // dT1/dsigma is one term of the residual: the stem curve at the operating
+  // point, scaled by kmax. Taken at the passive point, which is where the theorem
+  // divides.
+  const double dT1_dsigma =
+      at_pars[par_kmax] *
+      proportion_of_conductivity_kernel<double>(sigma_star, at_pars);
+  const S sigma = odelia::implicit_value<S>(
+      sigma_star, dT1_dsigma, [&](const S& sg) -> S {
+        return pars[par_kmax] * (leaf.template stem_integral_at<S>(sg, pars) -
+                                 leaf.template stem_integral_at<S>(collar, pars)) -
+               flux;
+      });
+
+  // ⚠️ FOLLOW THE BRANCH THE FORWARD MODEL TOOK. Where the leaf is not moving
+  // water it does not place ci by the residual at all -- it assigns the CO2
+  // compensation point, which is a function of temperature and which no carbon
+  // input reaches. Applying the theorem to a condition the model did not solve
+  // returns a number rather than an error, and the number is a cancellation of
+  // two vanishing terms.
+  //
+  // dT2/dci is the assimilation's own slope plus the supply term's, at the
+  // passive point. A' comes from a TANGENT THROUGH THE SAME KERNEL the residual
+  // calls, which is upstream's own way of taking it -- a hand-written slope twin
+  // would be a second definition of one function, free to disagree with it in a
+  // way that stays finite and plausible.
+  // The stem's flux at the placed sigma. gc is built from THIS, not from the
+  // draw, because that is what the model's ci solve reads.
+  const S stem_flux = transpiration_at<S>(sigma, collar, pars);
+
+  double dT2_dci = 0.0;
+  if (!ci_at_compensation_point_) {
+    dT2_dci = assim_slope_at<double>(ci_star, at_pars) * umol_to_mol +
+              gc_per_flux * to_passive(stem_flux) * inv_atm;
+  }
+  const S ci =
+      ci_at_compensation_point_
+          ? S(ci_star)
+          : odelia::implicit_value<S>(
+                ci_star, dT2_dci, [&](const S& c) -> S {
+                  const S A = leaf.template assim_colimited_kernel<S>(c, pars);
+                  return A * umol_to_mol -
+                         S(gc_per_flux) * stem_flux * (S(leaf.ca_) - c) *
+                             S(inv_atm);
+                });
+
+  // ---- the other half of each pair: the response in the collar --------------
+  //
+  // Both come out of the same two conditions, differentiated in the collar with
+  // the parameters held still. They are returned WITH their values because a
+  // consumer seeded from separate places can pair a value from one point with a
+  // slope from another, and a first attempt that moved only the collar disagreed
+  // with a difference by 40 to 100 per cent.
+  const S kmax = pars[par_kmax];
+  const S f_p = proportion_of_conductivity_kernel<S>(collar, pars);
+  const S f_sigma = proportion_of_conductivity_kernel<S>(sigma, pars);
+
+  // dsigma/dcollar, from the same closed form the double path uses. At a tangent
+  // its own slope falls out of this arithmetic, so no quotient rule is written.
+  const S V = (draw.flux.slope / kmax + f_p) / f_sigma;
+
+  const S gc_const = S(gc_per_flux);
+  const S inv = S(inv_atm);
+  const S gc = gc_const * stem_flux;
+  // The conductance partials are the transport slope at each end, which is the
+  // closed form kmax * f -- already formed above, so read rather than recomputed.
+  const S dgc_dsigma = gc_const * kmax * f_sigma;
+  const S dgc_dp = -gc_const * kmax * f_p;
+
+  const S A_prime = assim_slope_at<S>(ci, pars);
+  const S g_ci = A_prime * umol_to_mol + gc * inv;
+  const S ca_minus_ci = S(ca_) - ci;
+  const S dci_dsigma = (dgc_dsigma * ca_minus_ci * inv) / g_ci;
+  const S dci_dp_expl = (dgc_dp * ca_minus_ci * inv) / g_ci;
+
+  return CollarCoords<S>{pair<S>{sigma, V},
+                         pair<S>{ci, dci_dsigma * V + dci_dp_expl}};
 }
 
 inline double Leaf::hydraulic_cost_TF(double psi_stem) {
