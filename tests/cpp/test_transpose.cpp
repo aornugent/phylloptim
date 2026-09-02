@@ -3,9 +3,9 @@
 //     <v, J u>  ==  <J^T v, u>
 //
 // J is the map from the leaf's active inputs -- the parameter pack and the soil
-// state -- to what the surface places at a held collar: the stem potential, the
-// intercellular CO2, the flux, and the per-layer draws. `J u` is one forward
-// tangent seeded with u; `J^T v` is one reverse sweep seeded with v.
+// state -- to the two things plant reads, profit and the per-layer draws, plus
+// the two coordinates they are assembled from. `J u` is one forward tangent
+// seeded with u; `J^T v` is one reverse sweep seeded with v.
 //
 // Neither side is a reference for the other. They are the same operator read in
 // two directions, and only a consistent J satisfies both -- which is what makes
@@ -19,8 +19,8 @@
 // deciding one, so the collar carries no rows and there is no envelope reasoning
 // to check yet. The live-collar arm, and the control that holds it passive on
 // one side only, arrive with collar_at -- until then this checks the two
-// residual lifts, the grafts underneath them, and the supply path, which is what
-// exists to be checked.
+// residual lifts, the grafts underneath them, the supply path and the objective,
+// which is what exists to be checked.
 //
 // Run by `make -C tests/cpp`, with the rest of the suite.
 
@@ -128,12 +128,15 @@ double forward_side(const pl::Leaf& l, const std::vector<double>& u,
   const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), in.supply());
   const auto co = l.collar_coords_at<T>(l.opt_psi_stem_, l.ci_,
                                         T(l.opt_root_psi_), draw, in.pars);
+  const auto o = l.outputs_at<pl::Leaf::CostCurve::TF24, T>(
+      T(l.opt_root_psi_), draw, in.pars);
 
   double acc = v[0] * odelia::ode::derivative_along(co.sigma.value) +
                v[1] * odelia::ode::derivative_along(co.ci.value) +
-               v[2] * odelia::ode::derivative_along(draw.flux.value);
-  for (std::size_t i = 0; i < draw.uptake.size(); ++i) {
-    acc += v[3 + i] * odelia::ode::derivative_along(draw.uptake[i]);
+               v[2] * odelia::ode::derivative_along(draw.flux.value) +
+               v[3] * odelia::ode::derivative_along(o.profit);
+  for (std::size_t i = 0; i < o.uptake.size(); ++i) {
+    acc += v[4 + i] * odelia::ode::derivative_along(o.uptake[i]);
   }
   return acc;
 }
@@ -150,6 +153,8 @@ double reverse_side(const pl::Leaf& l, const std::vector<double>& u,
   auto draw = l.supply_draw_at<A>(A(l.opt_root_psi_), in.supply());
   auto co = l.collar_coords_at<A>(l.opt_psi_stem_, l.ci_, A(l.opt_root_psi_),
                                   draw, in.pars);
+  auto o = l.outputs_at<pl::Leaf::CostCurve::TF24, A>(A(l.opt_root_psi_), draw,
+                                                      in.pars);
 
   tape.registerOutput(co.sigma.value);
   xad::derivative(co.sigma.value) = v[0];
@@ -157,9 +162,11 @@ double reverse_side(const pl::Leaf& l, const std::vector<double>& u,
   xad::derivative(co.ci.value) = v[1];
   tape.registerOutput(draw.flux.value);
   xad::derivative(draw.flux.value) = v[2];
-  for (std::size_t i = 0; i < draw.uptake.size(); ++i) {
-    tape.registerOutput(draw.uptake[i]);
-    xad::derivative(draw.uptake[i]) = v[3 + i];
+  tape.registerOutput(o.profit);
+  xad::derivative(o.profit) = v[3];
+  for (std::size_t i = 0; i < o.uptake.size(); ++i) {
+    tape.registerOutput(o.uptake[i]);
+    xad::derivative(o.uptake[i]) = v[4 + i];
   }
   tape.computeAdjoints();
 
@@ -182,7 +189,7 @@ void check(int layers, double psi0, double ppfd, double leaf_temp,
 
   Stream rng{seed};
   const std::size_t nin = pl::n_pars + 3 * std::size_t(layers);
-  const std::size_t nout = 3 + std::size_t(layers);
+  const std::size_t nout = 4 + std::size_t(layers);
   std::vector<double> u(nin), v(nout);
   for (double& x : u) x = rng.next();
   for (double& x : v) x = rng.next();
