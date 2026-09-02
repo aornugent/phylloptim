@@ -5669,9 +5669,19 @@ inline double Leaf::marginal_collar_slope() {
   // around it. Read off dprofit_at_collar_psi's own values: 1e-04, 1e-05 and
   // 1e-06 agree to seven figures, 1e-02 is truncation and 1e-07 is round-off.
   const double h = 1e-5;
-  bool up_ok = false, down_ok = false;
+  bool up_ok = false, down_ok = false, here_ok = false;
   const double up = dprofit_at_collar_psi<K>(p0 + h, &up_ok);
   const double down = dprofit_at_collar_psi<K>(p0 - h, &down_ok);
+  // ⚠️ ONE SIDE IS ENOUGH, AND AN INTERIOR COLLAR CAN BE A STEP FROM A BOUND.
+  // The feasible interval is closed and its ends are reachable: a collar sitting
+  // within h of one has a neighbour outside it, where dprofit refuses. Returning
+  // NaN there hands the caller nothing to divide by, and plant's interior
+  // derivation refuses the whole SWEEP on it -- so a point perfectly well placed
+  // in the interior costs a gradient because of where its neighbour fell. A
+  // one-sided difference at the same step is a derivative of the same function,
+  // to one order lower, which is the right answer rather than no answer.
+  const double here =
+      (up_ok && down_ok) ? 0.0 : dprofit_at_collar_psi<K>(p0, &here_ok);
   // Back to the point the solve placed, because this drove the model away from
   // it.
   //
@@ -5687,12 +5697,21 @@ inline double Leaf::marginal_collar_slope() {
   evaluate_root_collar_psi_for<K>(p0);
   operating_point_kind_ = kind0;
   dry_bound_is_root_limit_ = dry0;
-  if (!up_ok || !down_ok || !std::isfinite(up) || !std::isfinite(down)) {
-    // The same convention duptake_dpsi uses at a kink: a caller that cannot get
-    // a curvature here has to know that, not be handed a zero it will divide by.
-    return std::numeric_limits<double>::quiet_NaN();
+  const bool have_up = up_ok && std::isfinite(up);
+  const bool have_down = down_ok && std::isfinite(down);
+  const bool have_here = here_ok && std::isfinite(here);
+  if (have_up && have_down) {
+    return (up - down) / (2.0 * h);
   }
-  return (up - down) / (2.0 * h);
+  if (have_here && have_up) {
+    return (up - here) / h;
+  }
+  if (have_here && have_down) {
+    return (here - down) / h;
+  }
+  // The same convention duptake_dpsi uses at a kink: a caller that cannot get a
+  // curvature here has to know that, not be handed a zero it will divide by.
+  return std::numeric_limits<double>::quiet_NaN();
 }
 
 
