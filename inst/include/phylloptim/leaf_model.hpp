@@ -1832,6 +1832,33 @@ public:
   S marginal_at(const S& collar, const SupplyDraw<S>& draw,
                 const leaf_pars<S>& pars) const;
 
+  // dM/dp at the operating point the solve placed -- the curvature the interior
+  // derivation divides by. A FIRST difference of the marginal, which is what this
+  // has always meant: the failure it replaces was a SECOND difference of the
+  // OBJECTIVE, whose second-order content was two hand-written Taylor
+  // coefficients and which put a POSITIVE curvature at an interior maximum on a
+  // century stand.
+  //
+  // ⚠️ NOT A TANGENT THROUGH marginal_at, AND THE REASON IS CONDITIONING RATHER
+  // THAN EFFORT. dci/dcollar is a cancellation of two terms of 8.1e+04 that
+  // leaves 0.64, and its collar derivative is dominated by dci/dsigma * dV/dp
+  // where dV/dp is ITSELF a cancellation -- 0.50 against 0.50, leaving -1.1e-04.
+  // So an assembly has to hold four significant digits through that, and then
+  // multiply by 8.1e+04. It cannot: the conductivity's VALUE is the table's and
+  // its response is the curve's, and those disagree by the fit error, which is
+  // larger than the residual being cancelled to. A tangent returns an eighth of
+  // the answer, with the right sign.
+  //
+  // The difference does not have that problem, because M itself is O(1) away
+  // from the optimum and is not formed by cancelling anything. Measured over
+  // three decades of step it is stable to SEVEN significant figures.
+  //
+  // ⚠️ NOT const: it drives the model to two neighbouring collars and restores
+  // the operating point afterwards. Leaving it at p0 +/- h would be hazard 8 --
+  // every path out of the solve writes its own rates, and this is a path out.
+  template <CostCurve K>
+  double marginal_collar_slope();
+
 
   // The pack as this leaf currently stands. The double path passes this where the
   // active path passes a seeded copy, so both reach the kernels the same way and
@@ -5390,6 +5417,28 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
       odelia::ode::derivative_along(hydraulic_cost_TF_kernel<nested>(sg, np));
 
   return A_prime * at.ci.slope - C_prime * at.sigma.slope;
+}
+
+template <Leaf::CostCurve K>
+inline double Leaf::marginal_collar_slope() {
+  const double p0 = opt_root_psi_;
+  // Absolute, not relative: the collar runs 0.5 to 6 MPa, so one step serves the
+  // whole range, and the error-versus-step curve has a floor three decades wide
+  // around it. Read off dprofit_at_collar_psi's own values: 1e-04, 1e-05 and
+  // 1e-06 agree to seven figures, 1e-02 is truncation and 1e-07 is round-off.
+  const double h = 1e-5;
+  bool up_ok = false, down_ok = false;
+  const double up = dprofit_at_collar_psi<K>(p0 + h, &up_ok);
+  const double down = dprofit_at_collar_psi<K>(p0 - h, &down_ok);
+  // Back to the point the solve placed, because this drove the model away from
+  // it. evaluate_root_collar_psi leaves exactly what find_root_collar_psi did.
+  evaluate_root_collar_psi_for<K>(p0);
+  if (!up_ok || !down_ok || !std::isfinite(up) || !std::isfinite(down)) {
+    // The same convention duptake_dpsi uses at a kink: a caller that cannot get
+    // a curvature here has to know that, not be handed a zero it will divide by.
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return (up - down) / (2.0 * h);
 }
 
 
