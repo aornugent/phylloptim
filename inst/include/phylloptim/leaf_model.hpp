@@ -1149,6 +1149,62 @@ public:
     std::vector<double> duptake_dp;
   };
 
+  // The only way to make one, so the draw records the collar it was taken at and
+  // its values cannot come from different ones.
+  //
+  // ⚠️ THE COLLAR IS PASSIVE HERE, whatever the caller hands in. This is the
+  // supply at a POINT; where the point itself moves is the graft's business, and
+  // taking it live would record the search that placed it.
+  template <class S>
+  SupplyDraw<S> supply_draw_at(const S& collar,
+                               const SupplyAt<S>& supply) const {
+    const std::size_t n = static_cast<std::size_t>(supply_n_layers());
+    SupplyDraw<S> d;
+    d.at = odelia::util::to_passive(collar);
+
+    // ⚠️ NO DRAW AT A SHUTDOWN, and not because it would be zero. The collar is
+    // held at the stem's critical potential there, which is past where the uptake
+    // model answers at all -- the integral is exactly zero and E_up is not a
+    // number, so asking costs a stop rather than a wrong row. Every consumer
+    // reads zero at that kind anyway. ShadeDeath is NOT this case: it sits on the
+    // wet bound, where E_up is zero in value and its rows are the bound's own.
+    if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown) {
+      d.uptake.assign(n, S(0.0));
+      d.duptake_dp.assign(n, 0.0);
+      return d;
+    }
+
+    const S held = S(d.at);
+    d.uptake.assign(n, S(0.0));
+    roots_.template uptake_at<S>(held, supply, d.uptake, d.flux.value);
+    d.flux.slope = roots_.template duptake_dpsi<S>(held, supply);
+
+    // The per-layer collar slopes, SUPPLIED at double: the draws already carry
+    // their own rows, and what is missing is only the channel through the collar
+    // moving. Taking the supply again at a live collar would record the whole of
+    // it a second time for the same numbers.
+    std::vector<double> soil_at;
+    soil_at.reserve(supply.psi_soil.size());
+    for (const S& v : supply.psi_soil) {
+      soil_at.push_back(odelia::util::to_passive(v));
+    }
+    roots_.duptake_dpsi(d.at, soil_at, d.duptake_dp);
+    return d;
+  }
+
+  // ⚠️ A DRAW FROM THE WRONG COLLAR IS A WRONG NUMBER, not a missing row: profit
+  // reads the flux at whatever collar it is evaluated at, so a stale draw answers
+  // with the uptake from somewhere else and every value stays finite. Exact,
+  // because the draw stores the point it was taken at rather than deriving it.
+  template <class S>
+  void check_draw(double expect, const SupplyDraw<S>& draw) const {
+    if (draw.at != expect) {
+      util::stop("Leaf: the supply draw was taken at a collar of " +
+                 util::to_string(draw.at) + " and is being read at " +
+                 util::to_string(expect));
+    }
+  }
+
   // ---- the differentiable surface's coordinates ------------------------------
   //
   // A coordinate is a value AND its response in the collar potential, so the two

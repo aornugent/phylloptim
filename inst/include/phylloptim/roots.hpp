@@ -656,65 +656,133 @@ public:
   // those, and the caller falls back to a central difference. An implementation
   // that threw, or returned 0, would silently degrade TF24f's acclimation
   // gradient. Any alternative supply path must keep this contract.
+  // Three entries, one body. The double one is upstream's signature and its
+  // arithmetic unchanged; the second also writes each layer's own term, which is
+  // the row outputs_at grafts the draws through; the third is the same at any
+  // scalar, for a caller assembling on the tape.
   double duptake_dpsi(double T_collar,
                       const std::vector<double>& psi_soil) const {
+    return duptake_dpsi_impl<double>(
+               T_collar, supply_over(psi_soil), nullptr) * kg_per_mol_h2o;
+  }
+
+  // The same number, plus the per-layer terms that sum to it. They stay in MOL,
+  // matching the per-layer draws rather than the aggregate -- the kg conversion
+  // is applied once, to the total, exactly as uptake_impl applies it.
+  double duptake_dpsi(double T_collar, const std::vector<double>& psi_soil,
+                      std::vector<double>& per_layer) const {
+    return duptake_dpsi_impl<double>(
+               T_collar, supply_over(psi_soil), &per_layer) * kg_per_mol_h2o;
+  }
+
+  // At any scalar, against a caller's own view. No per-layer out-parameter here
+  // on purpose: those rows are SUPPLIED at double, so a caller wanting them wants
+  // the overload above.
+  template <class T>
+  T duptake_dpsi(const T& T_collar, const SupplyAt<T>& at) const {
+    return duptake_dpsi_impl<T>(T_collar, at, nullptr) * T(kg_per_mol_h2o);
+  }
+
+private:
+  // This object's members as a view over a caller's soil vector, so the double
+  // entries reach the same body without copying their own state.
+  SupplyAt<double> supply_over(const std::vector<double>& psi_soil) const {
+    return {psi_soil, network_.r_R_H_min, network_.r_R_V_sum, root_P50, root_c};
+  }
+
+  // The collar conductance, in MOL, at any scalar. Upstream's `duptake_dpsi`
+  // term for term, with the two disciplines the active path needs: ⚠️ EVERY
+  // COMPARISON READS PASSIVE (a taped comparison manufactures a discontinuity),
+  // and the vulnerability reads carry their closed-form rows through graft.hpp.
+  //
+  // ⚠️ THE MOVING BOUND'S INTEGRAND IS THE INTEGRAL'S OWN DERIVATIVE, not the
+  // separate conductivity spline. The two agree on the knot domain and are
+  // bounded differently past it -- the lookup clamps to the last knot, the
+  // integral is capped at G(inf) -- so only this one stays consistent with the
+  // `integral` above it. graft_curve supplies the ROWS; the VALUE stays the
+  // derivative table's, which is what keeps that distinction.
+  //
+  // At double every graft collapses to its table read, so this instantiation is
+  // upstream's arithmetic and the number does not move.
+  template <class T>
+  T duptake_dpsi_impl(const T& T_collar, const SupplyAt<T>& at,
+                      std::vector<double>* per_layer) const {
+    using odelia::util::to_passive;
+    const std::vector<T>& psi_soil = at.psi_soil;
+    const double collar_at = to_passive(T_collar);
     const double kink_tol = 1e-8;
-    double dEup_dT_mol = 0.0;
+    const std::size_t n = static_cast<std::size_t>(max_soil_layer);
+    if (per_layer != nullptr) per_layer->assign(n, 0.0);
+    T dEup_dT_mol = T(0.0);
 
     for (int i = 0; i < max_soil_layer; i++) {
-      if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
-          std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
-          std::abs(T_collar) < kink_tol) {
-        return std::numeric_limits<double>::quiet_NaN();
+      const T& psi_i = psi_soil[std::size_t(i)];
+      const double soil_at = to_passive(psi_i);
+      if (std::abs(collar_at - soil_at) < kink_tol ||
+          std::abs((collar_at - soil_at) - grav_head_z_[i]) < kink_tol ||
+          std::abs(collar_at) < kink_tol) {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        if (per_layer != nullptr) per_layer->assign(n, nan);
+        return T(nan);
       }
 
-      const double T_src_min = std::min(psi_soil[i], T_collar);
-      const double T_src_max = std::max(psi_soil[i], T_collar);
-      const double span = T_src_max - T_src_min;
-      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;  // = dspan/dT_collar
+      const T T_src_min = (collar_at < soil_at) ? T_collar : psi_i;
+      const T T_src_max = (soil_at < collar_at) ? T_collar : psi_i;
+      const T span = T_src_max - T_src_min;
+      const double sign_var = (collar_at > soil_at) ? 1.0 : -1.0;  // = dspan/dT_collar
 
       // integral, replicated bit-for-bit from uptake_impl.
-      const double T_pos_lo = std::max(T_src_min, 0.0);
-      const double T_neg_hi = std::min(T_src_max, 0.0);
-      double integral = 0.0;
-      if (T_pos_lo < T_src_max) {
-        integral += root_vuln_integral_at(T_src_max) -
-                    root_vuln_integral_at(T_pos_lo);
+      const T T_pos_lo = (to_passive(T_src_min) < 0.0) ? T(0.0) : T_src_min;
+      const T T_neg_hi = (0.0 < to_passive(T_src_max)) ? T(0.0) : T_src_max;
+
+      auto G_integral = [&](const T& arg) -> T {
+        const double q = to_passive(arg);
+        if constexpr (std::is_same_v<T, double>) {
+          return root_vuln_integral_at(q);
+        } else {
+          return graft_integral<T>(root_vuln_integral_at(q), arg, at.root_P50,
+                                   at.root_c);
+        }
+      };
+
+      T integral = T(0.0);
+      if (to_passive(T_pos_lo) < to_passive(T_src_max)) {
+        integral += G_integral(T_src_max) - G_integral(T_pos_lo);
       }
-      if (T_src_min < T_neg_hi) {
+      if (to_passive(T_src_min) < to_passive(T_neg_hi)) {
         integral += (T_neg_hi - T_src_min);
       }
 
-      // d(integral)/d(T_collar): for T_collar>0 the moving bound is in the
-      // vulnerable region. The integrand is the derivative of the *same*
-      // cumulative curve that produced `integral`
-      // (root_vuln_integral_deriv_at), NOT the separate root_vuln_from_psi
-      // spline: the two agree on the knot domain but are bounded differently past
-      // it -- the conductivity lookup clamps its argument to the last knot, the
-      // integral is capped at G(inf) -- so beyond the domain only the integral's
-      // own derivative stays consistent with the value used here (issue #1; the
-      // reasoning is #527's). ⚠️ They do NOT both clamp to the last value.
-      // For T_collar<0 (an above-atmospheric collar) the
-      // moving bound is in the f_r==1 part, contributed linearly, so the slope
-      // is 1.
-      const double fr_at =
-          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
-      const double dinteg_dT = sign_var * fr_at;
+      T fr_at = T(1.0);
+      if (collar_at > 0.0) {
+        const double table = root_vuln_integral_deriv_at(collar_at);
+        if constexpr (std::is_same_v<T, double>) {
+          fr_at = table;
+        } else {
+          fr_at = graft_curve<T>(table, T_collar, at.root_P50, at.root_c);
+        }
+      }
+      const T dinteg_dT = T(sign_var) * fr_at;
 
-      const double r_R_H = network_.r_R_H_min[i] * span / integral;
-      const double r_R = r_R_H + network_.r_R_V_sum[i];
-      const double dr_R_H_dT =
-          network_.r_R_H_min[i] * (sign_var * integral - span * dinteg_dT) / (integral * integral);
-      const double dr_R_dT = dr_R_H_dT;
+      const T r_R_H = at.r_R_H_min[std::size_t(i)] * span / integral;
+      const T r_R = r_R_H + at.r_R_V_sum[std::size_t(i)];
+      const T dr_R_H_dT = at.r_R_H_min[std::size_t(i)] *
+                          (T(sign_var) * integral - span * dinteg_dT) /
+                          (integral * integral);
+      const T dr_R_dT = dr_R_H_dT;
 
-      const double num = T_collar - psi_soil[i] - grav_head_z_[i];
-      const double dnum_dT = 1.0;
+      const T num = T_collar - psi_i - T(grav_head_z_[i]);
+      const T dnum_dT = T(1.0);
       // E_i = num / r_R  ->  quotient rule.
-      dEup_dT_mol += (dnum_dT * r_R - num * dr_R_dT) / (r_R * r_R);
+      const T term = (dnum_dT * r_R - num * dr_R_dT) / (r_R * r_R);
+      if (per_layer != nullptr) (*per_layer)[std::size_t(i)] = to_passive(term);
+      dEup_dT_mol += term;
     }
 
-    return dEup_dT_mol * kg_per_mol_h2o;  // match E_up's kg units
+    return dEup_dT_mol;
   }
+
+public:
 
 private:
   // Total water drawn from all layers to the collar. Writes E_up (kg H2O m^-2
