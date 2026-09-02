@@ -70,12 +70,15 @@ struct Drivers {
 };
 
 pl::Leaf make_leaf(const Drivers& d, const std::vector<double>& psi_soil,
-                   const std::vector<double>& soil_depth) {
+                   const std::vector<double>& soil_depth, std::size_t rooted) {
   pl::Leaf l;
   l.setup_transpiration(100);
   l.setup_root_vulnerability(100);
   std::vector<double> mass(psi_soil.size(),
                            1.0 / double(psi_soil.size()) / d.area_leaf);
+  // Roots that stop short of the profile, which is the case a fixture with
+  // carbon in every layer cannot see.
+  for (std::size_t i = rooted; i < mass.size(); ++i) mass[i] = 0.0;
   l.set_physiology(fixture::root_network(mass, soil_depth), d.PPFD, psi_soil,
                    soil_depth, d.K_s * d.theta / d.h, d.atm_vpd, d.ca,
                    d.leaf_temp, d.atm_o2_kpa, d.atm_kpa);
@@ -91,13 +94,21 @@ double uptake_of(const pl::Leaf& l, double collar, std::size_t j) {
 }
 
 void check(const std::vector<double>& psi_soil,
-           const std::vector<double>& soil_depth, double collar) {
+           const std::vector<double>& soil_depth, double collar,
+           std::size_t rooted) {
   Drivers d;
-  pl::Leaf l = make_leaf(d, psi_soil, soil_depth);
+  pl::Leaf l = make_leaf(d, psi_soil, soil_depth, rooted);
   l.find_root_collar_psi();
 
   std::vector<double> rows;
   const double total_kg = l.roots_.duptake_dpsi(collar, l.roots_.psi_soil_, rows);
+  // ⚠️ ONE ENTRY PER SOIL LAYER, matching the uptake it is grafted onto. Sized by
+  // the deepest ROOTED layer instead, a shallow-rooted plant hands back a shorter
+  // vector than its own uptake -- which plant's gradient ladder refuses a whole
+  // sweep on, and which every fixture whose layers are all rooted is blind to.
+  ok(rows.size() == l.roots_.psi_soil_.size(),
+     "one collar row per soil layer, not per rooted layer");
+  ++compared;
   if (!std::isfinite(total_kg)) {
     return;  // a kink: duptake_dpsi refuses by contract, and rows is all NaN
   }
@@ -144,7 +155,9 @@ int main() {
       {1.0}, {0.5, 1.0, 1.5}, {0.4, 0.8, 1.2, 1.6, 2.0}};
   for (std::size_t k = 0; k < soils.size(); ++k) {
     for (double collar : {0.25, 0.75, 1.0, 1.25, 1.5, 2.5, 3.5, 4.5, 5.5}) {
-      check(soils[k], depths[k], collar);
+      check(soils[k], depths[k], collar, soils[k].size());
+      // and the same profile with roots reaching only the top layers
+      if (soils[k].size() > 1) check(soils[k], depths[k], collar, 1);
     }
   }
   printf("    %d layer rows compared | worst gap %.2fx the reference's own floor"

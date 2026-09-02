@@ -788,7 +788,16 @@ private:
     const std::vector<T>& psi_soil = at.psi_soil;
     const double collar_at = to_passive(T_collar);
     const double kink_tol = 1e-8;
-    const std::size_t n = static_cast<std::size_t>(max_soil_layer);
+    // ⚠️ ONE ENTRY PER SOIL LAYER, NOT PER ROOTED LAYER, which is the convention
+    // the uptake already keeps: the loop below writes only as far as
+    // max_soil_layer -- the deepest layer carrying roots -- and the layers under
+    // it stay zero, because a layer no root reaches draws nothing and its collar
+    // slope is nothing. Sized by the rooted count instead, a shallow-rooted plant
+    // hands back a shorter vector than its own uptake, and the graft in
+    // outputs_at pairs a row with the wrong layer or refuses on the length.
+    // Measured: plant's gradient ladder refused a whole sweep on
+    // "expected 5, received 2".
+    const std::size_t n = psi_soil.size();
     if (per_layer != nullptr) per_layer->assign(n, 0.0);
     T dEup_dT_mol = T(0.0);
 
