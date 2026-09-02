@@ -908,6 +908,11 @@ public:
   // moves the kink rather than removing it. What removes it is a cost that DIVERGES
   // at the bound, which is exactly why no product objective can be boundary-crit.
   static constexpr double k_crit_fraction = 0.05;
+  // Knots in each pre-integrated vulnerability curve. Named because a CONSUMER
+  // has to seat the same number -- plant's Control carries it -- and a literal
+  // repeated there would drift from this one silently, changing which curve the
+  // solve ran on while every number stayed plausible.
+  static constexpr double ncontrol_default = 100.0;
 
   // The two derivations, one place each, so a caller cannot get them
   // inconsistent. `f` is the remaining-conductivity fraction.
@@ -2302,6 +2307,14 @@ public:
   // This leaf's own sites plus the supply model's, which are ONE list. Summed on
   // read rather than shared on construction, so rebuilding the root network
   // cannot silently detach the tally.
+  std::vector<std::size_t> clamp_counts() const {
+    std::vector<std::size_t> out = *clamps.counts;
+    const std::vector<std::size_t>& supply = *roots_.clamps.counts;
+    for (std::size_t i = 0; i < out.size() && i < supply.size(); ++i) {
+      out[i] += supply[i];
+    }
+    return out;
+  }
   std::size_t clamp_count(int site) const {
     return clamps.at(site) + roots_.clamps.at(site);
   }
@@ -2310,8 +2323,34 @@ public:
     roots_.clamps.clear();
   }
 
+  // How many kinds there are, counted from the LAST enumerator so a kind added
+  // to the list is inside this by construction. A consumer tallying by kind
+  // sizes its array from here; a number repeated on that side would silently
+  // drop the new one.
+  static constexpr std::size_t operating_point_kind_count =
+      static_cast<std::size_t>(OperatingPointKind::NonFiniteGradient) + 1;
+
   OperatingPointKind operating_point_kind() const {
     return operating_point_kind_;
+  }
+  // Put back an operating point a previous pass found: the collar it placed, and
+  // the ARM it placed it on.
+  //
+  // ⚠️ BOTH, IN ONE CALL, BECAUSE evaluate_root_collar_psi RESTORES EVERY NUMBER
+  // AND THEN TAGS THE POINT `prescribed`. That is correct from its side -- a
+  // caller handed it a target -- and it is wrong for a replay, where the recorded
+  // arm is the whole point: collar_at switches on the kind, so a replayed
+  // interior point tagged `prescribed` has no condition to place it at. Splitting
+  // this into two calls is the mistake, and it costs a throw in a caller that
+  // never asked for a collar.
+  //
+  // This is the replay half of a recorded decision: the collar MOVES and is
+  // re-derived from, the arm SELECTS and is put back. Differentiating the choice
+  // would manufacture a jump the model does not have.
+  double replay_operating_point(double collar, OperatingPointKind kind) {
+    const double out = evaluate_root_collar_psi(collar);
+    operating_point_kind_ = kind;
+    return out;
   }
   static const char* operating_point_kind_name(OperatingPointKind kind);
 
@@ -2373,7 +2412,7 @@ inline Leaf::Leaf()
     curv_fact_elec_trans(0.7), //curvature factor for the light response curve (unitless)
     curv_fact_colim(0.99), //curvature factor for the colimited photosythnthesis equatiom
     GSS_tol_abs(1e-3),
-    vulnerability_curve_ncontrol(100),
+    vulnerability_curve_ncontrol(ncontrol_default),
     ci_abs_tol(1e-3),
     ci_niter(1000),
     TF24_cost_scale(7.5) //cost parameter for TF24 profit model umol m^-2 s^-1

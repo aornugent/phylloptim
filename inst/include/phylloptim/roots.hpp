@@ -162,6 +162,72 @@ inline void root_network_from_carbon(
 }
 
 // Same, returning a fresh network. Convenience for tests and standalone callers.
+// The same map at any scalar, writing the two series the supply view reads.
+//
+// An OVERLOAD rather than a second name: the arithmetic below is upstream's term
+// for term, including squaring dz into its own variable first, so the double
+// instantiation is bit-identical to the RootNetwork one. It exists because the
+// carbon -> resistance chain belongs to whoever owns the architecture model --
+// plant -- and has to land on the same tape as everything else rather than
+// crossing as a hand-written d(uptake)/d(carbon).
+//
+// It writes only r_R_H_min and r_R_V_sum. c_r_V, c_r_H and the per-layer r_R_V
+// are intermediates the RootNetwork keeps for the R boundary and nothing on a
+// differentiated path reads.
+template <class T>
+inline void root_network_from_carbon(
+    const std::vector<T>& root_carbon_per_layer, const std::vector<double>& dz,
+    double beta_R_H, double beta_R_V, std::vector<T>& r_R_H_min,
+    std::vector<T>& r_R_V_sum) {
+  using odelia::util::to_passive;
+  const std::size_t n_layers = root_carbon_per_layer.size();
+  if (dz.size() != n_layers) {
+    util::stop("root_network_from_carbon: dz and root_carbon_per_layer must "
+               "have the same number of elements");
+  }
+  for (std::size_t i = 0; i < n_layers; ++i) {
+    if (!util::is_finite(dz[i]) || dz[i] <= 0.0) {
+      util::stop("root_network_from_carbon: dz must be finite and positive in "
+                 "every layer; layer " + util::to_string(i + 1) +
+                 " is " + util::format_double(dz[i]));
+    }
+  }
+
+  // The deepest layer carrying carbon. ⚠️ A SELECTOR, so it reads passive: which
+  // layers are rooted is piecewise constant in the carbon, and differentiating
+  // the comparison would manufacture a jump where a layer starts being reached.
+  int max_soil_layer = 0;
+  for (std::size_t i = 0; i < n_layers; ++i) {
+    if (to_passive(root_carbon_per_layer[i]) != 0.0) {
+      max_soil_layer = static_cast<int>(i) + 1;
+    }
+  }
+  r_R_H_min.assign(static_cast<std::size_t>(max_soil_layer), T(0.0));
+  r_R_V_sum.assign(static_cast<std::size_t>(max_soil_layer), T(0.0));
+
+  T vertical_resistance_sum = T(0.0);
+  for (int i = 0; i < max_soil_layer; ++i) {
+    const T& root_mass = root_carbon_per_layer[std::size_t(i)];
+    const double at = to_passive(root_mass);
+    if (at < 0.0) {
+      util::stop("Root mass lower than 0");
+    }
+    // A layer with no carbon has no resistance to give and none to accumulate;
+    // the running sum passes through it unchanged.
+    if (at == 0.0) {
+      r_R_V_sum[std::size_t(i)] = vertical_resistance_sum;
+      continue;
+    }
+    const T c_r_v = root_mass / 3.0;
+    const T c_r_h = root_mass * 2.0 / 3.0;
+    r_R_H_min[std::size_t(i)] = T(beta_R_H) / c_r_h;
+    // ⚠️ SQUARE FIRST, INTO ITS OWN VARIABLE -- see the double form above.
+    const double dz_sq = dz[std::size_t(i)] * dz[std::size_t(i)];
+    vertical_resistance_sum += T(beta_R_V) * T(dz_sq) / c_r_v;
+    r_R_V_sum[std::size_t(i)] = vertical_resistance_sum;
+  }
+}
+
 inline RootNetwork root_network_from_carbon(
     const std::vector<double>& root_carbon_per_layer,
     const std::vector<double>& dz,
