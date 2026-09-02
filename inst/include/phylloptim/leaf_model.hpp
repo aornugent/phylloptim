@@ -5437,13 +5437,21 @@ inline S Leaf::psi_crit_at(const leaf_pars<S>& pars) const {
 template <Leaf::CostCurve K, class S>
 inline S Leaf::profit_at(const S& collar, const SupplyDraw<S>& draw,
                          const leaf_pars<S>& pars) const {
-  static_assert(K == CostCurve::TF24,
-                "the reverse-mode surface covers TF24; a second curve is a row "
-                "in profit_at, outputs_at and marginal_at");
+  static_assert(K == CostCurve::TF24 || K == CostCurve::TF24_floor,
+                "the reverse-mode surface covers TF24 and TF24_floor; another "
+                "curve is a row in profit_at and marginal_at");
   const CollarCoords<S> at =
       collar_coords_at<S>(opt_psi_stem_, ci_, collar, draw, pars);
   const S A = assim_colimited_kernel<S>(at.ci.value, pars);
-  const S cost = hydraulic_cost_TF_kernel<S>(at.sigma.value, pars);
+  S cost = hydraulic_cost_TF_kernel<S>(at.sigma.value, pars);
+  if constexpr (K == CostCurve::TF24_floor) {
+    // TF24's own cost plus a part LINEAR IN THE FLUX: Theta(E) = Theta~(psi) +
+    // lambda_o*E. Written as the parent's expression plus a term, which is what
+    // makes the reduction at lambda_o = 0 exact rather than approximate -- an
+    // exact zero added to TF24's exact value, fused multiply-add included.
+    cost = cost + pars[par_TF24_floor_lambda_o] *
+                      transpiration_at<S>(at.sigma.value, collar, pars);
+  }
   return A - cost;
 }
 
@@ -5494,6 +5502,8 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
     const S held = operating_point_kind_ == OperatingPointKind::HydraulicShutdown
                        ? psi_crit_at<S>(pars)
                        : collar;
+    // No water moves here, so the floor's linear-in-flux term is exactly zero
+    // and the two curves agree at this kind by construction.
     out.profit = -respiration_at<S>(pars) - hydraulic_cost_TF_kernel<S>(held, pars);
   } else {
     out.profit = profit_at<K, S>(interior ? collar_held : collar, draw, pars);
@@ -5504,9 +5514,9 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
 template <Leaf::CostCurve K, class S>
 inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
                            const leaf_pars<S>& pars) const {
-  static_assert(K == CostCurve::TF24,
-                "the reverse-mode surface covers TF24; a second curve is a row "
-                "in profit_at, outputs_at and marginal_at");
+  static_assert(K == CostCurve::TF24 || K == CostCurve::TF24_floor,
+                "the reverse-mode surface covers TF24 and TF24_floor; another "
+                "curve is a row in profit_at and marginal_at");
   // ⚠️ EVERY FACTOR IS A VALUE, so this is arithmetic at S and dM/dp is a FIRST
   // derivative of it. The lift this replaces took its value and first derivative
   // from a TABULATION and its second from the TRUE function, and the two disagree
@@ -5528,8 +5538,18 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
   for (std::size_t i = 0; i < np.size(); ++i) np[i] = lift(pars[i]);
   nested sg = lift(at.sigma.value);
   odelia::ode::seed_direction(sg, 1.0);
-  const S C_prime =
+  S C_prime =
       odelia::ode::derivative_along(hydraulic_cost_TF_kernel<nested>(sg, np));
+  if constexpr (K == CostCurve::TF24_floor) {
+    // d/dsigma of lambda_o * kmax * (G(sigma) - G(collar)) is lambda_o*kmax*f,
+    // and the conductivity is the TABLE's for the reason every other one here
+    // is: the solve ran on the table.
+    C_prime = C_prime +
+              pars[par_TF24_floor_lambda_o] * pars[par_kmax] *
+                  graft_curve<S>(stem_curve_integral_deriv(opt_psi_stem_),
+                                 at.sigma.value, pars[par_stem_P50],
+                                 pars[par_stem_c]);
+  }
 
   return A_prime * at.ci.slope - C_prime * at.sigma.slope;
 }
