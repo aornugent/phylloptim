@@ -5657,6 +5657,88 @@ void benchmark() {
 
 } // namespace
 
+// What plant reads, against what the solve itself left.
+//
+// outputs_at and marginal_at ASSEMBLE the leaf's answers from kernels, where the
+// solve reaches the same numbers by a different route entirely -- through
+// set_leaf_states_rates and the members. So agreement is a statement about the
+// assembly rather than a tautology, and it is asserted BIT-FOR-BIT because
+// nothing here is reassociated: the assembly is meant to be the same arithmetic.
+//
+// ⚠️ EVERY KIND, because the branches differ. An interior point reads the held
+// collar (the envelope omission), a bound reads its own condition, and the two
+// SHUT kinds are not the same point: a hydraulic shutdown holds the stem at
+// psi_crit and zeroes every layer, while shade death sits on the wet bound where
+// the flux is zero in value but the rows are the bound's own. The census below is
+// part of the result -- a fixture reaching only one of them has narrowed the
+// check without narrowing what it claims.
+void test_outputs_agree_with_the_solve() {
+  printf("outputs_at and marginal_at against the solve's own numbers\n");
+  using K = phylloptim::Leaf::CostCurve;
+  const std::vector<std::vector<double>> soils = {
+      {2.0}, {1.0, 2.0, 3.0}, {0.5, 1.0, 1.5, 2.0, 2.5}};
+  const std::vector<std::vector<double>> depths = {
+      {1.0}, {0.5, 1.0, 1.5}, {0.4, 0.8, 1.2, 1.6, 2.0}};
+  int n_interior = 0, n_bound = 0, n_shut = 0, n_marg = 0;
+  for (double T : {25.0, 40.0}) {
+    for (double psi0 : {0.5, 1.0, 2.0, 3.0, 4.0, 6.0}) {
+      for (std::size_t k = 0; k < soils.size(); ++k) {
+        Drivers d;
+        d.leaf_temp = T;
+        std::vector<double> ps;
+        bool bad = false;
+        for (double v : soils[k]) {
+          ps.push_back(v + psi0 - 1.0);
+          if (ps.back() <= 0.0) bad = true;
+        }
+        if (bad) continue;
+        phylloptim::Leaf l = make_leaf(d, ps, depths[k]);
+        l.find_root_collar_psi();
+        const auto kind = l.operating_point_kind();
+        if (kind == phylloptim::Leaf::OperatingPointKind::SolverRefused ||
+            kind == phylloptim::Leaf::OperatingPointKind::NonFiniteGradient ||
+            kind == phylloptim::Leaf::OperatingPointKind::Unsolved) {
+          continue;
+        }
+        if (kind == phylloptim::Leaf::OperatingPointKind::Interior) ++n_interior;
+        else if (kind == phylloptim::Leaf::OperatingPointKind::HydraulicShutdown ||
+                 kind == phylloptim::Leaf::OperatingPointKind::ShadeDeath) ++n_shut;
+        else ++n_bound;
+
+        const auto pars = l.passive_pars();
+        const double p0 = l.opt_root_psi_;
+        const auto draw = l.supply_draw_at<double>(p0, l.roots_.held_supply());
+        const auto got = l.outputs_at<K::TF24, double>(p0, draw, pars);
+        ok(got.profit == l.profit_, "outputs_at's profit IS the solve's");
+        ok(got.uptake.size() == l.soil_consumption_.size(),
+           "one uptake per layer");
+        for (std::size_t j = 0; j < got.uptake.size(); ++j) {
+          ok(got.uptake[j] == l.soil_consumption_[j],
+             "outputs_at's layer draw IS the solve's");
+        }
+        if (kind == phylloptim::Leaf::OperatingPointKind::Interior) {
+          bool feasible = false;
+          const double up = l.dprofit_at_collar_psi<K::TF24>(p0, &feasible);
+          // dprofit_at_collar_psi drives the model to that collar; put the point
+          // back before reading anything else off this leaf (hazard 8).
+          l.replay_operating_point(p0, kind);
+          if (feasible && std::isfinite(up)) {
+            ++n_marg;
+            const auto d2 = l.supply_draw_at<double>(p0, l.roots_.held_supply());
+            ok(l.marginal_at<K::TF24, double>(p0, d2, pars) == up,
+               "marginal_at IS upstream's dprofit_at_collar_psi");
+          }
+        }
+      }
+    }
+  }
+  printf("    %d interior (%d refereed against dprofit), %d at a bound, %d shut\n",
+         n_interior, n_marg, n_bound, n_shut);
+  ok(n_interior > 0 && n_bound > 0 && n_shut > 0,
+     "the sweep reached an interior point, a bound and a shut point");
+  ok(n_marg > 0, "the sweep refereed the marginal somewhere");
+}
+
 int main() {
   test_defaults_are_unset();
   test_vulnerability_curve();
@@ -5683,6 +5765,7 @@ int main() {
   test_operating_point_kind_is_written_by_every_path();
   test_collar_solve_refuses_rather_than_guessing();
   test_collar_argmax_is_smooth_in_a_trait();
+  test_outputs_agree_with_the_solve();
   test_soil_conductance_is_positive();
   test_root_vulnerability_is_bounded_past_its_grid();
   test_root_psi_crit_clamp_binds();
