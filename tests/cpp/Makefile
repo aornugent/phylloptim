@@ -42,6 +42,18 @@ endif
 # which reads like a broken toolchain and is not. It bites on Linux, where
 # apt's libboost-dev headers land in /usr/include and CI passes BH_INC=/usr/include.
 # The compiler already searches /usr/include, so dropping the flag costs nothing.
+# ⚠️ PHYLLOPTIM NOW HAS A REVERSE-MODE PATH, and AGENTS.md hazard 3 says nothing
+# will tell you. XAD's active tape is a __thread variable whose STORAGE CLASS is
+# not part of the mangled name, so a mismatch against odelia's and plant's
+# Makevars links cleanly and is undefined behaviour. These two must stay equal to
+# theirs. Forward mode is tapeless and needed neither, which is why
+# src/Makevars was exempt -- it is not exempt once the R layer reaches the tape.
+XADFLAGS = -DXAD_NO_THREADLOCAL -DXAD_USE_STRONG_INLINE
+# The one translation unit odelia compiles the tape into. The installed package
+# ships headers only, so this comes from a checkout.
+ODELIA_SRC ?= $(ODELIA_INC)/../../src
+TAPE_SRC = $(ODELIA_SRC)/Tape.cpp
+
 DEP_INC  = $(ODELIA_INC) $(BH_INC)
 SYS_INC  = $(foreach d,$(filter-out /usr/include /usr/include/,$(strip $(DEP_INC))),-isystem $(d))
 INCLUDES = -I$(PHYLLOPTIM_INC) $(SYS_INC)
@@ -67,10 +79,11 @@ GOLDEN_ARGS ?=
 # newer date on it.
 all: build
 	./test_leaf
+	./test_transpose
 	./test_golden $(GOLDEN_ARGS)
 	./test_primitives $(GOLDEN_ARGS)
 
-build: test_leaf test_golden test_primitives
+build: test_leaf test_transpose test_golden test_primitives
 
 # Not built or run by `make all` -- it takes a few seconds and measures the
 # machine as much as the code. Run it deliberately when a change might have
@@ -81,6 +94,13 @@ bench: bench_solve bench_gradient
 
 test_leaf: test_leaf.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+
+# The transpose identity, which needs no reference gradient: one tangent against
+# one sweep. It is the only thing here that can see a wrong SUPPLIED row, and the
+# only one that can referee the collar responses at the shipped spline
+# resolution. The one program here that links the tape.
+test_transpose: test_transpose.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
 test_golden: test_golden.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
@@ -112,4 +132,4 @@ primitives-golden: test_primitives
 	./test_primitives --generate
 
 clean:
-	rm -f test_leaf test_golden test_primitives bench_solve bench_gradient
+	rm -f test_leaf test_transpose test_golden test_primitives bench_solve bench_gradient

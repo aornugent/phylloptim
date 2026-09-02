@@ -5046,7 +5046,9 @@ inline T Leaf::jmax_at(const leaf_pars<T>& pars) const {
   // The thermal cost reads leaf temperature and two thresholds, none of which is
   // a trait, so it is a factor here rather than a term carrying rows.
   if (use_thermal_cost_) {
-    j *= 1.0 - thermal_cost_at(leaf_temp_);
+    // Written out rather than `*=`, whose overload is ambiguous at a nested
+    // scalar.
+    j = j * T(1.0 - thermal_cost_at(leaf_temp_));
   }
   return j;
 }
@@ -5097,10 +5099,19 @@ inline T Leaf::transpiration_at(const T& sigma, const T& collar,
 
 template <typename T>
 inline T Leaf::assim_slope_at(const T& ci, const leaf_pars<T>& pars) const {
+  // ⚠️ A NESTED ACTIVE IS BUILT BY ASSIGNING INTO ITS VALUE, not by converting.
+  // The outer scalar's constructor takes the INNERMOST value type, so
+  // `nested(inner)` either refuses to compile or strips the inner rows -- and a
+  // stripped row here is a slope that is right at double and zero in every trait.
   using nested = odelia::ode::tangent_scalar<T>;
+  auto lift = [](const T& x) -> nested {
+    nested out;
+    xad::value(out) = x;
+    return out;
+  };
   leaf_pars<nested> np;
-  for (std::size_t i = 0; i < np.size(); ++i) np[i] = nested(pars[i]);
-  nested c = nested(ci);
+  for (std::size_t i = 0; i < np.size(); ++i) np[i] = lift(pars[i]);
+  nested c = lift(ci);
   odelia::ode::seed_direction(c, 1.0);
   return odelia::ode::derivative_along(
       assim_colimited_kernel<nested>(c, np));
