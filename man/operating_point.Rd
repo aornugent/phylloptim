@@ -7,28 +7,54 @@
 operating_point(x)
 }
 \arguments{
-\item{x}{a solved `Leaf`}
+\item{x}{a solved \code{Leaf}}
 }
 \value{
 A one-row data.frame.
 }
 \description{
-Reads the outputs off a leaf that has been solved. Call after
-`$find_root_collar_psi()`; before that the values are the missing-value
-sentinels the object was constructed with.
+Reads the outputs off a leaf that has been solved. Call after \verb{$optimise()};
+before that the values are the missing-value sentinels the object was
+constructed with.
 }
 \details{
 Costs about 4 µs, so it is usable in a loop. It was 180 µs until it stopped
-reading the twelve outputs through twelve separate calls into C++ and stopped
-building its one row with `data.frame()` (#39) -- 45× more than the ~3 µs
-solve it was reporting on.
+reading the fifteen outputs through fifteen separate calls into C++ and
+stopped building its one row with \code{data.frame()} (#39) -- 45× more than the
+~3 µs solve it was reporting on.
 }
+\section{What the cost columns mean}{
+
+
+\code{hydraulic_cost} is the whole cost the objective subtracted. \code{shadow_cost} is
+the share of it that is a \emph{price} rather than carbon the plant gave up: the
+value of water in its best alternative use, which for a leaf is assimilation
+later. So
+
+\preformatted{
+  realised cost   = hydraulic_cost - shadow_cost
+  carbon profit   = profit + shadow_cost
+}
+
+and a consumer that grows a plant on this leaf wants the second of those,
+never \code{profit}. Deducting a shadow price from a carbon budget taxes growth by
+something the plant never spent.
+
+\code{shadow_cost} is \code{TF24_floor_lambda_o * E} on that curve and zero on every
+other. Zero means \emph{this curve does not separate the two}, not \emph{this curve's
+cost is all realised carbon}. \code{CF77} is the case worth stating: its whole cost
+is \code{lambda * E}, and reading that as a shadow price is an ordinary thing to do,
+but the model supplies one number and nothing to attribute it with and behaves
+identically whichever way it is read. Reporting it as all-shadow would present
+one reading as a fact. The field is defined only where the curve defines it.
+}
+
 \examples{
 l <- leaf_model()
 set_drivers(l, psi_soil = 2.0, PPFD = 900)
-l$find_root_collar_psi()
+l$optimise()
 operating_point(l)
 }
 \seealso{
-[leaf_solve()], which does the whole thing in one call.
+\code{\link[=leaf_solve]{leaf_solve()}}, which does the whole thing in one call.
 }

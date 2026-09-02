@@ -18,11 +18,14 @@ leaf_solve(
   traits = leaf_traits(),
   control = leaf_control(),
   supply = leaf_supply_multilayer(),
-  reuse = TRUE
+  reuse = TRUE,
+  model = "collar",
+  CF77_lambda = NA_real_,
+  TF24_floor_lambda_o = NA_real_
 )
 }
 \arguments{
-\item{psi_soil}{soil water potential, MPa, **positive magnitude**. Length
+\item{psi_soil}{soil water potential, MPa, \strong{positive magnitude}. Length
 sets the number of soil layers.}
 
 \item{PPFD}{photosynthetic photon flux density, umol m^-2 s^-1}
@@ -31,9 +34,9 @@ sets the number of soil layers.}
 to 1 m layers.}
 
 \item{root_network}{the soil-to-collar hydraulic resistances, a
-[RootNetwork()]. **The same argument on both supply paths**: per rooted layer
-from [root_network_from_carbon()] on the multi-layer path, or one series
-resistance from [series_resistance()] on the single-potential path. Defaults
+\code{\link[=RootNetwork]{RootNetwork()}}. \strong{The same argument on both supply paths}: per rooted layer
+from \code{\link[=root_network_from_carbon]{root_network_from_carbon()}} on the multi-layer path, or one series
+resistance from \code{\link[=series_resistance]{series_resistance()}} on the single-potential path. Defaults
 to a nominal value on either — 20 kg C m^-2 leaf split evenly, or 1e3 —
 written out in the body where you can see and replace it. Stand-ins, not
 recommendations.}
@@ -53,25 +56,55 @@ conductance, kg m^-2 s^-1 MPa^-1}
 ppm-to-Pa conversion is derived from it, and getting it wrong moves
 assimilation by percent, not by rounding.}
 
-\item{traits}{a [leaf_traits()] object}
+\item{traits}{a \code{\link[=leaf_traits]{leaf_traits()}} object}
 
-\item{control}{a [leaf_control()] object}
+\item{control}{a \code{\link[=leaf_control]{leaf_control()}} object}
 
-\item{supply}{how water reaches the root collar: [leaf_supply_multilayer()]
-(the default) or [leaf_supply_single()]. Under the latter each `psi_soil` is
-one value rather than a profile, and `soil_depth` is omitted -- it is named
-by [leaf_supply_single()] instead. `root_network` is how the resistance
-arrives either way; [series_resistance()] builds the one-layer form.}
+\item{supply}{how water reaches the root collar: \code{\link[=leaf_supply_multilayer]{leaf_supply_multilayer()}}
+(the default) or \code{\link[=leaf_supply_singlelayer]{leaf_supply_singlelayer()}}. On the single-potential path
+\code{soil_depth} and \code{root_network} must be omitted, and each \code{psi_soil} is one
+value rather than a profile.}
 
-\item{reuse}{solve every row with one `Leaf` object (`TRUE`) or construct a
-fresh one per row (`FALSE`, the default). Reuse is faster because the two
+\item{reuse}{solve every row with one \code{Leaf} object (\code{TRUE}) or construct a
+fresh one per row (\code{FALSE}, the default). Reuse is faster because the two
 vulnerability splines are built once, and it is safe -- every exit from the
-solve writes its own outputs. `FALSE` exists so that can be checked rather
+solve writes its own outputs. \code{FALSE} exists so that can be checked rather
 than assumed, and the package's tests do check it.}
+
+\item{model}{which optimality model to solve, as in \code{\link[=leaf_gradient]{leaf_gradient()}}:
+\code{"collar"} (the default, the production path -- the TF24 cost maximised over
+the root-collar potential) or any name from \code{\link[=cost_curve_names]{cost_curve_names()}}, which
+solves that curve's \strong{stem} optimum instead: \code{psi_stem} with the upstream
+potential pinned at \code{psi_soil}, which needs \code{leaf_supply_singlelayer()}.
+
+⚠️ \strong{\code{"collar"} and \code{"TF24"} are different models, not two ways of asking
+one question}, even though both use the TF24 cost. They optimise different
+variables over different supply topologies and disagree on 20 of 30 driver
+rows.
+
+⚠️ \strong{On a stem route the \code{collar} column comes back non-finite}, because
+the collar is not solved for at all. An absent number is the truthful answer
+rather than a gap -- reading one would be reading whatever the last solve
+left behind.
+
+Two curves take a PRESCRIBED price of water rather than deriving one:
+\code{CF77} reads \code{CF77_lambda} and \code{TF24_floor} reads \code{TF24_floor_lambda_o},
+both below. Neither has a default, and each curve refuses to solve without
+its own.}
+
+\item{CF77_lambda, TF24_floor_lambda_o}{the prescribed marginal value of water
+for the two curves that take one, in umol C (kg H2O)^-1. \code{NA_real_} (the
+default) leaves the field unset, which every other model wants.
+
+⚠️ \strong{Their scale is set by the leaf, not chosen freely.} At this package's
+defaults the leaf's own marginal cost of water runs 9e4 to 3e5, and a price
+far outside that band pins the optimum against a bound — where the answer
+describes the bracket rather than the model. \code{\link[=operating_point]{operating_point()}}'s
+\code{lambda_emergent} is how you find a value that means something.}
 }
 \value{
 A data.frame with one row per driver combination: the drivers, then
-  the columns of [operating_point()].
+the columns of \code{\link[=operating_point]{operating_point()}}.
 }
 \description{
 Drivers in, operating point out. Vectorised over the scalar drivers, so a
@@ -79,44 +112,60 @@ response curve is one call rather than a loop.
 }
 \details{
 This is the entry point for someone who would otherwise reach for
-`plantecophys::Photosyn()`. The difference in what comes back is the point of
-the package: `gc` here is not from a fitted conductance model, it is what
-falls out of maximising profit over an explicit hydraulic path, and `g1_eff`
-reports the Medlyn `g1` that would have been needed to reproduce it.
+\code{plantecophys::Photosyn()}. The difference in what comes back is the point of
+the package: \code{gc} here is not from a fitted conductance model, it is what
+falls out of maximising profit over an explicit hydraulic path, and \code{g1_eff}
+reports the Medlyn \code{g1} that would have been needed to reproduce it.
 }
+\section{\code{leaf_temp} is a driver, \code{Tleaf} is an output}{
+
+Two temperature columns come back and they are not the same thing.
+\code{leaf_temp} is the driver you supplied. \code{Tleaf} is the temperature the
+reported fluxes were computed at.
+
+By default they are equal, because the default path takes leaf temperature as
+prescribed. With the Penman-Monteith energy balance on
+(\verb{$use_energy_balance_ <- TRUE}) they are not: \code{leaf_temp} is then \strong{air}
+temperature, and \code{Tleaf} is solved per operating point from the leaf's own
+transpiration — so it rises as the stomata close, and it is the column to plot
+assimilation against.
+}
+
 \section{Performance, and what the lever actually is}{
 
-About **20 µs per row**, of which the model is **2.8 µs**. The rest is the R
+About \strong{20 µs per row}, of which the model is \strong{2.8 µs}. The rest is the R
 boundary: each call into C++ costs ~1.1 µs and a solved row needs several.
 
 Two consequences, both the opposite of what you might expect:
+\itemize{
+\item \strong{This is the fast path, not the convenient-but-slow one.} It is within 6\%
+of building a \code{Leaf} yourself and looping \code{set_drivers()} +
+\verb{$find_root_collar_psi()} + \code{\link[=operating_point]{operating_point()}}. Reaching into the object
+saves about 1 µs a row and is worth doing for access to intermediate state,
+not for speed. (This was not true before: building the result row by row and
+\code{rbind}ing cost 344 µs a row, 26× the stateful loop.)
+\item \strong{The lever is fewer R calls per row, not a different R function.} Pass all
+your drivers to one vectorised call rather than looping in R. If you need
+more than that -- a fit's inner loop, say -- what has to go is the boundary
+itself, which means C++.
+}
 
-* **This is the fast path, not the convenient-but-slow one.** It is within 6%
-  of building a `Leaf` yourself and looping `set_drivers()` +
-  `$find_root_collar_psi()` + [operating_point()]. Reaching into the object
-  saves about 1 µs a row and is worth doing for access to intermediate state,
-  not for speed. (This was not true before: building the result row by row and
-  `rbind`ing cost 344 µs a row, 26× the stateful loop.)
-* **The lever is fewer R calls per row, not a different R function.** Pass all
-  your drivers to one vectorised call rather than looping in R. If you need
-  more than that -- a fit's inner loop, say -- what has to go is the boundary
-  itself, which means C++.
-
-`reuse = TRUE` is the default because constructing a `Leaf` from R costs
-~204 µs, some 70 solves, and only ~32 µs of that is the two vulnerability
-splines; the rest is R-side object construction. See [set_traits()] for
+\code{reuse = TRUE} is the default because constructing a \code{Leaf} from R costs
+about \strong{180x a trivial \code{.Call}} (~230 µs where this was measured), or 45
+solves, and only ~32 µs of that is the two vulnerability
+splines; the rest is R-side object construction. See \code{\link[=set_traits]{set_traits()}} for
 varying traits without reconstructing, and note it costs 21.8 µs rather than
 0.02 µs when the trait you change owns a vulnerability spline.
 }
 
 \section{Recycling}{
 
-`PPFD`, `atm_vpd`, `ca`, `leaf_temp`, `atm_o2_kpa`, `atm_kpa` and
-`leaf_specific_conductance_max` are recycled to a common length, the usual R
-way. `psi_soil` is recycled too **when it is a plain numeric vector** --
+\code{PPFD}, \code{atm_vpd}, \code{ca}, \code{leaf_temp}, \code{atm_o2_kpa}, \code{atm_kpa} and
+\code{leaf_specific_conductance_max} are recycled to a common length, the usual R
+way. \code{psi_soil} is recycled too \strong{when it is a plain numeric vector} --
 each element is then a separate single-layer solve. For multi-layer solves
-pass a list of numeric vectors, one per row; `soil_depth` follows the same
-rule. `root_network` is either one [RootNetwork()], used for every row, or a
+pass a list of numeric vectors, one per row; \code{soil_depth} follows the same
+rule. \code{root_network} is either one \code{\link[=RootNetwork]{RootNetwork()}}, used for every row, or a
 list of them, one per row.
 }
 
@@ -133,7 +182,11 @@ d[, c("psi_soil", "A", "gc", "g1_eff")]
 
 # two three-layer profiles
 leaf_solve(psi_soil = list(c(1, 1.5, 2), c(3, 3.5, 4)), PPFD = 900)
+
+# a different optimality model, on the single-potential path it needs
+leaf_solve(psi_soil = 1.5, PPFD = 900, model = "SOX",
+           supply = leaf_supply_singlelayer())
 }
 \seealso{
-[leaf_model()] for the stateful interface.
+\code{\link[=leaf_model]{leaf_model()}} for the stateful interface.
 }

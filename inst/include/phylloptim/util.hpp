@@ -29,6 +29,58 @@ namespace util {
   throw std::runtime_error(msg);
 }
 
+// --- infeasibility, as distinct from a caller error (#57) --------------------
+//
+// A parameter proposal during a fit WILL reach operating points the solve cannot
+// handle. That is not an edge case, it is what an optimiser does, and it has to
+// cost those rows rather than the whole likelihood evaluation. So a caller needs to
+// tell "this operating point cannot be solved" apart from "you handed me a
+// mismatched driver vector", and until now both arrived as a plain R error and the
+// only way to separate them was to match on message text.
+//
+// ⚠️ THE TOKEN IS THE LOAD-BEARING HALF, NOT THE TYPE. Rcpp converts any
+// std::exception into an ordinary R error carrying only `what()`, so a derived C++
+// type is invisible from R -- and R is where the caller is. The token is a stable,
+// machine-readable prefix inside the message:
+//
+//     [phylloptim:infeasible:collar_bracket] find_root_psi(...) failed: ...
+//
+// which R's thin wrapper reads to re-signal with a condition class. The type is here
+// for a C++ consumer, who can catch it directly, and because it costs nothing.
+//
+// ⚠️ WHY THIS IS NOT AT THE R BOUNDARY, WHERE IT WOULD BE TIDIER. `util.hpp` must
+// not reach for Rcpp -- that is hazard 9, and it is enforced by CI building this on
+// runners with no R -- and the boundary itself is RcppR6-generated and must not be
+// hand-edited. So the classification happens where the knowledge is (here) and the
+// translation happens in hand-written R.
+//
+// ⚠️ AND WHY THE MESSAGE TEXT IS NOT ALREADY ENOUGH. It reads like it would be. It
+// is not: the out-of-domain wording has been rewritten twice recently (#65, #79) and
+// #92 added another, so a caller matching on prose is silently broken by an
+// improvement to an error message. The token is ours and is asserted by tests.
+//
+// ⚠️ CLASSIFYING A CALLER ERROR AS INFEASIBLE IS THE ONE MISTAKE THAT MATTERS.
+// #39 rejected silent NA rows because an all-NA driver column once hid behind "every
+// prediction is NA". An input-validation failure marked infeasible would be
+// swallowed by the very tryCatch this exists to enable, and the fit would report a
+// plausible likelihood over the rows that survived. So the default is `stop()`, and a
+// site becomes infeasible only when it is reachable at a WELL-FORMED call with
+// in-range data because the parameters or state make the operating point unsolvable.
+// The list of codes that have passed that test is in R/conditions.R.
+struct infeasible_error : std::runtime_error {
+  explicit infeasible_error(const std::string &what_arg)
+      : std::runtime_error(what_arg) {}
+};
+
+inline std::string infeasible_token(const std::string &code) {
+  return "[phylloptim:infeasible:" + code + "] ";
+}
+
+[[noreturn]] inline void stop_infeasible(const std::string &code,
+                                         const std::string &msg) {
+  throw infeasible_error(infeasible_token(code) + msg);
+}
+
 template <typename T> std::string to_string(T x) { return std::to_string(x); }
 
 // A double in an error message. to_string above is std::to_string, which for a

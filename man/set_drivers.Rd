@@ -19,9 +19,9 @@ set_drivers(
 )
 }
 \arguments{
-\item{x}{a `Leaf`, from [leaf_model()]}
+\item{x}{a \code{Leaf}, from \code{\link[=leaf_model]{leaf_model()}}}
 
-\item{psi_soil}{soil water potential, MPa, **positive magnitude**. Length
+\item{psi_soil}{soil water potential, MPa, \strong{positive magnitude}. Length
 sets the number of soil layers.}
 
 \item{PPFD}{photosynthetic photon flux density, umol m^-2 s^-1}
@@ -30,9 +30,9 @@ sets the number of soil layers.}
 to 1 m layers.}
 
 \item{root_network}{the soil-to-collar hydraulic resistances, a
-[RootNetwork()]. **The same argument on both supply paths**: per rooted layer
-from [root_network_from_carbon()] on the multi-layer path, or one series
-resistance from [series_resistance()] on the single-potential path. Defaults
+\code{\link[=RootNetwork]{RootNetwork()}}. \strong{The same argument on both supply paths}: per rooted layer
+from \code{\link[=root_network_from_carbon]{root_network_from_carbon()}} on the multi-layer path, or one series
+resistance from \code{\link[=series_resistance]{series_resistance()}} on the single-potential path. Defaults
 to a nominal value on either — 20 kg C m^-2 leaf split evenly, or 1e3 —
 written out in the body where you can see and replace it. Stand-ins, not
 recommendations.}
@@ -53,58 +53,60 @@ ppm-to-Pa conversion is derived from it, and getting it wrong moves
 assimilation by percent, not by rounding.}
 }
 \value{
-`x`, invisibly.
+\code{x}, invisibly.
 }
 \description{
-Named and defaulted, over the C++ `set_physiology()`'s ten positional
-arguments. Modifies `x` in place and returns it invisibly, so it can be
+Named and defaulted, over the C++ \code{set_physiology()}'s ten positional
+arguments. Modifies \code{x} in place and returns it invisibly, so it can be
 piped.
 }
 \section{Water potentials are positive magnitudes}{
 
-`psi_soil` is a positive number of MPa. There is one representation for water
+\code{psi_soil} is a positive number of MPa. There is one representation for water
 potential throughout this package and it is asserted at the input boundary
 rather than documented: a negative entry is an error. That check is the only
 thing standing between a script written against the old signed convention and
 a plausible wrong number, so this wrapper surfaces it rather than smoothing
-it over -- it does not take `abs()`.
+it over -- it does not take \code{abs()}.
 }
 
 \section{Multiple soil layers}{
 
-Pass vectors for `psi_soil`, and optionally for `soil_depth`. Both must end up
-the same length; by default `soil_depth` becomes 1 m layers.
+Pass vectors for \code{psi_soil}, and optionally for \code{soil_depth}. Both must end up
+the same length; by default \code{soil_depth} becomes 1 m layers.
 }
 
 \section{The supply resistances, on either path}{
 
 The leaf takes the soil-to-collar hydraulic RESISTANCES, not the root carbon
 they may have been derived from (#33). The solve reads two vectors of them,
-`r_R_H_min` and `r_R_V_sum`, and nothing in it knows about root carbon, layer
-thickness, the 1/3 : 2/3 vertical/horizontal split or either `beta_R_*`
+\code{r_R_H_min} and \code{r_R_V_sum}, and nothing in it knows about root carbon, layer
+thickness, the 1/3 : 2/3 vertical/horizontal split or either \verb{beta_R_*}
 constant. This function used to ask for a root carbon profile, which a leaf
 physiologist does not have, and invented a default of 20 kg C m^-2 leaf.
 
-**`root_network` is the same argument on both supply paths**, which is the
-point. On the multi-layer path it carries one `r_R_H_min` and one `r_R_V_sum`
+\strong{\code{root_network} is the same argument on both supply paths}, which is the
+point. On the multi-layer path it carries one \code{r_R_H_min} and one \code{r_R_V_sum}
 per rooted layer; on the single-potential path it carries one series resistance
-in `r_R_V_sum` and nothing else, which is that field's own meaning with one
-layer and no vulnerability-weighted term. [root_network_from_carbon()] builds
-the first, [series_resistance()] the second. Before this change the
-single-potential resistance was an argument to [leaf_supply_single()] instead —
-so the same quantity arrived at a different *time* depending on which path was
+in \code{r_R_V_sum} and nothing else, which is that field's own meaning with one
+layer and no vulnerability-weighted term. \code{\link[=root_network_from_carbon]{root_network_from_carbon()}} builds
+the first, \code{\link[=series_resistance]{series_resistance()}} the second. Before this change the
+single-potential resistance was an argument to \code{\link[=leaf_supply_singlelayer]{leaf_supply_singlelayer()}} instead —
+so the same quantity arrived at a different \emph{time} depending on which path was
 in force, and it was the only fitted parameter whose setter reset the object.
 
 Both paths default it, because neither should force a caller to own a supply
 model they do not have, and both defaults are written out in this function's
 body rather than buried in a signature: a nominal 20 kg C m^-2 leaf through
-[root_network_from_carbon()] on the multi-layer path, and a nominal 1e3
+\code{\link[=root_network_from_carbon]{root_network_from_carbon()}} on the multi-layer path, and a nominal 1e3
 MPa s (mol H2O)^-1 m^2 leaf series resistance on the single-potential one.
 Both are stand-ins, not recommendations.
 
-A leaf built with [leaf_supply_single()] carries its own single layer, so
-passing `soil_depth` to it is an error rather than ignored: the depth is
-already named, and two spellings of it could disagree.
+\code{soil_depth} is the one argument that is genuinely multi-layer-only, and
+passing it on the single-potential path is an error rather than ignored: there
+is no depth profile there for anything to read. That is also why
+\code{\link[=leaf_supply_singlelayer]{leaf_supply_singlelayer()}} keeps \code{gravity_head} — see its documentation for the one
+remaining asymmetry between the two paths, and why it is left in place.
 }
 
 \examples{
@@ -114,5 +116,5 @@ set_drivers(l, psi_soil = 2.0, PPFD = 900, atm_vpd = 1.5)
 set_drivers(l, psi_soil = c(1.0, 1.5, 2.0), PPFD = 900)
 }
 \seealso{
-[leaf_model()], [leaf_solve()]
+\code{\link[=leaf_model]{leaf_model()}}, \code{\link[=leaf_solve]{leaf_solve()}}
 }

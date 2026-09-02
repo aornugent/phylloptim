@@ -14,7 +14,6 @@
 ^\.vscode$
 ^.*\.Rproj$
 ^\.Rproj\.user$
-^PLAN\.md$
 ^COMPARISON\.md$
 ^agents\.md$
 
@@ -42,12 +41,13 @@
 ^Makefile$
 ^tests/cpp/Makefile$
 
-# Built by make -C tests/cpp. The sources and the golden file must ship -- the
-# check in tests/cpp.R compiles them -- but the binaries must not.
+# Built by make -C tests/cpp. The sources and ALL THREE golden files must ship --
+# the check in tests/cpp.R compiles and runs them -- but the binaries must not.
 ^tests/cpp/test_leaf$
-^tests/cpp/test_leaf_gradient$
 ^tests/cpp/test_golden$
+^tests/cpp/test_primitives$
 ^tests/cpp/bench_solve$
+^tests/cpp/bench_gradient$
 ^tests/cpp/.*\.dSYM$
 
 # Validation scripts, not tests: they need an installed plant and take minutes.

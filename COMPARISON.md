@@ -28,10 +28,10 @@ source read at 1.0.6.1). All three are **pure R with no compiled code**.
 | Soil water potential | **yes, multi-layer** (separable — PLAN 7b) | prescribed scalar (Tuzet only) | no | no |
 | Root resistance | **yes, per layer** | explicitly not implemented | no | no |
 | Profit / gain-risk optimisation | **yes** | Cowan-Farquhar with fixed λ | no | no |
-| Thermal acclimation or damage | yes (in plant's TF24t) | no | no | no |
+| Thermal acclimation or damage | yes — an instantaneous PSII cost here (Sicangco et al. 2026, default off), and a lasting damage ratchet in plant's TF24t | no | no | no |
 | Fits to measured data | **no** | yes (A-Ci, Ball-Berry) | no | yes (that's the point) |
 | Swappable *empirical* gs schemes | Medlyn present, not dispatched | **yes — 4, plus Tuzet** | n/a | n/a |
-| Swappable *hydraulic optimality* schemes | **planned — TF24, Sperry, Prentice14** | no (none are hydraulic) | no | no |
+| Swappable *hydraulic optimality* schemes | **TF24 and Sperry ProfitMax runnable at identical drivers; Prentice14 planned** | no (none are hydraulic) | no | no |
 | Exact derivatives | **yes — forward-mode AD (XAD)** | no | no | no |
 | Language | C++ header-only | R | R | R |
 | Cost per solve | ~4 µs | not measured; `mapply` over scalars | one `uniroot` per leaf | vectorised over time series |

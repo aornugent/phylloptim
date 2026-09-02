@@ -6,7 +6,7 @@
 \usage{
 leaf_control(
   GSS_tol_abs = 0.001,
-  vulnerability_curve_ncontrol = 1600,
+  vulnerability_curve_ncontrol = 100,
   ci_abs_tol = 0.001,
   ci_niter = 1000,
   integration_rule = 21,
@@ -14,15 +14,21 @@ leaf_control(
 )
 }
 \arguments{
-\item{GSS_tol_abs}{absolute tolerance for the golden-section search over
-stem water potential. ⚠️ **This no longer sets how well the operating point
-is determined**, and this text used to say that it did. The collar solve now
-solves its own first-order condition to about `1e-12` instead of searching
-profit to `GSS_tol_abs`, so changing this leaves the answer bit-identical on
-the production path. What it still does: it is the width below which the
-feasible collar interval is treated as a single point, and it is the
-tolerance of the two single-layer `optimise_psi_stem_*` optimisers, which
-are off that path.}
+\item{GSS_tol_abs}{absolute tolerance for a golden-section search over stem
+water potential. ⚠️ \strong{This does not set how well the operating point is
+determined.} Every solver in the package now root-finds its own first-order
+condition instead of searching the objective, so changing this leaves the
+answer bit-identical on the production path. What it still does, and it is
+less than the name suggests: it is read in exactly two places, both on the
+COLLAR route -- the width below which the feasible collar interval is treated
+as a single point, and the tolerance of the golden-section FALLBACK used when
+neither bracket endpoint has a usable gradient (no driver sweep has reached
+that fallback).
+
+⚠️ \strong{It does not reach the stem route at all.} That refines by a root-find
+on \code{dJ/dpsi == 0} at a hardcoded tolerance; the \verb{(cell width) * 1e-4} figure
+is its own golden-section fallback, not its normal path. Tightening this to
+sharpen a stem-route argmax does nothing.}
 
 \item{vulnerability_curve_ncontrol}{number of control points used to
 pre-integrate the two Weibull vulnerability curves into splines. Higher is
@@ -38,20 +44,20 @@ Simpson that replaced it has no rule order. Retained because plant's R
 bindings expose it.}
 
 \item{integration_tol}{absolute tolerance for the direct quadrature in
-`transpiration_full_integration()`. Not on the production path, which
+\code{transpiration_full_integration()}. Not on the production path, which
 reads the pre-integrated spline instead.}
 }
 \value{
-A `leaf_control` object; a named list.
+A \code{leaf_control} object; a named list.
 }
 \description{
 Tolerances and iteration counts. These are not traits: they control how
 precisely the solve is carried out, not what is being solved, and separating
-them from [leaf_traits()] is the point of having two functions.
+them from \code{\link[=leaf_traits]{leaf_traits()}} is the point of having two functions.
 }
 \section{What is deliberately not here}{
 
-The internal leaf-temperature clamp (`-40 C` to `70 C`) is a compile-time
+The internal leaf-temperature clamp (\verb{-40 C} to \verb{70 C}) is a compile-time
 constant and stays one. It is a guard that keeps an extreme non-equilibrium
 transpiration on the energy-balance path from driving the Arrhenius block
 non-finite -- not a tolerance anyone tunes. Making it settable would let a
@@ -64,5 +70,5 @@ leaf_control()
 leaf_control(GSS_tol_abs = 1e-5)
 }
 \seealso{
-[leaf_traits()], [leaf_model()]
+\code{\link[=leaf_traits]{leaf_traits()}}, \code{\link[=leaf_model]{leaf_model()}}
 }

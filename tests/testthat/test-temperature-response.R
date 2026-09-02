@@ -14,7 +14,7 @@
 
 test_that("the temperature-response parameters are readable at their defaults", {
   l <- leaf_model(traits = leaf_traits(), control = leaf_control(),
-                  supply = leaf_supply_single())
+                  supply = leaf_supply_singlelayer())
 
   expect_equal(l$vcmax_ha_, 60000)
   expect_equal(l$vcmax_H_d_, 200000)
@@ -37,7 +37,7 @@ test_that("the temperature-response parameters are readable at their defaults", 
 # puts them -- Jones et al. (2026) fit 35 C for both.
 test_that("the defaults imply the documented thermal optima", {
   l <- leaf_model(traits = leaf_traits(), control = leaf_control(),
-                  supply = leaf_supply_single())
+                  supply = leaf_supply_singlelayer())
   topt <- function(ha, H_d, d_S) H_d / (d_S - 8.314 * log(ha / (H_d - ha))) - 273.15
 
   expect_equal(topt(l$vcmax_ha_, l$vcmax_H_d_, l$vcmax_d_S_), 31.2, tolerance = 0.05)
@@ -54,7 +54,7 @@ test_that("the defaults imply the documented thermal optima", {
 test_that("changing a temperature parameter changes the solve, via set_traits", {
   tr <- leaf_traits()
   build <- function() leaf_model(traits = tr, control = leaf_control(),
-                                 supply = leaf_supply_single())
+                                 supply = leaf_supply_singlelayer())
   drive <- function(x) {
     set_drivers(x, psi_soil = 0.5, PPFD = 1200,
                 root_network = series_resistance(50),
@@ -82,7 +82,7 @@ test_that("R_d_25 reaches the solve, and rises with temperature", {
   tr <- leaf_traits()
   drive <- function(rd_25, temp = 25) {
     l <- leaf_model(traits = leaf_traits(R_d_25 = rd_25),
-                    control = leaf_control(), supply = leaf_supply_single())
+                    control = leaf_control(), supply = leaf_supply_singlelayer())
     set_drivers(l, psi_soil = 0.5, PPFD = 1200,
                 root_network = series_resistance(50),
                 leaf_specific_conductance_max = 1e-4, atm_vpd = 1.0, ca = 40,

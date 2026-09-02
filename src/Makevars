@@ -1,16 +1,9 @@
-## XAD, which arrives via odelia and supplies the derivatives, needs C++20. So
-## does the model.
+## XAD, which arrives via odelia and supplies the forward-mode derivatives,
+## needs C++20. So does the model.
 CXX_STD = CXX20
-
-## Must match odelia/src/Makevars and plant/src/Makevars exactly. The collar's
-## condition records a reverse pass, so this package reaches XAD's active tape --
-## a __thread variable defined in odelia -- and a storage-class mismatch does not
-## change the mangled name, so the linker resolves it and the behaviour is
-## undefined. These were absent while the model used forward mode only.
-PKG_CPPFLAGS = -DXAD_NO_THREADLOCAL -DXAD_USE_STRONG_INLINE
 
 ## The model headers, which are shipped in inst/include and are not on the
 ## include path during the package's own build. -isystem rather than -I so that
 ## a warning in the model does not fail a consumer's build with -Werror; the
 ## headers get their own -Wall -Wextra treatment in tests/cpp.
-PKG_CPPFLAGS += -isystem../inst/include/
+PKG_CPPFLAGS = -isystem../inst/include/

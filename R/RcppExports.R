@@ -5,20 +5,12 @@ RootNetwork__ctor <- function() {
     .Call('_phylloptim_RootNetwork__ctor', PACKAGE = 'phylloptim')
 }
 
-Leaf__ctor <- function(vcmax_25, stem_c, stem_b, psi_crit, root_c, root_b, root_psi_crit, beta2, jmax_25, a, curv_fact_elec_trans, curv_fact_colim, GSS_tol_abs, vulnerability_curve_ncontrol, ci_abs_tol, ci_niter, cost_scale_TF24) {
-    .Call('_phylloptim_Leaf__ctor', PACKAGE = 'phylloptim', vcmax_25, stem_c, stem_b, psi_crit, root_c, root_b, root_psi_crit, beta2, jmax_25, a, curv_fact_elec_trans, curv_fact_colim, GSS_tol_abs, vulnerability_curve_ncontrol, ci_abs_tol, ci_niter, cost_scale_TF24)
+Leaf__ctor <- function(vcmax_25, stem_c, stem_P50, root_c, root_P50, TF24_beta2, jmax_25, a, curv_fact_elec_trans, curv_fact_colim, GSS_tol_abs, vulnerability_curve_ncontrol, ci_abs_tol, ci_niter, TF24_cost_scale) {
+    .Call('_phylloptim_Leaf__ctor', PACKAGE = 'phylloptim', vcmax_25, stem_c, stem_P50, root_c, root_P50, TF24_beta2, jmax_25, a, curv_fact_elec_trans, curv_fact_colim, GSS_tol_abs, vulnerability_curve_ncontrol, ci_abs_tol, ci_niter, TF24_cost_scale)
 }
 
 Leaf__operating_point_values <- function(obj_) {
     .Call('_phylloptim_Leaf__operating_point_values', PACKAGE = 'phylloptim', obj_)
-}
-
-Leaf__operating_point_kind_name <- function(obj_) {
-    .Call('_phylloptim_Leaf__operating_point_kind_name', PACKAGE = 'phylloptim', obj_)
-}
-
-Leaf__zero_flux_operating_point <- function(obj_) {
-    .Call('_phylloptim_Leaf__zero_flux_operating_point', PACKAGE = 'phylloptim', obj_)
 }
 
 Leaf__initialize_integrator <- function(obj_, integration_rule, integration_tol) {
@@ -29,36 +21,12 @@ Leaf__set_physiology <- function(obj_, root_network, PPFD, psi_soil, soil_depth,
     invisible(.Call('_phylloptim_Leaf__set_physiology', PACKAGE = 'phylloptim', obj_, root_network, PPFD, psi_soil, soil_depth, leaf_specific_conductance_max, atm_vpd, ca, leaf_temp, atm_o2_kpa, atm_kpa))
 }
 
-Leaf__perturb_stem_b <- function(obj_, stem_b) {
-    invisible(.Call('_phylloptim_Leaf__perturb_stem_b', PACKAGE = 'phylloptim', obj_, stem_b))
+Leaf__perturb_stem_P50 <- function(obj_, stem_P50) {
+    invisible(.Call('_phylloptim_Leaf__perturb_stem_P50', PACKAGE = 'phylloptim', obj_, stem_P50))
 }
 
-Leaf__stem_curve_integral <- function(obj_, psi) {
-    .Call('_phylloptim_Leaf__stem_curve_integral', PACKAGE = 'phylloptim', obj_, psi)
-}
-
-Leaf__stem_curve_integral_deriv <- function(obj_, psi) {
-    .Call('_phylloptim_Leaf__stem_curve_integral_deriv', PACKAGE = 'phylloptim', obj_, psi)
-}
-
-Leaf__stem_curve_integral_dstem_b <- function(obj_, psi) {
-    .Call('_phylloptim_Leaf__stem_curve_integral_dstem_b', PACKAGE = 'phylloptim', obj_, psi)
-}
-
-Leaf__root_curve_integral <- function(obj_, psi) {
-    .Call('_phylloptim_Leaf__root_curve_integral', PACKAGE = 'phylloptim', obj_, psi)
-}
-
-Leaf__root_curve_integral_deriv <- function(obj_, psi) {
-    .Call('_phylloptim_Leaf__root_curve_integral_deriv', PACKAGE = 'phylloptim', obj_, psi)
-}
-
-Leaf__root_curve_integral_droot_b <- function(obj_, psi) {
-    .Call('_phylloptim_Leaf__root_curve_integral_droot_b', PACKAGE = 'phylloptim', obj_, psi)
-}
-
-Leaf__set_traits <- function(obj_, vcmax_25, stem_c, stem_b, psi_crit, root_c, root_b, root_psi_crit, beta2, jmax_25, a, curv_fact_elec_trans, curv_fact_colim, cost_scale_TF24, R_d_25) {
-    invisible(.Call('_phylloptim_Leaf__set_traits', PACKAGE = 'phylloptim', obj_, vcmax_25, stem_c, stem_b, psi_crit, root_c, root_b, root_psi_crit, beta2, jmax_25, a, curv_fact_elec_trans, curv_fact_colim, cost_scale_TF24, R_d_25))
+Leaf__set_traits <- function(obj_, vcmax_25, stem_c, stem_P50, root_c, root_P50, TF24_beta2, jmax_25, a, curv_fact_elec_trans, curv_fact_colim, TF24_cost_scale, R_d_25, JS22_gamma, CMax_a, CMax_b) {
+    invisible(.Call('_phylloptim_Leaf__set_traits', PACKAGE = 'phylloptim', obj_, vcmax_25, stem_c, stem_P50, root_c, root_P50, TF24_beta2, jmax_25, a, curv_fact_elec_trans, curv_fact_colim, TF24_cost_scale, R_d_25, JS22_gamma, CMax_a, CMax_b))
 }
 
 Leaf__proportion_of_conductivity <- function(obj_, psi) {
@@ -109,6 +77,10 @@ Leaf__electron_transport <- function(obj_) {
     .Call('_phylloptim_Leaf__electron_transport', PACKAGE = 'phylloptim', obj_)
 }
 
+Leaf__leaf_temp_from_E <- function(obj_, E) {
+    .Call('_phylloptim_Leaf__leaf_temp_from_E', PACKAGE = 'phylloptim', obj_, E)
+}
+
 Leaf__set_leaf_states_rates_from_psi_stem <- function(obj_, psi_stem, psi_upstream) {
     invisible(.Call('_phylloptim_Leaf__set_leaf_states_rates_from_psi_stem', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream))
 }
@@ -133,44 +105,152 @@ Leaf__evaluate_root_collar_psi <- function(obj_, target_opt_root_psi) {
     .Call('_phylloptim_Leaf__evaluate_root_collar_psi', PACKAGE = 'phylloptim', obj_, target_opt_root_psi)
 }
 
-Leaf__profit_at_fixed_collar_values <- function(obj_, collar) {
-    .Call('_phylloptim_Leaf__profit_at_fixed_collar_values', PACKAGE = 'phylloptim', obj_, collar)
-}
-
 Leaf__dprofit_droot_collar_psi <- function(obj_, opt_root_psi) {
     .Call('_phylloptim_Leaf__dprofit_droot_collar_psi', PACKAGE = 'phylloptim', obj_, opt_root_psi)
+}
+
+Leaf__dprofit_droot_collar_psi_checked <- function(obj_, opt_root_psi) {
+    .Call('_phylloptim_Leaf__dprofit_droot_collar_psi_checked', PACKAGE = 'phylloptim', obj_, opt_root_psi)
 }
 
 Leaf__psi_stem_to_ci <- function(obj_, psi_stem, psi_upstream) {
     .Call('_phylloptim_Leaf__psi_stem_to_ci', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
 }
 
-Leaf__hydraulic_cost_Sperry <- function(obj_, psi_stem, psi_upstream) {
-    .Call('_phylloptim_Leaf__hydraulic_cost_Sperry', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
-}
-
 Leaf__hydraulic_cost_TF <- function(obj_, psi_stem) {
     .Call('_phylloptim_Leaf__hydraulic_cost_TF', PACKAGE = 'phylloptim', obj_, psi_stem)
 }
 
-Leaf__profit_psi_stem_Sperry <- function(obj_, psi_stem, psi_upstream) {
-    .Call('_phylloptim_Leaf__profit_psi_stem_Sperry', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+Leaf__hydraulic_cost_CF77 <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__hydraulic_cost_CF77', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__hydraulic_cost_JS22 <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__hydraulic_cost_JS22', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__hydraulic_cost_CMax <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__hydraulic_cost_CMax', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
 }
 
 Leaf__profit_psi_stem_TF <- function(obj_, psi_stem, psi_upstream) {
     .Call('_phylloptim_Leaf__profit_psi_stem_TF', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
 }
 
+Leaf__profit_psi_stem_CF77 <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__profit_psi_stem_CF77', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__profit_psi_stem_JS22 <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__profit_psi_stem_JS22', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__profit_psi_stem_CMax <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__profit_psi_stem_CMax', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__hydraulic_cost_TF24_floor <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__hydraulic_cost_TF24_floor', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__profit_psi_stem_TF24_floor <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__profit_psi_stem_TF24_floor', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__lambda_JS22 <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__lambda_JS22', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__lambda_CMax <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__lambda_CMax', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__lambda_TF24_floor <- function(obj_, psi_stem) {
+    .Call('_phylloptim_Leaf__lambda_TF24_floor', PACKAGE = 'phylloptim', obj_, psi_stem)
+}
+
+Leaf__sox_reduction <- function(obj_, psi_stem) {
+    .Call('_phylloptim_Leaf__sox_reduction', PACKAGE = 'phylloptim', obj_, psi_stem)
+}
+
+Leaf__profit_psi_stem_SOX <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__profit_psi_stem_SOX', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__lambda_SOX <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__lambda_SOX', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__jw26_reduction <- function(obj_, psi_stem) {
+    .Call('_phylloptim_Leaf__jw26_reduction', PACKAGE = 'phylloptim', obj_, psi_stem)
+}
+
+Leaf__profit_psi_stem_JW26 <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__profit_psi_stem_JW26', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__lambda_JW26 <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__lambda_JW26', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
 Leaf__lambda_TF24 <- function(obj_, psi_stem) {
     .Call('_phylloptim_Leaf__lambda_TF24', PACKAGE = 'phylloptim', obj_, psi_stem)
 }
 
-Leaf__optimise_psi_stem_Sperry <- function(obj_) {
-    invisible(.Call('_phylloptim_Leaf__optimise_psi_stem_Sperry', PACKAGE = 'phylloptim', obj_))
+Leaf__prepare_profitmax_at <- function(obj_, A_max) {
+    invisible(.Call('_phylloptim_Leaf__prepare_profitmax_at', PACKAGE = 'phylloptim', obj_, A_max))
 }
 
-Leaf__optimise_psi_stem_TF <- function(obj_) {
-    invisible(.Call('_phylloptim_Leaf__optimise_psi_stem_TF', PACKAGE = 'phylloptim', obj_))
+Leaf__set_model <- function(obj_, curve, route, method) {
+    invisible(.Call('_phylloptim_Leaf__set_model', PACKAGE = 'phylloptim', obj_, curve, route, method))
+}
+
+Leaf__model_curve <- function(obj_) {
+    .Call('_phylloptim_Leaf__model_curve', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__model_route <- function(obj_) {
+    .Call('_phylloptim_Leaf__model_route', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__model_method <- function(obj_) {
+    .Call('_phylloptim_Leaf__model_method', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__closed_form_fallback_fraction <- function(obj_) {
+    .Call('_phylloptim_Leaf__closed_form_fallback_fraction', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__reset_closed_form_counters <- function(obj_) {
+    invisible(.Call('_phylloptim_Leaf__reset_closed_form_counters', PACKAGE = 'phylloptim', obj_))
+}
+
+Leaf__optimise <- function(obj_) {
+    invisible(.Call('_phylloptim_Leaf__optimise', PACKAGE = 'phylloptim', obj_))
+}
+
+Leaf__evaluate_psi_stem_at <- function(obj_, target_psi_stem) {
+    .Call('_phylloptim_Leaf__evaluate_psi_stem_at', PACKAGE = 'phylloptim', obj_, target_psi_stem)
+}
+
+Leaf__dprofit_dpsi_stem_checked <- function(obj_, psi_stem) {
+    .Call('_phylloptim_Leaf__dprofit_dpsi_stem_checked', PACKAGE = 'phylloptim', obj_, psi_stem)
+}
+
+Leaf__thermal_cost_at <- function(obj_, leaf_temp) {
+    .Call('_phylloptim_Leaf__thermal_cost_at', PACKAGE = 'phylloptim', obj_, leaf_temp)
+}
+
+Leaf__prepare_profitmax <- function(obj_) {
+    invisible(.Call('_phylloptim_Leaf__prepare_profitmax', PACKAGE = 'phylloptim', obj_))
+}
+
+Leaf__profit_psi_stem_ProfitMax <- function(obj_, psi_stem, psi_upstream) {
+    .Call('_phylloptim_Leaf__profit_psi_stem_ProfitMax', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__profitmax_curve <- function(obj_, n) {
+    .Call('_phylloptim_Leaf__profitmax_curve', PACKAGE = 'phylloptim', obj_, n)
 }
 
 Leaf__medlyn_model_gs <- function(obj_, assim_colimited_) {
@@ -185,12 +265,80 @@ Leaf__solve_medlyn_ci_analytical <- function(obj_) {
     invisible(.Call('_phylloptim_Leaf__solve_medlyn_ci_analytical', PACKAGE = 'phylloptim', obj_))
 }
 
+Leaf__set_supply_multilayer <- function(obj_) {
+    invisible(.Call('_phylloptim_Leaf__set_supply_multilayer', PACKAGE = 'phylloptim', obj_))
+}
+
+Leaf__set_supply_single <- function(obj_, gravity_head) {
+    invisible(.Call('_phylloptim_Leaf__set_supply_single', PACKAGE = 'phylloptim', obj_, gravity_head))
+}
+
 Leaf__setup_transpiration <- function(obj_, resolution) {
     invisible(.Call('_phylloptim_Leaf__setup_transpiration', PACKAGE = 'phylloptim', obj_, resolution))
 }
 
 Leaf__setup_root_vulnerability <- function(obj_, resolution) {
     invisible(.Call('_phylloptim_Leaf__setup_root_vulnerability', PACKAGE = 'phylloptim', obj_, resolution))
+}
+
+Leaf__vcmax_25__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__vcmax_25__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__jmax_25__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__jmax_25__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__stem_c__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__stem_c__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__stem_P50__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__stem_P50__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__root_c__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__root_c__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__root_P50__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__root_P50__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__stem_b__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__stem_b__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__psi_crit__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__psi_crit__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__root_b__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__root_b__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__root_psi_crit__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__root_psi_crit__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__TF24_beta2__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__TF24_beta2__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__a__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__a__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__curv_fact_elec_trans__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__curv_fact_elec_trans__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__curv_fact_colim__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__curv_fact_colim__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__TF24_cost_scale__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__TF24_cost_scale__get', PACKAGE = 'phylloptim', obj_)
 }
 
 Leaf__ci___get <- function(obj_) {
@@ -249,20 +397,76 @@ Leaf__psi_stem__set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__psi_stem__set', PACKAGE = 'phylloptim', obj_, value))
 }
 
-Leaf__lambda___get <- function(obj_) {
-    .Call('_phylloptim_Leaf__lambda___get', PACKAGE = 'phylloptim', obj_)
+Leaf__CF77_lambda___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__CF77_lambda___get', PACKAGE = 'phylloptim', obj_)
 }
 
-Leaf__lambda___set <- function(obj_, value) {
-    invisible(.Call('_phylloptim_Leaf__lambda___set', PACKAGE = 'phylloptim', obj_, value))
+Leaf__CF77_lambda___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__CF77_lambda___set', PACKAGE = 'phylloptim', obj_, value))
 }
 
-Leaf__lambda_analytical___get <- function(obj_) {
-    .Call('_phylloptim_Leaf__lambda_analytical___get', PACKAGE = 'phylloptim', obj_)
+Leaf__CF77_soil_beta___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__CF77_soil_beta___get', PACKAGE = 'phylloptim', obj_)
 }
 
-Leaf__lambda_analytical___set <- function(obj_, value) {
-    invisible(.Call('_phylloptim_Leaf__lambda_analytical___set', PACKAGE = 'phylloptim', obj_, value))
+Leaf__CF77_soil_beta___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__CF77_soil_beta___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__TF24_floor_lambda_o__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__TF24_floor_lambda_o__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__TF24_floor_lambda_o__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__TF24_floor_lambda_o__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__theta__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__theta__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__theta__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__theta__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__theta_fc__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__theta_fc__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__theta_fc__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__theta_fc__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__theta_w__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__theta_w__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__theta_w__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__theta_w__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__carbon_gain___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__carbon_gain___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__carbon_gain___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__carbon_gain___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__hydraulic_cost_norm___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__hydraulic_cost_norm___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__hydraulic_cost_norm___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__hydraulic_cost_norm___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__thermal_cost___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__thermal_cost___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__thermal_cost___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__thermal_cost___set', PACKAGE = 'phylloptim', obj_, value))
 }
 
 Leaf__hydraulic_cost___get <- function(obj_) {
@@ -319,6 +523,14 @@ Leaf__count__get <- function(obj_) {
 
 Leaf__count__set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__count__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__Tleaf___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__Tleaf___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__Tleaf___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__Tleaf___set', PACKAGE = 'phylloptim', obj_, value))
 }
 
 Leaf__electron_transport___get <- function(obj_) {
@@ -489,6 +701,30 @@ Leaf__R_d_25__set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__R_d_25__set', PACKAGE = 'phylloptim', obj_, value))
 }
 
+Leaf__JS22_gamma__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__JS22_gamma__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__JS22_gamma__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__JS22_gamma__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__CMax_a__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__CMax_a__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__CMax_a__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__CMax_a__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__CMax_b__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__CMax_b__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__CMax_b__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__CMax_b__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
 Leaf__rd_q10_intercept___get <- function(obj_) {
     .Call('_phylloptim_Leaf__rd_q10_intercept___get', PACKAGE = 'phylloptim', obj_)
 }
@@ -577,14 +813,6 @@ Leaf__z_soil_mid___set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__z_soil_mid___set', PACKAGE = 'phylloptim', obj_, value))
 }
 
-Leaf__dz___get <- function(obj_) {
-    .Call('_phylloptim_Leaf__dz___get', PACKAGE = 'phylloptim', obj_)
-}
-
-Leaf__dz___set <- function(obj_, value) {
-    invisible(.Call('_phylloptim_Leaf__dz___set', PACKAGE = 'phylloptim', obj_, value))
-}
-
 Leaf__soil_number_of_depths___get <- function(obj_) {
     .Call('_phylloptim_Leaf__soil_number_of_depths___get', PACKAGE = 'phylloptim', obj_)
 }
@@ -657,12 +885,76 @@ Leaf__f_r__set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__f_r__set', PACKAGE = 'phylloptim', obj_, value))
 }
 
+Leaf__last_solve_fell_back___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__last_solve_fell_back___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__last_solve_fell_back___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__last_solve_fell_back___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__closed_form_calls___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__closed_form_calls___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__closed_form_calls___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__closed_form_calls___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__closed_form_fallbacks___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__closed_form_fallbacks___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__closed_form_fallbacks___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__closed_form_fallbacks___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
 Leaf__use_energy_balance___get <- function(obj_) {
     .Call('_phylloptim_Leaf__use_energy_balance___get', PACKAGE = 'phylloptim', obj_)
 }
 
 Leaf__use_energy_balance___set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__use_energy_balance___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__vpd_leaf___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__vpd_leaf___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__vpd_leaf___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__vpd_leaf___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__use_thermal_cost___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__use_thermal_cost___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__use_thermal_cost___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__use_thermal_cost___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__T50___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__T50___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__T50___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__T50___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__Tcrit___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__Tcrit___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__Tcrit___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__Tcrit___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__boundary_scan_n___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__boundary_scan_n___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__boundary_scan_n___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__boundary_scan_n___set', PACKAGE = 'phylloptim', obj_, value))
 }
 
 Leaf__d___get <- function(obj_) {
@@ -753,6 +1045,22 @@ Leaf__theta___set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__theta___set', PACKAGE = 'phylloptim', obj_, value))
 }
 
+Leaf__supply_kind__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__supply_kind__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__single_resistance___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__single_resistance___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__single_gravity_head___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__single_gravity_head___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__single_psi_soil___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__single_psi_soil___get', PACKAGE = 'phylloptim', obj_)
+}
+
 Leaf__lambda__get <- function(obj_) {
     .Call('_phylloptim_Leaf__lambda__get', PACKAGE = 'phylloptim', obj_)
 }
@@ -765,8 +1073,101 @@ Leaf__lambda_multilayer__get <- function(obj_) {
     .Call('_phylloptim_Leaf__lambda_multilayer__get', PACKAGE = 'phylloptim', obj_)
 }
 
+Leaf__lambda_emergent__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__lambda_emergent__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__profitmax_A_max__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__profitmax_A_max__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__profitmax_k_span__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__profitmax_k_span__get', PACKAGE = 'phylloptim', obj_)
+}
+
 Leaf__g1_eff__get <- function(obj_) {
     .Call('_phylloptim_Leaf__g1_eff__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__shadow_cost__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__shadow_cost__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__gs_H2O__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__gs_H2O__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__H2O_CO2_stom_diff_ratio___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__H2O_CO2_stom_diff_ratio___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__H2O_CO2_stom_diff_ratio___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__H2O_CO2_stom_diff_ratio___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+#' The differentiable parameters, in the order C++ indexes them
+#'
+#' The fifteen [leaf_traits()] in `set_traits()`'s argument order, then
+#' `leaf_specific_conductance_max`, `resistance` and `CF77_lambda_`. Exported so that R's own
+#' copy of this order can be compared against it in a test: R passes integer
+#' positions into this enumeration, so appending to it is safe and reordering it
+#' would silently differentiate the wrong parameter.
+#'
+#' @return A character vector, one entry per differentiable parameter.
+#' @seealso [leaf_gradient_batch()]
+#' @examples
+#' gradient_par_names()
+#' @export
+gradient_par_names <- function() {
+    .Call('_phylloptim_gradient_par_names', PACKAGE = 'phylloptim')
+}
+
+#' The cost curves, in the order C++ indexes them
+#'
+#' Every optimality model this package implements, as names, in the order of the
+#' `CostCurve` enumeration. R selects a curve by its POSITION in this vector, so
+#' the vector is read back out of C++ rather than restated in R: appending a curve
+#' is safe and reordering the enumeration would silently solve a different model.
+#'
+#' @return A character vector of curve names.
+#' @seealso [leaf_gradient()], [leaf_gradient_batch()]
+#' @examples
+#' cost_curve_names()
+#' @export
+cost_curve_names <- function() {
+    .Call('_phylloptim_cost_curve_names', PACKAGE = 'phylloptim')
+}
+
+#' The differentiated outputs, in the order C++ indexes them
+#'
+#' `A`, `gc`, `psi_stem`, `collar` and `profit`. Unlike [gradient_par_names()],
+#' which R holds its own copy of and a test compares, R **reads** this one — so
+#' the list exists once and adding an output is one edit rather than two that
+#' can disagree.
+#'
+#' The first four are what a gas-exchange calibration observes; `profit` is what
+#' a demographic consumer bills, and it is the one output the envelope theorem
+#' reaches. See [leaf_gradient()].
+#'
+#' @return A character vector of five names.
+#' @seealso [leaf_gradient()], [leaf_gradient_batch()]
+#' @examples
+#' gradient_output_names()
+#' @export
+gradient_output_names <- function() {
+    .Call('_phylloptim_gradient_output_names', PACKAGE = 'phylloptim')
+}
+
+gradient_batch_prepare <- function(root_network, psi_soil, soil_depth, PPFD, atm_vpd, ca, leaf_temp, atm_o2_kpa, atm_kpa) {
+    .Call('_phylloptim_gradient_batch_prepare', PACKAGE = 'phylloptim', root_network, psi_soil, soil_depth, PPFD, atm_vpd, ca, leaf_temp, atm_o2_kpa, atm_kpa)
+}
+
+gradient_batch_check <- function(drivers) {
+    invisible(.Call('_phylloptim_gradient_batch_check', PACKAGE = 'phylloptim', drivers))
+}
+
+gradient_batch_run <- function(obj_, drivers, theta, pars, step, stationarity_tol, method, fast_stem_curve, psi, dpsi_dtheta, curve, fd_step, pinned_A_max) {
+    .Call('_phylloptim_gradient_batch_run', PACKAGE = 'phylloptim', obj_, drivers, theta, pars, step, stationarity_tol, method, fast_stem_curve, psi, dpsi_dtheta, curve, fd_step, pinned_A_max)
 }
 
 #' Root resistances from a root carbon profile
@@ -774,14 +1175,15 @@ Leaf__g1_eff__get <- function(obj_) {
 #' The root-architecture model that used to run inside `set_physiology()` (#33).
 #' Each layer's root carbon is split 1/3 vertical : 2/3 horizontal; the minimum
 #' horizontal resistance is `beta_R_H / c_r_h`, and the vertical resistance is
-#' `beta_R_V * dz^2 / c_r_v`, accumulated from the surface down.
+#' `beta_R_V * dz[i]^2 / c_r_v`, accumulated from the surface down, where `dz[i]`
+#' is the thickness of layer `i`.
 #'
 #' The result is sized to the deepest layer with non-zero root carbon, so it is
 #' shorter than `soil_depth` for a plant that is shallower than the soil profile.
 #' That is what `max_soil_layer` reports after a solve.
 #'
 #' @section This is a model, not a conversion:
-#' The 1/3 : 2/3 split, the `dz^2` scaling and both `beta_R_*` constants are
+#' The 1/3 : 2/3 split, the `dz[i]^2` scaling and both `beta_R_*` constants are
 #' choices, made in plant's TF24 strategy and calibrated there for
 #' *Eucalyptus saligna*. Nothing in the leaf solve depends on them -- it reads
 #' the resistances. If you have measured root resistances, or are fitting them,
@@ -791,14 +1193,17 @@ Leaf__g1_eff__get <- function(obj_) {
 #'   m^-2 leaf, one entry per soil layer. Per unit leaf area because the leaf is
 #'   purely intensive; passing absolute carbon gives resistances that are wrong
 #'   by the leaf area and no error anywhere will say so.
-#' @param soil_depth cumulative depth to the bottom of each layer, m. The layer
-#'   thickness `dz` is derived from it exactly as the leaf derives it, which is
-#'   why this takes the profile rather than `dz`.
+#' @param soil_depth cumulative depth to the bottom of each layer, m, strictly
+#'   increasing. Layer thicknesses are the differences between consecutive
+#'   entries, with an implicit 0 at the surface, so the layers need not be equal:
+#'   `soil_depth = c(0.02, 0.3, 1.5)` is a 2 cm surface layer over two thicker
+#'   ones. This takes the profile rather than the widths so that a caller reading
+#'   a depth profile cannot get the differencing wrong.
 #' @param beta_R_H proportionality constant between minimum horizontal
 #'   (intralayer) root hydraulic resistance and `C_r^-1`
 #'   (MPa s mol C / mol H2O).
 #' @param beta_R_V proportionality constant between minimum vertical
-#'   (interlayer) root hydraulic resistance and `dz^2/C_r`
+#'   (interlayer) root hydraulic resistance and `dz[i]^2/C_r`
 #'   (MPa mol C s / mol H2O / m^2).
 #'
 #' @return A [RootNetwork()].

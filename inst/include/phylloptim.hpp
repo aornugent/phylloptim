@@ -27,11 +27,14 @@
 // that maps one to the other -- but it is a helper you call, not something the
 // solve does for you (#33).
 
+#include <phylloptim/closed_form.hpp>
 #include <phylloptim/constants.hpp>
+#include <phylloptim/gradient.hpp>
 #include <phylloptim/leaf_model.hpp>
 #include <phylloptim/optimize.hpp>
 #include <phylloptim/quadrature.hpp>
 #include <phylloptim/roots.hpp>
+#include <phylloptim/single_potential.hpp>
 #include <phylloptim/uniroot.hpp>
 #include <phylloptim/util.hpp>
 #include <phylloptim/vulnerability.hpp>

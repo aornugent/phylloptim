@@ -12,49 +12,53 @@ root_network_from_carbon(
 )
 }
 \arguments{
-\item{root_carbon_per_leaf_area}{root carbon **per unit leaf area**, kg C
+\item{root_carbon_per_leaf_area}{root carbon \strong{per unit leaf area}, kg C
 m^-2 leaf, one entry per soil layer. Per unit leaf area because the leaf is
 purely intensive; passing absolute carbon gives resistances that are wrong
 by the leaf area and no error anywhere will say so.}
 
-\item{soil_depth}{cumulative depth to the bottom of each layer, m. The layer
-thickness `dz` is derived from it exactly as the leaf derives it, which is
-why this takes the profile rather than `dz`.}
+\item{soil_depth}{cumulative depth to the bottom of each layer, m, strictly
+increasing. Layer thicknesses are the differences between consecutive
+entries, with an implicit 0 at the surface, so the layers need not be equal:
+\code{soil_depth = c(0.02, 0.3, 1.5)} is a 2 cm surface layer over two thicker
+ones. This takes the profile rather than the widths so that a caller reading
+a depth profile cannot get the differencing wrong.}
 
 \item{beta_R_H}{proportionality constant between minimum horizontal
-(intralayer) root hydraulic resistance and `C_r^-1`
+(intralayer) root hydraulic resistance and \code{C_r^-1}
 (MPa s mol C / mol H2O).}
 
 \item{beta_R_V}{proportionality constant between minimum vertical
-(interlayer) root hydraulic resistance and `dz^2/C_r`
+(interlayer) root hydraulic resistance and \code{dz[i]^2/C_r}
 (MPa mol C s / mol H2O / m^2).}
 }
 \value{
-A [RootNetwork()].
+A \code{\link[=RootNetwork]{RootNetwork()}}.
 }
 \description{
-The root-architecture model that used to run inside `set_physiology()` (#33).
+The root-architecture model that used to run inside \code{set_physiology()} (#33).
 Each layer's root carbon is split 1/3 vertical : 2/3 horizontal; the minimum
-horizontal resistance is `beta_R_H / c_r_h`, and the vertical resistance is
-`beta_R_V * dz^2 / c_r_v`, accumulated from the surface down.
+horizontal resistance is \code{beta_R_H / c_r_h}, and the vertical resistance is
+\code{beta_R_V * dz[i]^2 / c_r_v}, accumulated from the surface down, where \code{dz[i]}
+is the thickness of layer \code{i}.
 }
 \details{
 The result is sized to the deepest layer with non-zero root carbon, so it is
-shorter than `soil_depth` for a plant that is shallower than the soil profile.
-That is what `max_soil_layer` reports after a solve.
+shorter than \code{soil_depth} for a plant that is shallower than the soil profile.
+That is what \code{max_soil_layer} reports after a solve.
 }
 \section{This is a model, not a conversion}{
 
-The 1/3 : 2/3 split, the `dz^2` scaling and both `beta_R_*` constants are
+The 1/3 : 2/3 split, the \code{dz[i]^2} scaling and both \verb{beta_R_*} constants are
 choices, made in plant's TF24 strategy and calibrated there for
-*Eucalyptus saligna*. Nothing in the leaf solve depends on them -- it reads
+\emph{Eucalyptus saligna}. Nothing in the leaf solve depends on them -- it reads
 the resistances. If you have measured root resistances, or are fitting them,
-build a [RootNetwork()] directly and do not come through here.
+build a \code{\link[=RootNetwork]{RootNetwork()}} directly and do not come through here.
 }
 
 \examples{
 root_network_from_carbon(rep(20 / 3, 3), soil_depth = 1:3)
 }
 \seealso{
-[RootNetwork()], [set_drivers()]
+\code{\link[=RootNetwork]{RootNetwork()}}, \code{\link[=set_drivers]{set_drivers()}}
 }

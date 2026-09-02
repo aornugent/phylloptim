@@ -46,90 +46,70 @@ DEP_INC  = $(ODELIA_INC) $(BH_INC)
 SYS_INC  = $(foreach d,$(filter-out /usr/include /usr/include/,$(strip $(DEP_INC))),-isystem $(d))
 INCLUDES = -I$(PHYLLOPTIM_INC) $(SYS_INC)
 
-# The collar's condition records a reverse pass, so the suite needs XAD's tape:
-# the two storage-class defines, which must match odelia's and plant's Makevars,
-# and the one translation unit odelia compiles the tape into. The installed
-# package ships headers only, so this comes from a checkout.
-XADFLAGS = -DXAD_NO_THREADLOCAL -DXAD_USE_STRONG_INLINE
-ODELIA_SRC ?= $(ODELIA_INC)/../../src
-TAPE_SRC = $(ODELIA_SRC)/Tape.cpp
-
-.PHONY: all build clean golden bench
+.PHONY: all build clean golden psi-stem-golden primitives-golden bench
 # The suite's own headers are prerequisites too: root_network.hpp holds the two
 # ex-`Leaf`-default constants the golden file's bit-exactness depends on, so a
 # stale rebuild after editing it would be a silently wrong baseline.
 HEADERS = $(wildcard $(PHYLLOPTIM_INC)/phylloptim/*.hpp) $(PHYLLOPTIM_INC)/phylloptim.hpp \
           $(wildcard *.hpp)
 
-# The golden file is bit-exact only on the platform that generated it, so the
-# comparison that means anything depends on where it runs: bit-exact on
-# macOS/arm64, per-field tolerances everywhere else. See the comment above main()
-# in test_golden.cpp for why the tolerant mode is correct and not a loosening.
-#
-# Defaulted by platform rather than left to the caller. Empty everywhere, the
-# form this had, makes `make` fail on every other platform for a reason that is
-# never a regression -- so a reader learns to ignore it, and the one time it IS a
-# regression nothing can say so. A stale golden then went unnoticed for ten days.
-ifeq ($(shell uname -s)/$(shell uname -m),Darwin/arm64)
-  GOLDEN_ARGS ?=
-else
-  GOLDEN_ARGS ?= --cross-platform
-endif
+# Extra arguments for the golden comparison. Empty means bit-exact, which is what
+# you want locally and on the platform that generated the file. CI passes
+# GOLDEN_ARGS=--cross-platform on platforms other than that one -- see the comment
+# above main() in test_golden.cpp for why that is correct and not a loosening.
+GOLDEN_ARGS ?=
 
+# ⚠️ EVERY TEST PROGRAM MUST BE NAMED HERE. This Makefile lists its sources
+# explicitly, and that is exactly how tests/validate/ rotted through two interface
+# changes without anyone noticing (#64): a file no build touches compiles in
+# nobody's head. Adding a .cpp under tests/cpp/ without adding it to `build`, to
+# `all`, to CMakeLists.txt and to cpp-tests.yml leaves it in the same state, with a
+# newer date on it.
 all: build
 	./test_leaf
-	./test_leaf_gradient
-	./test_transpose
-	./test_supplied_rows
 	./test_golden $(GOLDEN_ARGS)
+	./test_primitives $(GOLDEN_ARGS)
 
-build: test_leaf test_leaf_gradient test_transpose test_supplied_rows \
-       test_golden
+build: test_leaf test_golden test_primitives
 
 # Not built or run by `make all` -- it takes a few seconds and measures the
 # machine as much as the code. Run it deliberately when a change might have
 # moved the cost of a solve.
-bench: bench_solve
+bench: bench_solve bench_gradient
 	./bench_solve
+	./bench_gradient
 
 test_leaf: test_leaf.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
-
-# The gradient against a difference of the solve. Slower than test_leaf -- it
-# re-solves the whole leaf four times per input per state -- and it is the one
-# thing that referees the derivative against something that is not itself.
-test_leaf_gradient: test_leaf_gradient.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
-
-# The transpose identity, which needs no reference gradient: one tangent against
-# one sweep. It is the only thing here that can see a wrong SUPPLIED row, since a
-# difference of the recorded step cannot. 0.01 s.
-test_transpose: test_transpose.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
-
-# The two derivatives the leaf hands over as plain numbers, against a difference of
-# the forward model each describes. A difference of anything downstream is
-# identically zero on those columns, so this is the only place they can be caught.
-test_supplied_rows: test_supplied_rows.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
 
 test_golden: test_golden.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+
+test_primitives: test_primitives.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
 
 bench_solve: bench_solve.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
 
-# One-off measurement programs. Not built or run by anything; `make probe_x`
-# builds probe_x.cpp with the suite's own flags so a probe measures the same code
-# the tests do.
-probe_%: probe_%.cpp $(HEADERS)
-	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
+bench_gradient: bench_gradient.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
 
 # Regenerate the golden file. Only ever run this deliberately: it overwrites the
 # recorded behaviour, so a refactor that changed results would be rubber-stamped.
 golden: test_golden
 	./test_golden --generate
 
+# The psi_stem optimiser baseline, on the same terms as `golden` above: only ever
+# deliberately. Separate from `golden` so the two files cannot be regenerated by
+# accident together -- they have disjoint causes, and a diff in one is evidence
+# about a different part of the model than a diff in the other.
+psi-stem-golden: test_golden
+	./test_golden --generate-optima
+
+# The primitive-level baseline, regenerated on the same terms: only ever
+# deliberately, and only on macOS/arm64, which is the platform it is bit-exact on.
+primitives-golden: test_primitives
+	./test_primitives --generate
+
 clean:
-	rm -f test_leaf test_leaf_gradient test_transpose test_supplied_rows \
-	      test_golden bench_solve
+	rm -f test_leaf test_golden test_primitives bench_solve bench_gradient

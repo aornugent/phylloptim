@@ -32,7 +32,8 @@ double uniroot(Function f, double min, double max, double tol,
                                           internals::uniroot_tol(tol, tol),
                                           it);
   if (it > static_cast<boost::uintmax_t>(max_iterations)) {
-    util::stop("Exceeded max_iterations");
+    util::stop_infeasible("root_find_iterations",
+                          "exceeded max_iterations");
   }
   return (root.first + root.second) / 2.0;
 }
@@ -74,7 +75,8 @@ double uniroot_smooth(Function f, double min, double max, double tol,
   std::pair<double, double> root = toms748_solve(
       f, min, max, internals::uniroot_tol(tol, tol), it);
   if (it >= static_cast<boost::uintmax_t>(max_iterations)) {
-    util::stop("Exceeded max_iterations");
+    util::stop_infeasible("root_find_iterations",
+                          "exceeded max_iterations");
   }
   return (root.first + root.second) / 2.0;
 }
@@ -96,7 +98,8 @@ double uniroot_smooth(Function f, double min, double max, double f_min,
   std::pair<double, double> root = toms748_solve(
       f, min, max, f_min, f_max, internals::uniroot_tol(tol, tol), it);
   if (it >= static_cast<boost::uintmax_t>(max_iterations)) {
-    util::stop("Exceeded max_iterations");
+    util::stop_infeasible("root_find_iterations",
+                          "exceeded max_iterations");
   }
   return (root.first + root.second) / 2.0;
 }

@@ -1,0 +1,52 @@
+name: Prefer an apt mirror that answers
+description: >
+  Drop azure.archive.ubuntu.com from the runner's mirror list, when a fallback
+  remains. A no-op off Linux.
+
+# ⚠️ WHY THIS EXISTS. On 2026-08-19 azure.archive.ubuntu.com -- the mirror the
+# ubuntu runner image prefers -- stopped accepting connections from some runners.
+# `apt-get update` consults it for every index target, so a job held a runner for
+# 26 minutes on one apt line and three re-runs did the same, while a byte-identical
+# step in a sibling job passed. The fault is per-VM network reachability: nothing
+# in a workflow file distinguishes the jobs that hang from the ones that do not.
+#
+# The runner lists that host in /etc/apt/apt-mirrors.txt with archive.ubuntu.com
+# behind it, so DELETING THE LINE is the fix -- apt then goes straight to a mirror
+# that answers. Measured after: 11-19s for steps that had been hanging.
+#
+# ⚠️ PER-CONNECTION TIMEOUTS ALONE ARE NOT SUFFICIENT, which is worth knowing
+# before someone simplifies this away. With `Acquire::http::Timeout=15` and
+# `Retries=2` the dead host is still consulted for each of ~30 index targets, so
+# `apt-get update` blew a 5-minute budget anyway: a red job instead of a hung one,
+# but still red.
+#
+# ⚠️ IT MUST RUN BEFORE ANY ACTION THAT INSTALLS PACKAGES, not only before our own
+# apt steps. `r-lib/actions/setup-r` installs R's system dependencies with apt
+# inside the action, where a step-level fix cannot reach it -- that job sat on
+# setup-r for 37 minutes while this was happening.
+#
+# This is a composite action rather than three copied blocks so the explanation
+# above lives in one place. A duplicated comment is a claim that rots.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -eu
+        if [ "$RUNNER_OS" != "Linux" ]; then
+          echo "not Linux; nothing to do"
+          exit 0
+        fi
+        list=/etc/apt/apt-mirrors.txt
+        if [ ! -f "$list" ]; then
+          echo "$list absent; the image does not use a mirror list"
+          exit 0
+        fi
+        if grep -E "^[^#]*https?://" "$list" | grep -qv azure.archive.ubuntu.com; then
+          sudo sed -i "/azure.archive.ubuntu.com/d" "$list"
+          echo "dropped azure.archive.ubuntu.com; remaining mirrors:"
+        else
+          echo "azure.archive.ubuntu.com is the only mirror listed; left alone:"
+        fi
+        cat "$list"

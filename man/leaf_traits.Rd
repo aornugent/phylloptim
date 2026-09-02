@@ -7,18 +7,19 @@
 leaf_traits(
   vcmax_25 = 96,
   stem_c = 2.680147,
-  stem_b = 3.898245,
-  psi_crit = 5.870283,
+  stem_P50 = 3.4,
   root_c = 2.680147,
-  root_b = 3.898245,
-  root_psi_crit = 5.870283,
-  beta2 = 1.5,
+  root_P50 = 3.4,
+  TF24_beta2 = 1.5,
   jmax_25 = 157.44,
   a = 0.3,
   curv_fact_elec_trans = 0.7,
   curv_fact_colim = 0.99,
-  cost_scale_TF24 = 7.5,
-  R_d_25 = 1.44
+  TF24_cost_scale = 7.5,
+  R_d_25 = 1.44,
+  JS22_gamma = 1,
+  CMax_a = 0.6,
+  CMax_b = 0
 )
 }
 \arguments{
@@ -26,17 +27,16 @@ leaf_traits(
 
 \item{stem_c}{shape parameter of the stem vulnerability curve (unitless)}
 
-\item{stem_b}{sensitivity parameter of the stem vulnerability curve (MPa)}
-
-\item{psi_crit}{critical stem water potential (MPa, positive magnitude)}
+\item{stem_P50}{stem potential at 50\% loss of conductivity (MPa, positive
+magnitude). \code{stem_b} and \code{psi_crit} are derived from this pair and are
+readable but not settable on the resulting \code{Leaf}.}
 
 \item{root_c}{shape parameter of the root vulnerability curve (unitless)}
 
-\item{root_b}{sensitivity parameter of the root vulnerability curve (MPa)}
+\item{root_P50}{root potential at 50\% loss of conductivity (MPa, positive
+magnitude), with \code{root_b} and \code{root_psi_crit} derived from it.}
 
-\item{root_psi_crit}{critical root water potential (MPa, positive magnitude)}
-
-\item{beta2}{exponent for the effect of hydraulic risk (unitless)}
+\item{TF24_beta2}{exponent for the effect of hydraulic risk (unitless)}
 
 \item{jmax_25}{maximum electron transport rate at 25 C (umol m^-2 s^-1)}
 
@@ -46,48 +46,100 @@ leaf_traits(
 
 \item{curv_fact_colim}{curvature of the colimited photosynthesis equation}
 
-\item{cost_scale_TF24}{cost parameter for the TF24 profit model
+\item{TF24_cost_scale}{cost parameter for the TF24 profit model
 (umol m^-2 s^-1)}
 
 \item{R_d_25}{dark respiration at 25 C (umol m^-2 s^-1). It is the value at
 25 C only: respiration rises from there on Tjoelker's declining-Q10 curve.}
+
+\item{JS22_gamma}{Joshi & Stocker (2022)'s hydraulic unit cost
+(umol C m^-2 s^-1 MPa^-2), read only by the \code{JS22} cost curve and returning
+an exactly zero gradient on every other one.
+
+⚠️ \strong{The default is not a literature value.} It is order-of-magnitude
+matched to TF24 at this package's defaults, and no single value matches more
+than one soil potential: the \code{JS22_gamma} reproducing TF24's cost at its own
+optimum runs 0.287 at \code{psi_soil} 0.5 MPa to 1.761 at 3.0 MPa. TF24's cost
+tracks the absolute potential and this one tracks the drop, and across a
+drydown those move in opposite directions.}
+
+\item{CMax_a, CMax_b}{slope and intercept of the \code{CMax} marginal cost,
+\code{dC/dpsi = CMax_a * psi + CMax_b}, following Wolf et al. (2016) as
+Anderegg et al. (2018) parameterised it. Read only by the \code{CMax} curve.
+
+⚠️ \strong{\code{CMax_b} is signed, and negative in the source convention.} Sabot's
+\code{TractLSM} stores it with the sign inverted "so as to get a positive
+parameter value", so a value taken from that code or from a calibration
+against it must have its sign checked rather than assumed.
+
+⚠️ \strong{Neither default is a literature value.} With \code{CMax_b = 0} the \code{CMax_a}
+reproducing TF24's cost at its own optimum runs 0.406 at \code{psi_soil} 0.5 MPa
+to 0.807 at 3.0 MPa — a 2.0x range against \code{JS22_gamma}'s 6.1x, which is the
+absolute-versus-drop distinction as a number.}
 }
 \value{
-A `leaf_traits` object; a named list.
+A \code{leaf_traits} object; a named list.
 }
 \description{
 The traits, and only the traits. Numerical settings live in
-[leaf_control()]; the C++ constructor mixes the two and this is the split.
+\code{\link[=leaf_control]{leaf_control()}}; the C++ constructor mixes the two and this is the split.
 }
 \details{
-Defaults are *Eucalyptus saligna*, and are the same values
-`phylloptim::Leaf`'s default constructor uses.
+Defaults are \emph{Eucalyptus saligna}, and are the same values
+\code{phylloptim::Leaf}'s default constructor uses.
 }
 \section{Two vulnerability curves, not one}{
 
-`stem_b`/`stem_c` describe the STEM Weibull curve, which drives the
-hydraulic cost; `root_b`/`root_c` describe the ROOT curve, which drives
+\code{stem_P50}/\code{stem_c} describe the STEM Weibull curve, which drives the
+hydraulic cost; \code{root_P50}/\code{root_c} describe the ROOT curve, which drives
 uptake. They are separate parameters with separate meanings and they are
-named accordingly, because they were once an unmarked `b`/`c` pair alongside
-`root_b`/`root_c` and an analysis used the root parameters for the stem cost.
+named accordingly, because they were once an unmarked \code{b}/\code{c} pair alongside
+\code{root_b}/\code{root_c} and an analysis used the root parameters for the stem cost.
+
+Each curve has exactly TWO settable numbers. \code{stem_b}, \code{psi_crit}, \code{root_b}
+and \code{root_psi_crit} are quantiles of the curve those two define -- readable on
+the resulting \code{Leaf} and not settable anywhere. See \code{\link[=weibull_p50_c]{weibull_p50_c()}}.
+}
+
+\section{psi_crit is not a free trait}{
+
+\code{psi_crit} is the stem curve's \strong{P95} and is derived from \code{stem_P50}/\code{stem_c},
+not set. It used to be settable, describing a curve it was not derived from:
+the curve is pre-integrated over \verb{[0, P99]}, \code{psi_crit} never entered that
+bound, and every solve evaluates the curve \emph{at} \code{psi_crit} -- so anyone fitting
+a measured vulnerability curve picked a plausible number and got a domain error
+naming only the interpolator.
+
+At the defaults:
+
+\if{html}{\out{<div class="sourceCode">}}\preformatted{stem_b = 3.898245, stem_c = 2.680147
+3.898245 * log(1/0.05)^(1/2.680147) = 5.870283 = psi_crit
+}\if{html}{\out{</div>}}
+
+to six decimal places, against \code{P99 = 6.891842}. Both move with the pair, so
+there is nothing left to set inconsistently. \code{vignette("fitting")} derives the
+pair from a published P50/P88 pair, which is the right way round.
 }
 
 \section{Where the two root-resistance constants went}{
 
-`beta_R_H` and `beta_R_V` were traits here until #33. They parameterise the
+\code{beta_R_H} and \code{beta_R_V} were traits here until #33. They parameterise the
 root-ARCHITECTURE model, which the leaf no longer runs -- it takes the
-resistances. They are arguments to [root_network_from_carbon()] now.
+resistances. They are arguments to \code{\link[=root_network_from_carbon]{root_network_from_carbon()}} now.
 
-The cost is real and worth stating: a derivative with respect to either is a
-finite difference over two solves. Perturbing them is cheap, because
-[root_network_from_carbon()] is homogeneous of degree 1 in each, but the two
-solves are not.
+The cost is real and worth stating: \code{\link[=leaf_gradient]{leaf_gradient()}} can no longer
+differentiate with respect to either. Perturbing them is cheap, because
+\code{\link[=root_network_from_carbon]{root_network_from_carbon()}} is homogeneous of degree 1 in each, but the
+derivative of a solved output still needs two solves either side.
 }
 
 \examples{
 leaf_traits()
-leaf_traits(vcmax_25 = 120, stem_b = 2.5)
+# A more brittle stem. Only the curve's own two parameters are set: the scale
+# `stem_b` and the critical potential `psi_crit` are quantiles of that curve
+# and are derived from them, so they cannot be set inconsistently.
+leaf_traits(vcmax_25 = 120, stem_P50 = 2.2)
 }
 \seealso{
-[leaf_control()], [leaf_model()], [leaf_solve()]
+\code{\link[=leaf_control]{leaf_control()}}, \code{\link[=leaf_model]{leaf_model()}}, \code{\link[=leaf_solve]{leaf_solve()}}
 }

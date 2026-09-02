@@ -56,19 +56,28 @@ inline constexpr double ko_ha = 36.38e3;
 // Leaf::umol_per_mol_to_Pa_, derived from atm_kpa_. The old `0.1013` was 101.3
 // kPa hard-coded; don't reinstate it.
 
-// mol H2o kg ^-1
-inline constexpr double kg_to_mol_h2o = 55.4939;
-// kg mol^-1: molar mass of water, for converting molar water flux back to kg.
-// (Intentionally distinct from 1/kg_to_mol_h2o, which it does not exactly equal;
-// kept at the historical 0.018015 to preserve results.)
-inline constexpr double kg_per_mol_h2o = 0.018015;
+// The molar mass of water -- 18.015 g/mol, from the standard atomic weights -- and
+// the ONE place it is written down. Both conversion directions derive from it, so
+// they are reciprocal by construction; do not reintroduce a second literal (#51).
+//
+// Both names below are kept because plant `using`-declares both.
+inline constexpr double molar_mass_h2o = 0.018015; // kg mol^-1
+// kg mol^-1, for converting a molar water flux back to kg.
+inline constexpr double kg_per_mol_h2o = molar_mass_h2o;
+// mol H2O kg^-1 -- the reciprocal, now genuinely so.
+inline constexpr double kg_to_mol_h2o = 1.0 / molar_mass_h2o;
 // mol mol ^-1 / (umol mol ^-1)
 inline constexpr double umol_to_mol = 1e-6;
 // Pa kPa^-1
 inline constexpr double kPa_to_Pa = 1000.0;
 
-// universal gas constant J mol^-1 K^-1
-inline constexpr double gas_constant = 8.314;
+// universal gas constant J mol^-1 K^-1. Exact since the 2019 SI redefinition
+// (R = N_A k_B), so it is not a value to round.
+//
+// ⚠️ Read only by arrh_curve and peak_arrh_curve, always as `Ea/(R*T)` with Ea/RT
+// of order 24 -- so a relative change here reaches the rates ~24x amplified, and a
+// change too small to look like it matters does.
+inline constexpr double gas_constant = 8.314462618153240;
 
 //convert deg C to deg K
 inline constexpr double C_to_K = 273.15;
@@ -76,12 +85,24 @@ inline constexpr double C_to_K = 273.15;
 //H20:CO2 stomatal diffusion ratio
 inline constexpr double H2O_CO2_stom_diff_ratio = 1.67;
 
+// rho_w * g, as a head in MPa per metre of depth.
+//
+// ⚠️ 9.8e-3 is 6.8e-04 below `1000 * 9.80665 / 1e6`, above this package's 1e-04
+// "real difference" threshold, and it reaches results through the per-layer head.
+// Deliberately not "corrected": the right value needs a water-density convention
+// stated first (nominal 1000, 4 C and 25 C span 0.3%, four times the discrepancy),
+// so it is a modelling decision rather than arithmetic.
 inline constexpr double gravity_head = 9.8e-3; // MPa / m
 
 // --- Penman-Monteith leaf energy balance (minimal core; #523) -----------------
 // See notes/penman-monteith/. These back Leaf::leaf_temp_from_E and the es/Delta
 // helpers. Only used on the (default-off) use_energy_balance_ path.
-// latent heat of vaporisation of water, J kg^-1 (fixed at 25 deg C)
+// latent heat of vaporisation of water, J kg^-1, at about 21.5 C.
+//
+// ⚠️ NOT a 25 C value, which an earlier comment here claimed: lambda(T) ~= 2.501e6
+// - 2370*T gives 2.442e6 at 25 C. Left as-is because on the (default-off)
+// Penman-Monteith path lambda should become a function of the leaf temperature the
+// balance solves for, not a better constant -- see #28.
 inline constexpr double latent_heat_vap = 2.45e6;
 // volumetric heat capacity of air, J m^-3 K^-1
 inline constexpr double vol_heat_cap_air = 1200.0;
@@ -106,6 +127,15 @@ inline constexpr double aerodynamic_resistance_coef = 200.0;
 // profit and are simply rejected.
 inline constexpr double leaf_temp_min = -40.0;
 inline constexpr double leaf_temp_max = 70.0;
+// Floor on the leaf-to-air vapour pressure deficit (kPa) used by Fick's law
+// The same argument as the temperature clamp above, one step
+// downstream: a leaf cooled below the dew point has a NEGATIVE deficit, and
+// dividing a positive transpiration by it reports a negative stomatal
+// conductance. Flooring keeps such points finite and unattractive rather than
+// sign-inverted. 0.01 kPa is far below any operating deficit -- the driver
+// defaults are 1.5-2 kPa -- so it binds only where the model is already outside
+// what a one-way diffusion equation describes.
+inline constexpr double vpd_leaf_min = 0.01;
 
 
 } // namespace phylloptim

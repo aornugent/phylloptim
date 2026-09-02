@@ -7,9 +7,17 @@ hydraulics. Extracted from the TF24 strategy in
 Read alongside:
 
 - **[README.md](../README.md)** — what it is and how to use it
-- **[PLAN.md](../PLAN.md)** — status table, then the reasoning behind every open issue
+- **[NEWS.md](../NEWS.md)** — what changed in each release, and what it broke
+- **[`vignettes/the-models.Rmd`](../vignettes/the-models.Rmd)** — the eight
+  optimality models, the cost/link framework that unifies them, and two
+  appendices: **B** derives the gradients, **C** is the numerical practice
+  (finite-difference steps, golden files, cross-platform magnitudes)
+- **[`vignettes/fitting.Rmd`](../vignettes/fitting.Rmd)** — ⚠️ read *"Fitting a
+  different collection of parameters"* before answering anything about `pars`:
+  what a different collection costs, which parameters return exactly zero and
+  why, which are unreachable, and what a new study has to write itself
 - **[COMPARISON.md](../COMPARISON.md)** — how this differs from `plantecophys`, `tealeaves`, `bigleaf`
-- **[issues](https://github.com/traitecoevo/phylloptim/issues)** — the work queue; PLAN.md is the *why* behind each
+- **[issues](https://github.com/traitecoevo/phylloptim/issues)** — the work queue, and the *why* behind each open item
 
 Family context lives in [`plant-meta`](https://github.com/traitecoevo/plant-meta).
 
@@ -29,9 +37,24 @@ inst/include/phylloptim/
                                model NOTHING HERE CALLS: since #33 set_physiology
                                takes the resistances and the caller runs the model.
                                layer_thickness() is the dz definition both sides share
-  vulnerability.hpp            the Weibull cumulative-integral builder, shared by the
-                               stem and root curves
+  single_potential.hpp         SinglePotential: the other supply path — one ψ_soil
+                               and a constant series resistance
+  gradient.hpp                 the trait gradient, composed here and batched over
+                               observations (#4 stage 2). A SECOND implementation
+                               of R/gradient.R, required to agree with it
+                               BIT-FOR-BIT -- so no reassociation, no fused
+                               multiply-add (see `rounded()`), and every
+                               difference names its halves first because C++ does
+                               not sequence `f(a) - f(b)` and R does
+  vulnerability.hpp            the Weibull cumulative-integral builder, shared by both
   constants.hpp                physical constants as inline constexpr
+  closed_form.hpp              the closed form, reachable as `set_model(.., .., "closed")`.
+                               Defines Leaf::optimise_closed OUT OF LINE, which is
+                               legal only because this header is included AFTER
+                               leaf_model.hpp by <phylloptim.hpp>.
+                               ⚠️ Its guard tests an OUTPUT, so the method switches
+                               on a surface in DRIVER space and the argmax is
+                               discontinuous there. Never put it under a derivative
   quadrature.hpp               adaptive Simpson (replaced plant's compiled QAG)
   util.hpp                     R-free stop()/sentinels
   uniroot.hpp, optimize.hpp    1-D root finders and optimisers
@@ -44,19 +67,77 @@ inst/RcppR6_classes.yml        the R bindings' source of truth. Edit this, then
 src/, R/                       the R layer. Depends downward on inst/include/;
                                nothing there depends back on it
 R/leaf-model.R                 the friendly surface: leaf_traits/leaf_control,
-                               leaf_model/set_drivers/set_traits, leaf_solve
+                               leaf_model/set_drivers, leaf_solve
+R/gradient.R                   set_traits() and leaf_gradient() -- trait
+                               gradients by the implicit function theorem, with
+                               the active-set guard. Read its header before
+                               believing anything about its speed. ⚠️ THE
+                               REFERENCE IMPLEMENTATION: gradient.hpp is required
+                               to reproduce it bit-for-bit, so its arithmetic
+                               order is load-bearing
+R/gradient-batch.R             leaf_batch() and leaf_gradient_batch() -- the same
+                               gradient over N observations in ONE crossing.
+                               22x/observation
 tests/cpp/                     plain-C++ suite, no R, no framework
 tests/cpp/root_network.hpp     the suite's root-architecture fixture: the two
                                ex-Leaf-default beta_R_* constants, in ONE place
                                because the golden file's bit-exactness depends on them
-tests/cpp/golden/              bit-exact regression baseline, 576 operating points
-                               -- one 288-point state grid at 25 and 40 C
-tests/cpp/bench_solve.cpp      timing harness for the collar solve (hazard 5)
-tests/cpp/leaf_inputs.hpp      the suite's driving fixture: the ten values
-                               set_physiology takes, and the seeded LeafInputs an
-                               implicit node is asked for
+tests/cpp/golden/              THREE bit-exact regression baselines.
+                               operating_points.tsv: 576 solved points -- one
+                               288-point state grid at 25 and 40 C. Says WHETHER
+                               anything moved. Solves with find_root_collar_psi
+                               ONLY, so it is blind to every STEM route by
+                               construction
+                               primitives.tsv: 544 values from the functions the
+                               solve calls, in five call-tree TIERS. Says WHICH
+                               ONE moved -- the lowest tier that changed is the
+                               cause. #64
+                               psi_stem_optima.tsv: 5184 rows covering what the
+                               other two cannot -- the eight STEM routes
+                               across solver x topology x energy balance
+                               x thermal cost, in two passes, the second of which
+                               reuses one Leaf with the outputs POISONED so stale
+                               state is visible. ⚠️ It records today's known
+                               defects on purpose; read its header before reading
+                               a row as intended behaviour. ⚠️ Its cross-platform
+                               tolerances are INHERITED from operating_points.tsv
+                               and unmeasured -- it prints the worst observed
+                               difference even when it passes, so read that off
+                               the first non-macOS run
+tests/cpp/test_primitives.cpp  the reader for the second of those. ⚠️ Read its
+                               per-tier table before anything else on a failure
+tests/cpp/bench_solve.cpp      timing harness for the collar solve AND the five
+                               single-layer arms -- three exact, two closed-form
+                               -- on the 1-layer subset (hazard 5). Both methods
+                               in ONE process, which is what makes their ratio a
+                               controlled A/B. ⚠️ The new arms print us/call, not
+                               us/solve, because bench_history.sh greps every
+                               occurrence of the latter into one TSV field
+tests/cpp/bench_gradient.cpp   timing harness for a TRAIT GRADIENT: the IFT
+                               composite against differencing the solve, with
+                               no R in the way
 tests/testthat/                the R layer's tie-back to the golden points
-tests/validate/                R scripts comparing against plant (needs R)
+tests/testthat/gradient_golden.tsv
+                               recorded trait gradients, five rows, hex floats.
+                               The guard the C++-versus-R equality test cannot
+                               be: a change applied to BOTH passes that one.
+                               Regenerate with tools/gradient_golden.R, on
+                               macOS/arm64, and only deliberately. ⚠️ Bit-exact
+                               on that platform only, like tests/cpp/golden/ --
+                               these are derivatives of argmax-evaluated outputs,
+                               so they inherit its sqrt-amplified class and
+                               disagree cross-platform by up to 2.34e-3 (was
+                               1.3e-3 before #87 added `profit`) -- twenty times
+                               the solved outputs, because a finite difference
+                               divides the solver floor by the step, `R_d_25`'s
+                               step is the smallest here, and `profit` is the
+                               smallest magnitude carrying that same floor
+tests/validate/                the SCM regression pair (needs R and a plant
+                               build), plus tsv_to_hex.c, which test-golden.R's
+                               regeneration recipe pipes through. The two
+                               compare-against-plant harnesses are GONE (#64):
+                               plant consumes these headers, so there is no
+                               independent implementation left to compare with
 CMakeLists.txt                 the no-R build: C++ and Python consumers, and the
                                thing that makes "does not need R" runnable
 ```
@@ -64,13 +145,14 @@ CMakeLists.txt                 the no-R build: C++ and Python consumers, and the
 ## Build and test
 
 ```sh
-make -C tests/cpp            # builds and runs both suites
-make -C tests/cpp golden     # regenerate the golden file -- see the warning below
+make -C tests/cpp            # builds and runs all three suites
+make -C tests/cpp golden             # regenerate operating_points.tsv -- see below
+make -C tests/cpp psi-stem-golden    # regenerate psi_stem_optima.tsv -- same warning
+make -C tests/cpp primitives-golden  # regenerate primitives.tsv -- same warning
 make -C tests/cpp bench      # time the solve AND a trait gradient (not in `make all`)
 
-# `make` picks the right comparison for the platform on its own -- bit-exact on
-# macOS/arm64, tolerant elsewhere. Pass this only to force the tolerant run ON the
-# reference platform, which is a way to silence a real diff and almost never right.
+# compare the golden file with a tolerance instead of bit-exactly. Correct on a
+# platform other than macOS/arm64, wrong as a way to silence a real diff.
 make -C tests/cpp GOLDEN_ARGS=--cross-platform
 ```
 
@@ -88,7 +170,16 @@ make -C tests/cpp && make -C tests/cpp bench
 `cpp-tests.yml`'s "Consume the installed package" step writes a `consumer/main.cpp`
 inline, in a heredoc, and builds it against the *installed* package through
 `find_package`. It calls `set_physiology`, so **any signature change breaks it, and
-neither `make` nor `cmake` locally covers it.** #33 hit this: 359 checks passing, a
+neither `make` nor `cmake` locally covers it.**
+
+⚠️ **It also fills a `theta[gradient::n_pars]` by hand, so a change to the PARAMETER
+SET breaks it too — and that break is silent rather than a compile error.** When the
+trait vector went 14 → 15 with four names replaced, its 16-entry list under-filled an
+18-element array *and* put `kmax` in a trait's slot; the consumer built, ran, and
+printed `dA/dvcmax = nan  status = error`. `git grep n_pars` over `R/` and `src/`
+does not find it, because it is not in the source tree. **Grep `.github/` too
+whenever the parameter set changes**, and note that this program is the only place
+that exercises the gradient through a `find_package` consumer. #33 hit this: 359 checks passing, a
 bit-identical golden file, `ctest` 2/2, and three red jobs on
 `cannot convert '<brace-enclosed initializer list>' to 'const RootNetwork&'`.
 
@@ -139,7 +230,7 @@ facts are held apart by one rule — **`src/` and `R/` include downward into
 `.github/workflows/cpp-tests.yml` building the whole suite on runners with **no R
 installed**. Do not add an R step to that workflow; R work goes in
 `R-CMD-check.yml`. A job with R present compiles the same headers and cannot tell
-the difference. PLAN item 6a has the decision.
+the difference.
 
 ```sh
 cmake -B build -DPHYLLOPTIM_ODELIA_INCLUDE_DIR=../odelia/inst/include
@@ -169,7 +260,7 @@ doxygen                      # renders the C++ API to docs/html/index.html
 ⚠️ **R does not track header dependencies, so `R CMD INSTALL` after editing
 `inst/include/` reuses a stale `src/RcppR6.o` and the R layer goes on running the
 OLD model.** Nothing warns you, and the numbers stay plausible: two rounds of
-R-side diagnostics were taken against the previous solver during PLAN 11a before
+R-side diagnostics were taken against the previous solver before
 this was noticed. **`rm -f src/*.o src/*.so` before reinstalling**, then check one
 value against the C++ suite, which does track headers.
 
@@ -190,7 +281,17 @@ make`, was tried and reverted — installing this package needs no make, and
 `LinkingTo: phylloptim` consumers would inherit a declaration that is false for them.
 
 Doxygen for the C++ API, roxygen for the R one — they document different things
-and both now have something to document. The roxygen blocks live in
+and both now have something to document.
+
+⚠️ **`DESCRIPTION` says `Roxygen: list(markdown = TRUE)`, and it did not until
+0.6.1.** Every roxygen block in this package is written in markdown — `[fn()]`
+links, `**bold**`, backticks, pipe tables — and without that line roxygen2 copied
+all of it into `man/*.Rd` as literal text: no `\code{}`, no `\link{}`, zero
+working cross-references in the whole help system. `man/leaf_gradient.Rd` contained
+0 of each. It went unnoticed because the Rd files are generated and nobody reads
+them, and because `R CMD check` does not object to a `[foo()]` that is just prose.
+**If you regenerate `man/` and the diff loses `\code{}` everywhere, that line has
+gone missing.** The roxygen blocks live in
 `inst/RcppR6_classes.yml` and reach `R/RcppR6.R` through the generator, so
 `man/` is generated from generated code: edit the YAML, run
 `Rscript -e 'RcppR6::RcppR6()'`, then `roxygen2::roxygenise()`.
@@ -201,13 +302,30 @@ byte-for-byte. If you add a header, you need do nothing. If you want a literal
 Doxygen command, write a `///` comment and the filter will leave it alone.
 Publishing is off until someone sets the repo variable `PUBLISH_DOCS=true`.
 
+⚠️ **One indented display per comment block.** An indented run becomes
+`\verbatim`, and Doxygen 1.9 — which is the version CI installs, where local
+Homebrew is 1.17 — drops the second one's OPEN and then reports `unexpected
+command endverbatim` at a line in the *filtered* stream that lands in unrelated
+code, 120 lines away in the case that found it. **A local `doxygen` run renders
+it in silence**, so this is only ever visible in CI and only cryptically. Put the
+equations in one display rather than one on each side of a paragraph; `docs.yml`
+now asserts the shape and names the block, so it fails legibly.
+
 ## Cost: the one thing the golden file cannot see
 
-`tests/cpp/bench_solve.cpp` covers the C++ side.
-**`tools/bench_user_cost.R` covers the R side** — one solve and N solves — and
-`tools/bench_history.sh` runs both against a list of commits.
+⚠️ **And `README.md` is guarded by a test, because nothing else can see it.**
+Vignettes are knitted, so a stale example there fails a build; the README is plain
+markdown and its code is prose to every tool in the repo. When `stem_b` became
+`stem_P50` in #126, one README example was updated and two were not, and both
+errored. `tests/testthat/test-readme.R` now parses and evaluates every ```r block.
+It is a SYNTAX-AND-API guard only — it says nothing about whether the numbers in
+the surrounding prose are still right, and those rot the same way.
+
+`tests/cpp/bench_solve.cpp` and `bench_gradient.cpp` cover the C++ side.
+**`tools/bench_user_cost.R` covers the R side** — one solve, N solves, and a
+gradient — and `tools/bench_history.sh` runs all of them against a list of commits.
 `tests/testthat/test-cost.R` is the guard, and `tools/cost-baseline.tsv` the recorded
-table. PLAN has the numbers.
+table.
 
 Three rules, each of which was learned by getting it wrong:
 
@@ -224,9 +342,17 @@ Three rules, each of which was learned by getting it wrong:
    default through `root_network_from_carbon()`, the single one through
    `RootNetwork__ctor`. Counting the wrong one returns 0 forever and the test passes
    while measuring nothing. That mistake is in this file's history.
-3. ⚠️ **Measure the entry point the USER calls.** A claim of parity on
-   `set_drivers()` and `leaf_solve()` says nothing about a path that is in no
-   harness, and #66 nearly doubled one that was not.
+3. ⚠️ **A count beats a time whenever one is available, and for the batch gradient
+   one always is.** `leaf_gradient_batch()`'s whole claim is that it crosses the
+   boundary ONCE per call rather than 112 times per observation, and that is
+   countable: `test-cost.R` asserts one `gradient_batch_run` for any N, and **zero**
+   calls to any of the nine per-perturbation primitives the R route reaches through.
+   A timing assertion would not say this — it drifts with the machine, and it would
+   still pass if the count went back to being per-row on a fast day.
+4. ⚠️ **Measure the entry point the USER calls.** #66 nearly doubled
+   `leaf_gradient()` (286× → 539× a `.Call`) while `set_drivers()` and `leaf_solve()`
+   were flat. Both of those were measured and pronounced "at parity"; the gradient
+   path was not in any harness, and a calibration uses the gradient path.
 
 ⚠️ **`tools/bench_history.sh` refuses commits before #47**, and the reason is worth
 knowing before you write any harness that installs an old commit: they declare
@@ -248,7 +374,7 @@ exactly 48 rows × 5 fields, and showed the `area_leaf` change was 2 ULP.
 model**, because every reference value is *defined* at 25 °C and a change to any
 response curve is inert there **by construction**. Hence the second temperature, and
 hence the classification being printed per temperature: points move between branches
-as the leaf warms (dry-pinned 18 → 0, wet-pinned 24 → 80). Temperature is the
+as the leaf warms (boundary-crit 18 → 0, boundary-soil 24 → 80). Temperature is the
 OUTERMOST loop, which is what lets a regeneration that adds one be checked as an
 addition — the 25 °C block must come out byte-identical.
 
@@ -268,9 +394,9 @@ perturbation** (unifying the AD replica with the function it mirrors) at each st
 
 | amplifier in play | that perturbation shows up as |
 |---|---|
-| golden section, `GSS_tol_abs` 1e-3 | **5.53e-04** — pre-11a, #4 comment 2 |
-| `psi_stem_to_ci` at 1e-7 | **4.98e-07** — after 11a removed golden section |
-| `psi_stem_to_ci` at **1e-10 — where we are now** | **~1e-09** (PLAN 11b) |
+| golden section, `GSS_tol_abs` 1e-3 | **5.53e-04** — the old collar solve |
+| `psi_stem_to_ci` at 1e-7 | **4.98e-07** — golden section gone |
+| `psi_stem_to_ci` at **1e-10 — where we are now** | **~1e-09** |
 | `psi_stem_to_ci` at 1e-13, not taken | 7.16e-13 |
 
 The old four-order gap between rounding and bug briefly collapsed to one, and is
@@ -290,9 +416,13 @@ now back. Two things follow:
   the same order as the effect being measured. **Hazard 5 says interleave; this adds
   that building the two arms in different trees is its own bias**, and a
   seven-point sweep is not seven controlled A/Bs.
-- **It is not the settable `ci_abs_tol`** (default 1e-3), which reaches only the
-  off-path `optimise_psi_stem_*` solvers. Tightening that one buys no precision on
-  the production path, which is a wart worth knowing before someone tries it.
+- **It is not the settable `ci_abs_tol`** (default 1e-3). ⚠️ This entry used to say
+  that one reached "the off-path stem-route solvers"; it does not. Grep
+  says `ci_abs_tol` is read in exactly one place, `solve_medlyn_ci_numerical` --
+  the empirical Medlyn-conductance route. **Both** families of optimality solver
+  reach `ci` through `psi_stem_to_ci`, so both get the 1e-10 and neither is
+  reachable by the settable control. Tightening it buys no precision anywhere in
+  the optimality model, which is a wart worth knowing before someone tries it.
 
 **It is bit-exact only on the platform that generated it — macOS/arm64.** libm's
 `exp`/`pow` are not bit-reproducible between glibc on x86-64 and Apple's libm on
@@ -300,39 +430,123 @@ arm64, and FMA contraction differs too, so cross-platform bit-equality was never
 achievable. CI compares bit-exactly on macOS and with `--cross-platform` elsewhere.
 
 **The size of the cross-platform disagreement is the interesting part, and it is
-not one number.** The nine reported fields split into two classes three orders of
-magnitude apart:
+not one number.** The nine reported fields split into two classes, and the gap between
+them has narrowed sharply:
 
-| field | gcc | clang | why |
+| field | master (16d2963) | 0.6.0 | this file used to say |
 |---|---|---|---|
-| `profit` | **2.14e-09** | **2.14e-09** | it is the maximum itself — well-conditioned |
-| the other eight | **1.4e-04** | **1.4e-04** | evaluated at the **argmax** — sqrt-amplified |
+| `profit` | 2.13e-09 | **1.86e-07** | 2.14e-09 |
+| the other eight | 9.02e-06 | **9.02e-06** | 1.4e-04 |
 
-Read off CI's summary line: 3757 of 5184 values differ, against tolerances of 1e-05
-and 5e-03. ⚠️ **This table is a CI reading and nothing asserts it, so it goes stale
-silently** — it has been wrong three times. Read the summary line, never the FAIL
-lines, which are truncated at 20 and biased toward whichever rows come first.
+Read off CI's summary line, gcc and clang identical in every column: 3815 of 5184
+values differ on master, 3626 on 0.6.0, against tolerances of 1e-05 and 5e-03.
+
+⚠️ **THE LAST COLUMN IS THE LESSON, AND IT CAUGHT ME TOO.** The argmax figure had
+been wrong by 15× since before 0.6.0 — master reads 9.02e-06, not 1.4e-04. So a
+first pass at this entry read the stale 1.4e-04 as the baseline, concluded 0.6.0 had
+*improved* the argmax class 15×, and wrote a retraction of the sqrt mechanism on the
+strength of it. Both were wrong: the argmax class **did not move at all**, and the
+only column 0.6.0 changed is `profit`. **Read the BASELINE off master's CI, not off
+this table** — `gh run list --branch master --workflow cpp-tests.yml`, then grep the
+g++ job's log for "values differ". Reading the summary line rather than the FAIL
+lines is necessary and not sufficient: it has to be the summary line from the right
+commit.
+
+**So one number moved: `profit`, 2.13e-09 → 1.86e-07, and the cause is not the
+solver.** At an IDENTICAL curve, 0.6.0 and master are **bit-identical on all 576
+golden rows across profit, collar, psi_stem and assim** — measured by handing
+master's arm the exact derived `psi_crit` in place of its shipped literal
+5.870283, which is the curve's P95 rounded to six decimals. Every difference in
+the regenerated file traces to that one default. What plausibly changed the
+cross-platform figure is that `stem_b` and `psi_crit` are DERIVED now, through
+`pow`/`log` of `(P50, c)`, where master had them as decimal literals: the curve
+itself now carries a platform difference that master's could not.
+
+### ⚠️ AND BOTH CLASS FIGURES ARE CANCELLATION ARTEFACTS OF THE METRIC
+
+The test names the worst row per class now, and the answer disposes of most of what
+this section used to argue. **Both** worst rows are rows where the reported quantity
+is passing through zero:
+
+| class | worst RELATIVE row | the value there | grid median | amplification |
+|---|---|---|---|---|
+| `profit` **1.86e-07** | `psi_soil=0.5 ppfd=100 vpd=2 T=40 layers=5` | 1.05e-03 — the grid **minimum** | 2.47 | **2348×** |
+| argmax **9.02e-06** | `psi_soil=4 ppfd=100 vpd=4 T=25 layers=3`, `assim` | 4.05e-07 | 1.44 | **3.6e+06×** |
+
+A relative difference divides by the value, so wherever a reported quantity nearly
+cancels — a dim, hot leaf whose assimilation barely clears respiration — the metric
+is amplified by the cancellation and says nothing about the model.
+
+**And the ABSOLUTE figures, which is what the platforms actually disagree by:**
+
+| class | worst ABSOLUTE | where | units |
+|---|---|---|---|
+| `profit` | **1.35e-09** | `psi_soil=1 ppfd=1500 vpd=1 T=25 layers=1` | µmol C m⁻² s⁻¹ |
+| argmax | **3.62e-09** | `psi_soil=0.5 ppfd=100 vpd=2 T=40 layers=5`, `ci` | Pa |
+
+⚠️ **Both land on ~1e-09, which is this guide's own documented solver floor** — and
+note that neither absolute worst is the same row as its relative worst. On the
+relative worst row profit's absolute disagreement is 1.96e-10, an order *below* the
+grid's worst. So the two classes are not three orders apart, or five: **in the units
+the model reports, they are the same size, and that size is the floor.**
+
+So **"profit is well-conditioned and the eight argmax fields are sqrt-amplified", as
+this file has said for a long time, is a statement about the metric at two singular
+rows rather than about the model at an operating point.** The `sqrt` mechanism is
+still real — a flat maximum does displace its argmax by `sqrt(dp/k)` — but these two
+numbers were never evidence for it, and the arithmetic never closing (5× out) was
+the tell.
+
+**What was done about it, and what was not.** The summary reports the worst
+**absolute** difference per class alongside the relative one, each naming its row, so
+a cancellation row is distinguishable from real drift. **The tolerance is unchanged**
+and still relative: a near-zero row is exactly where a genuinely broken value would
+also show up, so the check stays where it is and only the reporting improved. The
+sibling file `psi_stem_optima.tsv` handles the same problem the other way, with an
+absolute floor (`kOptNegligible`, 1e-12) below which it declines to compare — worth
+knowing that the two files answer this differently on purpose.
+
+⚠️ **The remaining hypothesis is NOT confirmed and probably does not matter.** That
+`stem_b`/`psi_crit` being derived through `pow`/`log` makes the curve itself
+platform-dependent has the right shape, but every local single-parameter
+perturbation falls two to three orders short of 1.86e-07 — 1 ULP in `psi_soil` gives
+2.75e-09, 1 ULP in `stem_P50` 7.67e-10, and master's rounded-versus-exact `psi_crit`
+6.14e-07 (an 8× amplification of a 7.8e-08 input). A libm difference perturbs every
+`exp`/`pow` independently, which no single-point perturbation reproduces. Given the
+row it lands on, chasing it further is chasing 2e-10 of a µmol.
+
+⚠️ **`psi_stem_optima.tsv`'s cross-platform tolerances were INHERITED and unmeasured,
+and this is the reading.** Worst relative difference **3.5e-08**, at
+`fresh/collar/multi3 psi_soil=4 ppfd=1500 T=25 eb=1 tc=1 assim`, against the same
+1e-05 / 5e-03 — roughly 285× of headroom, so the inherited tolerances are generous
+rather than wrong. 156 of its values compare as zero on both sides.
 
 gcc and clang report *identical* figures. They used to differ by 2–3×, and what
-differed was which way a golden-section comparison fell; since PLAN 11a removed that
+differed was which way a golden-section comparison fell; with that
 search, what is left is libm's `exp`/`pow` — a property of the platform, not the
 compiler. If a compiler-dependent column reappears, something has reintroduced a
 discrete decision into the solve.
 
-**Why the two classes are five orders apart:** the maximum is *flat*, with curvature
+**Why the two classes are orders apart:** the maximum is *flat*, with curvature
 k ≈ 1.0 measured directly at the worst points in `profit ≈ p* − k(psi_stem−x*)²`, so
 an error `dp` in the profit **value** displaces its **location** by `sqrt(dp/k)`.
-That is a mechanism, not an identity — `sqrt(2.14e-09)` ≈ 4.6e-05 against the 1.4e-04
-observed, because the two column maxima fall at *different* operating points. Do not
-expect `sqrt(worst profit)` to predict `worst argmax`.
+That is a mechanism, not an identity, and the arithmetic has never quite closed:
+`sqrt(2.13e-09)` ≈ 4.6e-05 against master's 9.02e-06 observed, so it OVER-predicts
+by 5× — the two column maxima fall at different operating points. **Do not expect
+`sqrt(worst profit)` to predict `worst argmax` in either direction.** It is a reason
+the two classes differ, not a formula relating them. (This paragraph used to read
+the other way round, comparing against the stale 1.4e-04, and so claimed the
+mechanism under-predicted.)
 
 Two things follow that matter beyond this file:
 
-- **`profit` is the only reported field that is well-conditioned across platforms.**
-  If you need a portable check of the solve, check `profit`, not `opt_psi_stem_`.
-- **~~Eight of the nine fields are pinned to 17 digits but only *determined* to
-  about `GSS_tol_abs` (1e-3).~~ No longer true, and the fix is PLAN 11a.** The
-  collar solve now solves `dprofit == 0` rather than searching profit, so on the
+- **`profit` is still the best-conditioned reported field, but by 48× rather than
+  by orders of magnitude** — 1.86e-07 against the argmax class's 9.02e-06. On master
+  the gap was 4200×. A portable check of the solve should still prefer `profit` over
+  `opt_psi_stem_`; the margin is thinner than it was, so re-read the summary line
+  before leaning on it.
+- **The eight argmax-evaluated fields are determined, not just pinned.** The
+  collar solve solves `dprofit == 0` rather than searching profit, so on the
   198 interior rows the argmax is determined to solver precision — `|dprofit|` at
   the returned collar has a median of **5.6e-15**, against golden section's 7.8e-4.
   The remaining 42 rows have a **constrained** optimum pinned to a bracket bound,
@@ -342,10 +556,13 @@ Two things follow that matter beyond this file:
   So bit-exactness is now a drift detector *and* the numbers are determined. What
   has not changed: **cross-platform disagreement is still sqrt-amplified** at the
   argmax, because that comes from the flat maximum rather than from the solver.
+  (An earlier pass retracted that sentence, on the strength of a 15× improvement in
+  the argmax class. There was no improvement — the baseline it was measured against
+  was this file's own stale figure. The sentence stands.)
 
 ⚠️ **Profit is the wrong instrument for checking a collar-solve change, and this
 cost real time.** It is the maximum, so it is flat, and its own numerical floor is
-set by the nested `ci` root-find's 1e-7 tolerance. When 11a landed, two of 288 rows
+set by the nested `ci` root-find's 1e-7 tolerance. When the root-find landed, two of 288 rows
 came out ~6e-7 *lower* in profit while their residual improved by ten orders of
 magnitude. **Check the residual `|dprofit|` at the returned point instead** — it
 improved on 240 of 240 feasible rows with none worse, which is a statement profit
@@ -365,6 +582,34 @@ lines.**
 
 **Never regenerate the golden file to make another platform pass.** It just moves
 the failure to the platform the file came from.
+
+### ⚠️ R's `sum()` is not C++'s `+=`, and a test comparing them is platform-dependent
+
+Found by #92, on `test-surface.R`'s check that `Leaf::operating_point_values()` — one
+flat vector across the boundary — agrees with reading the twelve outputs one binding
+at a time. Eleven of the twelve are bindings and were bit-identical. The twelfth,
+`uptake`, is a **sum over soil layers**, so the R side had to derive it, and it used
+`sum()`.
+
+**R's `sum()` accumulates in `LDOUBLE`: 80-bit on x86-64, 64-bit on arm64.**
+`operating_point_values()` accumulates in `double`. So `sum()` agrees bit-for-bit on
+arm64 and can differ by an ULP on x86-64 — for any sum of more than one term. The
+assertion passed on macOS and on Linux for years, and it was luck on Linux: #92 moved
+the values and the three-layer case came apart on ubuntu only, at element [10] of
+twelve, while macOS stayed green. **The code under test had not changed platform
+behaviour; the assertion had always been platform-dependent.**
+
+`Reduce("+", finite, 0)` accumulates left to right in plain double addition from the
+same zero the C++ loop starts at, so the comparison is bit-exact everywhere. Prefer
+that to widening a tolerance: what the test exists to catch is a **shifted column**,
+which is worth catching at the last bit.
+
+Generalising, because it is not only `sum()`: **before demanding bit-equality across
+the R/C++ boundary, check that both sides use the same accumulator width and the same
+association order.** `sum`, `mean`, `cumsum` and `prod` all use `LDOUBLE`; `+` on
+doubles does not. This is the mirror image of the entry below on R's decimal parser —
+there the instrument was `as.numeric`, here it is `sum`, and both times the model was
+right and the measurement was not.
 
 ### One measurement to carry forward: TOMS748 is not sign-symmetric
 
@@ -397,7 +642,7 @@ to quarantine results changes onto.
   2364 when first recorded, 2431 on a rerun with `NOT_CRAN` unset, on both arms of a
   control. Compare against a control run, never against a remembered number.)
   ⚠️ **#15 deliberately changed results**, so that validation now needs redoing
-  against plant — see hazard 7 and PLAN item 9.
+  against plant — see hazard 7.
 
 What replaces the old rule: **a change that moves results lands on `master` through
 a PR that states its measured blast radius against the golden file.** #15 is the
@@ -411,14 +656,173 @@ breakdown lives ("moves 240 golden cells; split by cause in #15"). The cell coun
 the per-cause split and the tolerance bands go in the first PR comment — see
 "Writing commits here" below.
 
+## One solver. Do not add a second.
+
+**Every optimality model in this package reaches its operating point through ONE
+function**, and the single most likely way to damage this codebase is to add another
+alongside it. It has happened twice already and both times the duplicate was slower
+*and* wrong in a way the original was not.
+
+The shape, and where each piece lives:
+
+```
+util::maximise_over_closed_interval_foc(f, df, lo, hi, n, tol, iters, &fmax)
+    endpoints, so a constrained optimum is reachable
+    an n-cell scan, so a second basin cannot hide the global one
+    a ROOT-FIND of df == 0 inside the winning cell
+    the grid argmax always kept, so refinement can only improve on it
+```
+
+Everything is an argument to that call. A new cost curve is a row in
+`benefit_link<K>()` and `cost_deriv<K>()`. A new topology is a bracket and a chain
+factor. A configuration that needs a basin scan passes `n > 0`; one that does not
+passes `0`, which makes the same function the endpoints-plus-root-find method.
+
+**Four things that are arguments, not reasons for a new function:**
+
+| you might think you need | you need |
+|---|---|
+| a different cost curve | a `CostCurve` enumerator and two table rows |
+| a different objective *shape* (a product, a normalised ratio) | a `BenefitLink` — the cost goes in log form and `h'` carries the rest |
+| a different decision variable or supply topology | the bracket and the chain factor `dpsi_stem/dpsi` |
+| a scan, or no scan | `n` |
+
+**The worked example is `TF24_floor`**, added after this section was written, and it
+is the shape a new curve should have. What it touched: one enumerator (kept last,
+so `n_cost_curves` follows it), one arm each in `with_curve()` and `curve_name()`,
+one arm each in the four `if constexpr` tables (`benefit_link`,
+`check_cost_parameters`, `cost_deriv`, `profit_psi_stem_for`, `lambda_for`), a
+cost/profit/lambda trio beside its parents' — and nothing in any solver. Both
+routes, both supply topologies, the gradient and the closed form came for free.
+Its ONE parameter is a caller INPUT with no default (`TF24_floor_lambda_o`, as
+`CF77_lambda_`); the hydraulic half reads `TF24_cost_scale` and `TF24_beta2`.
+
+⚠️ **PREFER SHARING THE PARENT'S PARAMETERS TO GIVING THE NEW CURVE ITS OWN, WHEN
+THE NEW CURVE IS A PARENT PLUS A TERM.** The first version of `TF24_floor` had its
+own hydraulic scale, on the convention that a parameter names the curve that reads
+it. That convention is right for a curve that stands alone and wrong for one that
+exists to be COMPARED with its parent: sharing makes the parent the same curve at
+one parameter's zero, so "is TF24 missing a price of water?" is a one-restriction
+question instead of a three-restriction one. It also kept the trait vector at
+fifteen, which is not nothing — see hazard 13 for what a sixteenth cost.
+
+⚠️ **The cheapest test of a new curve is a REDUCTION to an old one, and it costs
+nothing to arrange.** `TF24_floor` is `TF24` at `lambda_o = 0` and `CF77` at
+`TF24_cost_scale = 0`, and both are asserted BIT-FOR-BIT rather than to a tolerance
+— which works only because each term is the parent's own expression, so zeroing a
+parameter adds an exact zero to the other curve's exact value. It survives fused
+multiply-add too: with the addend an exact zero, `fma(x, y, 0)` is `round(x*y)`
+and `fma(0, y, q)` is `q`, so both reductions hold under `-ffp-contract=fast`.
+That test needs no fixture, no golden file and no tolerance to argue about, and it
+catches a wiring error anywhere between the enum and the reported outputs. **Reach
+for it before reaching for a new baseline.**
+
+⚠️ **A NEW CURVE WHOSE PARAMETER IS A FIELD RATHER THAN A TRAIT IS UNREACHABLE FROM
+`leaf_solve()` UNTIL SOMEONE WIRES IT.** `leaf_traits()` cannot carry a field and
+`leaf_solve()` builds its own `Leaf`, so `CF77` spent its whole life reachable only
+through `leaf_model()` — survivable while its documentation said so, and not
+survivable for a curve whose ONLY parameter is a price. `leaf_solve()` and
+`leaf_batch()` take the two prices as arguments now and `.seat_model()` applies
+them; `.solve_price_fields` is the one table saying which price belongs to which
+curve, and `.gradient_owned_pars` is its twin on the gradient side. A third priced
+curve needs a row in both.
+
+⚠️ **`n` IS SET FROM MEASUREMENT, NOT FROM CAUTION, AND SCANNING BY DEFAULT IS THE
+EXPENSIVE MISTAKE.** This is a package whose reason for existing is a ~3 µs solve
+that plant calls millions of times. Measured over a 1728-row sweep (8 air
+temperatures × 4 gate combinations × 6 soil potentials × 3 deficits × 3 light
+levels), the only objectives carrying two prominent interior basins are `TF24` (21
+rows) and `JS22` (66), and **every one of those rows has the energy balance on**;
+the collar objective has none in 432 rows across the same range. So
+`basin_scan_cells()` returns 0 with the gate off. Re-measure before widening that —
+the valleys are 7.0e-01 and 3.5e+00 deep, so a missed basin is a large error, but a
+scan added "to be safe" is a 3× cost on the hot path for nothing.
+
+⚠️ **AND A SCAN IS NOT A WAY TO FIND A MAXIMUM YOU WILL LATER DIFFERENTIATE.** A
+scan argmax is piecewise constant in the parameters, so any derivative through it is
+a staircase. That cost this project real time twice over: the stem routes refined on
+bracket width and left `|dJ/dpsi|` at a median of 4.4e-05, which made a
+finite-difference gradient return 0.1855 against a true 0.0551 and the wrong SIGN on
+another curve; and `|A|max` came from a 500-point scan, which is where ProfitMax's
+partial-versus-total gradient split came from. Both are now root-finds. Median
+residual is **1.2e-15**, one finite-difference step (1e-06) serves every route, and
+ProfitMax got **10× faster** (58.2 → 5.6 µs) because the scan is gone.
+
+**If you are about to write a new `optimise_*` or `maximise_*`, the question to
+answer first is which of the four arguments above you actually need.** If the answer
+is "none of them, my case is genuinely different", say so in the PR with the
+measurement that shows it — because the last three times that claim was made
+(`optimise_psi_stem_Sperry`, ProfitMax's grid walk, the collar solve's separate
+maximiser) it was wrong, and deleting each one made the code both smaller and
+faster. A fourth has since joined them: `util::maximise_over_closed_interval`,
+which was the call above without the root-find and ended up called only by its own
+test.
+
+**Two things in the tree LOOK like a second solver and are not.** Both say so at
+the definition now, and both were re-proposed during review before they did:
+
+- **`Leaf::maximise_profit_over_collar`** is the call above at `n = 0` PLUS a
+  classification: every exit sets an `OperatingPointKind`, and 42 of 240 feasible
+  golden rows are pinned and read it. The shared maximiser returns an argmax and
+  nothing about how it got there, so folding them in means either an out-parameter
+  no other caller wants, or losing the tag.
+- **`dprofit_dpsi_stem` and `dprofit_at_collar_psi`** share ~90 lines of algebra.
+  The stem form IS the collar form at `dpsistem_dpsi = 1`, `dgc_dpsi = 0` --
+  mathematically, not TEXTUALLY, and the Identity arm's exact operation sequence is
+  what keeps all four golden baselines bit-identical. Everything carrying no such
+  constraint is already shared: `cost_deriv<K>`, `benefit_link_deriv<K>`,
+  `respiration_temp_deriv`, `dprofit_energy_balance_term`.
+
+So the shape to look for is not a function duplicating the solver's *algebra* --
+that can be load-bearing -- but one duplicating its *structure* with a piece
+missing. That is what the deleted maximiser was.
+
+**And the runtime curve dispatch is ONE switch.** There were four -- solve-collar,
+solve-stem, evaluate-stem, dprofit-stem -- all with the same arms; they are
+`Leaf::with_curve()`, a template taking a generic lambda, so a curve added to the
+enum touches an arm there, an arm in `curve_name()`, and the three `if constexpr`
+tables. Neither surviving switch has a `default:`, deliberately: a `default`
+satisfies `-Werror=switch` and so removes the check they exist for.
+
 ## Hazards, each of which has cost someone real numbers
 
-1. **There are TWO Weibull vulnerability curves.** Stem (`stem_b`, `stem_c`) drives
-   `hydraulic_cost_TF`; root (`root_b`, `root_c`) drives uptake. They used to be the
-   unmarked `b`/`c` plus `root_b`/`root_c`, and the companion analysis used the root
-   parameters for the stem cost and carried λ ∝ ψ^3.02 into a manuscript draft where
-   it should have been ψ^0.64. Never leave an unmarked default for a parameter that
-   exists in two versions.
+1. **There are TWO Weibull vulnerability curves.** Stem (`stem_P50`, `stem_c`)
+   drives `hydraulic_cost_TF`; root (`root_P50`, `root_c`) drives uptake. They used
+   to be the unmarked `b`/`c` plus `root_b`/`root_c`, and the companion analysis
+   used the root parameters for the stem cost and carried λ ∝ ψ^3.02 into a
+   manuscript draft where it should have been ψ^0.64. Never leave an unmarked
+   default for a parameter that exists in two versions.
+
+   ⚠️ **Each curve has exactly TWO settable numbers, and everything else about it
+   is derived.** `stem_b = P50/(ln 2)^(1/c)` and `psi_crit = b·ln(1/0.05)^(1/c)`,
+   i.e. P95 of the same curve — and Sperry's `k_crit = 0.05·kmax` reads that same
+   0.05 from `Leaf::k_crit_fraction`. All four are readable and none is settable.
+
+   This is worth defending, because the failure it removes was expensive and quiet.
+   `psi_crit` used to be a free trait describing a curve it was not derived from:
+   the spline is pre-integrated over `[0, P99]`, `psi_crit` never entered that
+   bound, and every solve evaluates the curve *at* `psi_crit` — so anyone fitting a
+   measured vulnerability curve picked a plausible number and got a domain error
+   naming only the interpolator. It needed a consistency check and a domain check
+   to police it. **Both are now deleted rather than maintained**: the domain check
+   is provably vacuous (a derived P95 is inside P99 for every `c > 0`, since
+   `ln 20 < ln 100`), and there is nothing left for a consistency check to compare.
+
+   Do not reintroduce `stem_b` as settable. Solving `c = ln(ln 2)/ln(P50/b)`
+   diverges as `P50 → b`, so a (b, c) interface has a singularity that a (P50, c)
+   one does not.
+
+   The root curve's clamp is still worth knowing: `root_vuln_at` clamps to the
+   last knot rather than throwing (#77). A layer silently reporting the floor
+   conductivity is #85's question, not this one.
+
+   ⚠️ **The domain edge itself was unstable until #92.** The knot grid accumulated
+   `psi += step`, so it produced `resolution` *or* `resolution - 1` knots depending
+   on `b` and `c` — the realised bound was not `vulnerability_psi_max` and was not
+   reproducible across parameter values. At the package defaults it fell one full
+   step (1.0%) short. It is indexed now, and `x.back() == vulnerability_psi_max(b,
+   c)` is asserted **bit-exactly** over 1800 (b, c, resolution) triples: a
+   tolerance there would pass on the code the test exists to reject.
 2. **~~Signed versus magnitude water potentials.~~ RESOLVED — there is now ONE
    representation: every ψ is a positive magnitude in MPa (#25).** The hazard this
    entry used to describe is gone rather than managed, and the two attempts to
@@ -484,8 +888,8 @@ the per-cause split and the tolerance bands go in the first PR comment — see
 
    What changed is the conclusion. This entry used to say plant chose
    golden-section over Brent for that reason, and read as a warning against
-   touching the collar solve. **PLAN 11a replaced golden section with a
-   safeguarded root-find on `dprofit == 0`, and smoothness improved.** Measured:
+   touching the collar solve. **A safeguarded root-find on `dprofit == 0`
+   replaced golden section, and smoothness improved.** Measured:
 
    | | golden section | root-find |
    |---|---|---|
@@ -500,7 +904,7 @@ the per-cause split and the tolerance bands go in the first PR comment — see
    the comparison sequence flipped. That made the argmax piecewise constant at fine
    scales, so trait derivatives came back exactly zero — or, for traits in the
    hydraulic path, **smooth, plausible and sign-inverted** (`root_b`: −2.6e-03
-   against a true +2.6e-04). See PLAN 11a for the arbitration.
+   against a true +2.6e-04).
 
    ⚠️ **The re-measurement above is in a TRAIT, and the hazard's concern is plant
    state.** Smoothness in height and light, feeding the demographic gradient,
@@ -513,6 +917,18 @@ the per-cause split and the tolerance bands go in the first PR comment — see
    longer the collar solver: it is that solver's fallback, plus the single-layer
    optimisers. Do not read its existence as evidence that a comparison-based
    search is the safe default here.
+
+   ⚠️ **The closed form fails this hazard, which is why it is not on a
+   differentiated path.** Its own arithmetic is fine; what breaks is that its
+   validity guard tests an **output**, so the set of drivers on which the method
+   switches is a surface in driver space and the argmax JUMPS across it. **A
+   mixture of two methods is discontinuous even where both are individually
+   smooth**, and no tolerance fixes that. `set_model` resets the method to exact
+   for this reason, so `gradient::route_seat` cannot pick it up. Measurements are
+   in `closed_form.hpp`; the short version is that the mean |second difference| of
+   `opt_psi_stem_` across a parameter sweep -- which is the quantity a trait
+   gradient differentiates, and which for a smooth argmax should shrink with the
+   step -- rises a hundredfold where the sweep crosses the guard.
 4. **The leaf is purely intensive.** Every input is per unit leaf area or a
    dimensionless/intensive driver. Nothing scales with plant size — whole-plant
    allometry (`kmax(h)`, root carbon totals) is computed on the plant side and passed
@@ -546,34 +962,33 @@ the per-cause split and the tolerance bands go in the first PR comment — see
 
    Before arguing from inlining, check: `nm -C test_golden | grep <fn>`. No symbol
    means inlined; a symbol plus `bl` call sites in `objdump -d` means it is not.
-6. **The supply is one class, `MultiLayerRoots`, reached by a direct call — and it
-   is still pluggable.** A bare leaf is that class at one layer with
-   `r_R_H_min = 0`, which is the same three operations in the same order as a
-   dedicated single-potential class: measured bit-identical, and PLAN "One supply
-   path" has the numbers and the one behaviour the reconciliation had to choose.
+6. **There are TWO supply paths, chosen by `Leaf::supply_kind_`.** `MultiLayerRoots`
+   (default) and `SinglePotential`. Both are held as members and selected by an
+   enum, which measured **free** where `std::variant` cost +1.0% — a predictable
+   branch in front of an already-out-of-line call disappears into it. Don't
+   "tidy" this into a variant without re-measuring, and note the trap: a
+   compile-time-known tag folds the branch away and reports a false zero.
 
-   The interface a second supply implements is five methods — `begin_solve`,
+   When adding a third path, the contract is five methods — `begin_solve`,
    `uptake`/`uptake_at`, `duptake_dpsi`, the collar-potential bound, and the layer
    count — plus one rule: **`duptake_dpsi` returning NaN means "fall back to
    finite differences", so returning 0 or throwing silently degrades TF24f's
-   acclimation gradient.** A supply with no branch kinks simply never returns it.
+   acclimation gradient.** A path with no branch kinks simply never returns it.
 
-   `set_physiology`'s `RootNetwork` argument **is** part of that contract, and a
-   sixth method with it: `set_root_network`. The resistances arrive through
-   that one argument whatever the supply, so the calling convention does not depend
-   on which is in force; `MultiLayerRoots` reads one `r_R_H_min` and one
-   `r_R_V_sum` per rooted layer. Anything added beside it must accept the argument
-   and validate what it can use. The gravitational head comes with them rather than
-   as configuration: a layer's head is `gravity_head * z_soil_mid`, so naming a
-   layer's depth names its head, at one layer and at many.
+   `set_physiology`'s `RootNetwork` argument **is** part of the contract now, and a
+   sixth method with it: `set_supply_resistances`. Both paths take their
+   soil-to-collar resistances from that one argument, so the calling convention does
+   not depend on which path is in force. `MultiLayerRoots` reads one `r_R_H_min` and
+   one `r_R_V_sum` per rooted layer; `SinglePotential` reads `r_R_V_sum[0]` as its
+   series resistance and **refuses** a non-zero `r_R_H_min` rather than ignoring it.
+   A third path must accept the argument and validate what it can use.
 
-   ⚠️ **Dispatch here is measured, so do not pick one by taste.** An enum tag and a
-   `switch` in front of the call measured **free** where `std::variant` cost +1.0%:
-   a predictable branch in front of an already-out-of-line call disappears into it,
-   and `std::visit` cannot match that because it emits indirect thunks. PLAN 7b-iii
-   stage 2 has the table, the reproduction recipe, and the trap that makes the whole
-   comparison worthless — a compile-time-known tag folds the branch away and every
-   arm reports a false zero.
+   ⚠️ **`gravity_head` is the one thing that is still configuration on the single
+   path**, via `set_supply_single(gravity_head)`, and that is deliberate rather than
+   unfinished: the multi-layer path derives a per-layer head from the depth profile
+   it is given, and a path with no depth profile has nothing to derive one from —
+   while a bare leaf wants zero rather than a geometric default. Do not "finish the
+   job" by inventing a depth for it.
 7. **Moving a public member is a plant API break, because RcppR6 binds fields by
    name.** plant's `inst/RcppR6_classes.yml` lists most of `Leaf`'s state as
    `access: field`, and the generator emits `obj_->psi_soil_` — a getter *and* a
@@ -657,13 +1072,24 @@ the per-cause split and the tolerance bands go in the first PR comment — see
    curve) and the **solved operating point** (hazard 8). The third is the one that
    cost the time:
 
-   ⚠️ **`vcmax_`, `jmax_` and `R_d_` are derived inside `set_physiology`'s
+   ⚠️ **~~`vcmax_`, `jmax_` and `R_d_` are derived inside `set_physiology`'s
    temperature cache, which is keyed on `(leaf_temp_, atm_o2_kpa_)` and on nothing
-   else.** So the obvious repair — change the trait, then call `set_physiology`
-   again — takes a cache *hit* and never recomputes them. Only
-   `electron_transport_` gets refreshed. A trait sweep written that way runs the
-   whole sweep at the first vcmax it ever saw, and every number it reports is
-   plausible.
+   else.~~ FIXED (#55), and the entry stays only so the repair is not undone.** It
+   used to be keyed on that pair alone, so the obvious repair — change the trait,
+   then call `set_physiology` again — took a cache *hit* and never recomputed them:
+   a trait sweep written that way ran the whole sweep at the first vcmax it ever
+   saw, and every number it reported was plausible.
+
+   The key is now every scalar `update_temperature_dependent_params()` reads,
+   `vcmax_25` and `jmax_25` among them, so re-driving after a bare trait write
+   *does* recompute. **The guarantee lives in `photo_temp_key()`, not in the
+   field** — a member added to the temperature block and left out of that key
+   reopens this silently, and `photo_temp_key_size` is the only thing that will
+   complain. `test_temperature_params_invalidate_cache` asserts it through the
+   route a caller actually takes.
+
+   `set_traits()` is still the right way to change a trait: the splines and the
+   solved operating point need clearing too, and the cache key does not do that.
 
    `set_traits` ends with `setup_clean_leaf()`, which is what resets the cache; the
    cost is that `set_physiology` must genuinely be called again afterwards.
@@ -677,26 +1103,187 @@ the per-cause split and the tolerance bands go in the first PR comment — see
    **And measure before optimising a trait loop, in the layer you actually care
    about.** Two costs dominate, and which one bites depends on where you are:
 
-   - **From R**, constructing a `Leaf` costs **204 µs** — 33 solves — of which only
-     ~32 µs is the two splines; the rest is R-side object construction over ~60
-     active bindings. That is what dominates any R loop over traits, and
-     `set_traits` exists to avoid it.
+   - **From R**, constructing a `Leaf` costs **~180× a trivial `.Call`, or 45
+     solves** (230 µs re-measured, against 4.9 µs for `$optimise()` in the same
+     process), of which only ~32 µs is the two splines; the rest is R-side object
+     construction over ~60 active bindings. That, not the choice of gradient
+     formula, is what dominates a finite-difference gradient in R. `set_traits`
+     exists to avoid it — a re-trait plus a re-drive is 3.4 solves.
+
+     ⚠️ **Quote the RATIO, not the microseconds, and this file was part of the
+     problem.** Five places in this package quoted "204 µs" beside four different
+     solve counts — 33 here, 55, 70 and 73 elsewhere — because nobody re-derived
+     the divisor. And construction's share of a one-parameter gradient went 40% →
+     **61%** when the solvers got cheaper, with the 40% left standing everywhere.
+     Rule 1 of the cost section below applies to documentation too.
    - **In C++**, `set_traits` costs **0.02 µs** normally and **21.8 µs** when it
      rebuilds a vulnerability curve — **3.5× a whole solve**. So a gradient loop
-     over `stem_b`, `stem_c`, `root_b` or `root_c` is dominated by spline
+     over `stem_P50`, `stem_c`, `root_P50` or `root_c` is dominated by spline
      reconstruction, and no amount of cleverness in the derivative touches it.
 
-   ⚠️ **Do not carry the R conclusion into C++.** A projected speedup taken on an
-   R measurement was retracted and then half un-retracted: with the boundary out of
-   the way the same composite wins 4.4× on the eleven traits that touch no spline.
+   `make -C tests/cpp bench_gradient` measures both arms. ⚠️ **Do not carry the R
+   conclusion into C++**: a projected speedup was retracted on an R
+   measurement and half of it then reinstated, because with the boundary
+   removed the same composite wins 4.4× on the eleven traits that touch no spline.
 
+
+11. **A bracketing optimiser answers "where is the interior maximum", and that is
+   not the same question as "where is the maximum".** The single-layer profit is
+   neither unimodal nor always interior: at a leaf hot enough that net assimilation
+   is negative across the whole supply stream, the ProfitMax profit is highest at
+   **full closure** and carries a second maximum out in the interior. At Tair 50 °C
+   with the thermal cost on the profit runs −1.5314 at `psi_soil`, −1.5510 at 1.19
+   and −1.5459 at 1.88, so a search that steps in from the bounds reports an open
+   stoma where the objective says shut.
+
+   So all eight stem routes maximise over a CLOSED interval: endpoints
+   included, a `boundary_scan_n_` = 64 scan to pick the basin **where
+   `basin_scan_cells()` asks for one**, and a refine that root-finds the
+   first-order condition inside the winning cell. Against a
+   20001-point reference over 30 single-potential rows they are exact. The scan is
+   free for ProfitMax, which needs it for |A|max anyway; the other two pay for it,
+   and `bench_solve` prices all four arms (collar 3.20, TF 9.45, Sperry 8.40,
+   ProfitMax 58.5 µs/call).
+
+   ⚠️ **The refine tolerance must scale with the CELL, or a finer grid is WORSE.**
+   Brent terminates on bracket width, so a fixed tolerance comparable to a cell
+   leaves the answer at the grid point — and adding grid points then makes it worse,
+   because cells narrow while the tolerance does not. A shortfall count that *rises*
+   as the grid gets finer is the signature.
+
+   ⚠️ **Endpoints alone are a half-fix, and the row count hides it.** Adding the two
+   bounds removes every boundary row while still leaving a worst-case shortfall of
+   3.05e-01 on a genuine interior second hump — worse than the 4.71e-01 it fixes.
+   **Read the worst shortfall, not the number of rows short.** This is the standing
+   objection to any derivative-only route: a root-find between the two ends is
+   exactly the half-fix. What keeps both properties is multi-start — several
+   sub-brackets, each yielding an exact stationary point, compared on profit —
+   because a grid argmax is piecewise constant in the traits and so cannot feed a
+   gradient (hazard 3).
+
+   The collar solve needs none of this: `maximise_profit_over_collar` tests the
+   gradient's sign at each end and reports a pinned optimum explicitly, which is why
+   42 of 240 feasible golden rows are pinned and correct.
+
+   ⚠️ **A STEM ROUTE IS NOT the collar solve with a restriction — it is a
+   different model, and neither is a check on the other.** These optimise ψ_stem with
+   upstream pinned at ψ_soil, ignoring the soil→collar path entirely, which is what
+   their refusal message means by "non-**root-based**". They disagree with the collar
+   solve on 20 of 30 driver rows, and the gap does **not** close as the root
+   resistance goes to zero (1.67 MPa at r = 1e-2): as that resistance vanishes the
+   collar loses its freedom, `[root_zero_E, root_crit]` collapses, and the collar
+   solve correctly reports `determined` rather than optimising.
+
+12. **`n_pars` is a compile-time constant, and a short aggregate initialiser is
+   legal C++.** Several places fill `theta` with a literal list sized by
+   `gradient::n_pars`. An initialiser shorter than the array zero-fills the rest,
+   so adding a parameter shifts `kmax` and `resistance` down a slot and drops
+   `resistance` off the end **with no diagnostic at all**.
+
+   This has bitten twice. `test_leaf.cpp`'s batch `theta` put `kmax` into a new
+   trait's slot and left `kmax` itself `0.0`; the only symptom was three
+   observations failing to solve. `test_golden.cpp`'s `by_solver_threw[4]` was
+   indexed by a `Solver` enum that grew to eight, writing past the end.
+
+   Both now derive their size from one named constant with a `static_assert`.
+   **Count the entries against `n_pars` whenever you touch either, and prefer a
+   named count to a literal** — `bench_gradient.cpp` carried a literal `13` over an
+   11-element array through three trait-count changes, and it only ever crashed
+   when the address layout happened to be unlucky.
+
+   ⚠️ **Two of those initialisers are DELIBERATELY SHORT — they leave the
+   model-owned prices zero-filled because the route they exercise reads neither —
+   and that is exactly the case the zero-fill hides.** Both now carry
+   `static_assert(gradient::n_pars == N)` beside them, so the next appended
+   parameter is a compile error rather than a shifted `kmax`. Three places assert
+   that constant now: `tests/cpp/test_leaf.cpp`, `tests/cpp/bench_gradient.cpp`,
+   and the consumer program inside `.github/workflows/cpp-tests.yml`. Grep for
+   `n_pars ==` and update all three together.
+13. **The trait vector is bound POSITIONALLY in four places**: C++
+   `gradient::apply()`, R's `.gradient_setter`, the batch route's `theta` matrix,
+   and R's derived copy of the enumeration. Two of those fail loudly on a length
+   change. The others did not: the batch's non-trait columns were addressed as
+   `length(par_names)` and `length(par_names) - 1L`, correct only while `kmax` and
+   `resistance` were the final two in that order.
+
+   They are addressed by NAME now, and `.gradient_non_traits` names the non-trait
+   set once. Appending a parameter is safe; reordering the enumeration
+   differentiates the wrong thing and returns plausible numbers.
+
+   ⚠️ **`.gradient_setter`'s own call was the last positional one, and it broke as
+   its comment predicted.** It spelled out fifteen subscripts into `l$set_traits`,
+   with a note saying that adding a trait would fail at run time inside the
+   generated binding, naming neither the line nor the count — "that is how #41
+   broke". Adding a sixteenth trait broke it again the same way: 118 gradient-batch
+   rows came back `status = "error"` where they had been `"interior"`, because the R
+   reference threw and the batch did not, so the failure surfaced as an
+   R-versus-C++ DISAGREEMENT rather than as a missing argument. It is a `do.call`
+   over the derived trait vector now and costs no extra boundary crossing. **A
+   comment predicting a failure is not a guard against it.**
+
+   ⚠️ That trait was then REMOVED — `TF24_floor` shares TF24's parameters instead —
+   so the vector is back at fifteen and nothing in the shipped tree exercises a
+   sixteenth slot. The `do.call` is kept anyway: the next trait will not be so
+   easy to withdraw.
+
+   ⚠️ **The MODEL-OWNED parameters are a second class now, and `CF77_lambda_` is
+   no longer the only one.** `TF24_floor_lambda_o` joins it: a slot in the
+   enumeration available for exactly one curve and refused, by name, on every
+   other. `R/gradient.R`'s `.gradient_owned_pars` is the single table mapping
+   price to owner — do not write a second one, and do not reason about "the CF77
+   slot" as though it were unique.
+14. **A derived `psi_crit` makes the P50 chain rule CONDITIONAL.** Since
+   `psi_crit` is the curve's 95% quantile rather than a trait, moving `stem_P50`
+   moves the threshold, and `d/dP50` picks up a term through it. That term is
+   **exactly zero at an interior optimum and order one at a pinned one**, so the
+   clean identity `d/dP50 = (ln 2)^{-1/c} · d/db` holds only where the optimum is
+   interior. Assert it keyed on `status`, never unconditionally: an unconditional
+   assertion fails on pinned rows for a *correct* implementation.
+15. **A finite difference through a solve has a noise floor, and the floor moves
+   with the solver.** The error-versus-step curve is a V and only its floor is a
+   derivative; a small step is the wrong instinct. Worse, the V's position depends
+   on which solver produced the argmax: the collar solve root-finds `dprofit == 0`
+   and locates psi* to ~1e-15. The stem routes do the same now; while they scanned
+   and refined on bracket WIDTH they resolved psi* only to ~1e-06 of the bracket, so
+   a relative parameter step of 1e-06 differenced quantisation — measured 0.1855
+   against a true 0.0551, and the wrong SIGN on another curve. ONE step (1e-06)
+   serves every route now, and the floor still moves with the solver, so re-sweep
+   if one changes again.
+
+   **Sweep the step and read the floor.** Two bugs were reported against a correct
+   composite on the strength of one 1e-06 step. Each gradient route carries its own
+   `fd_step` for this reason. `vignette("the-models")` Appendix C has the numbers.
+16. **Check that an assertion was actually exercised.** A first-order-condition
+   test whose λ was 100× off-scale put all nine rows on a bound, so the identity
+   was never evaluated and the test passed. Print the count of rows that reached
+   the assertion. λ's scale is set by the leaf — `marginal_cost_water()` runs
+   9e4–3e5 at the defaults.
 
 ## Validating against plant
 
-`tests/validate/` holds the harnesses. Read the header of
-`compare_with_plant.R` before using them — it records what has been ruled out.
+⚠️ **There is no longer a harness that compares against plant, and there cannot be
+one.** plant has no independent copy of this model — it consumes these headers — so
+"compare against plant" is this package compared with itself. `compare_with_plant.R`
+and `compare_primitives.R` are **deleted** (#64); what they established —
+bit-identical, including 78 of 78 SCM nodes — cannot be re-run. If you find yourself wanting them, what you
+actually want is one of:
 
-Three things that will waste your time otherwise:
+- **`tests/cpp/test_primitives.cpp`** for *where* a difference comes from. 544
+  primitive values in five tiers, in call-tree order, against
+  `tests/cpp/golden/primitives.tsv`. **The lowest tier that moved is the cause and the
+  tiers above it are consequences** — that is the whole point of it, and it is what
+  `operating_points.tsv` cannot tell you. Read its tier table before anything else.
+  Regenerate with `make -C tests/cpp primitives-golden`, on macOS/arm64, deliberately.
+- **`tests/cpp/golden/operating_points.tsv`** for *whether* anything moved.
+- **`tests/validate/scm_regression.R` + `scm_compare.R`** for the SCM half, which is
+  the one comparison a bit-identical leaf solve does not settle.
+
+⚠️ **`tsv_to_hex.c` is live, not leftover.** `test-golden.R`'s regeneration recipe
+pipes through it, because R's decimal parser is not correctly rounded. ⚠️ Never
+write an R-side expected value by pasting a decimal from the golden file.
+
+Three things that will waste your time otherwise, if you do run anything against a
+plant build:
 
 - **Build the reference plant from the commit this package was extracted from**, not
   whatever is installed. The installed plant may be a different branch; during this

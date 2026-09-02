@@ -66,7 +66,7 @@ test_that("set_drivers() does not build a supply network per call", {
   expect_identical(n, 1L)
 
   # The single-potential path, through its own mechanism.
-  s <- leaf_model(supply = leaf_supply_single())
+  s <- leaf_model(supply = leaf_supply_singlelayer())
   set_drivers(s, psi_soil = 1.5)
   n <- count_calls("RootNetwork__ctor",
                    for (i in 1:20) set_drivers(s, psi_soil = 1.5))
@@ -85,7 +85,8 @@ test_that("series_resistance() does not reach C++ after the first call", {
 
 test_that("leaf_solve() crosses the boundary a bounded number of times per row", {
   # Not a time: a count of solves. `reuse = TRUE` must build ONE Leaf for the whole
-  # sweep, which is the other 155-us-per-call trap on this surface.
+  # sweep, which is the other 155-us-per-call trap on this surface (issue #52 is the
+  # same cost in leaf_gradient()).
   n1 <- count_calls("Leaf__ctor", leaf_solve(psi_soil = rep(1.5, 4)))
   n2 <- count_calls("Leaf__ctor", leaf_solve(psi_soil = rep(1.5, 32)))
   expect_identical(n1, n2)      # constant in the number of rows
@@ -95,6 +96,74 @@ test_that("leaf_solve() crosses the boundary a bounded number of times per row",
   # test above is no longer testing anything.
   expect_gt(count_calls("Leaf__ctor",
                         leaf_solve(psi_soil = rep(1.5, 8), reuse = FALSE)), 4L)
+})
+
+test_that("leaf_gradient(x =) constructs no Leaf at all", {
+  # #52. Construction is ~146 us, about 40% of a one-parameter gradient, and `x`
+  # exists to remove it from a per-observation loop. The guard is a COUNT: reuse must
+  # construct zero, however many gradients are taken, or the argument is decorative.
+  tr <- leaf_traits()
+  l <- leaf_model(traits = tr)
+  leaf_gradient(psi_soil = 2.0, x = l, traits = tr, pars = "vcmax_25")   # warm
+
+  n <- count_calls("Leaf__ctor", {
+    for (i in 1:5) {
+      leaf_gradient(psi_soil = 2.0, x = l, traits = tr, pars = "vcmax_25")
+    }
+  })
+  expect_identical(n, 0L)
+
+  # And without `x` it constructs exactly one per call -- if that stopped being true
+  # the test above would be measuring nothing.
+  n <- count_calls("Leaf__ctor", {
+    for (i in 1:5) {
+      leaf_gradient(psi_soil = 2.0, traits = tr, pars = "vcmax_25")
+    }
+  })
+  expect_identical(n, 5L)
+})
+
+test_that("leaf_gradient_batch() crosses the boundary once, whatever N is", {
+  # ⚠️ THIS IS THE WHOLE CLAIM OF #4 STAGE 2, AND IT IS COUNTABLE. A four-parameter
+  # gradient through `leaf_gradient()` crosses the boundary 112 times per
+  # observation and spends 1.5% of its time in the model. The batch composes the
+  # composite in C++ instead, so the crossing count must be CONSTANT IN N -- one
+  # call into `gradient_batch_run`, per call and not per row. A timing assertion
+  # would not say this: it would drift with the machine, and it would still pass if
+  # the count went back to being per-row on a fast day.
+  b1 <- leaf_batch(psi_soil = rep(1.5, 4), PPFD = 900)
+  b2 <- leaf_batch(psi_soil = rep(1.5, 64), PPFD = 900)
+  pars <- c("vcmax_25", "stem_P50", "TF24_cost_scale", "TF24_beta2")
+  leaf_gradient_batch(b1, pars = pars)                       # warm anything lazy
+
+  n1 <- count_calls("gradient_batch_run", leaf_gradient_batch(b1, pars = pars))
+  n2 <- count_calls("gradient_batch_run", leaf_gradient_batch(b2, pars = pars))
+  expect_identical(n1, 1L)
+  expect_identical(n2, 1L)                      # 16x the rows, the same one call
+
+  # ⚠️ AND NO MODEL WORK LEAKED BACK TO R, which is the stronger statement and the
+  # one that would catch a future "small" convenience added to the R wrapper. Every
+  # per-perturbation primitive `leaf_gradient()` reaches through -- the setter, the
+  # solve, the two gradient evaluations -- must be called ZERO times by the batch,
+  # for any N. A single one of these appearing in the R path is the regression this
+  # file exists for, at 11 crossings per parameter per observation.
+  for (sym in c("Leaf__set_traits", "Leaf__set_physiology",
+                "Leaf__find_root_collar_psi", "Leaf__evaluate_root_collar_psi",
+                "Leaf__dprofit_droot_collar_psi", "Leaf__operating_point_values",
+                "Leaf__perturb_stem_P50", "Leaf__ctor", "RootNetwork__ctor",
+                "root_network_from_carbon")) {
+    expect_identical(count_calls(sym, leaf_gradient_batch(b2, pars = pars)), 0L,
+                     label = sym)
+  }
+
+  # `leaf_batch()` is where the per-observation R work is allowed to live, because
+  # it runs once per fit rather than once per likelihood evaluation -- but it must
+  # still build exactly ONE Leaf, not one per observation (#52's trap on a new
+  # surface), and reach the drivers' C++ side exactly once.
+  expect_identical(count_calls("Leaf__ctor",
+                               leaf_batch(psi_soil = rep(1.5, 64))), 1L)
+  expect_identical(count_calls("gradient_batch_prepare",
+                               leaf_batch(psi_soil = rep(1.5, 64))), 1L)
 })
 
 test_that("a driven row costs a bounded multiple of a trivial .Call", {
@@ -113,7 +182,7 @@ test_that("a driven row costs a bounded multiple of a trivial .Call", {
       1e6 * as.numeric(difftime(Sys.time(), t0, units = "secs")) / n
     }))
   }
-  l <- leaf_model(supply = leaf_supply_single())
+  l <- leaf_model(supply = leaf_supply_singlelayer())
   net <- series_resistance(1e3)
   set_drivers(l, psi_soil = 1.5, root_network = net)
   l$find_root_collar_psi()
@@ -127,6 +196,74 @@ test_that("a driven row costs a bounded multiple of a trivial .Call", {
 
   expect_lt(row / ref, 30)      # measured 14
   expect_lt(timeit(function() leaf_solve(psi_soil = rep(1.5, 16),
-                                         supply = leaf_supply_single(),
+                                         supply = leaf_supply_singlelayer(),
                                          root_network = net), 30) / 16 / ref, 45)  # measured 20
+})
+
+
+test_that("shadow_cost separates the price from the realised carbon cost", {
+  # ⚠️ BIT EQUALITY against `lambda_o * E`, not a tolerance. The accessor reads the
+  # stored transpiration rather than recomputing it, precisely so the identity
+  # holds exactly against the REPORTED `E` -- which is what a caller checks.
+  sp <- leaf_supply_singlelayer()
+  for (lo in c(0, 1.5e4, 1.5e5)) {
+    r <- leaf_solve(psi_soil = 1.0, PPFD = 900, atm_vpd = 2, model = "TF24_floor",
+                    TF24_floor_lambda_o = lo, supply = sp)
+    expect_identical(r$shadow_cost, lo * r$E)
+    # The two routes to the carbon the plant actually kept agree, but NOT to the
+    # last bit: `profit` is `A - hydraulic_cost` computed in C++, so adding the
+    # shadow term back reassociates the subtraction. 1 ULP, and asserting
+    # `identical` here would be asserting that floating-point addition is
+    # associative.
+    expect_equal(r$profit + r$shadow_cost,
+                 r$A - (r$hydraulic_cost - r$shadow_cost))
+    expect_gte(r$hydraulic_cost - r$shadow_cost, 0)
+  }
+
+  # At a zero price the curve IS TF24, so the realised cost is the whole cost and
+  # the carbon profit is the objective.
+  r0 <- leaf_solve(psi_soil = 1.0, PPFD = 900, atm_vpd = 2, model = "TF24_floor",
+                   TF24_floor_lambda_o = 0, supply = sp)
+  expect_identical(r0$shadow_cost, 0)
+  expect_identical(r0$profit + r0$shadow_cost, r0$profit)
+
+  # ⚠️ ZERO ON EVERY OTHER CURVE, CF77 INCLUDED, and that is a statement about the
+  # curve rather than about the cost -- see operating_point()'s documentation.
+  for (m in c("TF24", "JS22", "CMax", "SOX", "JW26", "ProfitMax")) {
+    r <- leaf_solve(psi_soil = 1.0, PPFD = 900, atm_vpd = 2, model = m, supply = sp)
+    expect_identical(r$shadow_cost, 0, info = m)
+  }
+  rc <- leaf_solve(psi_soil = 1.0, PPFD = 900, atm_vpd = 2, model = "CF77",
+                   CF77_lambda = 1.5e5, supply = sp)
+  expect_identical(rc$shadow_cost, 0)
+})
+
+
+test_that("leaf_solve() reports the seated curve's lambda, not TF24's", {
+  # `lambda` is `marginal_cost_water()` -- TF24's price at this operating point,
+  # whatever curve ran. `lambda_emergent` is the curve's own. Until it was appended
+  # to the reported vector it was reachable only off a `leaf_model()` object, so a
+  # `leaf_solve()` caller on any other curve had to reconstruct it -- and on
+  # TF24_floor that meant knowing `lambda` carries only the hydraulic half and
+  # adding the floor back by hand.
+  sp <- leaf_supply_singlelayer()
+  price <- 1.5e5
+
+  # ⚠️ CF77 PINS IT, its emergent lambda being known independently of the solve:
+  # the curve prices water at a prescribed constant, so this must return it.
+  cf <- leaf_solve(psi_soil = 1.0, PPFD = 900, atm_vpd = 2, model = "CF77",
+                   CF77_lambda = price, supply = sp)
+  expect_equal(cf$lambda_emergent, price, tolerance = 1e-6)
+  expect_false(isTRUE(all.equal(cf$lambda, price)))   # `lambda` is NOT the price
+
+  # TF24 is the one curve where the two agree, by construction
+  tf <- leaf_solve(psi_soil = 1.0, PPFD = 900, atm_vpd = 2, model = "TF24",
+                   supply = sp)
+  expect_identical(tf$lambda_emergent, tf$lambda)
+
+  # and TF24_floor's is the hydraulic half plus the floor
+  fl <- leaf_solve(psi_soil = 1.0, PPFD = 900, atm_vpd = 2, model = "TF24_floor",
+                   TF24_floor_lambda_o = price, supply = sp)
+  expect_equal(fl$lambda_emergent, fl$lambda + price)
+  expect_gt(fl$lambda_emergent, fl$lambda)
 })

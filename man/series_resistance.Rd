@@ -8,31 +8,31 @@ series_resistance(resistance)
 }
 \arguments{
 \item{resistance}{the whole soil-to-collar path as one series resistance,
-**per unit leaf area**, MPa s (mol H2O)^-1 m^2 leaf. Must be positive: a
+\strong{per unit leaf area}, MPa s (mol H2O)^-1 m^2 leaf. Must be positive: a
 zero resistance is an infinite flux. Per unit leaf area because the leaf is
 purely intensive — nothing here may scale with plant size.}
 }
 \value{
-A [RootNetwork()] with one entry in `r_R_V_sum`.
+A \code{\link[=RootNetwork]{RootNetwork()}} with one entry in \code{r_R_V_sum}.
 }
 \description{
-The single-potential path's counterpart to [root_network_from_carbon()]: it
-packages one series resistance into the [RootNetwork()] that [set_drivers()]
+The single-potential path's counterpart to \code{\link[=root_network_from_carbon]{root_network_from_carbon()}}: it
+packages one series resistance into the \code{\link[=RootNetwork]{RootNetwork()}} that \code{\link[=set_drivers]{set_drivers()}}
 takes, so the two supply paths are driven through the same argument.
 }
 \details{
-It goes in `r_R_V_sum` rather than `r_R_H_min`, and that is exact rather than a
-convention: `r_R_V_sum` already means "series resistance from the surface down
+It goes in \code{r_R_V_sum} rather than \code{r_R_H_min}, and that is exact rather than a
+convention: \code{r_R_V_sum} already means "series resistance from the surface down
 to this layer, with no vulnerability weighting", and this is that quantity with
-one layer. `r_R_H_min` is the vulnerability-weighted horizontal term, which
+one layer. \code{r_R_H_min} is the vulnerability-weighted horizontal term, which
 this path does not have — supplying a non-zero one is an error rather than
 ignored, since it would otherwise silently drop a resistance you meant to use.
 }
 \examples{
 series_resistance(1500)
-leaf_solve(psi_soil = 1.5, supply = leaf_supply_single(),
+leaf_solve(psi_soil = 1.5, supply = leaf_supply_singlelayer(),
            root_network = series_resistance(1500))
 }
 \seealso{
-[leaf_supply_single()], [root_network_from_carbon()], [set_drivers()]
+\code{\link[=leaf_supply_singlelayer]{leaf_supply_singlelayer()}}, \code{\link[=root_network_from_carbon]{root_network_from_carbon()}}, \code{\link[=set_drivers]{set_drivers()}}
 }

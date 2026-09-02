@@ -11,34 +11,36 @@ leaf_model(
 )
 }
 \arguments{
-\item{traits}{a [leaf_traits()] object}
+\item{traits}{a \code{\link[=leaf_traits]{leaf_traits()}} object}
 
-\item{control}{a [leaf_control()] object}
+\item{control}{a \code{\link[=leaf_control]{leaf_control()}} object}
 
-\item{supply}{how water reaches the root collar: [leaf_supply_multilayer()]
-(the default) or [leaf_supply_single()]}
+\item{supply}{how water reaches the root collar: \code{\link[=leaf_supply_multilayer]{leaf_supply_multilayer()}}
+(the default) or \code{\link[=leaf_supply_singlelayer]{leaf_supply_singlelayer()}}}
 }
 \value{
-A `Leaf` R6 object.
+A \code{Leaf} R6 object.
 }
 \description{
-The recommended way to construct a leaf. [Leaf()] is the raw C++ constructor,
-with all seventeen arguments positional and no defaults; this splits them into
-traits and numerical settings, defaults both, and initialises the integrator.
+The recommended way to construct a leaf. \code{\link[=Leaf]{Leaf()}} is the raw C++ constructor,
+with all fifteen arguments positional and no defaults; this splits them into
+traits and numerical settings, defaults both, assigns the four traits the
+constructor does not take, and initialises the integrator.
 }
 \details{
-The result is a stateful R6 object: set drivers with [set_drivers()], solve
-with `$find_root_collar_psi()`, then read the operating point off the object
-or with [operating_point()]. For a single solve you probably want
-[leaf_solve()] instead, which does all of that in one call.
+The result is a stateful R6 object: set drivers with \code{\link[=set_drivers]{set_drivers()}}, choose a
+model with \verb{$set_model()} if you want one other than the default, solve with
+\verb{$optimise()}, then read the operating point off the object or with
+\code{\link[=operating_point]{operating_point()}}. For a single solve you probably want \code{\link[=leaf_solve]{leaf_solve()}}
+instead, which does all of that in one call.
 }
 \examples{
 l <- leaf_model()
 set_drivers(l, psi_soil = 2.0, PPFD = 900)
-l$find_root_collar_psi()
+l$optimise()
 operating_point(l)
 }
 \seealso{
-[leaf_traits()], [leaf_control()], [leaf_supply_single()],
-  [set_drivers()], [leaf_solve()]
+\code{\link[=leaf_traits]{leaf_traits()}}, \code{\link[=leaf_control]{leaf_control()}}, \code{\link[=leaf_supply_singlelayer]{leaf_supply_singlelayer()}},
+\code{\link[=set_drivers]{set_drivers()}}, \code{\link[=leaf_solve]{leaf_solve()}}
 }

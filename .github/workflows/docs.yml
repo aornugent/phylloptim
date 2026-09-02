@@ -32,8 +32,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The mirror fix is a local composite action; its `action.yml` records why
+      # this is needed and what was measured. It must precede every apt call.
+      - uses: ./.github/actions/working-apt-mirror
+
       - name: Install Doxygen and graphviz
-        run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
+        timeout-minutes: 5
+        run: |
+          set -eu
+          apt_opts="-o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=2"
+          sudo apt-get $apt_opts update
+          sudo apt-get $apt_opts install -y doxygen graphviz
 
       # The renderer reads the headers through tools/doxygen_filter.awk, which
       # rewrites comments so Doxygen can see them. A bug there could silently
@@ -56,6 +65,53 @@ jobs:
               head -40 /tmp/delta.txt
               status=1
             fi
+          done
+          exit $status
+
+      # ⚠️ Doxygen 1.9 -- the version this runner installs -- handles the FIRST
+      # `\verbatim` in a comment block and drops the second one's OPEN, then
+      # reports `unexpected command endverbatim` at its close. The line it names
+      # is in the FILTERED stream and lands in unrelated code: in the case that
+      # found this, 120 lines past the comment responsible. Doxygen 1.17 renders
+      # the same input in silence, so a local run says nothing and the only
+      # oracle is this job. Assert the shape here, where the message can name the
+      # block, rather than leaving the next person to bisect the render.
+      #
+      # ⚠️ It is the `///` blocks that break, NOT the `/*! \file */` one, and the
+      # difference is load-bearing rather than untested: closed_form.hpp's file
+      # block has carried two runs since long before this check, on a green
+      # master. Counting it too fails the build on code Doxygen renders happily.
+      - name: Check no comment block opens two verbatim runs
+        run: |
+          set -eu
+          status=0
+          for f in $(find inst/include -name '*.hpp' | sort); do
+            awk -f tools/doxygen_filter.awk "$f" \
+              | awk -v f="$f" '
+                  function note(t) {
+                    if (first == "") {
+                      sub(/^[ \t]*(\/\/\/|\*)?[ \t]*/, "", t)
+                      first = substr(t, 1, 60)
+                    }
+                  }
+                  function flush() {
+                    if (opens > 1) {
+                      printf "::error file=%s::comment block [%s] opens %d verbatim runs; Doxygen 1.9 drops all but the first. One indented display per block -- see tools/doxygen_filter.awk\n", f, first, opens
+                      bad = 1
+                    }
+                    opens = 0; first = ""
+                  }
+                  /^[ \t]*\/\*![ \t]*\\file/ { infile = 1; flush(); next }
+                  infile {
+                    if ($0 ~ /^[ \t]*\*\/[ \t]*$/) infile = 0
+                    next
+                  }
+                  /^[ \t]*\/\// {
+                    if ($0 ~ /\\verbatim[ \t]*$/) opens++
+                    note($0); next
+                  }
+                  { flush() }
+                  END { flush(); exit (bad ? 1 : 0) }' || status=1
           done
           exit $status
 

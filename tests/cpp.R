@@ -1,4 +1,4 @@
-# Run the C++ suite under `R CMD check` (issue #12, PLAN item 15).
+# Run the C++ suite under `R CMD check` (#12).
 #
 # This package ships headers and nothing else -- no R code, no compiled code --
 # so without this file `R CMD check` validates essentially nothing. The point is
@@ -95,14 +95,17 @@ message("  BH      ", deps[["BH"]])
 message("  odelia  ", deps[["odelia"]])
 message("  golden  ", if (length(golden_args)) golden_args else "bit-exact")
 
-owd <- setwd(cpp_dir)   # test_golden reads golden/operating_points.tsv relatively
+owd <- setwd(cpp_dir)   # both golden readers take their file relatively
 on.exit(setwd(owd), add = TRUE)
 
 includes <- c("-I", shQuote(deps[["phylloptim"]]),
               "-isystem", shQuote(deps[["odelia"]]),
               "-isystem", shQuote(deps[["BH"]]))
 
-for (prog in c("test_leaf", "test_golden")) {
+# ⚠️ Every program under tests/cpp/ that has a golden file belongs in this list, and
+# in tests/cpp/Makefile, CMakeLists.txt and cpp-tests.yml. #64 is what a program in
+# none of them turns into.
+for (prog in c("test_leaf", "test_golden", "test_primitives")) {
   src <- paste0(prog, ".cpp")
   message("\n== ", src)
   status <- system2(cxx, c(cxxstd, "-O2", "-Wall", "-Wextra",
@@ -115,6 +118,8 @@ for (prog in c("test_leaf", "test_golden")) {
   status <- system2(file.path(".", prog), golden_args)
   if (status != 0) {
     stop(prog, " failed (exit ", status, ").\n",
+         "  If this was test_primitives, read its per-TIER table first: the lowest\n",
+         "  tier that moved is the cause and the ones above it are consequences.\n",
          "  If this was the golden comparison, read the worst-relative-difference\n",
          "  line it printed first: ~1e-15 is cross-platform libm and not a\n",
          "  regression, ~1e-4 is a real change in behaviour.")

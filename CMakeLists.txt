@@ -136,11 +136,15 @@ endif()
 
 # --- the C++ suite ------------------------------------------------------------
 #
-# The same two programs tests/cpp/Makefile builds, and the same golden file.
+# The same programs tests/cpp/Makefile builds, and the same golden files.
 # Deliberately not a reimplementation of that Makefile: it stays the developer
 # entry point, and this is here so the no-R claim is checkable by a machine that
-# has never had R on it. test_golden reads golden/operating_points.tsv from its
-# working directory, hence WORKING_DIRECTORY below.
+# has never had R on it. Both golden readers take their file from the working
+# directory, hence WORKING_DIRECTORY below.
+#
+# ⚠️ A test program added under tests/cpp/ has to be added HERE as well as to that
+# Makefile and to cpp-tests.yml. #64 is what happens otherwise: a harness no build
+# touches rots through two interface changes in silence.
 #
 # The golden file is bit-exact only on the platform that generated it
 # (macOS/arm64), so pass --cross-platform anywhere else. See the comment above
@@ -151,7 +155,7 @@ option(PHYLLOPTIM_BUILD_TESTS "Build the C++ test suite" ${PHYLLOPTIM_IS_TOP_LEV
 if(PHYLLOPTIM_BUILD_TESTS)
   enable_testing()
 
-  foreach(prog test_leaf test_golden bench_solve)
+  foreach(prog test_leaf test_golden test_primitives bench_solve)
     add_executable(${prog} tests/cpp/${prog}.cpp)
     target_link_libraries(${prog} PRIVATE phylloptim::phylloptim)
     target_compile_options(${prog} PRIVATE -Wall -Wextra -Wno-unused-parameter)
@@ -167,6 +171,12 @@ if(PHYLLOPTIM_BUILD_TESTS)
   endif()
 
   add_test(NAME leaf_golden COMMAND test_golden ${PHYLLOPTIM_GOLDEN_ARGS}
+           WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp)
+
+  # The primitive-level baseline (#64). Same per-platform policy, and the same
+  # variable, because it is bit-exact on exactly the same platform and for exactly
+  # the same reason -- libm's exp/pow.
+  add_test(NAME leaf_primitives COMMAND test_primitives ${PHYLLOPTIM_GOLDEN_ARGS}
            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp)
 
   # bench_solve is built but not registered as a test: it is a timing harness,

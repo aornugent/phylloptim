@@ -2,20 +2,16 @@
 #ifndef PHYLLOPTIM_ROOTS_HPP_
 #define PHYLLOPTIM_ROOTS_HPP_
 
-#include <phylloptim/clamp_sites.hpp>
 #include <phylloptim/constants.hpp>
 #include <phylloptim/util.hpp>
 #include <phylloptim/vulnerability.hpp>
 
 #include <odelia/interpolator.hpp>
-#include <odelia/tangent.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <memory>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace phylloptim {
@@ -23,69 +19,6 @@ namespace phylloptim {
 // The per-layer root hydraulic resistances the supply solve actually consumes.
 // Two of the five fields are load-bearing; see set_root_network on why the other
 // three are here at all.
-// The supply state one uptake reads, at one scalar. References rather than
-// values because the double path runs it ~10^3 times per collar solve and owns
-// the arrays already; the active path builds its own and hands them the same way.
-//
-// The layer geometry is not here. Depths belong to the architecture model rather
-// than to anything plant differentiates, so they stay where they are.
-template <typename T>
-struct SupplyAt {
-  const std::vector<T>& psi_soil;
-  const std::vector<T>& r_R_H_min;   // per layer, fully hydrated
-  const std::vector<T>& r_R_V_sum;   // per layer, cumulative from the surface
-  const T& root_b;
-  const T& root_c;
-};
-
-// The same, owned. The active path builds one of these and hands the view; a
-// gradient in the supply has this shape too, which is what lets a caller read it
-// by name rather than by position.
-template <typename T>
-struct SupplyValues {
-  using value_type = T;
-  std::vector<T> psi_soil, r_R_H_min, r_R_V_sum;
-  T root_b{}, root_c{};
-
-  SupplyAt<T> at() const {
-    return {psi_soil, r_R_H_min, r_R_V_sum, root_b, root_c};
-  }
-
-  template <class U>
-  SupplyValues<U> rebind_from() const {
-    using odelia::util::to_passive;
-    SupplyValues<U> out;
-    for (const T& v : psi_soil) out.psi_soil.push_back(U(to_passive(v)));
-    for (const T& v : r_R_H_min) out.r_R_H_min.push_back(U(to_passive(v)));
-    for (const T& v : r_R_V_sum) out.r_R_V_sum.push_back(U(to_passive(v)));
-    out.root_b = U(to_passive(root_b));
-    out.root_c = U(to_passive(root_c));
-    return out;
-  }
-
-  // The entries a caller can seed, in one order, so a gradient over them cannot
-  // be matched to them by hand. The layer arrays come first, layer-major. The
-  // const form carries the list and the mutable one takes the constness back
-  // off, so an entry is named in one place.
-  std::vector<const T*> field_ptrs() const {
-    std::vector<const T*> out;
-    out.reserve(psi_soil.size() + r_R_H_min.size() + r_R_V_sum.size() + 2);
-    for (const T& v : psi_soil) out.push_back(&v);
-    for (const T& v : r_R_H_min) out.push_back(&v);
-    for (const T& v : r_R_V_sum) out.push_back(&v);
-    out.push_back(&root_b);
-    out.push_back(&root_c);
-    return out;
-  }
-  std::vector<T*> field_ptrs() {
-    std::vector<T*> out;
-    for (const T* q : std::as_const(*this).field_ptrs()) {
-      out.push_back(const_cast<T*>(q));
-    }
-    return out;
-  }
-};
-
 struct RootNetwork {
   // Minimum (fully-hydrated) horizontal, intra-layer soil->root resistance.
   // Divided by the vulnerability-weighted mean conductivity at the operating
@@ -93,50 +26,9 @@ struct RootNetwork {
   std::vector<double> r_R_H_min;
   // Cumulative vertical, inter-layer resistance from the surface down to layer i.
   std::vector<double> r_R_V_sum;
-  // c_r_H and r_R_V are diagnostics; r_R_V is the per-layer vertical resistance
-  // the cumulative sum is built from. c_r_V is the vertical third of the layer's
-  // carbon, which root_carbon recovers the carbon from.
+  // Diagnostics only -- read by nothing in the model.
   std::vector<double> c_r_V, c_r_H, r_R_V;
 };
-
-// The two resistances the supply reads, from the carbon invested in each layer,
-// at one scalar. This is the whole of the architecture model that a derivative
-// travels through: the three other fields the double form fills are diagnostics
-// with no reader on that path.
-//
-// Templated so the caller that owns the model -- the one that decides how much
-// carbon goes where -- can run it at its own scalar and keep the chain on its own
-// tape, rather than asking for a hand-written d(uptake)/d(carbon).
-template <typename T>
-inline void root_resistances_from_carbon(
-    const std::vector<T>& root_carbon_per_layer, double dz, double beta_R_H,
-    double beta_R_V, std::vector<T>& r_R_H_min, std::vector<T>& r_R_V_sum) {
-  const std::size_t n = root_carbon_per_layer.size();
-  r_R_H_min.assign(n, T(0.0));
-  r_R_V_sum.assign(n, T(0.0));
-  const double dz_sq = dz * dz;
-  T vertical_resistance_sum = T(0.0);
-  for (std::size_t i = 0; i < n; ++i) {
-    const T& root_mass = root_carbon_per_layer[i];
-    const double at = odelia::util::to_passive(root_mass);
-    if (at < 0.0) {
-      util::stop("Root mass lower than 0");
-    }
-    // A layer with no carbon has no resistance to give and none to accumulate;
-    // the running sum passes through it unchanged.
-    if (at == 0.0) {
-      r_R_V_sum[i] = vertical_resistance_sum;
-      continue;
-    }
-    const T c_r_v = root_mass / 3.0;
-    const T c_r_h = root_mass * 2.0 / 3.0;
-    r_R_H_min[i] = T(beta_R_H) / c_r_h;
-    // The vertical conductivity is likely linearly proportional to the root area
-    // projected onto the horizontal plane, hence dz^2.
-    vertical_resistance_sum += T(beta_R_V * dz_sq) / c_r_v;
-    r_R_V_sum[i] = vertical_resistance_sum;
-  }
-}
 
 // The root-architecture model: how carbon invested in roots becomes hydraulic
 // resistance.
@@ -152,10 +44,28 @@ inline void root_resistances_from_carbon(
 // Each layer's root carbon is split 1/3 vertical : 2/3 horizontal, and
 //   network_.r_R_H_min[i] = beta_R_H / c_r_h        (min horizontal resistance, i.e. the
 //                                           reciprocal of max conductance)
-//   r_R_V[i]     = beta_R_V * dz^2 / c_r_v (vertical; dz^2 because vertical
-//                                           conductivity scales with root
-//                                           cross-sectional area)
+//   r_R_V[i]     = beta_R_V * dz[i]^2 / c_r_v (vertical; dz[i]^2 because
+//                                           vertical conductivity scales with
+//                                           root cross-sectional area, and the
+//                                           segment spanning layer i is dz[i]
+//                                           long)
 //   network_.r_R_V_sum[i] = cumulative vertical resistance from the surface to layer i.
+//
+// ⚠️ `dz` IS PER LAYER, AND THAT IS LOAD-BEARING RATHER THAN GENERALITY FOR ITS
+// OWN SAKE. It was one scalar until #626, which was correct only for a profile of
+// equal layers and silently wrong for any other. The property that fails is
+// DISCRETISATION INVARIANCE: with a root density uniform over depth, the
+// layer-integrated carbon in layer i is c_r_V[i] = (C/3)*dz[i]/D, so the
+// per-layer form gives r_R_V[i] = 3*beta_R_V*D*dz[i]/C and the total
+// sum(r_R_V) = 3*beta_R_V*D^2/C -- independent of how the column is sliced, as it
+// must be, since slicing is a numerical choice and not a property of the plant. A
+// single scalar dz = D/n breaks that: total resistance picks up a factor
+// (D/n)^2 * sum(1/dz[i]) / D^2, which is 1 only for equal layers. Measured with a
+// 2 cm surface layer over 1.5 m in five layers, it inflates total vertical root
+// resistance 3.68x and throttles uptake, with nothing anywhere reporting it.
+//
+// So the reduction test is a total, not a per-layer value, and it is the one
+// worth keeping: sum(r_R_V) must not depend on the profile.
 //
 // The returned vectors are sized to the deepest layer with non-zero root carbon,
 // so the hot loop only iterates over layers that actually contain roots.
@@ -179,9 +89,26 @@ inline void root_resistances_from_carbon(
 // buffer. The value-returning overload below is for tests and one-off callers,
 // where that does not matter.
 inline void root_network_from_carbon(
-    const std::vector<double>& root_carbon_per_layer, double dz,
+    const std::vector<double>& root_carbon_per_layer,
+    const std::vector<double>& dz,
     double beta_R_H, double beta_R_V, RootNetwork& out) {
   const size_t n_layers = root_carbon_per_layer.size();
+
+  if (dz.size() != n_layers) {
+    util::stop("root_network_from_carbon: dz and root_carbon_per_layer must "
+               "have the same number of elements");
+  }
+  for (size_t i = 0; i < n_layers; ++i) {
+    // Checked for every layer rather than only the rooted ones, because a
+    // caller's profile is wrong as a whole if any width is: the layers below the
+    // rooting depth are the ones a shallow plant does not reach *today* and will
+    // reach as it grows.
+    if (!util::is_finite(dz[i]) || dz[i] <= 0.0) {
+      util::stop("root_network_from_carbon: dz must be finite and positive in "
+                 "every layer; layer " + util::to_string(i + 1) +
+                 " is " + util::format_double(dz[i]));
+    }
+  }
 
   // deepest layer with non-zero root carbon
   int max_soil_layer = 0;
@@ -196,7 +123,6 @@ inline void root_network_from_carbon(
   out.r_R_V.resize(max_soil_layer);
   out.r_R_V_sum.resize(max_soil_layer);
 
-  const double dz_sq = dz * dz;
   double vertical_resistance_sum = 0.0;
   for (int i = 0; i < max_soil_layer; ++i) {
     if(root_carbon_per_layer[i] < 0){
@@ -217,7 +143,16 @@ inline void root_network_from_carbon(
 
     // Set horizantal minimum resistance per soil layer (i.e. reciprocal of maximum conductance).
     out.r_R_H_min[i] = beta_R_H / c_r_h;
-    // The vertical conductivity is likely linearly proportional to the root area projected onto the horizontal plane, hence dz^2.
+    // The vertical conductivity is likely linearly proportional to the root area
+    // projected onto the horizontal plane, hence dz^2 -- and it is THIS layer's
+    // thickness, because the vertical root segment being resisted is the one
+    // spanning this layer. See the discretisation-invariance note above.
+    //
+    // ⚠️ SQUARE FIRST, INTO ITS OWN VARIABLE. `beta_R_V * dz[i] * dz[i] / c_r_v`
+    // associates left to right, i.e. (beta_R_V*dz)*dz, which is NOT the
+    // beta_R_V*(dz*dz) this has always computed and would move the golden file by
+    // a last bit for no reason.
+    const double dz_sq = dz[i] * dz[i];
     out.r_R_V[i] = beta_R_V * dz_sq / c_r_v;
     vertical_resistance_sum += out.r_R_V[i];
     out.r_R_V_sum[i] = vertical_resistance_sum;
@@ -226,29 +161,64 @@ inline void root_network_from_carbon(
 
 // Same, returning a fresh network. Convenience for tests and standalone callers.
 inline RootNetwork root_network_from_carbon(
-    const std::vector<double>& root_carbon_per_layer, double dz,
+    const std::vector<double>& root_carbon_per_layer,
+    const std::vector<double>& dz,
     double beta_R_H, double beta_R_V) {
   RootNetwork out;
   root_network_from_carbon(root_carbon_per_layer, dz, beta_R_H, beta_R_V, out);
   return out;
 }
 
-// Layer thickness implied by a cumulative soil-depth profile.
+// Per-layer thicknesses implied by a cumulative soil-depth profile: the
+// differences between consecutive boundaries, with an implicit 0 at the surface.
 //
-// Exported as its own function because since #33 there are TWO callers that must
-// agree on it: MultiLayerRoots::set_soil_state, and whoever builds the root
-// network before handing it over. root_network_from_carbon scales the vertical
-// resistance by dz^2, so two definitions drifting apart would put a silent
-// squared factor on every vertical resistance -- and nothing in either package
-// would notice, because both halves would still be internally consistent.
-inline double layer_thickness(const std::vector<double>& soil_depth) {
+// FOR A CALLER WHO HAS A PROFILE AND NOT THE WIDTHS. It is a convenience, and
+// deliberately no longer billed as "the shared definition of dz" the way its
+// scalar predecessor was: since #626 there is no derivation to share, because the
+// widths ARE the geometry a caller states and everything else follows from them.
+// A caller who holds its own widths -- plant's TF24_Environment does -- must pass
+// those, NOT re-derive them through here.
+//
+// ⚠️ THE REASON THAT IS NOT PEDANTRY: differencing is not bit-exact. Over 180
+// (total depth, n) pairs, `diff` of a profile built as `(i+1)*depth/n` differs
+// from `depth/n` in the last bit in 122 of them -- the package defaults among
+// them. So re-deriving widths a caller already holds silently perturbs every
+// vertical resistance, and through the solve that reaches the reported outputs.
+// Exact whenever the boundaries are exactly representable, which is why the
+// golden grid (1 m layers) is unaffected.
+inline std::vector<double>
+layer_thicknesses(const std::vector<double>& soil_depth) {
   if (soil_depth.empty()) {
     // Guarded because this is a public entry point a caller reaches for directly,
     // where the same expression inside set_soil_state was only ever reachable
     // after set_physiology had validated the profile against psi_soil.
-    util::stop("layer_thickness: soil_depth must have at least one layer");
+    util::stop("layer_thicknesses: soil_depth must have at least one layer");
   }
-  return soil_depth.back() / soil_depth.size();
+  std::vector<double> out(soil_depth.size());
+  double previous = 0.0;
+  for (size_t i = 0; i < soil_depth.size(); ++i) {
+    // Strictly increasing, so every width comes out positive. Checked here rather
+    // than left to root_network_from_carbon's positivity guard because the
+    // diagnosis differs: there the widths are wrong, here the PROFILE is not a
+    // profile.
+    //
+    // ⚠️ IT DOES NOT CATCH WIDTHS PASSED WHERE BOUNDARIES WERE WANTED, and do not
+    // read it as though it did. A width vector that happens to increase with
+    // depth -- which a graded profile thinning towards the surface does -- passes
+    // every check here and yields different, entirely plausible widths. Only the
+    // caller knows which of the two it is holding. Asserted in
+    // test_layer_thicknesses so the limit is on the record.
+    if (!util::is_finite(soil_depth[i]) || !(soil_depth[i] > previous)) {
+      util::stop("layer_thicknesses: soil_depth must be finite and strictly "
+                 "increasing (cumulative depth to the bottom of each layer); "
+                 "layer " + util::to_string(i + 1) + " is " +
+                 util::format_double(soil_depth[i]) + " after " +
+                 util::format_double(previous));
+    }
+    out[i] = soil_depth[i] - previous;
+    previous = soil_depth[i];
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,27 +278,30 @@ class MultiLayerRoots {
 public:
   // --- root vulnerability trait pair (hazard 1: NOT the stem's b/c) ---------
   double root_c = 2.680147;       // unitless
-  double root_b = 3.898245;       // -MPa
-  double root_psi_crit = 5.870283; // -MPa
+  // THE TRAIT is root_P50, the potential at 50% loss of conductivity. root_b and
+  // root_psi_crit are DERIVED from it and root_c by Leaf, and are kept here
+  // because the supply path's own curve and bracket are written in terms of them.
+  double root_P50 = 3.4;          // MPa, positive magnitude
+  double root_b = 3.8982451221145307;   // MPa, = P50 / (ln 2)^(1/c)
+  double root_psi_crit = 5.8702827267723245; // MPa, = P95 of that curve
 
-  // G(m) = int_0^m f_r(s) ds, indexed by magnitude m = -psi, carrying a value, a
-  // slope and a curvature at every knot -- all three the closed form's. Lets
-  // uptake() obtain the mean conductivity over a potential interval from 2 evals
-  // instead of (n+1).
-  //
-  // ONE table, not two. f_r is dG/dpsi, so the curve is this table's slope rather
-  // than a second tabulation of it: two tables agreed at their knots and differed
-  // between them, so uptake read G from one polynomial and f_r from another.
-  odelia::interpolator::hermite_interpolator<double, 5> root_vuln_integral_from_psi;
+  // NOTE: beta_R_H and beta_R_V used to live here. They are parameters of the
+  // root-architecture model, not of water transport, and since #33 this class
+  // takes resistances rather than the carbon they were applied to -- so they are
+  // arguments to root_network_from_carbon and members of whoever owns that
+  // model. In plant that is TF24_Strategy.
+
+  // pre-computed root vulnerability curve f_r(m) = exp(-(m/root_b)^root_c)
+  odelia::interpolator::Interpolator root_vuln_from_psi;
+  // cumulative integral of it, G(m) = int_0^m f_r(s) ds, indexed by magnitude
+  // m = -psi. Lets uptake() obtain the mean conductivity over a potential
+  // interval from 2 evals instead of (n+1).
+  odelia::interpolator::Interpolator root_vuln_integral_from_psi;
   // What the two splines do past their last knot, cached by setup_vulnerability.
   // Both are read through the accessors below, never as bare .eval() calls --
   // see the accessors for why. util::na_value until a curve is built.
   double root_vuln_last_knot_ = util::na_value;
   double root_vuln_integral_limit_ = util::na_value;
-
-  // How often each clamp held. Shared storage, so a consumer copying this object
-  // per unit still reads what the copy counted.
-  clamp_counter clamps;
 
   // --- soil geometry -------------------------------------------------------
   // The four scalars carry the same unset sentinels clear() assigns, so a bare
@@ -344,7 +317,11 @@ public:
   // multiply per layer per (re)evaluation.
   std::vector<double> grav_head_z_;
   bool use_precomputed_z_soil_mid_ = false;
-  double dz_ = util::na_value;
+  // NOTE: `dz_` used to live here, a scalar layer thickness re-derived from the
+  // profile on every set_soil_state. Nothing in this package had read it since
+  // #33, and #626 removed the last reason to carry it: layer thickness is stated
+  // by the caller now, per layer, and is an argument to root_network_from_carbon
+  // rather than something this object derives a second opinion about.
 
   // --- soil state ----------------------------------------------------------
   std::vector<double> psi_soil_;           // positive magnitudes, as supplied
@@ -393,83 +370,53 @@ public:
   // Issue #1 measured what taking odelia's extrapolant unexamined cost instead: a
   // conductivity that turns negative past 7.3742 MPa, and an integral 4.35x its
   // own limit at 1000 MPa.
-  // The built curve against the pair that determines it; see Leaf's cache for
-  // why the key is (b, c, resolution) and why a handful of entries is enough.
-  struct CurveCache {
-    double b = 0.0, c = 0.0, resolution = 0.0;
-    odelia::interpolator::hermite_interpolator<double, 5> integral;
-    double last_knot = 0.0, integral_limit = 0.0;
-  };
-  static constexpr std::size_t curve_cache_size = 32;
-  // One store per thread, shared by every MultiLayerRoots on it: the key
-  // determines the value completely, so nothing of the plant being solved is
-  // carried in it. Per-object stores start empty, so constructing this to
-  // overwrite it -- which rebinding to another scalar does, per cohort per stage
-  // -- rebuilt the curve every time.
-  static std::shared_ptr<std::vector<CurveCache>> curve_store() {
-    static thread_local std::shared_ptr<std::vector<CurveCache>> store =
-        std::make_shared<std::vector<CurveCache>>();
-    return store;
-  }
-  std::shared_ptr<std::vector<CurveCache>> curve_cache_ = curve_store();
-
   void setup_vulnerability(double resolution) {
-    curve_reads_.clear();
-    for (const CurveCache& hit : *curve_cache_) {
-      if (hit.b == root_b && hit.c == root_c && hit.resolution == resolution) {
-        root_vuln_integral_from_psi = hit.integral;
-        root_vuln_last_knot_ = hit.last_knot;
-        root_vuln_integral_limit_ = hit.integral_limit;
-        return;
-      }
-    }
-    // Three knot vectors from one pass: dG/dpsi IS exp(-(psi/root_b)^root_c) and
-    // its own slope needs nothing the same series has not already formed, so every
-    // channel of this table is the closed form's and none is inferred.
-    // f_r(0) = exp(-pow(0,root_c)) = 1.
-    std::vector<double> x_psi_root, y_integral, y_f_r, y_f_r_slope;
+    std::vector<double> x_psi_root, y_integral;
     cumulative_vulnerability_integral(root_b, root_c, resolution, x_psi_root,
-                                      y_integral, y_f_r, y_f_r_slope);
+                                      y_integral);
 
-    root_vuln_integral_from_psi.init(x_psi_root, y_integral, y_f_r, y_f_r_slope);
+    // f_r conductivity knots on the same grid. f_r(0) = exp(-pow(0,root_c)) = 1.
+    std::vector<double> y_f_r(x_psi_root.size());
+    for (size_t i = 0; i < x_psi_root.size(); ++i) {
+      y_f_r[i] = exp(-pow(x_psi_root[i] / root_b, root_c));
+    }
+    // Conductivity: NO extrapolation, matching the stem pair in
+    // Leaf::setup_transpiration. Its limit is zero, which is unusable as the
+    // divisor it becomes, so root_vuln_at clamps the argument to the last knot
+    // instead and this setting is what stops any other reading being possible.
+    root_vuln_from_psi.init(x_psi_root, y_f_r);
+    root_vuln_from_psi.set_extrapolate(false);
 
-    // Neither carries an extrapolation setting, because neither ever reads past
-    // its knots: root_vuln_at clamps the argument, and root_vuln_integral_at caps
-    // the value at the closed-form limit. Past the last knot the interpolant
-    // extends the end slope, which for the integral is f_r there -- under a
-    // hundredth -- so the cap binds smoothly instead of a quadratic running away.
+    // Integral: extrapolation stays ON, under a ceiling. Its limit is finite and
+    // non-zero, and the end-knot polynomial tracks the true G closely over the
+    // half-MPa it takes to reach that limit (3.46212 against 3.46176 at 7 MPa), so
+    // capping the VALUE is both smooth and tighter than clamping the argument
+    // would be. root_vuln_integral_at applies the cap.
+    //
+    // Do not set this false "to match" the conductivity spline: odelia's deriv()
+    // has no extrapolation check where eval() does, so eval would throw while
+    // deriv went on extrapolating.
+    root_vuln_integral_from_psi.init(x_psi_root, y_integral);
+    root_vuln_integral_from_psi.set_extrapolate(true);
 
     // The last knot, NOT vulnerability_psi_max: the knot loop advances by
     // accumulation and stops one step short of psi_max (6.8229 against 6.8918 at
     // the root defaults), so psi_max is itself outside the domain and clamping to
     // it would throw.
-    root_vuln_last_knot_ = root_vuln_integral_from_psi.max();
+    root_vuln_last_knot_ = root_vuln_from_psi.max();
     root_vuln_integral_limit_ =
         cumulative_vulnerability_integral_limit(root_b, root_c);
-
-    if (curve_cache_->size() >= curve_cache_size) {
-      curve_cache_->erase(curve_cache_->begin());
-    }
-    curve_cache_->push_back(CurveCache{root_b, root_c, resolution,
-                                       root_vuln_integral_from_psi,
-                                       root_vuln_last_knot_,
-                                       root_vuln_integral_limit_});
   }
 
-  // f_r at a suction, clamped into the knot domain: the last knot holds about 1%
-  // of full conductivity, which is the driest this curve describes, and the clamp
-  // is what makes the read in-domain rather than a setting on the interpolant.
+  // f_r at a suction, clamped into the knot domain -- set_extrapolate(false)
+  // throws at both ends, and the last knot's ~1% is the driest conductivity this
+  // curve describes.
   //
   // Operand order is load-bearing: written this way both clamps return psi when
   // psi is NaN, where the reversed forms return the bound. The uptake call site's
   // !isfinite(f_ri) guard is what reads that NaN.
   double root_vuln_at(double psi) const {
-    if (psi > root_vuln_last_knot_ || psi < 0.0) {
-      clamps.note(CLAMP_ROOT_VULN_ARGUMENT);
-    }
-    // The integral's own slope, so f_r and G are derivatives of one polynomial. A
-    // second table of f_r agreed with this at the knots and nowhere between them.
-    return root_vuln_integral_from_psi.slope(
+    return root_vuln_from_psi.eval(
         std::max(std::min(psi, root_vuln_last_knot_), 0.0));
   }
 
@@ -487,517 +434,19 @@ public:
   // flux tends to integral/r_R_H_min <= G(inf)/r_R_H_min as the span grows, which
   // is the whole area under the conductivity curve and is the right limit.
   double root_vuln_integral_at(double psi) const {
-    const double raw = root_vuln_integral_from_psi.eval(psi);
-    if (raw > root_vuln_integral_limit_) {
-      clamps.note(CLAMP_ROOT_VULN_INTEGRAL_CAP);
-    }
-    return std::min(raw, root_vuln_integral_limit_);
+    return std::min(root_vuln_integral_from_psi.eval(psi),
+                    root_vuln_integral_limit_);
   }
 
   // dG/dpsi, consistent with root_vuln_integral_at: zero wherever that returns
-  // the cap, because there the value no longer depends on psi.
+  // the cap, because there the value no longer depends on psi. Costs a second
+  // spline eval, which is affordable here and would not be on the uptake hot path
+  // -- duptake_dpsi runs once per gradient, not ~10^3 times per solve.
   double root_vuln_integral_deriv_at(double psi) const {
     if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
       return 0.0;
     }
-    // The interpolant's own slope, which is the exact derivative of the value the
-    // line above just read. The closed form f_r is the derivative of G and NOT of
-    // this tabulation of G, so returning it would give a value and a derivative
-    // taken from two different functions -- they agree at the knots, where the
-    // supplied slope IS f_r, and differ between them by the interpolation error.
-    // Measured: a differenced curvature moves from 1e-07 to 1.9e-07 that way.
-    return root_vuln_integral_from_psi.slope(psi);
-  }
-
-  // d(dG/dpsi)/dpsi -- the integrand's own slope, and NOT a second derivative of
-  // the tabulation. Differentiating a cumulative integral in its upper limit
-  // leaves the integrand there, so one more derivative leaves the integrand's
-  // slope, and exp(-(psi/root_b)^root_c) has that in closed form. A C1
-  // interpolant's second derivative is a difference of its data; this is data.
-  //
-  // Zero wherever the integral is at its cap, and zero at or below the surface,
-  // for the two reasons the first derivative is: past the cap the value no longer
-  // moves with psi, and below it the integrand is the constant 1.
-  double root_vuln_integrand_deriv_at(double psi) const {
-    if (!(psi > 0.0)) {
-      return 0.0;
-    }
-    if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
-      return 0.0;
-    }
-    return vulnerability_curve_slope(psi, root_b, root_c);
-  }
-
-  // ⚠️ ONE PLACE DECIDES HOW A LAYER MEAN IS FORMED, and this is it.
-  //
-  // Everything the uptake and its derivatives need is a MEAN over the layer's
-  // suction interval -- the conductivity curve for the resistance, one of its trait
-  // derivatives for a trait row.
-  //
-  // A MEAN IS AN AVERAGE AND NOT A DIVIDED DIFFERENCE, and writing it as one is what
-  // removes the failure mode rather than managing it. Formed as
-  // (G(hi) - G(lo))/span it is a difference of two reads of a TABULATED cumulative,
-  // so its relative error is the table's own divided by the span, and every
-  // derivative taken of it divides by the span again. One operating point of
-  // 2,829,445 on a century stand reached a span of 5.6e-08; the marginal there was
-  // corrupted enough that the collar solve returned a MINIMUM of profit and the
-  // whole census went not-a-number.
-  //
-  // Formed directly, every quantity in the family is ONE sum over the same nodes:
-  //
-  //   x_i = m + (s/2) t_i        a_i = (1 + t_i)/2        b_i = (1 - t_i)/2
-  //
-  //   mean        = 1/2 sum w_i f  (x_i)
-  //   d/dhi       = 1/2 sum w_i f' (x_i) a_i
-  //   d/dlo       = 1/2 sum w_i f' (x_i) b_i
-  //   d2/dhi2     = 1/2 sum w_i f''(x_i) a_i^2
-  //   d2/dlo dhi  = 1/2 sum w_i f''(x_i) a_i b_i
-  //
-  // Which quantity is wanted picks which derivative of the curve goes under the sum
-  // and which power of the bound weights multiplies it. NOTHING DIVIDES BY THE SPAN
-  // at any order, so there is no cancellation to threshold around, no asymptotic to
-  // cross over to, and no f''/3 and f''/6 limits to derive and check.
-  //
-  // ⚠️ ONE THRESHOLD, AND IT IS A COST SWITCH RATHER THAN A CROSSOVER. The two forms
-  // are complementary rather than competing. The difference is well conditioned and
-  // cheap over a LONG interval, where a fixed rule is not accurate -- the curve has a
-  // weak singularity at the surface, and across the whole domain seven nodes reach
-  // only 8.3e-07. The sum is exact over a SHORT one, where the difference cancels.
-  // ⚠️ 5e-3 IS THE OLD MIXED THRESHOLD, AND THAT IS NOT A COINCIDENCE. The three
-  // constants it replaces were 1e-5, 5e-4 and 5e-3, one per quantity, because a
-  // divided difference degrades a decade earlier at each order. A single threshold
-  // has to be the LOOSEST of them or the quantity that needed the loosest regresses:
-  // at 1e-3 the mixed second derivative reads 8.53e-06 against the old scheme's
-  // 4.97e-07, seventeen times worse, while the other three improve. At 5e-3 nothing
-  // regresses -- the mixed term matches the old scheme exactly, and the mean, the
-  // bound derivative and the pure second improve by 33x, 6300x and 176x. Measured in
-  // probe_layer_mean; the century forward run is 32.94 s against a 32.4-32.8 s
-  // baseline, so the accuracy is free.
-  static constexpr double layer_mean_direct_below = 5e-3;
-
-  // True where the average is formed directly. Both bounds above the surface,
-  // because below it the integrand is the constant 1 and the curve has a corner
-  // there, which no fixed rule integrates.
-  template <class T>
-  static bool average_directly(const T& span, const T& lo) {
-    using odelia::util::to_passive;
-    return to_passive(span) < layer_mean_direct_below && to_passive(lo) > 0.0;
-  }
-
-  // Gauss-Legendre on [-1,1]. Seven nodes because probe_layer_mean measures that
-  // exact to rounding at every span this form is used at.
-  static constexpr int n_node = 7;
-  static constexpr double node_t[7] = {
-      -0.9491079123427585, -0.7415311855993945, -0.4058451513773972, 0.0,
-      0.4058451513773972,  0.7415311855993945,  0.9491079123427585};
-  static constexpr double node_w[7] = {
-      0.1294849661688697, 0.2797053914892766, 0.3818300505051189,
-      0.4179591836734694, 0.3818300505051189, 0.2797053914892766,
-      0.1294849661688697};
-
-  // The average of one function of suction over [lo, hi], weighted by how each node
-  // moves with the bound being differentiated. EVERY layer mean below is one call to
-  // this, at whatever scalar the caller works in: the nodes are constants, so an
-  // active bound carries its rows through the curve reads, and nothing here divides
-  // by the span at any order.
-  template <class T, class F, class W>
-  T node_average_at(const T& lo, const T& hi, F&& g, W&& weight) const {
-    const T m = T(0.5) * (lo + hi), s = hi - lo;
-    T acc = T(0.0);
-    for (int i = 0; i < n_node; ++i) {
-      acc += T(node_w[i] * weight(node_t[i])) * g(m + s * T(0.5 * node_t[i]));
-    }
-    return T(0.5) * acc;
-  }
-
-  // The curve and its two slopes at one suction, each from its own closed form.
-  double curve_at(double psi) const {
-    return vulnerability_curve_at<double>(psi, root_b, root_c);
-  }
-  double curve_slope_at(double psi) const {
-    return vulnerability_curve_slope_at<double>(psi, root_b, root_c);
-  }
-  double curve_curvature_at(double psi) const {
-    return vulnerability_curve_curvature_at<double>(psi, root_b, root_c);
-  }
-
-  // The cumulative curve over the layer's interval. This is the construction five
-  // callers describe as "replicated bit-for-bit from uptake_impl" -- so here it is,
-  // once. Split about the surface because the integrand is the constant 1 below it
-  // and the curve only above.
-  // The cumulative curve at an ACTIVE query, as a lift about the passive point: the
-  // value is the table's, because the solve ran on the table, and the query slope and
-  // the two trait rows are the curve's own. The double path reads the table directly
-  // and keeps its per-solve cache, which an active query cannot use anyway.
-  //
-  // step, db and dc are all exactly zero in VALUE -- they carry the query's
-  // derivatives and nothing else -- so every term that multiplies two of them
-  // contributes exactly zero to a first derivative, and nothing here reads a
-  // second.
-  template <class T>
-  T cumulative_lift(const T& arg, const SupplyAt<T>& sup) const {
-    using odelia::util::to_passive;
-    const double q = to_passive(arg);
-    const CurveReads c = curve_reads_at(q);
-    const T step = arg - T(q);
-    // Zero in value, carrying the trait's own row: the passive point is the query
-    // and the traits are their own values, so each delta is x - to_passive(x).
-    const T db = sup.root_b - T(to_passive(sup.root_b));
-    const T dc = sup.root_c - T(to_passive(sup.root_c));
-    return T(c.integral) + T(c.deriv) * step + T(c.integral_db) * db +
-           T(c.integral_dc) * dc;
-  }
-
-  // dG/dpsi at an active query, lifted the same way: the value is the table's own
-  // slope -- consistent with the value the mean above was formed from -- and the
-  // query row is the curve's integrand slope. First order only, which is all a
-  // parameter row asks of it.
-  template <class T>
-  T cumulative_deriv_lift(const T& arg, const SupplyAt<T>& sup) const {
-    using odelia::util::to_passive;
-    const double q = to_passive(arg);
-    const CurveReads c = curve_reads_at(q);
-    const T step = arg - T(q);
-    const T db = sup.root_b - T(to_passive(sup.root_b));
-    const T dc = sup.root_c - T(to_passive(sup.root_c));
-    return T(c.deriv) + T(c.integrand_deriv) * step + T(c.dtrait_pos) * db +
-           T(c.dtrait_steep) * dc;
-  }
-
-  // The three layer-mean forms at ANY scalar. The double siblings below are these
-  // with the table read directly and the per-solve cache kept; these read it through
-  // the lift, so an active query carries its rows. Same decision, same split about
-  // the surface, one definition of each.
-  template <class T>
-  T layer_integral_at(const T& lo, const T& hi, const SupplyAt<T>& sup) const {
-    using odelia::util::to_passive;
-    const double lo_p = to_passive(lo), hi_p = to_passive(hi);
-    T integral = T(0.0);
-    if (std::max(lo_p, 0.0) < hi_p) {
-      T pos_lo = T(0.0);
-      if (lo_p > 0.0) {
-        pos_lo = lo;
-      }
-      integral += cumulative_lift<T>(hi, sup) - cumulative_lift<T>(pos_lo, sup);
-    }
-    if (lo_p < std::min(hi_p, 0.0)) {
-      T neg_hi = T(0.0);
-      if (hi_p < 0.0) {
-        neg_hi = hi;
-      }
-      integral += (neg_hi - lo);
-    }
-    return integral;
-  }
-
-  // The layer mean at any scalar, and its bound derivative below it.
-  //
-  // ⚠️ ONE NODE, AND THAT IS THE SAME RULE AS ABOVE RATHER THAN A SECOND FORM. The
-  // midpoint is Gauss-Legendre at n = 1 (t = 0, w = 2), so `f(mid)` is the value sum
-  // and `f'(mid)/2` is the d/dbound sum with its (1 + t)/2 weight at t = 0. What
-  // decides the order is what the consumer needs: a lift asks for the value and its
-  // first rows and nothing more, so its error is the rule's s^2 f''/24 -- about 4e-8
-  // at the span this fires below -- while the ROWS are exact because AD
-  // differentiates the node's own position. The double family feeds the second
-  // derivatives, so it pays for seven.
-  //
-  // Measured: recording the seven-node sum here instead cost 17% of a century
-  // gradient, and lifting the double answer cost 29%, because the double family's
-  // trait rows are an incomplete-gamma series this path has cached away.
-  template <class T>
-  T layer_mean_at(const T& lo, const T& hi, const SupplyAt<T>& sup) const {
-    const T span = hi - lo;
-    if (average_directly(span, lo)) {
-      return vulnerability_curve_at<T>(T(0.5) * (lo + hi), sup.root_b,
-                                       sup.root_c);
-    }
-    return layer_integral_at<T>(lo, hi, sup) / span;
-  }
-
-  // The mean is passed in for the reason its double sibling's is: the caller has it,
-  // and at an active scalar forming it again is a second pass of lifts.
-  template <class T>
-  T layer_mean_dbound_at(const T& lo, const T& hi, const SupplyAt<T>& sup,
-                         bool high_moves, const T& mean) const {
-    using odelia::util::to_passive;
-    const T span = hi - lo;
-    if (average_directly(span, lo)) {
-      return T(0.5) * vulnerability_curve_slope_at<T>(T(0.5) * (lo + hi),
-                                                      sup.root_b, sup.root_c);
-    }
-    const T& at = high_moves ? hi : lo;
-    T f_at = T(1.0);
-    if (to_passive(at) > 0.0) {
-      f_at = cumulative_deriv_lift<T>(at, sup);
-    }
-    if (high_moves) {
-      return (f_at - mean) / span;
-    }
-    return (mean - f_at) / span;
-  }
-
-  // d(E_up)/d(the collar) at any scalar -- the same four lines the double form is,
-  // now that both read the layer means rather than building an integral.
-  //
-  // ⚠️ THIS IS WHAT LETS THE INTERIOR COLLAR BE CLOSED BY A RESIDUAL. The marginal
-  // profit contains the transport response V, which contains this; and inside an
-  // implicit_value residual the collar is PASSIVE while the parameters are active, so
-  // what the residual needs is this quantity carrying its PARAMETER rows. Handing
-  // them over as numbers instead is what the interior case did, and those numbers
-  // came from a nested pass nothing referees.
-  template <class T>
-  T duptake_dpsi_at(const T& T_collar, const SupplyAt<T>& sup) const {
-    using odelia::util::to_passive;
-    T dEup = T(0.0);
-    for (int i = 0; i < max_soil_layer; i++) {
-      const T& psi_i = sup.psi_soil[std::size_t(i)];
-      const bool collar_is_high = to_passive(T_collar) > to_passive(psi_i);
-      const T& lo = collar_is_high ? psi_i : T_collar;
-      const T& hi = collar_is_high ? T_collar : psi_i;
-
-      const T& k = sup.r_R_H_min[std::size_t(i)];
-      const T mean_f = layer_mean_at<T>(lo, hi, sup);
-      const T mean_dT =
-          layer_mean_dbound_at<T>(lo, hi, sup, collar_is_high, mean_f);
-      const T r_R = k / mean_f + sup.r_R_V_sum[std::size_t(i)];
-      const T dr_R_dT = -k * mean_dT / (mean_f * mean_f);
-      const T num = T_collar - psi_i - T(grav_head_z_[std::size_t(i)]);
-      dEup += (r_R - num * dr_R_dT) / (r_R * r_R);
-    }
-    return dEup * T(kg_per_mol_h2o);
-  }
-
-  double layer_integral(double lo, double hi) const {
-    const double pos_lo = std::max(lo, 0.0);
-    const double neg_hi = std::min(hi, 0.0);
-    double integral = 0.0;
-    if (pos_lo < hi) {
-      integral += root_vuln_integral_at(hi) - root_vuln_integral_at(pos_lo);
-    }
-    if (lo < neg_hi) {
-      integral += (neg_hi - lo);
-    }
-    return integral;
-  }
-
-  // The mean of the conductivity curve over that interval, by whichever form is
-  // accurate at the span. Writing the callers in MEANS rather than in integrals is
-  // what removes the span from their formulas -- `k * span / integral` is `k / mean`,
-  // and `-k * span * dinteg / integral^2` is `-k * mean_d / mean^2` -- and the span
-  // is what was causing the trouble.
-  double layer_mean(double lo, double hi) const {
-    const double span = hi - lo;
-    if (average_directly(span, lo)) {
-      return node_average_at<double>(lo, hi,
-                          [&](double p) -> double { return curve_at(p); },
-                          [](double) -> double { return 1.0; });
-    }
-    return layer_integral(lo, hi) / span;
-  }
-
-  // d^2(mean)/d(hi)d(lo) -- the mean responding to BOTH bounds, which is what a
-  // mixed second derivative of the uptake needs. The same sum as the value with
-  // the curve's CURVATURE under it and one weight from each end.
-  //
-  // ⚠️ DO NOT REPLACE THE SUM WITH A HAND-DERIVED COEFFICIENT. An expansion about
-  // the midpoint gives f''/4 - f''/12 here and f''/3 for the pure one below, and an
-  // f''/4 written for either is a bounded but real error in a leading term that only
-  // a second hand derivation finds. Under the sum the weights are where the nodes
-  // sit, so the limits come out rather than being put in.
-  double layer_mean_dbound_mixed(double lo, double hi, double mean) const {
-    const double span = hi - lo;
-    if (average_directly(span, lo)) {
-      return node_average_at<double>(
-          lo, hi, [&](double p) -> double { return curve_curvature_at(p); },
-          [](double t) -> double { return 0.25 * (1.0 + t) * (1.0 - t); });
-    }
-    const double f_hi = (hi > 0.0) ? root_vuln_integral_deriv_at(hi) : 1.0;
-    const double f_lo = (lo > 0.0) ? root_vuln_integral_deriv_at(lo) : 1.0;
-    return (f_hi + f_lo - 2.0 * mean) / (span * span);
-  }
-
-  // d^2(mean)/d(one bound)^2 -- the same sum with both weights from the same end.
-  double layer_mean_dbound2(double lo, double hi, bool high_moves,
-                            double mean) const {
-    const double span = hi - lo;
-    if (average_directly(span, lo)) {
-      return node_average_at<double>(
-          lo, hi, [&](double p) -> double { return curve_curvature_at(p); },
-          [high_moves](double t) -> double {
-            const double a = 0.5 * (high_moves ? 1.0 + t : 1.0 - t);
-            return a * a;
-          });
-    }
-    const double at = high_moves ? hi : lo;
-    const double f_at = (at > 0.0) ? root_vuln_integral_deriv_at(at) : 1.0;
-    const double df_at = (at > 0.0) ? root_vuln_integrand_deriv_at(at) : 0.0;
-    return high_moves ? df_at / span - 2.0 * (f_at - mean) / (span * span)
-                      : 2.0 * (mean - f_at) / (span * span) - df_at / span;
-  }
-
-  // d(mean)/d(a moving bound): the sum with the curve's SLOPE under it, weighted by
-  // how far each node travels with that end.
-  //
-  // ⚠️ THE MEAN IS PASSED IN, NOT RECOMPUTED. Every caller that wants a bound
-  // derivative already has the mean, and the integral behind it is a pair of table
-  // reads -- so forming it again here doubled them on a path plant runs millions of
-  // times. One source of truth, and the result passed.
-  double layer_mean_dbound(double lo, double hi, bool high_moves,
-                           double mean) const {
-    const double span = hi - lo;
-    if (average_directly(span, lo)) {
-      return node_average_at<double>(
-          lo, hi, [&](double p) -> double { return curve_slope_at(p); },
-          [high_moves](double t) -> double {
-            return 0.5 * (high_moves ? 1.0 + t : 1.0 - t);
-          });
-    }
-    // ⚠️ root_vuln_integral_deriv_at AND NOT THE CONDUCTIVITY READ. The two differ in
-    // how they are bounded past the knots -- the conductivity read clamps its
-    // argument to the last knot, the integral is capped at G(inf) -- so beyond the
-    // domain only the integral's own derivative stays consistent with the value the
-    // mean was formed from. Below the surface the bound is in the f_r == 1 part,
-    // contributed linearly, so the slope is 1. Chosen here rather than at each
-    // caller.
-    const double at = high_moves ? hi : lo;
-    const double f_at = (at > 0.0) ? root_vuln_integral_deriv_at(at) : 1.0;
-    return high_moves ? (f_at - mean) / span : (mean - f_at) / span;
-  }
-
-  // dG/d(root_b) at a fixed suction, from the homogeneity the curve already has
-  // and with NO rebuild. G integrates exp(-(sigma/root_b)^root_c), which is
-  // homogeneous of degree one in (psi, root_b), so Euler's theorem gives
-  //
-  //   psi * dG/dpsi + root_b * dG/droot_b  ==  G(psi)
-  //
-  // and rearranging is the whole derivation. Same identity as the stem curve's,
-  // on the same builder.
-  //
-  // It stays right under the cap rather than in spite of it: past the ceiling G
-  // is the complete-gamma limit (root_b/root_c)*Gamma(1/root_c), LINEAR in
-  // root_b, and dG/dpsi is zero there -- so the identity returns G/root_b, which
-  // is that limit's own derivative.
-  //
-  // root_c has no counterpart: it reshapes the curve rather than scaling it, so
-  // its row needs the grid rebuilt, exactly as stem_c's does.
-  double root_vuln_integral_droot_b(double psi) const {
-    return (root_vuln_integral_at(psi) -
-            psi * root_vuln_integral_deriv_at(psi)) / root_b;
-  }
-
-  // Which parameter of the root curve a row is taken in. The two reach the supply
-  // by the same single route -- the layer's mean conductivity integral, and
-  // nothing else -- so one loop serves both and all that differs is which
-  // derivative of the curve it accumulates.
-  enum class CurveTrait { Position, Steepness };
-
-  // dG/dtheta at a fixed suction. Position is Euler's identity on the TABULATED
-  // pair, which stays right past the cap because the limit is homogeneous of
-  // degree one in root_b too. Steepness has no such identity -- it reshapes the
-  // curve rather than scaling it -- and comes off the incomplete gamma's own
-  // shape series, which is the same loop the tabulation is built from.
-  //
-  // ⚠️ CAPPED, LIKE EVERY OTHER READER HERE, and this was the one that was not.
-  // The series holds only on the grid, so past the cap it refused -- by throwing,
-  // where the value beside it returns its limit. A deep dry layer under a wetter
-  // one is the state that reaches it, which is the arrangement a drying profile
-  // produces and whole-plant shutdown does not catch, since that keys off the
-  // WETTEST layer. It cost a shaded five-layer plant its whole water channel: the
-  // wet bound's row threw, and the row layer fell back to differencing the solve.
-  // Past the cap the integral IS the limit, so the limit's own derivative is the
-  // answer and no series is involved.
-  double root_vuln_integral_dtrait(double psi, CurveTrait trait) const {
-    if (trait == CurveTrait::Position) {
-      return root_vuln_integral_droot_b(psi);
-    }
-    if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
-      return cumulative_vulnerability_integral_limit_dc(root_b, root_c);
-    }
-    // ⚠️ A BAND BETWEEN THE TWO DOMAINS, AND IT REFUSES RATHER THAN THROWING.
-    // The grid stops one step short of psi_max and the spline extrapolates past it
-    // with the slope at its last knot, so between psi_max and the potential where
-    // that straight line finally exceeds the limit the value is neither on the grid
-    // nor at the cap: the series has no domain there and the model's own integral is
-    // a linear extrapolation whose steepness derivative is not one of these
-    // expressions. Non-finite is the honest answer -- the caller differences a
-    // genuine rebuild instead, which moves the grid as the model does.
-    //
-    // It threw here until now, and a throw is not a refusal: a deep dry layer under
-    // a wetter one put a live plant in this band, and the exception took the whole
-    // metric's gradient rather than one row's.
-    if (!(std::pow(psi / root_b, root_c) <= vulnerability_x_max())) {
-      return util::na_value;
-    }
-    return cumulative_vulnerability_integral_derivatives_at(psi, root_b, root_c)
-        .dc;
-  }
-
-  // d(dG/dpsi)/dtheta -- the curve's own trait derivative, elementary in all
-  // three of its arguments. Zero wherever the integral is at its cap, for the
-  // reason its psi-derivative is zero there: past the cap the value no longer
-  // moves, so nothing that moves it can either.
-  // df_r/d(a curve parameter) at one suction, at any scalar. ONE expression, so the
-  // value below and the psi-slope after it are derivatives of the same function
-  // rather than of a hand-kept mirror of it.
-  template <class T>
-  static T integrand_dtrait_kernel(const T& psi, const T& b, const T& c,
-                                   CurveTrait trait) {
-    using std::exp;
-    using std::log;
-    using std::pow;
-    const T x = pow(psi / b, c);
-    const T f = exp(-x);
-    // if/else rather than ?:, because XAD's expression templates give the two arms
-    // different types and a ternary cannot reconcile them.
-    if (trait == CurveTrait::Position) {
-      return T(f * x * c / b);
-    }
-    return T(-f * x * log(psi / b));
-  }
-
-  double root_vuln_integrand_dtrait(double psi, CurveTrait trait) const {
-    if (!(psi > 0.0)) {
-      return 0.0;   // f_r == 1 there whatever the parameters are
-    }
-    if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
-      return 0.0;
-    }
-    return integrand_dtrait_kernel<double>(psi, root_b, root_c, trait);
-  }
-
-
-  // Every read of the root curve a lifted evaluation takes, at one suction. The
-  // lift asks for seven numbers at the same passive point -- one of them an
-  // incomplete-gamma series -- and the suctions it asks at are the layer
-  // potentials and the collar, which are fixed for a solve. The double path
-  // already memoises the first of them; this holds the rest on the same terms.
-  struct CurveReads {
-    double q = 0.0;
-    double integral = 0.0, deriv = 0.0, integrand_deriv = 0.0;
-    double dtrait_pos = 0.0, dtrait_steep = 0.0;
-    double integral_db = 0.0, integral_dc = 0.0;
-  };
-  // Bounded by the suctions a solve asks at: a layer potential, the collar, or
-  // zero. Cleared where either the soil state or the curve changes.
-  mutable std::vector<CurveReads> curve_reads_;
-
-  CurveReads curve_reads_at(double q) const {
-    for (const CurveReads& hit : curve_reads_) {
-      if (hit.q == q) {
-        return hit;
-      }
-    }
-    CurveReads r;
-    r.q = q;
-    r.integral = root_vuln_integral_at(q);
-    r.deriv = root_vuln_integral_deriv_at(q);
-    r.integrand_deriv = root_vuln_integrand_deriv_at(q);
-    r.dtrait_pos = root_vuln_integrand_dtrait(q, CurveTrait::Position);
-    r.dtrait_steep = root_vuln_integrand_dtrait(q, CurveTrait::Steepness);
-    r.integral_db = root_vuln_integral_dtrait(q, CurveTrait::Position);
-    r.integral_dc = root_vuln_integral_dtrait(q, CurveTrait::Steepness);
-    curve_reads_.push_back(r);
-    return r;
+    return root_vuln_integral_from_psi.deriv(psi);
   }
 
   // Per-timestep soil state: the layer potentials, the layer depths, and the
@@ -1011,6 +460,11 @@ public:
     if (!(use_precomputed_z_soil_mid_ &&
           z_soil_mid_.size() == static_cast<size_t>(soil_number_of_depths_))) {
       // Fallback for paths that do not provide environment-precomputed midpoints.
+      //
+      // Correct at ANY layer spacing, and left alone by #626 for that reason:
+      // `soil_depth` holds the cumulative depth to the BOTTOM of each layer, so
+      // averaging consecutive boundaries (with an implicit 0 at the surface) is
+      // the midpoint of layer i whether or not the layers are equal.
       z_soil_mid_.resize(soil_number_of_depths_);
       for (size_t i = 0; i < soil_number_of_depths_; ++i) {
         if (i == 0) {
@@ -1027,16 +481,6 @@ public:
     for (size_t i = 0; i < soil_number_of_depths_; ++i) {
       grav_head_z_[i] = gravity_head * z_soil_mid_[i];
     }
-
-    // Layer thickness is soil geometry, not root architecture, so it is set here
-    // rather than alongside the resistance network that consumes it.
-    //
-    // ⚠️ Nothing in this package READS dz_: the carbon -> resistance map is the
-    // caller's, and so is the thickness it scales by. It is here so that caller
-    // can read the number THIS soil profile was built with rather than deriving
-    // its own -- the vertical resistance scales with dz^2, so two definitions
-    // drifting apart would be a silent squared factor neither side could see.
-    dz_ = layer_thickness(soil_depth_);
   }
 
   // Per-timestep root resistance network. Takes the resistances themselves, not
@@ -1057,39 +501,18 @@ public:
   // reads them, but plant exposes them through RcppR6, so they are carried
   // rather than dropped. They are removal candidates with item 6.
   //
-  // ⚠️ TAKES const& AND COPY-ASSIGNS. DO NOT CHANGE IT TO BY-VALUE AND MOVE: the
-  // caller holds one network as a member and refills it, so moving empties the
-  // caller's buffers and forces root_network_from_carbon to reallocate all five
-  // vectors on the next call -- +0.074 us, which is what the in-place overload
-  // exists to avoid. Copy-assigning into already-sized vectors allocates nothing
-  // on either side once both are warm.
-  // A layer's root carbon, recovered from the network that was built out of it.
-  // The network holds the carbon split three ways rather than the carbon, and the
-  // vertical third is the half to read it back from. NA rather than zero for an
-  // unrooted layer: the network is sized to the deepest rooted layer, so a layer
-  // below it has no carbon to move AND no slot to move it in, and a zero there
-  // would say the outputs are insensitive to carbon that could be put there.
-  double root_carbon(int layer) const {
-    const std::vector<double>& c = network_.c_r_V;
-    return layer >= 0 && layer < int(c.size()) && c[std::size_t(layer)] > 0.0
-               ? 3.0 * c[std::size_t(layer)]
-               : util::na_value;
-  }
-
+  // ⚠️ TAKES const& AND COPY-ASSIGNS, WHERE IT USED TO TAKE BY VALUE AND MOVE.
+  // The move was right when the caller built a throwaway network per call; it is
+  // WRONG now that the caller holds one as a member and refills it, because
+  // moving would empty the caller's buffers and force root_network_from_carbon to
+  // reallocate all five vectors on the next call -- reintroducing exactly the
+  // +0.074 us the in-place overload exists to avoid. Copy-assigning into
+  // already-sized vectors allocates nothing on either side once both are warm.
   void set_root_network(const RootNetwork& network) {
-    // Checked on a copy and assigned at the end, so a refused network leaves the
-    // previous one in place rather than half of itself.
-    RootNetwork taken = network;
-    // An absent horizontal term is no horizontal term, which is the whole of a
-    // network built from a series resistance. A SHORT one is a length that
-    // disagrees, and that is the error below.
-    if (taken.r_R_H_min.empty()) {
-      taken.r_R_H_min.assign(taken.r_R_V_sum.size(), 0.0);
-    }
-    if (taken.r_R_V_sum.size() != taken.r_R_H_min.size()) {
+    if (network.r_R_V_sum.size() != network.r_R_H_min.size()) {
       util::stop("set_root_network: r_R_H_min and r_R_V_sum must have the same "
                  "length; got " + std::to_string(network.r_R_H_min.size()) +
-                 " and " + std::to_string(taken.r_R_V_sum.size()));
+                 " and " + std::to_string(network.r_R_V_sum.size()));
     }
     // The rooted layers index psi_soil_ and grav_head_z_ directly in uptake(),
     // so a network deeper than the soil profile is an out-of-bounds read rather
@@ -1097,27 +520,27 @@ public:
     // set_physiology validated root carbon against soil_depth; now the network
     // arrives from outside the package and the check has to be here.
     if (soil_number_of_depths_ > 0 &&
-        taken.r_R_H_min.size() >
+        network.r_R_H_min.size() >
             static_cast<size_t>(soil_number_of_depths_)) {
       util::stop("set_root_network: network has " +
-                 std::to_string(taken.r_R_H_min.size()) +
+                 std::to_string(network.r_R_H_min.size()) +
                  " rooted layers but the soil profile has only " +
                  std::to_string(static_cast<int>(soil_number_of_depths_)));
     }
-    for (size_t i = 0; i < taken.r_R_H_min.size(); ++i) {
+    for (size_t i = 0; i < network.r_R_H_min.size(); ++i) {
       // Resistances, so non-negative. Zero is permitted, and means infinite
       // conductance: root_network_from_carbon produces it for a zero-carbon
       // layer, which is backwards but is the behaviour this preserves (see its
       // note on zero-carbon layers).
-      if (!std::isfinite(taken.r_R_H_min[i]) || taken.r_R_H_min[i] < 0.0 ||
-          !std::isfinite(taken.r_R_V_sum[i]) || taken.r_R_V_sum[i] < 0.0) {
+      if (!std::isfinite(network.r_R_H_min[i]) || network.r_R_H_min[i] < 0.0 ||
+          !std::isfinite(network.r_R_V_sum[i]) || network.r_R_V_sum[i] < 0.0) {
         util::stop("set_root_network: root resistances must be finite and "
                    "non-negative; layer=" + std::to_string(i) +
-                   "; r_R_H_min=" + util::to_string(taken.r_R_H_min[i]) +
-                   "; r_R_V_sum=" + util::to_string(taken.r_R_V_sum[i]));
+                   "; r_R_H_min=" + util::to_string(network.r_R_H_min[i]) +
+                   "; r_R_V_sum=" + util::to_string(network.r_R_V_sum[i]));
       }
     }
-    network_ = std::move(taken);
+    network_ = network;
     max_soil_layer = static_cast<int>(network_.r_R_H_min.size());
   }
 
@@ -1131,7 +554,6 @@ public:
   // optimisation described on root_vuln_integral_soil_, and the wettest layer
   // falls out of the same loop.
   double begin_solve() {
-    curve_reads_.clear();
     root_vuln_integral_soil_.resize(max_soil_layer);
     double wettest_soil_layer = std::numeric_limits<double>::infinity();
     for (int i = 0; i < max_soil_layer; ++i) {
@@ -1143,45 +565,30 @@ public:
 
   // Uptake at a collar suction, against the soil state begin_solve() cached.
   // This is the hot path: ~10^3 calls per collar solve.
-  // At the soil state and the network this object holds, all in double.
   void uptake(double T_collar, std::vector<double>& soil_consumption,
               double& E_up) const {
-    uptake(T_collar, held_supply(), soil_consumption, E_up);
-  }
-
-  // At a supply the caller owns, which is how the active path reaches it: the
-  // resistances come from root carbon, and that arithmetic is the caller's.
-  template <typename T>
-  void uptake(const T& T_collar, const SupplyAt<T>& at_scalar,
-              std::vector<T>& soil_consumption, T& E_up) const {
-    uptake_impl<T>(T_collar, at_scalar,
-                   root_vuln_integral_soil_.size() ==
-                       static_cast<size_t>(max_soil_layer),
-                   soil_consumption, E_up);
-  }
-
-  // This object's own state, as the view above. No copies: the arrays are here.
-  SupplyAt<double> held_supply() const {
-    return {psi_soil_, network_.r_R_H_min, network_.r_R_V_sum, root_b, root_c};
+    uptake_impl(T_collar, psi_soil_,
+                root_vuln_integral_soil_.size() ==
+                    static_cast<size_t>(max_soil_layer),
+                soil_consumption, E_up);
   }
 
   // Uptake against an arbitrary vector of layer suctions, for callers that
   // want to probe the supply function away from the current soil state (the
   // R-facing Leaf::E_from_Soil_to_Root_Collar).
   //
-  // The `&psi_soil == &psi_soil_` test selects the cached soil-side path. It is
-  // kept here only so this entry point cannot change behaviour for a caller that
-  // happens to hand back psi_soil_ itself; the hot path above does not need
+  // The `&psi_soil == &psi_soil_` test is what used to select the
+  // cached path for every caller, including the hot one. It is kept here only so
+  // this entry point cannot change behaviour for a caller that happens to hand
+  // back psi_soil_ itself; the hot path above no longer depends on
   // address identity to be fast.
   void uptake_at(double T_collar, const std::vector<double>& psi_soil,
                  std::vector<double>& soil_consumption, double& E_up) const {
-    const SupplyAt<double> at_scalar{psi_soil, network_.r_R_H_min,
-                                     network_.r_R_V_sum, root_b, root_c};
-    uptake_impl<double>(T_collar, at_scalar,
-                        (&psi_soil == &psi_soil_) &&
-                            root_vuln_integral_soil_.size() ==
-                                static_cast<size_t>(max_soil_layer),
-                        soil_consumption, E_up);
+    uptake_impl(T_collar, psi_soil,
+                (&psi_soil == &psi_soil_) &&
+                    root_vuln_integral_soil_.size() ==
+                        static_cast<size_t>(max_soil_layer),
+                soil_consumption, E_up);
   }
 
   // Analytic d(E_up)/d(T_collar): the collar-suction derivative of the uptake,
@@ -1189,136 +596,89 @@ public:
   // positive by construction -- pulling harder at the collar draws more water --
   // which is the whole reason for working in magnitudes (#25). Per layer, with
   // span = |T_collar - T_soil[i]| and integral = \int f_r over
-  // [T_src_min, T_src_max] (root_vuln_integral_from_psi, whose integrand is that
-  // table's own slope):
+  // [T_src_min, T_src_max] (root_vuln_integral_from_psi, whose integrand is
+  // root_vuln_from_psi):
   //   E_i        = (T_collar - T_soil[i] - grav) / r_R,
   //   r_R        = r_R_H_min[i] * span / integral + r_R_V_sum[i],
   //   dspan/dT   = sign_var   (+1 if T_collar is the upper bound, else -1),
   //   dinteg/dT  = sign_var * f_r(T_collar)  for T_collar>0  (else sign_var, f_r==1),
   // and dE_i/dT follows by the quotient rule.
   //
-  // CONTRACT: a number at every collar, the coincidences included. The layer
-  // mean is an average, so at a span of zero its nodes collapse onto the bound
-  // and it is f there; any alternative supply path must answer there too.
+  // CONTRACT: returns NaN when any layer sits on a branch kink (T_collar ==
+  // T_soil[i], the gravity-balance point, or T_collar == 0). That is deliberate,
+  // not a failure -- the analytic general-branch derivative is not valid across
+  // those, and the caller falls back to a central difference. An implementation
+  // that threw, or returned 0, would silently degrade TF24f's acclimation
+  // gradient. Any alternative supply path must keep this contract.
   double duptake_dpsi(double T_collar,
                       const std::vector<double>& psi_soil) const {
-    std::vector<double> per_layer;
-    return duptake_dpsi(T_collar, psi_soil, per_layer);
-  }
-
-  // The same conductance with each layer's own share, which is what a caller
-  // grafting the draws onto a moving collar needs.
-  //
-  // ⚠️ THE TWO HALVES CARRY DIFFERENT UNITS, exactly as uptake's do: the return
-  // is kg to match E_up and per_layer is mol to match soil_consumption. The two
-  // siblings differ by design, so a graft must take each from its own half.
-  double duptake_dpsi(double T_collar, const std::vector<double>& psi_soil,
-                      std::vector<double>& per_layer) const {
-    const double total_mol = duptake_dpsi_impl(T_collar, psi_soil, per_layer);
-    return total_mol * kg_per_mol_h2o;  // match E_up's kg units
-  }
-
-
-  // d2(E_up)/d(T_collar)2, in kg to match the conductance above. Mirrors
-  // duptake_dpsi_impl term for term with one more derivative of each moving part:
-  // the span is linear in the collar so its second derivative is zero, and the
-  // integral's is the integrand's own slope -- not the tabulation's curvature,
-  // which is a difference of the data rather than data.
-  //
-  // A number at every collar, for the reason duptake_dpsi gives: the layer mean is
-  // an average, so a span of zero is a value rather than a quotient.
-  double d2uptake_dpsi2(double T_collar,
-                        const std::vector<double>& psi_soil) const {
-    double d2_mol = 0.0;
-    for (int i = 0; i < max_soil_layer; i++) {
-      const double T_src_min = std::min(psi_soil[i], T_collar);
-      const double T_src_max = std::max(psi_soil[i], T_collar);
-
-      // ⚠️ THE WORST OF THE THREE CANCELLATIONS was here, because the second
-      // derivative was built ON a first whose numerator -- `sign_var * integral -
-      // span * dinteg_dT` -- already cancels its leading terms exactly (integral is
-      // f_r * span and dinteg_dT is f_r). It had spent one order of the span before
-      // the second derivative spent another. See test_leaf's "the mean conductivity"
-      // table for the crossover at a span of about 1e-5.
-      //
-      // In MEANS there is no branch left to write: layer_mean* makes the choice, and
-      // what remains is the quotient rule on r = k/g.
-      //
-      //   r = k/g  ->  r' = -k g'/g^2,  r'' = k (2 g'^2/g^3 - g''/g^2)
-      const double k_min = network_.r_R_H_min[i];
-      const bool collar_is_high = T_collar > psi_soil[i];
-      const double g = layer_mean(T_src_min, T_src_max);
-      const double g1 =
-          layer_mean_dbound(T_src_min, T_src_max, collar_is_high, g);
-      const double g2 =
-          layer_mean_dbound2(T_src_min, T_src_max, collar_is_high, g);
-      const double r_R_H = k_min / g;
-      const double dr_R_dT = -k_min * g1 / (g * g);
-      const double d2r_R_dT =
-          k_min * (2.0 * g1 * g1 / (g * g * g) - g2 / (g * g));
-      const double r_R = r_R_H + network_.r_R_V_sum[i];
-
-      const double num = T_collar - psi_soil[i] - grav_head_z_[i];
-      // E_i = num / r_R with num linear in the collar, so the same two terms
-      // again -- one for the resistance's curvature, one for the product of the
-      // two first derivatives.
-      const double dE_i = (r_R - num * dr_R_dT) / (r_R * r_R);
-      d2_mol += -num * d2r_R_dT / (r_R * r_R) - 2.0 * dE_i * dr_R_dT / r_R;
-    }
-    return d2_mol * kg_per_mol_h2o;
-  }
-
-private:
-  // Per layer in mol, returning the sum in mol: the one loop both public forms
-  // read, so a change reaches them together and the total is the sum of the
-  // parts by construction rather than by agreement.
-  double duptake_dpsi_impl(double T_collar,
-                           const std::vector<double>& psi_soil,
-                           std::vector<double>& per_layer) const {
+    const double kink_tol = 1e-8;
     double dEup_dT_mol = 0.0;
-    per_layer.assign(psi_soil.size(), 0.0);
 
     for (int i = 0; i < max_soil_layer; i++) {
+      if (std::abs(T_collar - psi_soil[i]) < kink_tol ||
+          std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < kink_tol ||
+          std::abs(T_collar) < kink_tol) {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+
       const double T_src_min = std::min(psi_soil[i], T_collar);
       const double T_src_max = std::max(psi_soil[i], T_collar);
+      const double span = T_src_max - T_src_min;
+      const double sign_var = (T_collar > psi_soil[i]) ? 1.0 : -1.0;  // = dspan/dT_collar
 
-      // ⚠️ THE DIVIDED DIFFERENCE LOSES AN ORDER OF SPAN TO CANCELLATION, and this
-      // derivative is where it first showed: `integral` is f_r * span to leading order
-      // and `dinteg_dT` is f_r, so their difference cancels exactly and what survives
-      // is O(span^2) over an integral^2 that is also O(span^2). The limit is finite;
-      // the computation was not, because both are reads of a TABULATED curve and the
-      // cancellation promotes the table's error by one factor of 1/span.
-      //
-      // In MEANS the span is gone from the algebra and layer_mean* owns the choice of
-      // form, so there is no branch to write here at all.
-      const double k_min = network_.r_R_H_min[i];
-      const double mean_f = layer_mean(T_src_min, T_src_max);
-      const double mean_dT =
-          layer_mean_dbound(T_src_min, T_src_max, T_collar > psi_soil[i], mean_f);
-      const double r_R_H = k_min / mean_f;
-      const double dr_R_H_dT = -k_min * mean_dT / (mean_f * mean_f);
+      // integral, replicated bit-for-bit from uptake_impl.
+      const double T_pos_lo = std::max(T_src_min, 0.0);
+      const double T_neg_hi = std::min(T_src_max, 0.0);
+      double integral = 0.0;
+      if (T_pos_lo < T_src_max) {
+        integral += root_vuln_integral_at(T_src_max) -
+                    root_vuln_integral_at(T_pos_lo);
+      }
+      if (T_src_min < T_neg_hi) {
+        integral += (T_neg_hi - T_src_min);
+      }
+
+      // d(integral)/d(T_collar): for T_collar>0 the moving bound is in the
+      // vulnerable region. The integrand is the derivative of the *same*
+      // cumulative curve that produced `integral`
+      // (root_vuln_integral_deriv_at), NOT the separate root_vuln_from_psi
+      // spline: the two agree on the knot domain but are bounded differently past
+      // it -- the conductivity lookup clamps its argument to the last knot, the
+      // integral is capped at G(inf) -- so beyond the domain only the integral's
+      // own derivative stays consistent with the value used here (issue #1; the
+      // reasoning is #527's). ⚠️ They do NOT both clamp to the last value.
+      // For T_collar<0 (an above-atmospheric collar) the
+      // moving bound is in the f_r==1 part, contributed linearly, so the slope
+      // is 1.
+      const double fr_at =
+          (T_collar > 0.0) ? root_vuln_integral_deriv_at(T_collar) : 1.0;
+      const double dinteg_dT = sign_var * fr_at;
+
+      const double r_R_H = network_.r_R_H_min[i] * span / integral;
       const double r_R = r_R_H + network_.r_R_V_sum[i];
+      const double dr_R_H_dT =
+          network_.r_R_H_min[i] * (sign_var * integral - span * dinteg_dT) / (integral * integral);
       const double dr_R_dT = dr_R_H_dT;
 
       const double num = T_collar - psi_soil[i] - grav_head_z_[i];
       const double dnum_dT = 1.0;
       // E_i = num / r_R  ->  quotient rule.
-      const double dE_i = (dnum_dT * r_R - num * dr_R_dT) / (r_R * r_R);
-      per_layer[std::size_t(i)] = dE_i;
-      dEup_dT_mol += dE_i;
+      dEup_dT_mol += (dnum_dT * r_R - num * dr_R_dT) / (r_R * r_R);
     }
 
-    return dEup_dT_mol;
+    return dEup_dT_mol * kg_per_mol_h2o;  // match E_up's kg units
   }
 
+private:
   // Total water drawn from all layers to the collar. Writes E_up (kg H2O m^-2
   // leaf s^-1) and soil_consumption[i] (mol H2O m^-2 leaf s^-1, note the unit
   // split); a negative E_i in a layer means that layer is *gaining* water
   // (hydraulic redistribution).
   //
   // Implementation decisions:
-  //   * f_r and its running integral are read from one pre-computed table
-  //     (root_vuln_integral_from_psi, f_r being its slope) instead of repeatedly
+  //   * f_r and its running integral are read from pre-computed splines
+  //     (root_vuln_from_psi, root_vuln_integral_from_psi) instead of repeatedly
   //     evaluating exp(-(psi/b)^c); see setup_vulnerability.
   //   * Two special cases are handled exactly to avoid division/round-off
   //     issues: (a) collar potential equals layer potential, and (b) the
@@ -1326,34 +686,16 @@ private:
   //   * The isfinite() guards are present because this is called from within
   //     nested root-finders where bad brackets can produce NaNs; they fail fast
   //     with diagnostic context rather than propagating NaN.
-  // ⚠️ ONE QUADRATURE AT TWO SCALARS, and that is the point of the template. The
-  // forward solve runs it at double ~10^3 times per collar solve; the derivative
-  // path runs it once at an active scalar. A second implementation for the second
-  // scalar is a place the two can disagree, which is the one thing this boundary
-  // cannot afford.
-  //
-  // At double it is the arithmetic it always was, to the bit: the min/max are
-  // written as the selects they compile to, and the cumulative-integral cache is
-  // taken only there -- at an active scalar the argument carries a derivative and
-  // an equality test on it is a test on the value alone.
-  //
-  // The soil state and the network are held. The collar is what moves, which is
-  // what the marginal profit reads.
-  template <typename T>
-  void uptake_impl(const T& T_collar, const SupplyAt<T>& at_scalar,
+  void uptake_impl(double T_collar, const std::vector<double>& psi_soil,
                    bool use_integral_cache,
-                   std::vector<T>& soil_consumption, T& E_up) const {
-    using odelia::util::to_passive;
-    const std::vector<T>& psi_soil = at_scalar.psi_soil;
-    const double collar_at = to_passive(T_collar);
-    const double root_b0 = to_passive(at_scalar.root_b);
-    const double root_c0 = to_passive(at_scalar.root_c);
+                   std::vector<double>& soil_consumption, double& E_up) const {
 
-    if (!std::isfinite(collar_at)) {
-      util::stop("E_from_Soil_to_Root_Collar invalid input; T_collar=" + util::to_string(collar_at));
+    if (!std::isfinite(T_collar)) {
+      util::stop_infeasible("uptake",
+          "E_from_Soil_to_Root_Collar invalid input; T_collar=" + util::to_string(T_collar));
     }
 
-    E_up = T(0.0);
+    E_up = 0;
 
     // Cumulative-integral spline caching (bit-identical fast path). The only two
     // arguments ever passed to root_vuln_integral_from_psi in the loop below are
@@ -1362,15 +704,20 @@ private:
     // once), and psi_soil[i] is constant across the whole solve (precomputed in
     // begin_solve).
     const double G_at_T_collar =
-        use_integral_cache ? root_vuln_integral_at(collar_at) : 0.0;
+        use_integral_cache ? root_vuln_integral_at(T_collar) : 0.0;
 
-    // GUARD POLICY: no per-layer isfinite/stop guards in this hot loop, and DO
-    // NOT add them. Two guards are load-bearing:
-    //   * the equal-potentials f_ri <= 0 check below: a negative f_ri gives a
-    //     negative-but-FINITE r_R, hence a wrong-sign E_i that the post-loop
-    //     isfinite(E_up) check does not catch. root_vuln_at clamps its argument
-    //     to the last knot, which bounds f_ri below by that knot's ~1%, so the
-    //     check is a cheap assertion on that clamp, not the enforcement.
+    // GUARD POLICY (the per-layer isfinite/stop guards here were added while
+    // debugging the #485 drought-NaN, now fixed at source by the soil residual-
+    // moisture floor). Most were defensive and redundant, so they have been
+    // removed from this hot loop; the remaining two are load-bearing:
+    //   * the equal-potentials f_ri <= 0 check below: it USED to be the only
+    //     thing standing between a deep-drought layer and the negative
+    //     conductivity root_vuln_from_psi's extrapolant produced past its
+    //     domain -- negative-but-FINITE r_R, so a wrong-sign E_i the post-loop
+    //     isfinite(E_up) net would not catch. That case is now prevented at
+    //     source: root_vuln_at clamps its argument to the last knot, so f_ri is
+    //     bounded below by the last knot's ~1% (issue #1). The check stays as a
+    //     cheap assertion on that, not as the enforcement.
     //   * the post-loop isfinite(E_up) check: any non-finite produced anywhere
     //     in the loop propagates into the sum and is caught there once per call.
     // Everything else is provably safe to drop on the valid path: psi_soil is
@@ -1381,69 +728,45 @@ private:
     for(int i = 0; i < max_soil_layer; i++){
 
     // The wetter end of the interval spanned between this layer and the collar --
-    // the SMALLER suction, where the signed convention took a minimum. Written as
-    // the select std::min compiles to, so the collar can carry a derivative
-    // through whichever end it is.
-    const T& psi_i = psi_soil[std::size_t(i)];
-    const double soil_at = to_passive(psi_i);
-    const T T_src_min = (collar_at < soil_at) ? T_collar : psi_i;
+    // the SMALLER suction, where the signed convention took a minimum.
+    double T_src_min = std::min(psi_soil[i], T_collar);
 
     // The drier end: the LARGER suction.
-    const T T_src_max = (soil_at < collar_at) ? T_collar : psi_i;
+    double T_src_max = std::max(psi_soil[i], T_collar);
 
      // If root collar soil water potential equals the soil water potential in a given layer
-    if(std::abs(collar_at - soil_at) < 1e-8){
+    if(std::abs(T_collar - psi_soil[i]) < 1e-8){
 
       // Fraction of conductance in roots in a given layer at the driest suction
       // (which here equals the root collar's).
-      // f_r is the cumulative table's own slope, read through root_vuln_at so a
-      // layer drier than the grid gets the last knot's conductivity rather than an
-      // extrapolated (eventually negative) one.
-      // The conductivity at the potential both ends sit at, carrying the query's
-      // own slope and the curve's two trait derivatives -- the same five reads of
-      // one curve the cumulative integral is lifted with. A constant here reports
-      // this layer as insensitive to the soil it is in.
-      const double f_at = to_passive(T_src_max);
-      const T f_ri =
-          T(root_vuln_at(f_at)) +
-          T(root_vuln_integrand_deriv_at(f_at)) * (T_src_max - T(f_at)) +
-          T(root_vuln_integrand_dtrait(f_at, CurveTrait::Position)) *
-              (at_scalar.root_b - T(root_b0)) +
-          T(root_vuln_integrand_dtrait(f_at, CurveTrait::Steepness)) *
-              (at_scalar.root_c - T(root_c0));
-      if (!std::isfinite(to_passive(f_ri)) || to_passive(f_ri) <= 0.0) {
-        util::stop("E_from_Soil_to_Root_Collar invalid f_ri; layer=" + std::to_string(i) +
-                   "; f_ri=" + util::to_string(to_passive(f_ri)) +
-                   "; T_src_max=" + util::to_string(to_passive(T_src_max)) +
-                   "; T_collar=" + util::to_string(collar_at));
+      // root_vuln_from_psi is a pre-built spline of exp(-(psi/b_root)^c_root),
+      // read through root_vuln_at so a layer drier than the grid gets the last
+      // knot's conductivity rather than an extrapolated (eventually negative) one.
+      double f_ri = root_vuln_at(T_src_max);
+      if (!std::isfinite(f_ri) || f_ri <= 0.0) {
+        util::stop_infeasible("uptake",
+            "E_from_Soil_to_Root_Collar invalid f_ri; layer=" + std::to_string(i) +
+                   "; f_ri=" + util::to_string(f_ri) +
+                   "; T_src_max=" + util::to_string(T_src_max) +
+                   "; T_collar=" + util::to_string(T_collar));
       }
 
       // Fraction of conductance in roots in a given layer at the driest suction
-      const T r_R_H = at_scalar.r_R_H_min[std::size_t(i)] / f_ri; // [MPa * s * (mol H2O)^-1]
+      double r_R_H = network_.r_R_H_min[i] / f_ri; // [MPa * s * (mol H2O)^-1]
 
       // Total root resistance (horizantal plus vertical)
-      const T r_R = r_R_H + at_scalar.r_R_V_sum[std::size_t(i)];
+      double r_R = r_R_H + network_.r_R_V_sum[i];
 
-      // Transpiration is equivalent to gravitational water loss (i.e. layer gains
-      // water). The collar does not appear, so this branch carries the
-      // resistances' derivative and none of the collar's -- which is what the
-      // model says about it.
-      const T E_i = T(-grav_head_z_[i]) / r_R;
+      // Transpiration is equivalent to gravitational water loss (i.e. layer gains water)
+      double E_i = -grav_head_z_[i] / r_R ;
 
       soil_consumption[i] = E_i;
       E_up += E_i;
 
     }
-    // ⚠️ A SNAP, NOT A GUARD, AND IT IS TAKEN ONLY AT DOUBLE. The general branch
-    // below is well defined here -- the span is the gravitational head and the
-    // integral is positive -- so this is a convenience that writes a flux the
-    // model calls zero. Its derivative is NOT zero: it is 1/r_R, and a scalar
-    // that carries one takes the general branch to get it. Left in place at
-    // double because the forward model's numbers are the snapped ones.
-    else if(std::is_same_v<T, double> &&
-            std::abs((collar_at - soil_at) - grav_head_z_[i]) < 1e-8){
+    else if(std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < 1e-8){
       // If pressure difference perfectly balances gravity transpiration is equal to zero
-      const T E_i = T(0.0); // [mol H2O / m^2 / s]
+      double E_i = 0.0; // [mol H2O / m^2 / s]
 
       soil_consumption[i] = E_i;
 
@@ -1457,40 +780,27 @@ private:
       // (root_vuln_integral_from_psi, indexed by the suction magnitude) with 2
       // evals instead of the old (n+1)-point sample mean. The interval is split
       // at T = 0: for T < 0 (an above-atmospheric potential) vulnerability is 1.
-      const T T_pos_lo = (to_passive(T_src_min) < 0.0) ? T(0.0) : T_src_min;
-      const T T_neg_hi = (0.0 < to_passive(T_src_max)) ? T(0.0) : T_src_max;
+      double T_pos_lo = std::max(T_src_min, 0.0); // wet end of the T>=0 part
+      double T_neg_hi = std::min(T_src_max, 0.0); // dry end of the T<0 part
 
       // Memoised cumulative-integral lookup. Returns the exact same double the
       // spline would (same input -> same output); the comparisons select the
       // precomputed value because T_src_max / T_pos_lo are bit-for-bit equal to
       // one of the cached arguments in the common (T>=0) case.
-      // The cumulative curve, carrying its own integrand as the slope: the value
-      // is the table's, because the solve ran on the table, and the derivative is
-      // the curve's, which is what root_vuln_integral_deriv_at is.
-      // The cumulative root curve, carrying every slope the same curve gives:
-      // its own integrand in the query, the integrand's slope for the second
-      // order the collar's condition takes, and the two trait derivatives with
-      // their cross terms in the query. Five reads of one curve, none of them a
-      // hand-kept mirror of it.
-      auto G_integral = [&](const T& arg) -> T {
-        if constexpr (std::is_same_v<T, double>) {
-          const double q = arg;
-          if (use_integral_cache) {
-            if (q == collar_at) return G_at_T_collar;
-            if (q == soil_at) return root_vuln_integral_soil_[i];
-          }
-          return root_vuln_integral_at(q);
-        } else {
-          return cumulative_lift<T>(arg, at_scalar);
+      auto G_integral = [&](double arg) -> double {
+        if (use_integral_cache) {
+          if (arg == T_collar) return G_at_T_collar;
+          if (arg == psi_soil[i]) return root_vuln_integral_soil_[i];
         }
+        return root_vuln_integral_at(arg);
       };
 
-      T integral = T(0.0);
-      if (to_passive(T_pos_lo) < to_passive(T_src_max)) {
+      double integral = 0.0;
+      if (T_pos_lo < T_src_max) {
         // T>=0 part: suction runs from T_pos_lo up to T_src_max
         integral += G_integral(T_src_max) - G_integral(T_pos_lo);
       }
-      if (to_passive(T_src_min) < to_passive(T_neg_hi)) {
+      if (T_src_min < T_neg_hi) {
         // T<0 part: f_r == 1 over its length
         integral += (T_neg_hi - T_src_min);
       }
@@ -1506,43 +816,19 @@ private:
     // The exception, since the cap: with BOTH bounds past 7.3132 MPa the integral
     // is exactly 0 and r_R_H +Inf. E_i is then -0 and duptake_dpsi NaN, which its
     // caller reads as "use central differences".
-    const T span = T_src_max - T_src_min;
-
-    // ⚠️ SAME CANCELLATION AS duptake_dpsi_impl'S, ONE LEVEL DOWN. span/integral is
-    // (max - min)/(G(max) - G(min)), whose denominator differences two nearly-equal
-    // reads of a TABULATED G. The VALUE survives it -- 4e-10 at the span of 5.6e-08
-    // that one operating point of 2,829,445 on a century stand reached -- but this is
-    // the path plant's curvature is taken through, and AD differentiates it TWICE.
-    // Each differentiation divides by the span again, so 4e-10/(5.6e-08)^2 is about
-    // 0.13 relative: the curvature at that point was never trustworthy either.
-    //
-    // So over a short interval the mean is formed as a MEAN -- an average of the
-    // curve's own closed form over the interval, which subtracts nothing and so has
-    // no span left in its error. Over a long one the difference is well conditioned
-    // and far cheaper, and average_directly is the one place that choice is made.
-    //
-    // Only where both bounds sit above the surface: below it the integrand is the
-    // constant 1 and the curve has a corner there, which no fixed rule integrates.
-    T mean_f;
-    if (average_directly(span, T_src_min)) {
-      mean_f = vulnerability_curve_at<T>(T(0.5) * (T_src_min + T_src_max),
-                                        at_scalar.root_b, at_scalar.root_c);
-    } else {
-      mean_f = integral / span;
-    }
+    const double span = T_src_max - T_src_min;
 
     // Find the horizantal resistance in a given layer by dividing the minimum resistance (i.e. maximum conductivity) by the fractional loss of conductivity
-    const T r_R_H =
-        at_scalar.r_R_H_min[std::size_t(i)] / mean_f; // [MPa * s * (mol H2O)^-1]
+    double r_R_H = network_.r_R_H_min[i] * span / integral; // [MPa * s * (mol H2O)^-1]
 
     // Find the total resistance in a given layer by adding the vertical resistance in that layer
-    const T r_R = r_R_H + at_scalar.r_R_V_sum[std::size_t(i)]; // [MPa * s * (mol H2O)^-1]
+    double r_R = r_R_H + network_.r_R_V_sum[i]; // [MPa * s * (mol H2O)^-1]
 
     // Transpiration is equal to the potential gradient between the root collar
     // and the soil, accounting for gravitational potential. In magnitudes the
     // collar has to pull HARDER than the soil holds, plus enough to lift the
     // water -- hence the subtraction order. E_i < 0 still means the layer gains.
-    const T E_i = (T_collar - psi_i - T(grav_head_z_[i])) / r_R; // [mol H2O / m^2 / s]
+    double E_i = (T_collar - psi_soil[i] - grav_head_z_[i]) / r_R; // [mol H2O / m^2 / s]
 
     soil_consumption[i] = E_i;
     E_up += E_i;
@@ -1555,8 +841,9 @@ private:
   // mol H2O m^-2 s^-1 and converted downstream in TF24_Strategy::compute_rates.
   // The two siblings therefore carry different units by design.
   E_up = E_up * kg_per_mol_h2o;
-  if (!std::isfinite(to_passive(E_up))) {
-    util::stop("E_from_Soil_to_Root_Collar non-finite E_up_; T_collar=" + util::to_string(collar_at) +
+  if (!std::isfinite(E_up)) {
+    util::stop_infeasible("uptake",
+        "E_from_Soil_to_Root_Collar non-finite E_up_; T_collar=" + util::to_string(T_collar) +
                "; max_soil_layer=" + std::to_string(max_soil_layer));
   }
   }
