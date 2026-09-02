@@ -39,9 +39,34 @@ path is checked against, and #89, #90 and #131 built on it.
 | `bcc81cd` | `replay_operating_point`, `operating_point_kind_count`, `ncontrol_default`, the scalar carbon map |
 | `333af55` | `test_supplied_rows` -- the one row this surface supplies |
 | `bdff08d` | `outputs_at` / `marginal_at` asserted against the solve's own numbers, at every kind |
+| `f2a6dc6` | the curvature falls back to one-sided where a neighbour is outside the interval |
 
 plant carries `c49da429` (onto the rebuilt surface, and four merge breaks that
-had never compiled) and `6c748e14` (`with_slope` taken from odelia).
+had never compiled), `6c748e14` (`with_slope` taken from odelia), `c1f4cedd`
+(the tests upstream's event-queue constructor left behind, and the 0.9.0 pin),
+`6f31d36b` (the pack seated from the leaf before what plant owns overrides it)
+and `c6fc6958` (the three FF16 AD probes).
+
+## What the consumer boundary cost, and what it caught
+
+⚠️ **THE MERGE COMMIT HAD NEVER BEEN COMPILED.** Four things in plant were broken
+in ways no reader would find and no test could reach: a rename that missed one
+site, a lost `template <typename T, typename E>` line, a state read into a
+`double` inside a templated environment, and a call carrying an argument this
+branch's design had removed. A syntax-only sweep over all 27 translation units is
+what surfaced them, and it is the first thing to run after any merge here.
+
+Three more the SUITE caught, none of them about the model:
+
+* upstream's event queue gave `SCM` an `events` argument, and eleven
+  three-argument calls across six test files bound `Control()` to `events`.
+* the FF16 AD probes named odelia's scalars without including odelia, compiled
+  below C++20 where its concepts do not parse, and linked its tape without the
+  two XAD storage-class defines -- the hazard that names neither package.
+* the parameter pack was filled with zeros and then thirteen of nineteen slots
+  set, leaving seven cost curves' parameters at zero rather than the leaf's
+  values. plant's gradient ladder named it, by asking that every trait either has
+  a column or is refused BY NAME.
 
 Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
 (RECORDED-DECISIONS.md) and `f9c06de` (`with_slope` moved in). plant carries
