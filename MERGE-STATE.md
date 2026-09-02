@@ -32,6 +32,7 @@ path is checked against, and #89, #90 and #131 built on it.
 | `bf3c47a` | upstream's kernels take their parameters; `collar_coords_at` with both halves of each pair |
 | `6e3fd6a` | the transpose identity, over the surface that exists |
 | `ab444bf` | `profit_at` / `outputs_at` / `marginal_at`. profit and the draws bit-identical to the solve's own; the marginal bit-identical to upstream's `dprofit_at_collar_psi` |
+| `0b37498` | one spelling of each derivative: the residuals hold the collar, its channel is one supplied slope, and `graft_integral` takes the table's query slope |
 
 Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
 (RECORDED-DECISIONS.md) and `f9c06de` (`with_slope` moved in). plant carries
@@ -40,8 +41,41 @@ Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
 ## What is left, in dependency order
 
 1. **`marginal_collar_slope`** -- dM/dp, the curvature the interior derivation
-   divides by, as a FIRST derivative of `marginal_at` rather than a second of the
-   objective.
+   divides by. **Attempted and WITHDRAWN; read this before trying again.**
+
+   A tangent through `marginal_at` returns about an EIGHTH of it -- right sign,
+   plausible magnitude, and wrong. It is not a bug to find: with the residuals
+   holding the collar (which is what gives every first derivative one spelling),
+   nothing the slopes are built from responds to the collar, so the second
+   derivative is absent BY CONSTRUCTION. Measured: analytic d(dci/dp)/dp
+   -8.0e-03 against a difference of -9.198.
+
+   What an assembly needs, term by term:
+
+   * **d2sigma/dp2** = d(dsigma_du)/dp * du/dp + dsigma_du * d2u/dp2. The first
+     factor is the inverse table's SECOND derivative, which the interpolator does
+     not expose -- but `1/f(sigma)` supplies it in closed form as
+     `-f'(sigma)/f(sigma)^2 * dsigma/dp`, which is the same table-value-plus-
+     curve-row graft used everywhere else, evaluated at the LIVE sigma rather
+     than the held one.
+   * **d2E_up/dp2** comes free: `duptake_dpsi` is scalar-generic, so a tangent
+     through it at a live collar IS the second order. Verified to work; it is
+     simply not the dominant term (it moved the 4th digit).
+   * **the conductance partials** must then be evaluated at the live sigma and
+     the live collar, which is circular with the slopes -- so two passes, one for
+     the slope and one for its response.
+
+   ⚠️ AND THE REFERENCE IS A DIFFERENCE OF UPSTREAM'S `dprofit_at_collar_psi`,
+   NOT of `marginal_at`. `marginal_at` freezes `sigma_star` and `ci_star` at the
+   solved point, so differencing it in the collar differentiates a pinned
+   expression and returns ~1.6e+04 where the answer is ~-5.8. That difference is
+   stable to six digits across steps, so it is a usable referee -- and it is what
+   showed the tangent was short.
+
+   A first difference of upstream's M(p) is also a legitimate IMPLEMENTATION if
+   the analytic assembly proves not worth it: the old design's objection was to
+   differencing the OBJECTIVE twice, which flipped a curvature's sign, and a
+   first difference of M is a different and far better conditioned thing.
 2. **`test_supplied_rows`** -- the two rows no difference of the recorded step
    can referee.
 3. **`bound_at`** at TWO arms, **`collar_at`** taking the curvature per 33e0048,
@@ -128,6 +162,11 @@ should not sit here long.
 * **Every partial takes the TABLE's conductivity with the CURVE's rows**, through
   `graft_curve`, because the solve ran on the table. The closed form's value
   there makes M non-zero at the collar the solve placed.
+* **A derivative must have ONE spelling.** Where a quantity is both lifted by a
+  residual and carried as an explicit slope, the two are different numbers
+  whenever the table and its inverse are not exact mutual inverses -- and both
+  are finite, plausible, and wrong in different places. The residuals hold the
+  collar for exactly this reason.
 * **A nested active is built by assigning into its value.** `nested(inner)`
   strips the inner rows where it compiles at all, giving a slope that is right at
   double and zero in every trait.
