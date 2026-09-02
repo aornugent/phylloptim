@@ -108,6 +108,18 @@ Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
    needs measuring rather than merging. It is the one file whose PASS count varies
    run to run.
 
+5. **TF24f's acclimation rate does not respond to the price.** Everything else
+   about TF24_floor does: the solve optimises it, `shadow_cost` reports it, and
+   the stomata close. TF24f evaluates at a TRACKED collar rather than optimising
+   one, and its tracked state's gradient comes back the same at lambda_o = 0 and
+   1e5 -- both about 2e-13. Every phylloptim entry point it calls now names
+   TF24_floor, so the question is narrower than the seating: it is about that
+   strategy's own differenced gradient.
+
+⚠️ **`test-strategy-ff16 :: Report generation` fails for want of `kableExtra`,
+which is an environment gap rather than a defect** -- it should be behind a
+`skip_if_not_installed`. Recorded so the next reader does not chase it.
+
 ## The gate that has caught everything
 
 **Bit-identity at `T = double`, against upstream's own function.** Not a spot
