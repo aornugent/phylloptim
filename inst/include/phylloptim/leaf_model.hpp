@@ -10,6 +10,7 @@
 #include <phylloptim/roots.hpp>
 #include <phylloptim/single_potential.hpp>
 #include <phylloptim/vulnerability.hpp>
+#include <phylloptim/graft.hpp>
 
 #include <odelia/interpolator.hpp>
 #include <odelia/with_slope.hpp>
@@ -907,8 +908,10 @@ public:
 
   // The two derivations, one place each, so a caller cannot get them
   // inconsistent. `f` is the remaining-conductivity fraction.
+  // Forwards: the derivation lives in vulnerability.hpp, beside the curve it
+  // scales and the bundles that differentiate it.
   static double weibull_b_from_P50(double P50, double c) {
-    return P50 / std::pow(std::log(2.0), 1.0 / c);
+    return phylloptim::weibull_b_from_P50(P50, c);
   }
   static double weibull_psi_at_fraction(double b, double c, double f) {
     return b * std::pow(std::log(1.0 / f), 1.0 / c);
@@ -2309,19 +2312,12 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
 // untouched and only the tape sees the rows.
 template <class S>
 inline S Leaf::stem_integral_at(const S& psi, const leaf_pars<S>& pars) const {
-  using odelia::util::to_passive;
-  const double at = to_passive(psi);
-  const double P50 = to_passive(pars[par_stem_P50]);
-  const double c = to_passive(pars[par_stem_c]);
-  const double b = weibull_b_from_P50(P50, c);
-  const VulnerabilityIntegralDerivatives d =
-      cumulative_vulnerability_integral_derivatives_at(at, b, c);
-  const TraitRows rows = rows_in_P50(d.db, d.dc, b, c);
-  const S step = psi - S(at);
-  return S(stem_curve_integral(at, "Leaf::stem_integral_at")) +
-         S(d.dpsi) * step +
-         S(rows.dP50) * (pars[par_stem_P50] - S(P50)) +
-         S(rows.dc) * (pars[par_stem_c] - S(c));
+  // The value is the stem table's; the rows are the closed form's. One graft
+  // serves both curves -- see graft.hpp for why that is not a convenience.
+  return graft_integral<S>(
+      stem_curve_integral(odelia::util::to_passive(psi),
+                          "Leaf::stem_integral_at"),
+      psi, pars[par_stem_P50], pars[par_stem_c]);
 }
 
 inline leaf_pars<double> Leaf::passive_pars() const {

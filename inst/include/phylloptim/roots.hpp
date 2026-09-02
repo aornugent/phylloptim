@@ -5,6 +5,7 @@
 #include <phylloptim/constants.hpp>
 #include <phylloptim/util.hpp>
 #include <phylloptim/vulnerability.hpp>
+#include <phylloptim/graft.hpp>
 
 #include <odelia/interpolator.hpp>
 
@@ -274,6 +275,26 @@ layer_thicknesses(const std::vector<double>& soil_depth) {
 // into them after crown integration (tf24_strategy.cpp:501-508). They are
 // plant's buffers, not this object's state. Note the deliberate unit split:
 // E_up is kg H2O m^-2 s^-1, soil_consumption[i] is mol, converted downstream.
+
+// The active inputs the uptake path reads, as a view.
+//
+// A VIEW rather than an owned bundle, because there are two owners: the double
+// path assembles one from this object's own members (held_supply below), and the
+// active path from vectors its caller owns. One uptake_impl then serves both,
+// where an owned type would force the double path to copy its own state.
+//
+// ⚠️ THE CURVE ARRIVES AS (root_P50, root_c), NOT root_b. b is derived and
+// set_traits re-derives it, so a row in it reaches nothing -- graft.hpp carries
+// the chain.
+template <class T>
+struct SupplyAt {
+  const std::vector<T>& psi_soil;
+  const std::vector<T>& r_R_H_min;
+  const std::vector<T>& r_R_V_sum;
+  const T& root_P50;
+  const T& root_c;
+};
+
 class MultiLayerRoots {
 public:
   // --- root vulnerability trait pair (hazard 1: NOT the stem's b/c) ---------
@@ -593,6 +614,20 @@ public:
   // this entry point cannot change behaviour for a caller that happens to hand
   // back psi_soil_ itself; the hot path above no longer depends on
   // address identity to be fast.
+
+  // The same, at any scalar. The cache is refused on the active path: it returns
+  // a table read with no rows, which is a value that has quietly stopped
+  // responding to anything -- the one failure this whole surface exists to avoid.
+  template <class T>
+  void uptake_at(const T& T_collar, const SupplyAt<T>& at,
+                 std::vector<T>& soil_consumption, T& E_up) const {
+    const bool cache = std::is_same_v<T, double> &&
+                       (&at.psi_soil == reinterpret_cast<const std::vector<T>*>(&psi_soil_)) &&
+                       root_vuln_integral_soil_.size() ==
+                           static_cast<size_t>(max_soil_layer);
+    uptake_impl<T>(T_collar, at, cache, soil_consumption, E_up);
+  }
+
   void uptake_at(double T_collar, const std::vector<double>& psi_soil,
                  std::vector<double>& soil_consumption, double& E_up) const {
     uptake_impl(T_collar, psi_soil,
@@ -697,6 +732,113 @@ private:
   //   * The isfinite() guards are present because this is called from within
   //     nested root-finders where bad brackets can produce NaNs; they fail fast
   //     with diagnostic context rather than propagating NaN.
+
+public:
+  // This object's own state as a view, for the double path.
+  SupplyAt<double> held_supply() const {
+    return {psi_soil_, network_.r_R_H_min, network_.r_R_V_sum, root_P50, root_c};
+  }
+
+  // The uptake, at any scalar. Upstream's function line for line, with one
+  // discipline added: ⚠️ EVERY COMPARISON READS PASSIVE. std::min on two active
+  // values branches on a taped comparison and manufactures a discontinuity the
+  // model does not have -- so the branch is chosen at double and the ACTIVE value
+  // is selected, which is what std::min compiles to anyway.
+  //
+  // At double every graft below collapses to its table read and the cache path is
+  // taken, so this instantiation is the original arithmetic.
+  template <class T>
+  void uptake_impl(const T& T_collar, const SupplyAt<T>& at,
+                   bool use_integral_cache, std::vector<T>& soil_consumption,
+                   T& E_up) const {
+    using odelia::util::to_passive;
+    const std::vector<T>& psi_soil = at.psi_soil;
+    const double collar_at = to_passive(T_collar);
+    if (!std::isfinite(collar_at)) {
+      util::stop_infeasible("uptake",
+          "E_from_Soil_to_Root_Collar invalid input; T_collar=" +
+          util::to_string(collar_at));
+    }
+    E_up = T(0.0);
+
+    auto curve = [&](const T& x) -> T {
+      const double q = to_passive(x);
+      if constexpr (std::is_same_v<T, double>) { return root_vuln_at(q); }
+      else { return graft_curve<T>(root_vuln_at(q), x, at.root_P50, at.root_c); }
+    };
+
+    const double G_at_T_collar =
+        use_integral_cache ? root_vuln_integral_at(collar_at) : 0.0;
+
+    for (int i = 0; i < max_soil_layer; i++) {
+      const T& psi_i = psi_soil[std::size_t(i)];
+      const double soil_at = to_passive(psi_i);
+      const T T_src_min = (collar_at < soil_at) ? T_collar : psi_i;
+      const T T_src_max = (soil_at < collar_at) ? T_collar : psi_i;
+
+      if (std::abs(collar_at - soil_at) < 1e-8) {
+        const T f_ri = curve(T_src_max);
+        if (!std::isfinite(to_passive(f_ri)) || to_passive(f_ri) <= 0.0) {
+          util::stop_infeasible("uptake",
+              "E_from_Soil_to_Root_Collar invalid f_ri; layer=" +
+              std::to_string(i) + "; f_ri=" +
+              util::to_string(to_passive(f_ri)));
+        }
+        const T r_R = at.r_R_H_min[std::size_t(i)] / f_ri +
+                      at.r_R_V_sum[std::size_t(i)];
+        const T E_i = T(-grav_head_z_[i]) / r_R;
+        soil_consumption[std::size_t(i)] = E_i;
+        E_up += E_i;
+      } else if (std::is_same_v<T, double> &&
+                 std::abs((collar_at - soil_at) - grav_head_z_[i]) < 1e-8) {
+        soil_consumption[std::size_t(i)] = T(0.0);
+      } else {
+        const T T_pos_lo = (to_passive(T_src_min) < 0.0) ? T(0.0) : T_src_min;
+        const T T_neg_hi = (0.0 < to_passive(T_src_max)) ? T(0.0) : T_src_max;
+
+        auto G_integral = [&](const T& arg) -> T {
+          const double q = to_passive(arg);
+          if constexpr (std::is_same_v<T, double>) {
+            if (use_integral_cache) {
+              if (q == collar_at) return G_at_T_collar;
+              if (q == soil_at) return root_vuln_integral_soil_[std::size_t(i)];
+            }
+            return root_vuln_integral_at(q);
+          } else {
+            return graft_integral<T>(root_vuln_integral_at(q), arg, at.root_P50,
+                                     at.root_c);
+          }
+        };
+
+        T integral = T(0.0);
+        if (to_passive(T_pos_lo) < to_passive(T_src_max)) {
+          integral += G_integral(T_src_max) - G_integral(T_pos_lo);
+        }
+        if (to_passive(T_src_min) < to_passive(T_neg_hi)) {
+          integral += (T_neg_hi - T_src_min);
+        }
+
+        const T span = T_src_max - T_src_min;
+        const T r_R = at.r_R_H_min[std::size_t(i)] * span / integral +
+                      at.r_R_V_sum[std::size_t(i)];
+        const T E_i = (T_collar - psi_i - T(grav_head_z_[i])) / r_R;
+        soil_consumption[std::size_t(i)] = E_i;
+        E_up += E_i;
+      }
+    }
+
+    // ⚠️ THE TWO OUTPUTS CARRY DIFFERENT UNITS, and this line is the whole of the
+    // difference. E_up leaves in kg H2O m^-2 s^-1, matching the rest of the leaf
+    // and the environment; the per-layer draws stay in mol and are converted
+    // downstream in TF24_Strategy::compute_rates.
+    //
+    // Dropping it is invisible layer by layer -- every soil_consumption[i] is
+    // still exact -- and shows up only in the aggregate, as a clean factor of
+    // 1/0.018015. Which is how it was caught here: a ratio that round is a
+    // missing constant, not drift.
+    E_up = E_up * T(kg_per_mol_h2o);
+  }
+
   void uptake_impl(double T_collar, const std::vector<double>& psi_soil,
                    bool use_integral_cache,
                    std::vector<double>& soil_consumption, double& E_up) const {
