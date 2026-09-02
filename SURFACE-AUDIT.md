@@ -54,3 +54,54 @@ record of, or a selection between -- and whether odelia, upstream or this packag
 already names that. Four of eight did. The two that survived intact both did so
 for the same reason: they make a partially-built state unrepresentable, after a
 measured bug from building one.
+
+---
+
+# The rule, sharpened by everything since
+
+The test that has actually separated the survivors from the dissolved is not
+"does this group things that belong together". It is:
+
+> **Does it make a wrong state unrepresentable, or a wrong pairing checkable?**
+> A return type with an invariant earns its keep. A parameter bundle without one
+> does not.
+
+Nine for nine now, in both directions.
+
+## Survives -- carries an invariant
+
+| | what it prevents |
+|---|---|
+| `SupplyDraw` | holds the collar it was taken at; `check_draw` compares it at three call sites, so a flux from one collar and a slope from another cannot be read together |
+| `CollarPoint : CollarCoords` | five coordinates that must be seeded together, after a first attempt that moved only the collar and disagreed with a difference by 40 to 100 per cent |
+| `SupplyAt` | a view with two genuine owners -- `held_supply()` builds one from this object's members where no owned bundle exists |
+
+## Dissolved -- grouped arguments, or spelled something that existed
+
+| | what it already was |
+|---|---|
+| `SolvedPoint` | upstream's `evaluate_root_collar_psi`, which re-derives sigma, ci and every output from the collar alone |
+| `MarginalParts` | its two extra fields are `sigma.slope` and `ci.slope` -- the eighteenth spelling of the pair `two-paths.md` swept seventeen of |
+| `WhichBound::DryRootPsiCrit` | a bare identity, live only while `root_psi_crit` was a free trait. Under `(P50, c)` it is an ordinary expression AD chains itself |
+| `with_slope` in plant | odelia's, because `for_each_active` is odelia's obligation |
+| `ProfitInputs` / `LeafInputs` | the parameter enumeration upstream already maintains, given a scalar |
+| `SupplyValues` | storage only -- every use either declares it or immediately calls `.at()`. plant already owns the vectors |
+| `CurveTrait` + two functions | a SELECTOR where a RECORD was wanted. Upstream's integral bundle shows the shape; the integrand now has its sibling |
+| `sigma_star` / `ci_star` | threaded members. Every call passes `l.opt_psi_stem_, l.ci_`; the only other is `profit_at` forwarding to `collar_coords_at` |
+
+## What the lens produced rather than deleted
+
+Two pieces that read like they should always have been upstream's:
+
+* **`VulnerabilityDerivatives`** -- the integrand's bundle, in the same header and
+  shape as the integral's. Verified against central differences (worst 1.67e-08)
+  and against the free cross-check the other bundle gives: **f IS dG/dpsi**, and
+  the two agree to 0.00e+00 at every tested potential.
+* **`graft.hpp`** -- one graft for both curves. Written twice, one copy keeps a
+  partial at fixed `b` and the other carries the chain in `c`; that is a finite,
+  plausible, wrong row that nothing reports.
+
+Three refactors in a row -- extracting `rows_in_P50`, then `graft_integral`, then
+routing `stem_integral_at` through it -- left the verified numbers unchanged to
+the digit: 2.12e-07 and 1.84e-07. Same digits is the check that an abstraction is
+the thing that was already there, rather than a rewrite wearing its name.
