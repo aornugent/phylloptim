@@ -116,9 +116,29 @@ Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
    TF24_floor, so the question is narrower than the seating: it is about that
    strategy's own differenced gradient.
 
+6. **plant's `test-gradient-incidence` measures a REGIME, and the regime moved.**
+   Its three failures are about how many operating points are dry-pinned, whether
+   the light floor binds, and how far the root-vulnerability clamps stay from
+   being reached. None asserts a derivative. The operating points moved at
+   `47f7099` -- the deliberate interpolator change -- so these are the same event
+   as the golden re-bless, seen from the stand rather than the grid, and they
+   should be re-read after it.
+
+   ⚠️ AND ITS PREMISE IS NOW OUT OF DATE IN A USEFUL WAY. It says of the two root
+   clamps: *"These are NOT counted, deliberately, and this is what stands in for a
+   counter... Instrumenting them would need a phylloptim header edit, hence a
+   reinstall, hence a near-full plant recompile."* They ARE counted now. The
+   distance it measures is still the better assertion -- a counter reading zero
+   cannot report a margin -- but the count is available beside it.
+
 ⚠️ **`test-strategy-ff16 :: Report generation` fails for want of `kableExtra`,
 which is an environment gap rather than a defect** -- it should be behind a
 `skip_if_not_installed`. Recorded so the next reader does not chase it.
+
+⚠️ **Three files exceed the 1500 s cap this session's runner used and report
+nothing** -- `test-strategy-tf24`, `test-events`, `test-tf24-arid-corner`. They
+are slow, not crashed, and a run that counts only RESULT lines reads as a smaller
+suite. Count the files before reading the totals.
 
 ## The gate that has caught everything
 
