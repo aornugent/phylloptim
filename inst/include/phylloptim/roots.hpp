@@ -6,6 +6,7 @@
 #include <phylloptim/util.hpp>
 #include <phylloptim/vulnerability.hpp>
 #include <phylloptim/graft.hpp>
+#include <phylloptim/clamp_sites.hpp>
 
 #include <odelia/interpolator.hpp>
 
@@ -297,6 +298,11 @@ struct SupplyAt {
 
 class MultiLayerRoots {
 public:
+  // How often each clamp held. Shared storage, so a consumer copying this object
+  // still reports -- plant copies its whole strategy per cohort and discards it,
+  // and a plain member would take every count down with the copy.
+  clamp_counter clamps;
+
   // --- root vulnerability trait pair (hazard 1: NOT the stem's b/c) ---------
   double root_c = 2.680147;       // unitless
   // THE TRAIT is root_P50, the potential at 50% loss of conductivity. root_b and
@@ -448,8 +454,9 @@ public:
   // psi is NaN, where the reversed forms return the bound. The uptake call site's
   // !isfinite(f_ri) guard is what reads that NaN.
   double root_vuln_at(double psi) const {
-    return root_vuln_from_psi.eval(
-        std::max(std::min(psi, root_vuln_last_knot_), 0.0));
+    const double held = std::max(std::min(psi, root_vuln_last_knot_), 0.0);
+    if (held != psi) clamps.note(CLAMP_ROOT_VULN_ARGUMENT);
+    return root_vuln_from_psi.eval(held);
   }
 
   // G at a suction, with the closed-form limit G(inf) = (b/c)*Gamma(1/c) as a
@@ -466,8 +473,12 @@ public:
   // flux tends to integral/r_R_H_min <= G(inf)/r_R_H_min as the span grows, which
   // is the whole area under the conductivity curve and is the right limit.
   double root_vuln_integral_at(double psi) const {
-    return std::min(root_vuln_integral_from_psi.eval(psi),
-                    root_vuln_integral_limit_);
+    const double raw = root_vuln_integral_from_psi.eval(psi);
+    if (raw > root_vuln_integral_limit_) {
+      clamps.note(CLAMP_ROOT_VULN_INTEGRAL_CAP);
+      return root_vuln_integral_limit_;
+    }
+    return raw;
   }
 
   // dG/dpsi, consistent with root_vuln_integral_at: zero wherever that returns

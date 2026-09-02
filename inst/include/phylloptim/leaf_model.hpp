@@ -11,6 +11,7 @@
 #include <phylloptim/single_potential.hpp>
 #include <phylloptim/vulnerability.hpp>
 #include <phylloptim/graft.hpp>
+#include <phylloptim/clamp_sites.hpp>
 
 #include <odelia/interpolator.hpp>
 #include <odelia/with_slope.hpp>
@@ -2298,6 +2299,17 @@ public:
   // Read-only on purpose: the tag is an output of the solve, and a settable one
   // would be a way to disagree with it. Same argument as `supply_kind_`'s two
   // entry points above, one step further.
+  // This leaf's own sites plus the supply model's, which are ONE list. Summed on
+  // read rather than shared on construction, so rebuilding the root network
+  // cannot silently detach the tally.
+  std::size_t clamp_count(int site) const {
+    return clamps.at(site) + roots_.clamps.at(site);
+  }
+  void clear_clamp_counts() const {
+    clamps.clear();
+    roots_.clamps.clear();
+  }
+
   OperatingPointKind operating_point_kind() const {
     return operating_point_kind_;
   }
@@ -2311,6 +2323,12 @@ private:
   // classification -- a plausible answer about a different plant, which is the
   // worst failure shape available here. Defaulting the reset to Unsolved means a
   // path that forgets reports "unclassified" instead.
+  // Where this model replaces a value by a bound. A row severed that way and a
+  // row that is honestly zero are the same number, and a consumer DIFFERENCING
+  // through a clamp gets a finite value with no response in it and nothing to
+  // notice by -- so the derivative kill is invisible unless it is counted.
+  clamp_counter clamps;
+
   OperatingPointKind operating_point_kind_ = OperatingPointKind::Unsolved;
   // Which limit closed the dry end, recorded where the comparison is made.
   // BoundaryCrit alone does not say: the bracket takes whichever of the
@@ -3650,6 +3668,7 @@ inline double Leaf::profit_at_collar_psi(double target_opt_root_psi,
                                   double bound_a, double bound_b){
     const double opt_root_psi =
         std::min(std::max(target_opt_root_psi, bound_a), bound_b);
+    if (opt_root_psi != target_opt_root_psi) clamps.note(CLAMP_COLLAR_POTENTIAL);
 
     opt_psi_stem_ = find_psi_stem_from_psi_root(opt_root_psi, supply_psi_soil());
     opt_root_psi_ = opt_root_psi;
@@ -4411,6 +4430,7 @@ inline double Leaf::leaf_temp_from_E(double E, double* dT_dE) const {
   // Clamp to a physical range so an extreme (non-equilibrium) E cannot drive the
   // Arrhenius block non-finite; see leaf_temp_min/max in the header.
   const double clamped = std::min(std::max(Tleaf, leaf_temp_min), leaf_temp_max);
+  if (clamped != Tleaf) clamps.note(CLAMP_LEAF_TEMPERATURE);
   if (dT_dE != nullptr) {
     // Inside the clamp the balance is linear in E, so the slope is a constant
     // and negative: more transpiration, more latent heat, cooler leaf. ON the
