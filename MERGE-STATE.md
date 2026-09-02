@@ -33,6 +33,8 @@ path is checked against, and #89, #90 and #131 built on it.
 | `6e3fd6a` | the transpose identity, over the surface that exists |
 | `ab444bf` | `profit_at` / `outputs_at` / `marginal_at`. profit and the draws bit-identical to the solve's own; the marginal bit-identical to upstream's `dprofit_at_collar_psi` |
 | `0b37498` | one spelling of each derivative: the residuals hold the collar, its channel is one supplied slope, and `graft_integral` takes the table's query slope |
+| `dc9d4c5` | `marginal_collar_slope`, as a difference of the marginal, with the conditioning measurement that says why |
+| `7648dc5` | `collar_at` / `bound_at`; the transpose identity with the collar live AND its control |
 
 Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
 (RECORDED-DECISIONS.md) and `f9c06de` (`with_slope` moved in). plant carries
@@ -40,48 +42,40 @@ Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
 
 ## What is left, in dependency order
 
-1. **`marginal_collar_slope`** -- dM/dp, the curvature the interior derivation
-   divides by. **Attempted and WITHDRAWN; read this before trying again.**
+1. **The stem-vulnerability trait rows disagree with a difference of the model by
+   9x, and the AD is the one that is right.** ⚠️ READ THIS BEFORE "FIXING" IT.
 
-   A tangent through `marginal_at` returns about an EIGHTH of it -- right sign,
-   plausible magnitude, and wrong. It is not a bug to find: with the residuals
-   holding the collar (which is what gives every first derivative one spelling),
-   nothing the slopes are built from responds to the collar, so the second
-   derivative is absent BY CONSTRUCTION. Measured: analytic d(dci/dp)/dp
-   -8.0e-03 against a difference of -9.198.
+   At a HELD collar, `dM/d(stem_P50)` is 0.848 by AD and 7.83 by a difference of
+   upstream's own `dprofit_at_collar_psi`. Every other parameter agrees --
+   `cost_scale` to 1.7e-13, `vcmax_25` to 2.7e-06, `root_P50` to 4.4e-05 -- so it
+   is this channel and not the assembly.
 
-   What an assembly needs, term by term:
+   **The physics settles it.** `d(E_up)/d(stem_P50)` is EXACTLY zero: the soil
+   draw at a held collar is a property of the soil and the roots. The stem must
+   carry exactly that flux, so sigma moves to make it so, `gc` is proportional to
+   that same flux, and ci solves a residual in which nothing has changed.
+   `d(ci)/d(stem_P50)` at a held collar is therefore ZERO, which is what the AD
+   returns, and it returns it structurally: sigma is placed by T1, so the stem
+   flux IS E_up and inherits its rows.
 
-   * **d2sigma/dp2** = d(dsigma_du)/dp * du/dp + dsigma_du * d2u/dp2. The first
-     factor is the inverse table's SECOND derivative, which the interpolator does
-     not expose -- but `1/f(sigma)` supplies it in closed form as
-     `-f'(sigma)/f(sigma)^2 * dsigma/dp`, which is the same table-value-plus-
-     curve-row graft used everywhere else, evaluated at the LIVE sigma rather
-     than the held one.
-   * **d2E_up/dp2** comes free: `duptake_dpsi` is scalar-generic, so a tangent
-     through it at a live collar IS the second order. Verified to work; it is
-     simply not the dominant term (it moved the 4th digit).
-   * **the conductance partials** must then be evaluated at the live sigma and
-     the live collar, which is circular with the slopes -- so two passes, one for
-     the slope and one for its response.
+   The model's -2.7e-02 is a T1 residual of 2e-10 -- the two stem splines are not
+   exact mutual inverses -- amplified by the 4.7e+05 that `dci/d(stem_flux)`
+   carries. **It does NOT shrink with spline resolution**: measured at 100, 400,
+   1600 and 6400 knots, both sides converge and stay 9x apart. So this is not the
+   fit, and refining the splines will not close it.
 
-   ⚠️ AND THE REFERENCE IS A DIFFERENCE OF UPSTREAM'S `dprofit_at_collar_psi`,
-   NOT of `marginal_at`. `marginal_at` freezes `sigma_star` and `ci_star` at the
-   solved point, so differencing it in the collar differentiates a pinned
-   expression and returns ~1.6e+04 where the answer is ~-5.8. That difference is
-   stable to six digits across steps, so it is a usable referee -- and it is what
-   showed the tangent was short.
+   What would: making `transpiration_to_psi_stem` invert the SAME table
+   `transpiration` reads, rather than a separately fitted inverse spline. That is
+   a model change, it moves the golden files, and it is the user's call.
 
-   A first difference of upstream's M(p) is also a legitimate IMPLEMENTATION if
-   the analytic assembly proves not worth it: the old design's objection was to
-   differencing the OBJECTIVE twice, which flipped a curvature's sign, and a
-   first difference of M is a different and far better conditioned thing.
+   Until then, expect any finite-difference check of a stem-vulnerability row to
+   disagree by this factor, and do not tune the surface to match it.
+
 2. **`test_supplied_rows`** -- the two rows no difference of the recorded step
    can referee.
-3. **`bound_at`** at TWO arms, **`collar_at`** taking the curvature per 33e0048,
-   `clamp_sites.hpp`, `clamp_count`, `operating_point_kind_count`. When
-   `collar_at` lands, EXTEND `test_transpose`: the live-collar arm and the
-   control that holds the collar passive on one side only. Its header says so.
+3. `clamp_sites.hpp`, `clamp_count`, `operating_point_kind_count` -- ask the
+   lens question of each first. `operating_point_kind_count` counts from the last
+   enumerator, which is upstream's own `n_cost_curves` pattern.
 4. **plant** -- call sites onto the new signatures; the four derived quantities
    stop being passed at all, which is what finally makes the `no_gradient`
    question moot rather than deferred. Also: plant still defines its own
