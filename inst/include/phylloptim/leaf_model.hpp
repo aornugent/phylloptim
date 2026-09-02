@@ -1458,8 +1458,18 @@ public:
   // The collar this solve left, at whatever scalar the caller wants, from
   // whatever pins it. The kind chooses which condition closes the system and
   // nothing else.
+  //
+  // A caller that has already taken marginal_collar_slope() -- to refuse on a
+  // curvature it cannot divide by -- passes it as `interior_curvature` rather
+  // than letting this take it again: it is the same call with the same argument,
+  // and at an interior point it is 5.6% of a stand gradient. Passing it also
+  // makes the guard's number and the divisor the SAME number rather than two
+  // calls that agree by construction. NaN means "not taken yet, take it here",
+  // which is what every kind but Interior wants.
   template <typename S>
-  S collar_at(const LeafInputs<S>& in, const SupplyDraw<S>& draw) const;
+  S collar_at(const LeafInputs<S>& in, const SupplyDraw<S>& draw,
+              double interior_curvature =
+                  std::numeric_limits<double>::quiet_NaN()) const;
 
   // The outputs at a collar, whatever placed it. Underneath the kind switch this
   // is one composition: the two residuals, the kernels and the quadrature.
@@ -4510,8 +4520,8 @@ inline S Leaf::bound_at(WhichBound which, double bound_x,
 // it is the only one whose gradient had to be taken in forward mode and handed
 // over; every other kind's condition is first order and composes here.
 template <typename S>
-inline S Leaf::collar_at(const LeafInputs<S>& in,
-                         const SupplyDraw<S>& draw) const {
+inline S Leaf::collar_at(const LeafInputs<S>& in, const SupplyDraw<S>& draw,
+                         double interior_curvature) const {
   check_draw(opt_root_psi_, draw);
   S collar = S(opt_root_psi_);
   switch (operating_point_kind_) {
@@ -4532,7 +4542,10 @@ inline S Leaf::collar_at(const LeafInputs<S>& in,
       } else {
         collar = odelia::implicit_value<S>(
             opt_root_psi_,
-            marginal_collar_slope(in.profit.template rebind_from<double>()),
+            std::isnan(interior_curvature)
+                ? marginal_collar_slope(
+                      in.profit.template rebind_from<double>())
+                : interior_curvature,
             [&](const S& y) -> S {
               return marginal_at<S>(y, draw, in.profit);
             });
