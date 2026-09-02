@@ -74,10 +74,37 @@ Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
 
 ## What is left
 
-1. **The golden re-bless, on macOS/arm64.** The one item that cannot be done from
-   here -- see "the golden files" below. Everything else on this list is done.
+1. **The golden re-bless, on macOS/arm64.** Cannot be done from here -- see "the
+   golden files" below.
 
-2. **`test-stochastic-patch-runner`'s baseline**, which moved on BOTH sides and so
+2. **plant: `k_I` HAS NO ROW, AND THE MODEL DEPENDS ON IT.** ⚠️ A real gradient
+   gap, found by plant's own ladder and confirmed against the model.
+
+   The light extinction coefficient's column comes back an EXACT zero, and an
+   exact zero is the signature of a missing accumulator rather than of
+   insensitivity. Measured: perturbing `k_I` moves the short stand's census at
+   **d/dk_I = 16.21**, stable across two step sizes.
+
+   It is read at the active scalar in two places -- `compute_competition_and_slope`
+   and `radiation_at` -- so the parameter IS registered and the question is where
+   the light field is built. It is plant's competition path, not the leaf.
+
+   Six ladder assertions hang off it: rung3's "every trait the block reads has a
+   column", floor's two classification checks, rung4's "no shortlisted trait reads
+   exactly zero", declared-zero's, and rung5's newcomer check.
+
+3. **plant: the finite-difference comparisons are over budget, and the AD is the
+   side that is right.** Every AD-INTERNAL check passes -- the block Jacobian
+   forward against reverse at 2.01e-15, both transposes at 1e-16, the state
+   Jacobian along a trajectory at 3.90e-16. Only comparisons against a DIFFERENCE
+   of the model fail: the whole Jacobian at 2.25e-04 against 8.08e-07, the
+   right-hand-side transpose at 5.78e-04 against 8.82e-06.
+
+   That is this branch's stem-vulnerability finding at stand scale, and the entry
+   below says why the AD is right and what closing it costs. It is the same
+   decision, arriving where the user will feel it.
+
+4. **`test-stochastic-patch-runner`'s baseline**, which moved on BOTH sides and so
    needs measuring rather than merging. It is the one file whose PASS count varies
    run to run.
 
