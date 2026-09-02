@@ -1832,6 +1832,7 @@ public:
   S marginal_at(const S& collar, const SupplyDraw<S>& draw,
                 const leaf_pars<S>& pars) const;
 
+
   // The pack as this leaf currently stands. The double path passes this where the
   // active path passes a seeded copy, so both reach the kernels the same way and
   // there is one call convention rather than a member-reading twin.
@@ -2470,10 +2471,11 @@ template <class S>
 inline S Leaf::stem_integral_at(const S& psi, const leaf_pars<S>& pars) const {
   // The value is the stem table's; the rows are the closed form's. One graft
   // serves both curves -- see graft.hpp for why that is not a convenience.
+  const double at = odelia::util::to_passive(psi);
   return graft_integral<S>(
-      stem_curve_integral(odelia::util::to_passive(psi),
-                          "Leaf::stem_integral_at"),
-      psi, pars[par_stem_P50], pars[par_stem_c]);
+      stem_curve_integral(at, "Leaf::stem_integral_at"),
+      stem_curve_integral_deriv(at), psi, pars[par_stem_P50],
+      pars[par_stem_c]);
 }
 
 inline leaf_pars<double> Leaf::passive_pars() const {
@@ -5172,35 +5174,40 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   using odelia::util::to_passive;
   check_draw(to_passive(collar), draw);
 
-  // ⚠️ THE LEAF-TO-AIR DEFICIT AND THE SETTABLE RATIO, which is what
-  // stom_cond_CO2 divides by. With the energy balance off vpd_leaf_ IS atm_vpd_,
-  // so a check with the gate off cannot tell them apart -- and with it on they
-  // differ by up to 1.52x.
+  // ⚠️ THE RESIDUALS SEE A HELD COLLAR, AND THE COLLAR'S CHANNEL IS ADDED BACK AS
+  // ONE SUPPLIED SLOPE. That is the split RECORDED-DECISIONS states, and here it
+  // is forced rather than preferred: sigma is placed by an INVERSE TABLE, so its
+  // response to the collar is that table's own slope -- while the implicit
+  // function theorem on T1 divides by G'(sigma). The two agree only if the two
+  // stem splines are exact mutual inverses, and they are not. Letting the
+  // residual see a live collar therefore puts TWO values of dsigma/dcollar into
+  // one object: measured, the lift said 0.6913 for dci/dcollar where the slope
+  // beside it said 0.6382, and dM/dcollar came out an eighth of its size.
+  //
+  // Held, the residuals carry the TRAIT rows (which the inverse table has none
+  // of) and the slopes below carry the collar's. One spelling of each.
+  const S held(to_passive(collar));
   const double gc_per_flux =
       atm_kpa_ * kg_to_mol_h2o / vpd_leaf_ / H2O_CO2_stom_diff_ratio_;
   const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
   const Leaf& leaf = *this;
   const leaf_pars<double> at_pars = passive_pars();
 
-  // The flux at the LIVE collar. The draw holds it at the passive one carrying
-  // its own rows; what is missing is the channel through the collar moving, and
-  // that is the one recorded slope. At the operating point the step is exactly
-  // zero, so this is the draw's flux bit for bit.
-  const S step = collar - S(draw.at);
-  const S flux = draw.flux.value + draw.flux.slope * step;
-
-  // dT1/dsigma is one term of the residual: the stem curve at the operating
-  // point, scaled by kmax. Taken at the passive point, which is where the theorem
-  // divides.
+  // dT1/dsigma: the stem curve at the operating point, scaled by kmax, and taken
+  // from THE TABLE because that is the derivative the model itself forms.
   const double dT1_dsigma =
-      at_pars[par_kmax] *
-      proportion_of_conductivity_kernel<double>(sigma_star, at_pars);
-  const S sigma = odelia::implicit_value<S>(
+      at_pars[par_kmax] * stem_curve_integral_deriv(sigma_star);
+  const S sigma_h = odelia::implicit_value<S>(
       sigma_star, dT1_dsigma, [&](const S& sg) -> S {
         return pars[par_kmax] * (leaf.template stem_integral_at<S>(sg, pars) -
-                                 leaf.template stem_integral_at<S>(collar, pars)) -
-               flux;
+                                 leaf.template stem_integral_at<S>(held, pars)) -
+               draw.flux.value;
       });
+
+  // The stem's flux at the placed sigma. gc is built from THIS, not from the
+  // draw, because that is what the model's ci solve reads -- the two agree only
+  // to the stem splines' round-trip.
+  const S stem_flux = transpiration_at<S>(sigma_h, held, pars);
 
   // ⚠️ FOLLOW THE BRANCH THE FORWARD MODEL TOOK. Where the leaf is not moving
   // water it does not place ci by the residual at all -- it assigns the CO2
@@ -5209,21 +5216,16 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // returns a number rather than an error, and the number is a cancellation of
   // two vanishing terms.
   //
-  // dT2/dci is the assimilation's own slope plus the supply term's, at the
-  // passive point. A' comes from a TANGENT THROUGH THE SAME KERNEL the residual
-  // calls, which is upstream's own way of taking it -- a hand-written slope twin
-  // would be a second definition of one function, free to disagree with it in a
-  // way that stays finite and plausible.
-  // The stem's flux at the placed sigma. gc is built from THIS, not from the
-  // draw, because that is what the model's ci solve reads.
-  const S stem_flux = transpiration_at<S>(sigma, collar, pars);
-
+  // A' comes from a TANGENT THROUGH THE SAME KERNEL the residual calls, which is
+  // upstream's own way of taking it -- a hand-written slope twin would be a
+  // second definition of one function, free to disagree with it while staying
+  // finite.
   double dT2_dci = 0.0;
   if (!ci_at_compensation_point_) {
     dT2_dci = assim_slope_at<double>(ci_star, at_pars) * umol_to_mol +
               gc_per_flux * to_passive(stem_flux) * inv_atm;
   }
-  const S ci =
+  const S ci_h =
       ci_at_compensation_point_
           ? S(ci_star)
           : odelia::implicit_value<S>(
@@ -5234,48 +5236,28 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
                              S(inv_atm);
                 });
 
-  // ---- the other half of each pair: the response in the collar --------------
+  // ---- the collar's own channel ---------------------------------------------
   //
-  // Both come out of the same two conditions, differentiated in the collar with
-  // the parameters held still. They are returned WITH their values because a
-  // consumer seeded from separate places can pair a value from one point with a
-  // slope from another, and a first attempt that moved only the collar disagreed
-  // with a difference by 40 to 100 per cent.
   // ⚠️ THE CONDUCTIVITY HERE IS THE TABLE'S, WITH THE CURVE'S ROWS. Upstream's
   // dprofit_at_collar_psi forms every one of these from stem_curve_integral_deriv,
   // and the solve drove THAT assembly to zero -- so a closed-form value here
   // makes M non-zero at the collar the solve placed, and the envelope omission
-  // stops being true. graft.hpp is the same rule and the same one place: the
-  // value is the table's because the solve ran on the table, the rows are the
-  // curve's because a derivative off a table is a derivative of the fit.
+  // stops being true. graft.hpp is the same rule: the value is the table's
+  // because the solve ran on the table, the rows are the curve's because a table
+  // carries none.
   const S kmax = pars[par_kmax];
   const S f_p = graft_curve<S>(stem_curve_integral_deriv(to_passive(collar)),
-                               collar, pars[par_stem_P50], pars[par_stem_c]);
-  const S f_sigma = graft_curve<S>(stem_curve_integral_deriv(sigma_star), sigma,
-                                   pars[par_stem_P50], pars[par_stem_c]);
+                               held, pars[par_stem_P50], pars[par_stem_c]);
+  const S f_sigma = graft_curve<S>(stem_curve_integral_deriv(sigma_star),
+                                   sigma_h, pars[par_stem_P50],
+                                   pars[par_stem_c]);
 
   // dsigma/dcollar: THE INVERSE SPLINE'S OWN SLOPE times the transport's, which
   // is how upstream's dprofit_at_collar_psi forms it and what actually placed
-  // sigma -- transpiration_to_psi_stem inverts through psi_from_transpiration,
-  // a separate table.
-  //
-  // ⚠️ 1/f(sigma) IS THAT SLOPE ONLY IF THE TWO STEM SPLINES ARE EXACT MUTUAL
-  // INVERSES, AND THEY ARE NOT. Writing it that way puts sigma's response ~8 per
-  // cent out at the shipped resolution, which the marginal then amplifies by its
-  // own cancellation: M read 6.4e-02 at a collar where the solve had driven
-  // upstream's dprofit to 1e-12, so the envelope omission -- dropping
-  // M * dp/dtheta at an interior point BECAUSE M is zero there -- stopped being
-  // true of the number this function returns.
-  //
-  // So the VALUE is the table's, which is what makes M vanish at the collar the
-  // solve placed, and the ROWS are the closed form's, which is graft.hpp's rule:
-  // a derivative read off a table is a derivative of the fit.
-  // ⚠️ THE SOIL DRAW, NOT THE STEM FLUX. transpiration_to_psi_stem inverts at
-  // E_up/kmax + G(collar), so this is the point the inverse table was read at.
-  // The two fluxes differ by that table's own round-trip, which is the whole
-  // reason this argument has to be the one sigma was actually placed from.
+  // sigma. Read at E_up/kmax + G(collar) -- THE SOIL DRAW, the point the inverse
+  // table was queried at, not the stem flux.
   const double u_at = to_passive(draw.flux.value) / to_passive(kmax) +
-                      to_passive(stem_integral_at<S>(collar, pars));
+                      to_passive(stem_integral_at<S>(held, pars));
   const S recip = S(1.0) / f_sigma;
   const S dsigma_du =
       S(stem_curve_integral_inverse_deriv(u_at)) + (recip - S(to_passive(recip)));
@@ -5284,19 +5266,23 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   const S gc_const = S(gc_per_flux);
   const S inv = S(inv_atm);
   const S gc = gc_const * stem_flux;
-  // The conductance partials are the transport slope at each end, which is the
-  // closed form kmax * f -- already formed above, so read rather than recomputed.
+  // The conductance partials are the transport slope at each end, which is
+  // kmax * f -- already formed above, so read rather than recomputed.
   const S dgc_dsigma = gc_const * kmax * f_sigma;
   const S dgc_dp = -gc_const * kmax * f_p;
 
-  const S A_prime = assim_slope_at<S>(ci, pars);
+  const S A_prime = assim_slope_at<S>(ci_h, pars);
   const S g_ci = A_prime * umol_to_mol + gc * inv;
-  const S ca_minus_ci = S(ca_) - ci;
+  const S ca_minus_ci = S(ca_) - ci_h;
   const S dci_dsigma = (dgc_dsigma * ca_minus_ci * inv) / g_ci;
   const S dci_dp_expl = (dgc_dp * ca_minus_ci * inv) / g_ci;
+  const S dci_dp = dci_dsigma * V + dci_dp_expl;
 
-  return CollarCoords<S>{pair<S>{sigma, V},
-                         pair<S>{ci, dci_dsigma * V + dci_dp_expl}};
+  // The step is exactly zero in VALUE, so both coordinates are the residuals'
+  // bit for bit and only the collar's channel is added.
+  const S step = collar - held;
+  return CollarCoords<S>{pair<S>{sigma_h + V * step, V},
+                         pair<S>{ci_h + dci_dp * step, dci_dp}};
 }
 
 template <class S>
@@ -5405,6 +5391,7 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
 
   return A_prime * at.ci.slope - C_prime * at.sigma.slope;
 }
+
 
 inline double Leaf::hydraulic_cost_TF(double psi_stem) {
 

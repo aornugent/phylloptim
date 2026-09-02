@@ -740,8 +740,9 @@ private:
         if constexpr (std::is_same_v<T, double>) {
           return root_vuln_integral_at(q);
         } else {
-          return graft_integral<T>(root_vuln_integral_at(q), arg, at.root_P50,
-                                   at.root_c);
+          return graft_integral<T>(root_vuln_integral_at(q),
+                                   root_vuln_integral_deriv_at(q), arg,
+                                   at.root_P50, at.root_c);
         }
       };
 
@@ -873,8 +874,9 @@ public:
             }
             return root_vuln_integral_at(q);
           } else {
-            return graft_integral<T>(root_vuln_integral_at(q), arg, at.root_P50,
-                                     at.root_c);
+            return graft_integral<T>(root_vuln_integral_at(q),
+                                     root_vuln_integral_deriv_at(q), arg,
+                                     at.root_P50, at.root_c);
           }
         };
 
