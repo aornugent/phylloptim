@@ -79,11 +79,12 @@ GOLDEN_ARGS ?=
 # newer date on it.
 all: build
 	./test_leaf
+	./test_supplied_rows
 	./test_transpose
 	./test_golden $(GOLDEN_ARGS)
 	./test_primitives $(GOLDEN_ARGS)
 
-build: test_leaf test_transpose test_golden test_primitives
+build: test_leaf test_supplied_rows test_transpose test_golden test_primitives
 
 # Not built or run by `make all` -- it takes a few seconds and measures the
 # machine as much as the code. Run it deliberately when a change might have
@@ -93,6 +94,12 @@ bench: bench_solve bench_gradient
 	./bench_gradient
 
 test_leaf: test_leaf.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+
+# The one row this surface SUPPLIES rather than records, against a difference of
+# the function it claims to describe. A difference of anything downstream is
+# identically zero on that column, so this is the only place it can be caught.
+test_supplied_rows: test_supplied_rows.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
 
 # The transpose identity, which needs no reference gradient: one tangent against
@@ -132,4 +139,4 @@ primitives-golden: test_primitives
 	./test_primitives --generate
 
 clean:
-	rm -f test_leaf test_transpose test_golden test_primitives bench_solve bench_gradient
+	rm -f test_leaf test_supplied_rows test_transpose test_golden test_primitives bench_solve bench_gradient

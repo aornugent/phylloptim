@@ -155,13 +155,16 @@ option(PHYLLOPTIM_BUILD_TESTS "Build the C++ test suite" ${PHYLLOPTIM_IS_TOP_LEV
 if(PHYLLOPTIM_BUILD_TESTS)
   enable_testing()
 
-  foreach(prog test_leaf test_golden test_primitives bench_solve)
+  foreach(prog test_leaf test_supplied_rows test_golden test_primitives bench_solve)
     add_executable(${prog} tests/cpp/${prog}.cpp)
     target_link_libraries(${prog} PRIVATE phylloptim::phylloptim)
     target_compile_options(${prog} PRIVATE -Wall -Wextra -Wno-unused-parameter)
   endforeach()
 
   add_test(NAME leaf_unit COMMAND test_leaf
+           WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp)
+
+  add_test(NAME leaf_supplied_rows COMMAND test_supplied_rows
            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp)
 
   # The transpose identity is the one program here that LINKS THE TAPE, so it is
