@@ -35,59 +35,26 @@ path is checked against, and #89, #90 and #131 built on it.
 | `0b37498` | one spelling of each derivative: the residuals hold the collar, its channel is one supplied slope, and `graft_integral` takes the table's query slope |
 | `dc9d4c5` | `marginal_collar_slope`, as a difference of the marginal, with the conditioning measurement that says why |
 | `7648dc5` | `collar_at` / `bound_at`; the transpose identity with the collar live AND its control |
+| `0acba57` | the four clamp sites counted |
+| `bcc81cd` | `replay_operating_point`, `operating_point_kind_count`, `ncontrol_default`, the scalar carbon map |
+| `333af55` | `test_supplied_rows` -- the one row this surface supplies |
+| `bdff08d` | `outputs_at` / `marginal_at` asserted against the solve's own numbers, at every kind |
+
+plant carries `c49da429` (onto the rebuilt surface, and four merge breaks that
+had never compiled) and `6c748e14` (`with_slope` taken from odelia).
 
 Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
 (RECORDED-DECISIONS.md) and `f9c06de` (`with_slope` moved in). plant carries
 `5bde7727`, the merge on your tip.
 
-## What is left, in dependency order
+## What is left
 
-1. **The stem-vulnerability trait rows disagree with a difference of the model by
-   9x, and the AD is the one that is right.** ⚠️ READ THIS BEFORE "FIXING" IT.
+1. **The golden re-bless, on macOS/arm64.** The one item that cannot be done from
+   here -- see "the golden files" below. Everything else on this list is done.
 
-   At a HELD collar, `dM/d(stem_P50)` is 0.848 by AD and 7.83 by a difference of
-   upstream's own `dprofit_at_collar_psi`. Every other parameter agrees --
-   `cost_scale` to 1.7e-13, `vcmax_25` to 2.7e-06, `root_P50` to 4.4e-05 -- so it
-   is this channel and not the assembly.
-
-   **The physics settles it.** `d(E_up)/d(stem_P50)` is EXACTLY zero: the soil
-   draw at a held collar is a property of the soil and the roots. The stem must
-   carry exactly that flux, so sigma moves to make it so, `gc` is proportional to
-   that same flux, and ci solves a residual in which nothing has changed.
-   `d(ci)/d(stem_P50)` at a held collar is therefore ZERO, which is what the AD
-   returns, and it returns it structurally: sigma is placed by T1, so the stem
-   flux IS E_up and inherits its rows.
-
-   The model's -2.7e-02 is a T1 residual of 2e-10 -- the two stem splines are not
-   exact mutual inverses -- amplified by the 4.7e+05 that `dci/d(stem_flux)`
-   carries. **It does NOT shrink with spline resolution**: measured at 100, 400,
-   1600 and 6400 knots, both sides converge and stay 9x apart. So this is not the
-   fit, and refining the splines will not close it.
-
-   What would: making `transpiration_to_psi_stem` invert the SAME table
-   `transpiration` reads, rather than a separately fitted inverse spline. That is
-   a model change, it moves the golden files, and it is the user's call.
-
-   Until then, expect any finite-difference check of a stem-vulnerability row to
-   disagree by this factor, and do not tune the surface to match it.
-
-2. **`test_supplied_rows`** -- the two rows no difference of the recorded step
-   can referee.
-3. `clamp_sites.hpp`, `clamp_count`, `operating_point_kind_count` -- ask the
-   lens question of each first. `operating_point_kind_count` counts from the last
-   enumerator, which is upstream's own `n_cost_curves` pattern.
-4. **plant** -- call sites onto the new signatures; the four derived quantities
-   stop being passed at all, which is what finally makes the `no_gradient`
-   question moot rather than deferred. Also: plant still defines its own
-   `with_slope.h` with 11 users, now duplicating odelia's.
-5. **The R instruments** -- five files, all addressing the leaf through retired
-   trait names.
-6. **Verification and re-blessing** -- plant's suites; the golden re-bless below;
-   `test-stochastic-patch-runner`'s baseline, which moved on BOTH sides and so
-   needs measuring rather than merging.
-7. **`src/Makevars` needs the two XAD defines** before the R layer reaches the
-   tape. It is exempt only while forward mode is the only path, and nothing will
-   say when that stops being true (AGENTS.md hazard 3).
+2. **`test-stochastic-patch-runner`'s baseline**, which moved on BOTH sides and so
+   needs measuring rather than merging. It is the one file whose PASS count varies
+   run to run.
 
 ## The gate that has caught everything
 

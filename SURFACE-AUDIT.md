@@ -180,3 +180,38 @@ spelled for itself -- `1/f(sigma)`, the closed-form conductivity, the stem
 flux -- where upstream had the one the model actually uses. Asking "what does
 upstream already have for this" is not only a way to delete code; here it was
 the difference between a correct gradient and a plausible one.
+
+---
+
+# The lens at the consumer boundary
+
+The same question asked of everything plant reached for. Nothing new was coined
+that upstream or odelia could name.
+
+## Dissolved
+
+| coined | what it already is |
+|---|---|
+| `Leaf::SolvedPoint` (five fields) | a collar and an arm. Four fields were re-derivable from the collar alone, which is exactly what `evaluate_root_collar_psi` does |
+| `place_solved_point` / `solved_point` | `replay_operating_point`, below, plus reading `opt_root_psi_` and the kind |
+| plant's `with_slope` | odelia's, because `for_each_active` is odelia's obligation. Eleven users, one alias |
+| `root_resistances_from_carbon` | an OVERLOAD of upstream's `root_network_from_carbon`, on the output arguments -- the same distinction `duptake_dpsi` and `uptake_at` already make |
+| plant's curvature probe | it differenced the marginal to referee an ANALYTIC curvature. The curvature IS that difference now, so the probe compares a difference with itself |
+| four of the five R instruments | already answered: the two curves' trait rows by `test_leaf`'s 11292-point check, `set_traits`' stale derived state by `test_set_traits_matches_a_fresh_leaf`, the fixed-collar clamp by upstream's own `_checked` readers |
+
+## Kept -- carries an invariant
+
+| | what it prevents |
+|---|---|
+| `replay_operating_point` | putting a collar back WITHOUT its arm. `evaluate_root_collar_psi` restores every number bit-for-bit and then tags the point `prescribed`, which is correct from its side and leaves `collar_at` with no condition to place a replayed interior point at. One call, so the pair cannot be split -- and this exact mistake had already cost a throw once, inside `marginal_collar_slope` |
+| `dry_bound_is_root_limit_` | which limit closed the dry end. Upstream keeps ONE `BoundaryCrit` kind for two conditions, and re-deriving the comparison would repeat a root-find and differentiate a selector |
+| `operating_point_kind_count`, `ncontrol_default` | a consumer sizes an array and seats a spline from them. A literal on that side drifts silently: a kind added here lands outside a tally that stops at a stale count, and a curve built on a different knot number is a different curve with every number plausible |
+
+## What the boundary turned up that no lens would have
+
+Four things in plant that had never compiled, because the phylloptim API changed
+in the same commit that broke them: a rename that missed one site, a lost
+`template` line, a state read into a `double` inside a templated environment, and
+a call carrying an argument this branch's design had removed. A merge that
+cannot be built hides all four equally, and the syntax-only sweep over all 27
+translation units is what surfaced them.
