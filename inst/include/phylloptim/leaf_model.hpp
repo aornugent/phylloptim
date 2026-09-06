@@ -1229,21 +1229,6 @@ public:
     pair<T> ci;
   };
 
-  // What the marginal needs: those two, plus the collar itself and the stem's
-  // flux. DERIVES rather than repeating the pair above -- written out separately
-  // they were two structs differing by two members, and a sigma from one with a
-  // ci from another was a thing that compiled.
-  //
-  // ⚠️ FOUR MEMBERS, NOT FIVE. What used to be a separate `dEup_dp` field IS
-  // `transpiration.slope`: the stem's flux and the soil-to-collar conductance are
-  // one quantity at two orders, which a flat struct of bare scalars could only say
-  // in a comment. p.slope is 1 by construction.
-  template <class T>
-  struct CollarPoint : CollarCoords<T> {
-    pair<T> p;
-    pair<T> transpiration;
-  };
-
   enum class CostCurve {
  TF24, CF77, JS22, CMax, SOX, JW26, ProfitMax, TF24_floor };
 

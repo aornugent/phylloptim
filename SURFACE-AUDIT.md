@@ -15,30 +15,13 @@ anything added later.
 
 ## Kept, but reshaped
 
-**`CollarPoint`** earns its keep -- its five coordinates *"must be seeded
-consistently or the assembly below is a derivative of nothing"*, and a first
-attempt that moved only the collar **disagreed by 40 to 100 per cent**. But it
-REPEATS `CollarCoords`' two fields instead of deriving from them, which is the
-shape odelia already fixed: *"a recording row IS a program row plus its state, so
-it derives rather than repeating the two fields."* And its own comments admit a
-duplication -- `dEup_dp` IS `transpiration`'s slope. As pairs it is four members,
-not five, and consistent seeding stops being a warning and becomes a constraint.
-
-**`SupplyDraw`** earns its keep for the same reason and one more: it holds the
-collar it was taken at, so *"the three values cannot come from different ones"*.
-Its `flux`/`slope` become a `with_slope`. Its `uptake`/`duptake_dp` do NOT -- the
-draws are active and their slopes are SUPPLIED at double, which is
-`implicit_value`'s shape, not the pair's. Two different pairings, correctly
-distinguished, and worth keeping distinguished.
-
-**`FixedCollarEval{profit, uptake, feasible}`** is `LeafOutputs<double>` plus one
-member -- derive, do not repeat. The `feasible` flag itself is legitimate: an
-infeasible collar is an EXPECTED outcome on a gradient sweep (1536 of the golden
-file's 5184 rows are refused), so a throw would be the wrong shape. Upstream
-agrees and has the same convention under a different name -- `_checked` variants
-returning value-plus-flag, flattened for the R boundary, exactly as
-`profit_at_fixed_collar_values` does. Two spellings of one convention; take
-upstream's naming.
+**`CollarPoint` is gone.** It earned its keep on the surface this audit read --
+five coordinates that *"must be seeded consistently or the assembly below is a
+derivative of nothing"*, after a first attempt that moved only the collar and
+disagreed by 40 to 100 per cent. On the merged surface nothing constructs it:
+`collar_coords_at` returns `CollarCoords` and the marginal reads the collar it was
+handed. The finding it records still holds and is why the coordinates travel
+together; the type that carried them does not.
 
 ## Kept as-is
 
@@ -73,7 +56,6 @@ Nine for nine now, in both directions.
 | | what it prevents |
 |---|---|
 | `SupplyDraw` | holds the collar it was taken at; `check_draw` compares it at three call sites, so a flux from one collar and a slope from another cannot be read together |
-| `CollarPoint : CollarCoords` | five coordinates that must be seeded together, after a first attempt that moved only the collar and disagreed with a difference by 40 to 100 per cent |
 | `SupplyAt` | a view with two genuine owners -- `held_supply()` builds one from this object's members where no owned bundle exists |
 
 ## Dissolved -- grouped arguments, or spelled something that existed
