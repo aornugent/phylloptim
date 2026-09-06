@@ -45,7 +45,7 @@ Suggests:
     tidyr
 VignetteBuilder: knitr
 Remotes:
-    aornugent/odelia@ad/merge-upstream
+    aornugent/odelia@ad/v3-forward
 Config/testthat/edition: 3
 URL: https://github.com/traitecoevo/phylloptim
 BugReports: https://github.com/traitecoevo/phylloptim/issues
