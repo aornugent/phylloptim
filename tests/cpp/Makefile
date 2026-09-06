@@ -116,6 +116,11 @@ test_supplied_rows: test_supplied_rows.cpp $(HEADERS)
 test_transpose: test_transpose.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
+# Not in `all`: it answers a design question rather than guarding a property, and
+# it needs the tape the same way test_transpose does.
+probe_preaccumulation: probe_preaccumulation.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
+
 test_golden: test_golden.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
 
