@@ -1,7 +1,8 @@
 # Bringing reverse mode to upstream's leaf: where this is and what is left
 
-Live on `ad/merge-upstream`, cut from `ad/v3-forward` at 33e0048. Your branch is
-untouched; nothing is pushed.
+Built on `ad/merge-upstream`, cut from `ad/v3-forward` at 33e0048, and landed
+onto `ad/v3-forward` by fast-forward -- v3 was an ancestor of it in all three
+packages, so nothing was reconciled. "What is left" below is still what is left.
 
 ## The shape of the work
 
