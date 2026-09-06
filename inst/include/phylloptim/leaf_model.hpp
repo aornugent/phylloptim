@@ -3673,13 +3673,21 @@ inline void Leaf::optimise() {
 }
 
 
+// The seated curve, like every other entry point that names one. Pinned to TF24
+// these answered on a curve the leaf was not on: TF24_floor carries the price, so
+// a floor leaf priced its collar with the price absent and reported a state that
+// did not respond to it.
 inline double Leaf::evaluate_root_collar_psi(double target_opt_root_psi) {
-  return evaluate_root_collar_psi_for<CostCurve::TF24>(target_opt_root_psi);
+  return with_curve(cost_curve_, [&](auto tag) {
+    return evaluate_root_collar_psi_for<tag.value>(target_opt_root_psi);
+  });
 }
 
 
 inline double Leaf::dprofit_droot_collar_psi(double opt_root_psi, bool* feasible) {
-  return dprofit_droot_collar_psi_for<CostCurve::TF24>(opt_root_psi, feasible);
+  return with_curve(cost_curve_, [&](auto tag) {
+    return dprofit_droot_collar_psi_for<tag.value>(opt_root_psi, feasible);
+  });
 }
 
 
