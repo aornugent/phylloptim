@@ -50,8 +50,15 @@ endif
 # src/Makevars was exempt -- it is not exempt once the R layer reaches the tape.
 XADFLAGS = -DXAD_NO_THREADLOCAL -DXAD_USE_STRONG_INLINE
 # The one translation unit odelia compiles the tape into. The installed package
-# ships headers only, so this comes from a checkout.
+# ships headers only, so this comes from a checkout -- and ODELIA_INC resolves to
+# the INSTALLED headers whenever odelia is installed, which is the normal case
+# here, so deriving this from it alone finds no Tape.cpp. Only test_transpose
+# needs the tape, so the rest of the suite builds and runs and the transpose
+# identity is the one target that silently stops being checked.
 ODELIA_SRC ?= $(ODELIA_INC)/../../src
+ifeq ($(wildcard $(ODELIA_SRC)/Tape.cpp),)
+  ODELIA_SRC := ../../../odelia/src
+endif
 TAPE_SRC = $(ODELIA_SRC)/Tape.cpp
 
 DEP_INC  = $(ODELIA_INC) $(BH_INC)
