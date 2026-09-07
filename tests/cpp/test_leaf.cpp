@@ -12,11 +12,14 @@
 
 #include "root_network.hpp"
 
+#include <odelia/tangent.hpp>
+
 #include <chrono>
 #include <cmath>
 #include <functional>
 #include <cstdio>
 #include <limits>
+#include <map>
 #include <string>
 #include <algorithm>
 #include <iterator>
@@ -3222,6 +3225,122 @@ void test_light_reaches_carbon_with_a_row() {
   ok(compared == 4, "every light level solved");
 }
 
+// Every operating point the model answers at hands over FINITE rows.
+//
+// ⚠️ A NON-FINITE ROW IS NOT REPORTED ANYWHERE DOWNSTREAM, which is why this is
+// asserted here. plant records its rows against a constant 1.0, so the row it
+// validates is always finite and the sentinel rides in on the tape behind it;
+// its census gradient then polls for a DECLARED refusal, finds none, and hands
+// back NaN as a number the sweep computed. Measured before this check existed:
+// three of five census drivers returned NaN in every trait column of three
+// metrics, with nothing refused.
+//
+// The two routes are separate claims. `duptake_dpsi` returns NaN by contract
+// where its analytic branch is not valid (hazard 6), and a single-layer wet bound
+// -- where the shade-death exit places the collar -- is such a point; the
+// coordinates additionally run the implicit function theorem, which has no
+// residual to invert wherever the model assigned ci rather than solving for it.
+void test_every_answered_point_hands_over_finite_rows() {
+  printf("every answered operating point hands over finite rows\n");
+  using T = odelia::ode::tangent_scalar<double>;
+  std::map<std::string, int> reached;
+  int draws = 0, uptakes = 0, coords = 0;
+  for (int layers : {1, 3}) {
+    for (double psi0 : {0.25, 1.0, 2.0, 4.0, 6.0}) {
+      for (double ppfd : {1.0, 100.0, 900.0}) {
+        Drivers d;
+        d.PPFD = ppfd;
+        std::vector<double> psi_soil, soil_depth;
+        for (int i = 0; i < layers; ++i) {
+          psi_soil.push_back(psi0 + 0.35 * i);
+          soil_depth.push_back(1.0 * (i + 1));
+        }
+        phylloptim::Leaf l = make_leaf(d, psi_soil, soil_depth);
+        l.find_root_collar_psi();
+        const auto kind = l.operating_point_kind();
+        const std::string name = l.operating_point_kind_name(kind);
+        if (kind == phylloptim::Leaf::OperatingPointKind::Unsolved ||
+            kind == phylloptim::Leaf::OperatingPointKind::SolverRefused ||
+            kind == phylloptim::Leaf::OperatingPointKind::NonFiniteGradient) {
+          continue;
+        }
+        ++reached[name];
+        const std::string at = " at " + name + " psi_soil=" +
+                               std::to_string(psi0) + " ppfd=" +
+                               std::to_string(ppfd) + " layers=" +
+                               std::to_string(layers);
+
+        phylloptim::leaf_pars<T> pars;
+        const phylloptim::leaf_pars<double> seated = l.passive_pars();
+        for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
+        odelia::ode::seed_direction(pars[phylloptim::par_vcmax_25], 1.0);
+        std::vector<T> soil, r_h, r_v;
+        for (int i = 0; i < l.supply_n_layers(); ++i) {
+          soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
+          r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
+          r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
+        }
+        const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
+                                             pars[phylloptim::par_root_P50],
+                                             pars[phylloptim::par_root_c]};
+        const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
+        ++draws;
+        ok(std::isfinite(odelia::util::to_passive(draw.flux.slope)),
+           "the draw's collar slope is finite" + at);
+        for (std::size_t j = 0; j < draw.duptake_dp.size(); ++j) {
+          ok(std::isfinite(draw.duptake_dp[j]),
+             "layer " + std::to_string(j) + "'s supplied collar slope is finite" + at);
+        }
+
+        const double curvature =
+            kind == phylloptim::Leaf::OperatingPointKind::Interior
+                ? l.marginal_collar_slope<phylloptim::Leaf::CostCurve::TF24>()
+                : std::numeric_limits<double>::quiet_NaN();
+        if (kind == phylloptim::Leaf::OperatingPointKind::Interior &&
+            !std::isfinite(curvature)) {
+          continue;
+        }
+        const T collar =
+            l.collar_at<phylloptim::Leaf::CostCurve::TF24, T>(draw, pars, curvature);
+        const auto out =
+            l.outputs_at<phylloptim::Leaf::CostCurve::TF24, T>(collar, draw, pars);
+        ++uptakes;
+        ok(std::isfinite(odelia::ode::derivative_along(out.profit)),
+           "profit's row is finite" + at);
+        for (std::size_t j = 0; j < out.uptake.size(); ++j) {
+          ok(std::isfinite(odelia::ode::derivative_along(out.uptake[j])),
+             "layer " + std::to_string(j) + "'s uptake row is finite" + at);
+        }
+        // The coordinates are refused by name at a shutdown; outputs_at answers
+        // there instead, which the branch above just exercised.
+        if (kind != phylloptim::Leaf::OperatingPointKind::HydraulicShutdown) {
+          const auto co =
+              l.collar_coords_at<T>(l.opt_psi_stem_, l.ci_, collar, draw, pars);
+          ++coords;
+          ok(std::isfinite(odelia::ode::derivative_along(co.sigma.value)) &&
+                 std::isfinite(odelia::util::to_passive(co.sigma.slope)),
+             "sigma's row and collar slope are finite" + at);
+          ok(std::isfinite(odelia::ode::derivative_along(co.ci.value)) &&
+                 std::isfinite(odelia::util::to_passive(co.ci.slope)),
+             "ci's row and collar slope are finite" + at);
+        }
+      }
+    }
+  }
+  std::string names;
+  for (const auto &[name, n] : reached) {
+    names += (names.empty() ? "" : ", ") + name + "(" + std::to_string(n) + ")";
+  }
+  printf("    %d draws, %d output sets, %d coordinate pairs | kinds: %s\n", draws,
+         uptakes, coords, names.c_str());
+  // ⚠️ THE CLAIM IS ONLY EVIDENCE ABOUT THE KINDS IT REACHED, and shade death is
+  // the one that carried the sentinel: a fixture that stopped reaching it would
+  // pass this while checking nothing.
+  ok(reached.count("shade-death") > 0, "the sweep reached a shade death");
+  ok(reached.count("hydraulic-shutdown") > 0, "the sweep reached a shutdown");
+  ok(reached.count("interior") > 0, "the sweep reached an interior point");
+}
+
 void test_rd_temperature_response() {
   printf("R_d rises with temperature\n");
   Drivers d;
@@ -3306,7 +3425,7 @@ void test_rd_temperature_response() {
     l.find_root_collar_psi();
     printf("    T = %4.1f C   R_d %6.3f   A %8.4f%s\n", T, l.R_d_,
            l.assim_colimited_,
-           l.ci_at_compensation_point_ ? "   <-- shut down" : "");
+           l.ci_at_compensation_point() ? "   <-- shut down" : "");
   }
 
   // ⚠️ AND IT MUST SHUT DOWN RATHER THAN THROW. A leaf too hot to gain carbon at
@@ -3323,7 +3442,7 @@ void test_rd_temperature_response() {
       threw = true;
     }
     ok(!threw, "a leaf too hot to gain carbon shuts down instead of throwing");
-    ok(hot.ci_at_compensation_point_,
+    ok(hot.ci_at_compensation_point(),
        "and says so, rather than reporting an ordinary operating point");
     near(hot.ci_, hot.gamma_ * hot.umol_per_mol_to_Pa_, 1e-12,
          "ci sits at the compensation point");
@@ -3336,7 +3455,7 @@ void test_rd_temperature_response() {
   {
     phylloptim::Leaf ok_leaf = make_leaf(d, {2.0}, {1.0});
     ok_leaf.find_root_collar_psi();
-    ok(!ok_leaf.ci_at_compensation_point_,
+    ok(!ok_leaf.ci_at_compensation_point(),
        "an ordinary leaf is not flagged as shut down");
   }
 }
@@ -5933,6 +6052,7 @@ int main() {
   test_rd_temperature_response();
   test_pack_kernels_are_the_models_own();
   test_light_reaches_carbon_with_a_row();
+  test_every_answered_point_hands_over_finite_rows();
   test_set_traits_matches_a_fresh_leaf();
   test_prescribed_lambda_survives_redriving();
   test_profitmax_reports_an_emergent_lambda();

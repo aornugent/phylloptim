@@ -497,12 +497,29 @@ public:
   // cut) so TF24 (via pars.use_energy_balance) and the leaf-level demo can
   // turn PM on; default preserves backward compatibility.
   bool use_energy_balance_ = false;
-  // Set by psi_stem_to_ci when the energy-balance fallback fires: the leaf is so
-  // hot that assimilation is negative across the whole [gamma*, ca] bracket, so
-  // there is no supply==demand root and ci is placed AT the compensation point
-  // instead. The residual g is then NOT zero, which voids the implicit-function
-  // theorem dprofit_at_collar_psi is built on -- see the branch there.
-  bool ci_at_compensation_point_ = false;
+  // ci is AT the CO2 compensation point, which means the model ASSIGNED it rather
+  // than solving a supply == demand residual for it. The residual is then not
+  // zero, which voids the implicit-function theorem the derivative paths are
+  // built on -- so they drop the assimilation term instead of approximating it.
+  //
+  // ⚠️ DERIVED, NOT RECORDED, AND THAT IS THE WHOLE POINT. FOUR exits place ci
+  // here -- hydraulic shutdown, shade death, and both zero-transpiration branches
+  // of set_leaf_states_rates_from_psi_stem -- and while this was a flag, only the
+  // psi_stem_to_ci fallback set it. Every one of 450 hydraulic-shutdown and 396
+  // shade-death points in a 1440-point sweep therefore ran the theorem on a
+  // condition the model never solved, and dA/dci at exactly this ci is NaN: both
+  // limiting rates carry the factor (ci - gamma*), so the colimitation
+  // discriminant is exactly zero and the derivative of its square root is
+  // infinite. One NaN reaches every trait column that shares plant's adjoint
+  // accumulator.
+  //
+  // ⚠️ SEAT THE TEMPERATURE BLOCK BEFORE WRITING ci, never after. `gamma_` comes
+  // out of that block, so a re-seat with no re-solve leaves ci at the PREVIOUS
+  // temperature's compensation point and this reads false. All four exits above
+  // already write in that order.
+  bool ci_at_compensation_point() const {
+    return ci_ == gamma_ * umol_per_mol_to_Pa_;
+  }
   // Boundary-layer inputs for ra = C_ra*sqrt(d/U0) (doc 4.1). d is a per-strategy
   // trait (set from pars.d in prepare_strategy); wind_speed_ is the per-timestep
   // above-canopy driver (set from the environment before set_physiology). Both
@@ -1218,6 +1235,40 @@ public:
       soil_at.push_back(odelia::util::to_passive(v));
     }
     roots_.duptake_dpsi(d.at, soil_at, d.duptake_dp);
+
+    // ⚠️ A KINK IS ANSWERED HERE, ONCE, so that no consumer can read the sentinel.
+    // Hazard 6: `duptake_dpsi` returns NaN to mean "the analytic branch is not
+    // valid across this collar, difference it instead". A wet bound is one -- for
+    // a single rooted layer it is exactly the gravity-balance point, and that is
+    // where the shade-death exit places the collar.
+    //
+    // Honoured at the total and NOT at the per-layer slopes, the sentinel became
+    // `NaN * step` in every layer's uptake, NaN in the value and in the row. That
+    // reached plant, where one NaN row takes every trait column that shares the
+    // adjoint accumulator -- and nothing named it, because the row plant hands to
+    // `record_with_derivatives` is the constant 1.0 and the sentinel is already
+    // on the tape behind it.
+    //
+    // The rows go with the sentinel, which is right rather than a loss: the
+    // analytic form is not valid here, so neither are its rows. Each slope is
+    // differenced from the function its own values come from, so the total keeps
+    // its kg and the layers keep their mol without a conversion to remember.
+    const bool at_a_kink =
+        !std::isfinite(odelia::util::to_passive(d.flux.slope)) ||
+        std::any_of(d.duptake_dp.begin(), d.duptake_dp.end(),
+                    [](double x) { return !std::isfinite(x); });
+    if (at_a_kink) {
+      const double step = 1e-6;
+      std::vector<double> up_layer(d.duptake_dp.size(), 0.0);
+      std::vector<double> down_layer(d.duptake_dp.size(), 0.0);
+      double up = 0.0, down = 0.0;
+      roots_.uptake_at(d.at + step, soil_at, up_layer, up);
+      roots_.uptake_at(d.at - step, soil_at, down_layer, down);
+      d.flux.slope = S((up - down) / (2.0 * step));
+      for (std::size_t j = 0; j < d.duptake_dp.size(); ++j) {
+        d.duptake_dp[j] = (up_layer[j] - down_layer[j]) / (2.0 * step);
+      }
+    }
     return d;
   }
 
@@ -2634,7 +2685,6 @@ inline leaf_pars<double> Leaf::passive_pars() const {
 
 // set various states and physiology parameters obtained from TF24 to NA to clean leaf object
 inline void Leaf::setup_clean_leaf() {
-  ci_at_compensation_point_ = false;  // hazard 8: every exit writes its own state
   ci_ = util::na_value; // Pa
   stom_cond_CO2_= util::na_value; //mol Co2 m^-2 s^-1 
   assim_colimited_= util::na_value; // umol C m^-2 s^-1 
@@ -3893,7 +3943,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   //
   // R_d' is obtained the same way A_T is, by differencing the model's own
   // temperature block, so the two cannot drift apart.
-  if (ci_at_compensation_point_) {
+  if (ci_at_compensation_point()) {
     const double C_prime0 = cost_deriv<K>(psi_stem, psi);
     double dprofit = -C_prime0 * dpsistem_dpsi;
     if (use_energy_balance_ && dT_dE != 0.0) {
@@ -4101,7 +4151,7 @@ inline double Leaf::dprofit_dpsi_stem(double psi_stem, double psi_upstream,
   // there, so the implicit function theorem below does not hold and the
   // assimilation term is dropped rather than approximated. `feasible` stays
   // false, which is what tells a caller the difference.
-  if (ci_at_compensation_point_) {
+  if (ci_at_compensation_point()) {
     double dprofit = -C_prime;
     if (use_energy_balance_ && dT_dE != 0.0) {
       const double Rd_T = respiration_temp_deriv(Tleaf_here);
@@ -4899,7 +4949,6 @@ inline double Leaf::psi_stem_to_ci(double psi_stem, double psi_upstream) {
   // reaches NEITHER family of optimality solver -- both go through this function
   // and so through the 1e-10 above. A caller tightening it gets no extra precision
   // anywhere in the optimality model.
-  ci_at_compensation_point_ = false;
   try {
     return ci_ = util::uniroot_smooth(target, gamma_ * umol_per_mol_to_Pa_, ca_, 1e-10, ci_niter);
   } catch (const std::exception& e) {
@@ -4929,7 +4978,6 @@ inline double Leaf::psi_stem_to_ci(double psi_stem, double psi_upstream) {
         std::isfinite(t_lo) && std::isfinite(t_hi) &&
         ((t_lo > 0.0 && t_hi > 0.0) || (t_lo < 0.0 && t_hi < 0.0));
     if (use_energy_balance_ || no_root_in_bracket) {
-      ci_at_compensation_point_ = true;
       return ci_ = lo;
     }
     util::stop_infeasible("ci_solve", "psi_stem_to_ci failed: " + std::string(e.what()) +
@@ -5386,12 +5434,12 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // second definition of one function, free to disagree with it while staying
   // finite.
   double dT2_dci = 0.0;
-  if (!ci_at_compensation_point_) {
+  if (!ci_at_compensation_point()) {
     dT2_dci = assim_slope_at<double>(ci_star, at_pars) * umol_to_mol +
               gc_per_flux * to_passive(stem_flux) * inv_atm;
   }
   const S ci_h =
-      ci_at_compensation_point_
+      ci_at_compensation_point()
           ? S(ci_star)
           : odelia::implicit_value<S>(
                 ci_star, dT2_dci, [&](const S& c) -> S {
@@ -5436,13 +5484,22 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   const S dgc_dsigma = gc_const * kmax * f_sigma;
   const S dgc_dp = -gc_const * kmax * f_p;
 
-  const S A_prime = assim_slope_at<S>(ci_h, pars);
-  const S g_ci = A_prime * umol_to_mol + gc * inv;
-  const S ca_minus_ci = S(ca_) - ci_h;
-  const S dci_dsigma = (dgc_dsigma * ca_minus_ci * inv) / g_ci;
-  const S dci_dp_expl = (dgc_dp * ca_minus_ci * inv) / g_ci;
-
-  const S dci_dp = dci_dsigma * V + dci_dp_expl;
+  // ⚠️ THE SAME CONDITION AGAIN, AND IT GOVERNS THE SLOPE AS WELL AS THE VALUE.
+  // Where ci was assigned the compensation point there is no residual to invert,
+  // so the theorem below has nothing to divide -- and dA/dci is NaN at exactly
+  // that ci, because both limiting rates carry the factor (ci - gamma*), leaving
+  // the colimitation discriminant zero and the derivative of its square root
+  // infinite. ci is then a function of temperature alone, which no input reaches:
+  // the slope is zero, not small.
+  S dci_dp = S(0.0);
+  if (!ci_at_compensation_point()) {
+    const S A_prime = assim_slope_at<S>(ci_h, pars);
+    const S g_ci = A_prime * umol_to_mol + gc * inv;
+    const S ca_minus_ci = S(ca_) - ci_h;
+    const S dci_dsigma = (dgc_dsigma * ca_minus_ci * inv) / g_ci;
+    const S dci_dp_expl = (dgc_dp * ca_minus_ci * inv) / g_ci;
+    dci_dp = dci_dsigma * V + dci_dp_expl;
+  }
 
   // The step is exactly zero in VALUE, so both coordinates are the residuals'
   // bit for bit and only the collar's channel is added.
@@ -5593,31 +5650,11 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
   const Leaf& leaf = *this;
 
   // Both arms move water, so both slopes are the supply's own conductance at the
-  // bound, which the model states analytically rather than differencing.
-  //
-  // ⚠️ EXCEPT ON A KINK, WHERE THE ANALYTIC FORM REFUSES BY CONTRACT. A wet bound
-  // is the collar at which uptake vanishes, and for a single rooted layer that is
-  // exactly the gravity-balance point -- one of the three places duptake_dpsi
-  // returns NaN because its general-branch derivative is not valid across them.
-  // Hazard 6 says a NaN there means fall back to a difference, and this is a
-  // caller that has to: propagating it reaches implicit_value, which refuses a
-  // non-finite denominator and stops. The bound is a real operating point, so the
-  // answer is the difference rather than a refusal.
-  double dflux_dx = to_passive(draw.flux.slope);
-  if (!std::isfinite(dflux_dx)) {
-    const std::size_t n = static_cast<std::size_t>(supply_n_layers());
-    std::vector<double> soil_at;
-    soil_at.reserve(n);
-    for (int i = 0; i < supply_n_layers(); ++i) {
-      soil_at.push_back(roots_.psi_soil_[std::size_t(i)]);
-    }
-    const double step = 1e-6;
-    std::vector<double> lay(n, 0.0);
-    double up = 0.0, down = 0.0;
-    roots_.uptake_at(bound_x + step, soil_at, lay, up);
-    roots_.uptake_at(bound_x - step, soil_at, lay, down);
-    dflux_dx = (up - down) / (2.0 * step);
-  }
+  // bound. The draw carries it as ONE number: where a kink makes the analytic
+  // branch invalid -- a single-layer wet bound is exactly the gravity-balance
+  // point -- supply_draw_at has already differenced it, so there is no sentinel
+  // to test for here and no second definition of the fallback.
+  const double dflux_dx = to_passive(draw.flux.slope);
 
   if (wet) {
     // The residual IS the draw: uptake vanishes at this collar. implicit_value
