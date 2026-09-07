@@ -756,6 +756,17 @@ public:
   // NOTE: electron_transport_ is deliberately NOT cached here -- it also depends
   // on the per-call PPFD_ and is recomputed every call.
   bool   photo_temp_cached_ = false;
+  // The leaf temperature the block above currently holds.
+  //
+  // ⚠️ NOT `leaf_temp_`, AND THE PACK-READING KERNELS MUST READ THIS ONE. On the
+  // energy-balance path `leaf_temp_` is AIR temperature and the block is re-seated
+  // per candidate psi at the leaf's own -- measured 10 K apart at Tair 40 -- so a
+  // pack kernel reading `leaf_temp_` there evaluated the Farquhar block at air
+  // temperature while the model evaluated it at the leaf's: 100% of assimilation,
+  // 84% of electron transport, 8.3% of dA/dci. The transpose identity cannot see
+  // it, because it reads one surface in two directions and both directions are
+  // wrong together; test_leaf's member-against-pack comparison is what does.
+  double photo_temp_;
   // ⚠️ THE KEY MUST COVER EVERY SCALAR THE BLOCK READS, NOT JUST THE DRIVERS.
   // It used to be (leaf_temp_, atm_o2_kpa_) alone, and the argument for that was
   // "same inputs -> bit-identical outputs, so reusing is exact". That argument was
@@ -2643,6 +2654,7 @@ inline void Leaf::setup_clean_leaf() {
   // solve has run, so there is no kind of point to report.
   operating_point_kind_ = OperatingPointKind::Unsolved;
   leaf_temp_= util::na_value; // deg C
+  photo_temp_= util::na_value; // deg C -- no block seated yet
   Tleaf_= util::na_value; // deg C -- an output, so NA until a solve writes it
   Tair_= util::na_value; // deg C
   Rn_= util::na_value; // W m^-2
@@ -2690,9 +2702,11 @@ inline void Leaf::setup_clean_leaf() {
 //      the blocks are numerically independent, but keeping the order means the
 //      only thing this refactor has to argue about is where the code lives.
 //
-// NOTE: the temperature-dependent block (group 1) depends only on leaf_temp_
-// (constant across the run in the current driver setup) yet is recomputed on
-// every call; see the optimisation notes / caching opportunity.
+// NOTE: the temperature-dependent block (group 1) is a function of one
+// temperature, recorded in photo_temp_. Off the energy-balance path that is
+// leaf_temp_ and constant across the run in the current driver setup, which is
+// what the cache below exploits; on it the block is re-seated per candidate psi
+// at the leaf's own temperature and the cache is bypassed.
 //
 //sets various parameters which are constant for a given node at a given time
 inline void Leaf::set_physiology(const RootNetwork& root_network, double PPFD, const std::vector<double>& psi_soil, const std::vector<double>& soil_depth, double leaf_specific_conductance_max, double atm_vpd, double ca, double leaf_temp, double atm_o2_kpa, double atm_kpa) {
@@ -4381,6 +4395,9 @@ inline std::array<double, Leaf::photo_temp_key_size> Leaf::photo_temp_key() cons
 }
 
 inline void Leaf::update_temperature_dependent_params(double leaf_temp) {
+  // FIRST: the pack-reading kernels take the block's temperature from here, and
+  // two of them are called below.
+  photo_temp_ = leaf_temp;
   vcmax_ =
       peak_arrh_curve(vcmax_ha_, vcmax_25, leaf_temp, vcmax_H_d_, vcmax_d_S_);
   jmax_ = peak_arrh_curve(jmax_ha_, jmax_25, leaf_temp, jmax_H_d_, jmax_d_S_);
@@ -5184,25 +5201,27 @@ inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem) const {
 //
 // Each is its member-reading twin above with every differentiated quantity taken
 // from `pars` instead. At double the pack holds exactly what the members hold
-// (passive_pars builds it from them), and the operation order is unchanged, so
-// these instantiate to the same numbers bit for bit.
+// (passive_pars builds it from them), the temperature responses are taken at the
+// temperature the block itself holds (photo_temp_), and the operation order is
+// unchanged, so these instantiate to the same numbers bit for bit -- which
+// test_leaf asserts on both temperature paths rather than leaving to the reader.
 
 template <typename T>
 inline T Leaf::vcmax_at(const leaf_pars<T>& pars) const {
   return peak_arrh_curve<T>(T(vcmax_ha_), pars[par_vcmax_25],
-                            T(leaf_temp_), T(vcmax_H_d_), T(vcmax_d_S_));
+                            T(photo_temp_), T(vcmax_H_d_), T(vcmax_d_S_));
 }
 
 template <typename T>
 inline T Leaf::jmax_at(const leaf_pars<T>& pars) const {
   T j = peak_arrh_curve<T>(T(jmax_ha_), pars[par_jmax_25],
-                           T(leaf_temp_), T(jmax_H_d_), T(jmax_d_S_));
+                           T(photo_temp_), T(jmax_H_d_), T(jmax_d_S_));
   // The thermal cost reads leaf temperature and two thresholds, none of which is
   // a trait, so it is a factor here rather than a term carrying rows.
   if (use_thermal_cost_) {
     // Written out rather than `*=`, whose overload is ambiguous at a nested
     // scalar.
-    j = j * T(1.0 - thermal_cost_at(leaf_temp_));
+    j = j * T(1.0 - thermal_cost_at(photo_temp_));
   }
   return j;
 }
@@ -5210,9 +5229,9 @@ inline T Leaf::jmax_at(const leaf_pars<T>& pars) const {
 template <typename T>
 inline T Leaf::respiration_at(const leaf_pars<T>& pars) const {
   const double q10 =
-      rd_q10_intercept_ - rd_q10_slope_ * (leaf_temp_ + 25.0) / 2.0;
+      rd_q10_intercept_ - rd_q10_slope_ * (photo_temp_ + 25.0) / 2.0;
   return pars[par_R_d_25] *
-         T(std::pow(q10, (leaf_temp_ - 25.0) / 10.0));
+         T(std::pow(q10, (photo_temp_ - 25.0) / 10.0));
 }
 
 template <typename T>

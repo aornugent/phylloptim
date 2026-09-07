@@ -3088,6 +3088,87 @@ void test_temperature_params_invalidate_cache() {
 // exists. Every reference value in the model is DEFINED at 25 C, so a change to any
 // response curve is inert there by construction; the golden grid carries one hot
 // block for exactly this reason, and this test is what pins the response itself.
+// The pack-reading kernels against the member-reading ones they are twins of,
+// at double, where the two must be THE SAME NUMBERS and not merely close.
+//
+// This is the only check on the reverse-mode surface's VALUES. The transpose
+// identity reads that surface in two directions and is satisfied exactly by a
+// kernel evaluated at the wrong temperature or in the wrong light, because both
+// directions are then wrong together.
+//
+// ⚠️ THE ENERGY-BALANCE ARM IS THE POINT, not a second case for completeness.
+// Off that path the block's temperature and `leaf_temp_` are one number and a
+// kernel reading either passes; on it they run up to 10 K apart, and reading
+// `leaf_temp_` moved assimilation by 100%, electron transport by 84% and dA/dci
+// by 8.3%. The block members are compared FIRST so a failure names the cause
+// rather than the three consequences below it.
+void test_pack_kernels_are_the_models_own() {
+  printf("the pack-reading kernels are the model's own numbers\n");
+  using AD = xad::fwd<double>::active_type;
+  int compared = 0, agreed = 0, refused = 0;
+  double widest_gap = 0.0;
+  // Identical numbers, and identical refusals. At a leaf 50 C hot the
+  // colimitation discriminant leaves dA/dci NaN, and two NaNs from two spellings
+  // of one function are the agreement being asserted rather than an exception to
+  // it -- `near` cannot say that, since NaN compares false against everything.
+  // Counted, so a fixture that started refusing everywhere cannot pass by it.
+  auto same = [&](double got, double want, const std::string &what) {
+    if (std::isnan(got) && std::isnan(want)) {
+      ++refused;
+      ++checks;
+      return;
+    }
+    ++agreed;
+    near(got, want, 0.0, what);
+  };
+  for (bool gate : {false, true}) {
+    for (double psi0 : {0.5, 1.0, 2.0, 3.0}) {
+      for (double ppfd : {100.0, 1500.0}) {
+        for (double temp : {25.0, 40.0}) {
+          Drivers d;
+          d.PPFD = ppfd;
+          d.leaf_temp = temp;
+          phylloptim::Leaf l =
+              make_pm_leaf(d, {psi0, psi0 + 0.35, psi0 + 0.7}, {1.0, 2.0, 3.0},
+                           gate);
+          l.find_root_collar_psi();
+          const double ci = l.ci_;
+          if (!std::isfinite(ci)) continue;
+          ++compared;
+          widest_gap = std::max(widest_gap, std::abs(l.Tleaf_ - l.leaf_temp_));
+          const phylloptim::leaf_pars<double> p = l.passive_pars();
+          const std::string at = " at psi_soil=" + std::to_string(psi0) +
+                                 " ppfd=" + std::to_string(ppfd) + " Tair=" +
+                                 std::to_string(temp) +
+                                 (gate ? " eb=1" : " eb=0");
+          same(l.vcmax_at<double>(p), l.vcmax_, "vcmax" + at);
+          same(l.jmax_at<double>(p), l.jmax_, "jmax" + at);
+          same(l.respiration_at<double>(p), l.R_d_, "respiration" + at);
+          same(l.electron_transport_at<double>(p), l.electron_transport(),
+               "electron transport" + at);
+          same(l.assim_colimited_kernel<double>(ci, p), l.assim_colimited(ci),
+               "colimited assimilation" + at);
+          AD ci_ad = ci;
+          xad::derivative(ci_ad) = 1.0;
+          same(l.assim_slope_at<double>(ci, p),
+               xad::derivative(l.assim_colimited_kernel(ci_ad)),
+               "dA/dci" + at);
+        }
+      }
+    }
+  }
+  ok(compared >= 20, "the sweep reached at least 20 operating points");
+  ok(agreed > 4 * refused,
+     "most comparisons were of numbers, not of refusals: " +
+         std::to_string(agreed) + " numbers, " + std::to_string(refused) +
+         " refusals");
+  // The claim is only evidence where the two temperatures actually differ, so
+  // a fixture that stopped separating them would have stopped checking.
+  ok(widest_gap > 1.0,
+     "the sweep reached a leaf more than 1 K off air temperature, gap=" +
+         std::to_string(widest_gap));
+}
+
 void test_rd_temperature_response() {
   printf("R_d rises with temperature\n");
   Drivers d;
@@ -5797,6 +5878,7 @@ int main() {
   test_temperature_parameters_are_settable();
   test_temperature_params_invalidate_cache();
   test_rd_temperature_response();
+  test_pack_kernels_are_the_models_own();
   test_set_traits_matches_a_fresh_leaf();
   test_prescribed_lambda_survives_redriving();
   test_profitmax_reports_an_emergent_lambda();
