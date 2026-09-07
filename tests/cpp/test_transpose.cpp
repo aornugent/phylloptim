@@ -15,6 +15,20 @@
 // collar responses either: sigma comes from an inverse spline whose round-trip
 // dominates dsigma/dcollar - 1. This can.
 //
+// It cannot referee the VALUES, though. Both sides read one surface, so a kernel
+// evaluated at the wrong temperature or the wrong light satisfies this identity
+// exactly -- test_leaf's member-against-pack comparison is what covers that.
+//
+// ⚠️ THE RESIDUAL IS SCALED BY THE TERMS, NOT BY THE PAIRING. Both sides are a
+// sum over inputs of u_k times a row, and the sum can cancel: over this sweep the
+// pairing runs from 1.0 to 1.6e+03 times smaller than the sum of its terms'
+// magnitudes. Dividing by the pairing therefore measures rounding in a
+// cancellation wherever it is small, and it measures it against a threshold set
+// for the cases where it is not -- one point read 4.0e-09 that way with every
+// individual row agreeing to 3.3e-12. Scaling by the terms gives a wrong row of
+// relative size e a residual of order e whatever the pairing does, which is the
+// sensitivity this is here for.
+//
 // ⚠️ THE CONTROL IS THE POINT. The collar is LIVE -- placed by collar_at, so it
 // carries the rows of whatever condition pins it -- and the second arm holds it
 // passive on the REVERSE side only, which is exactly the envelope mistake. That
@@ -50,6 +64,7 @@ namespace {
 int failures = 0;
 int compared = 0;
 double worst = 0.0;
+double worst_cancel = 0.0;
 
 void ok(bool cond, const std::string& what) {
   if (!cond) {
@@ -149,10 +164,16 @@ double forward_side(const pl::Leaf& l, const std::vector<double>& u,
   return acc;
 }
 
-// <J^T v, u>: one recording, one sweep.
-double reverse_side(const pl::Leaf& l, const std::vector<double>& u,
-                    const std::vector<double>& v, double curvature,
-                    bool hold_collar, bool has_coords) {
+// <J^T v, u> and the size of the terms it was summed from.
+struct Pairing {
+  double value = 0.0;
+  double terms = 0.0;
+};
+
+// One recording, one sweep.
+Pairing reverse_side(const pl::Leaf& l, const std::vector<double>& u,
+                     const std::vector<double>& v, double curvature,
+                     bool hold_collar, bool has_coords) {
   Tape tape;
   Inputs<A> in = inputs_of<A>(l);
   std::vector<A*> f = in.flat();
@@ -182,11 +203,13 @@ double reverse_side(const pl::Leaf& l, const std::vector<double>& u,
   }
   tape.computeAdjoints();
 
-  double acc = 0.0;
+  Pairing out;
   for (std::size_t k = 0; k < f.size(); ++k) {
-    acc += u[k] * xad::derivative(*f[k]);
+    const double term = u[k] * xad::derivative(*f[k]);
+    out.value += term;
+    out.terms += std::abs(term);
   }
-  return acc;
+  return out;
 }
 
 // Whether the collar carries rows on this arm, which is what decides what the
@@ -222,7 +245,8 @@ Arm arm_of(pl::Leaf::OperatingPointKind kind) {
 
 // A control below this is "silent": holding the collar passive changed nothing.
 // The identity itself passes below 1e-10, so a live control at this floor still
-// sits three orders above what the check can resolve.
+// sits three orders above what the check can resolve. Scaled by the terms too,
+// for the reason the identity is.
 const double kControlFloor = 1e-7;
 int seen_carry = 0, seen_norows = 0;
 
@@ -251,12 +275,12 @@ void check(int layers, double psi0, double ppfd, double leaf_temp,
   const bool has_coords =
       l.operating_point_kind() != pl::Leaf::OperatingPointKind::HydraulicShutdown;
   const double fwd = forward_side(l, u, v, curvature, has_coords);
-  const double rev = reverse_side(l, u, v, curvature, false, has_coords);
+  const Pairing rev = reverse_side(l, u, v, curvature, false, has_coords);
 
   // The control, on the reverse side only.
-  const double held = reverse_side(l, u, v, curvature, true, has_coords);
-  const double scale_c = std::max(std::abs(rev), 1e-300);
-  const double moved = std::abs(rev - held) / scale_c;
+  const Pairing held = reverse_side(l, u, v, curvature, true, has_coords);
+  const double moved =
+      std::abs(rev.value - held.value) / std::max(rev.terms, 1e-300);
   if (arm == Arm::CarriesRows) {
     ++seen_carry;
     ok(moved > kControlFloor,
@@ -272,14 +296,18 @@ void check(int layers, double psi0, double ppfd, double leaf_temp,
            std::string(l.operating_point_kind_name(l.operating_point_kind())) +
            " moved=" + std::to_string(moved));
   }
-  const double scale = std::max(std::abs(fwd), std::abs(rev));
-  const double rel = (scale > 0.0) ? std::abs(fwd - rev) / scale : 0.0;
+  const double rel = (rev.terms > 0.0)
+                         ? std::abs(fwd - rev.value) / rev.terms
+                         : 0.0;
+  const double cancel = rev.terms / std::max(std::abs(rev.value), 1e-300);
   ++compared;
   if (rel > worst) worst = rel;
+  if (cancel > worst_cancel) worst_cancel = cancel;
   ok(rel < 1e-10,
      "transpose identity: layers=" + std::to_string(layers) + " psi_soil=" +
          std::to_string(psi0) + " ppfd=" + std::to_string(ppfd) + " T=" +
-         std::to_string(leaf_temp) + " rel=" + std::to_string(rel));
+         std::to_string(leaf_temp) + " rel=" + std::to_string(rel) +
+         " cancellation=" + std::to_string(cancel));
 }
 
 }  // namespace
@@ -300,6 +328,9 @@ int main() {
   }
   printf("    %d operating points compared | worst relative %.3e\n", compared,
          worst);
+  // Reported because it is what the scaling above is for: a sweep that stopped
+  // reaching a cancelling pairing would have stopped exercising the reason.
+  printf("    worst cancellation in the pairing: %.3gx\n", worst_cancel);
   // The identity is only evidence about the points it ran on, so a fixture that
   // stops reaching them has narrowed the check without narrowing the claim.
   printf("    arms reached: %d placed by a rule, %d with no collar to move\n",
