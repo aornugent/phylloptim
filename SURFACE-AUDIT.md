@@ -10,7 +10,7 @@ anything added later.
 |---|---|
 | `SolvedPoint` / `place_solved_point` | upstream's `evaluate_root_collar_psi(target)`, which *"leaves exactly the same outputs as find_root_collar_psi"* and re-derives sigma, ci and every output **from the collar alone**. Four of five fields were redundant. What survives is one double and one enum |
 | `MarginalParts{marginal, V, dci_dpsi}` | `V` and `dci_dpsi` are `sigma.slope` and `ci.slope` -- the eighteenth spelling of the value/slope pair `two-paths.md` swept seventeen of. `marginal_assembled` returns a scalar |
-| `WhichBound::DryRootPsiCrit` | a bare `return in.root_psi_crit;`, which existed only because root_psi_crit was a free trait. Under (P50, c) it is an ordinary expression AD chains itself. The arm dissolves and `DryBoundArm` folds into the two that remain |
+| `WhichBound::DryRootPsiCrit` | a bare `return in.root_psi_crit;`, which existed only because root_psi_crit was a free trait. Under (P50, c) it is an ordinary expression AD chains itself, so the arm needs no type. ⚠️ THE SELECTION DID NOT DISSOLVE WITH IT -- which of the two bounds meeting at the dry end binds still decides which expression places the collar, and it is a kind (`BoundaryRootCrit`) rather than a type of its own |
 | `with_slope` (in plant) | belongs in odelia: its `for_each_active` exists for `visit_active`, and a model carrying that hook is carrying odelia's problem. Moved |
 
 ## Kept, but reshaped
@@ -186,7 +186,7 @@ that upstream or odelia could name.
 | | what it prevents |
 |---|---|
 | `replay_operating_point` | putting a collar back WITHOUT its arm. `evaluate_root_collar_psi` restores every number bit-for-bit and then tags the point `prescribed`, which is correct from its side and leaves `collar_at` with no condition to place a replayed interior point at. One call, so the pair cannot be split -- and this exact mistake had already cost a throw once, inside `marginal_collar_slope` |
-| `dry_bound_is_root_limit_` | which limit closed the dry end. Upstream keeps ONE `BoundaryCrit` kind for two conditions, and re-deriving the comparison would repeat a root-find and differentiate a selector |
+| `dry_bound_is_root_limit_` | carrying which bound closed the dry end from where the comparison is made to where the solve classifies the point. It is no longer the classification: `BoundaryCrit` and `BoundaryRootCrit` are, so a tally of kinds reports the distinction where a private bool could not. Kept as the carrier because the comparison happens while the bracket is built and the classification after the solve lands -- re-deciding it there would repeat a root-find, and differentiating the comparison would manufacture a jump the model does not have |
 | `operating_point_kind_count`, `ncontrol_default` | a consumer sizes an array and seats a spline from them. A literal on that side drifts silently: a kind added here lands outside a tally that stops at a stale count, and a curve built on a different knot number is a different curve with every number plausible |
 
 ## What the boundary turned up that no lens would have

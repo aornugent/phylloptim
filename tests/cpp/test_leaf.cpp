@@ -949,7 +949,8 @@ void test_collar_solve_refuses_rather_than_guessing() {
   ok(m.operating_point_kind() == Kind::SolverRefused,
      "the solve reports that it could not resolve the bracket");
   ok(m.operating_point_kind() != Kind::BoundarySoil &&
-         m.operating_point_kind() != Kind::BoundaryCrit,
+         m.operating_point_kind() != Kind::BoundaryCrit &&
+         m.operating_point_kind() != Kind::BoundaryRootCrit,
      "and does not pass it off as a constrained optimum");
   // The endpoint the solve returns is stepped a fraction of the width inside the
   // bound it came from, so compare against the bound rather than for equality.
@@ -3339,6 +3340,58 @@ void test_every_answered_point_hands_over_finite_rows() {
   ok(reached.count("shade-death") > 0, "the sweep reached a shade death");
   ok(reached.count("hydraulic-shutdown") > 0, "the sweep reached a shutdown");
   ok(reached.count("interior") > 0, "the sweep reached an interior point");
+}
+
+// The dry end has TWO bounds, closed by different conditions, and which one bound
+// is a classification a tally has to be able to report.
+//
+// ⚠️ AT SHIPPED DEFAULTS ONE ARM NEVER WINS, so it needs a fixture built for it
+// rather than a sweep that waits for one. root_psi_crit is 5.87 MPa against a
+// continuity root near 1.3, so the root's own limit is never the min until the
+// trait that sets it is lowered deliberately. Without this the kind exists and
+// nothing reaches it, which is a classification no run can produce -- and while
+// the distinction was a private bool, no tally could report it either.
+//
+// The two arms place the collar by DIFFERENT expressions -- a residual on one and
+// a closed form on the other -- so the check is the placement as well as the
+// name: at the root-limit arm the collar is root_psi_crit exactly.
+void test_the_dry_end_reports_which_bound_closed_it() {
+  printf("the dry end reports which of its two bounds closed it\n");
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  Drivers d;
+  const std::vector<double> psi_soil{2.0}, depth{1.0};
+  const std::vector<double> mrp(psi_soil.size(),
+                               1.0 / double(psi_soil.size()) / d.area_leaf);
+  int continuity = 0, root_limit = 0;
+  for (double root_P50 : {3.4, 2.0, 1.2, 0.9, 0.7, 0.5, 0.3}) {
+    phylloptim::Leaf l = make_leaf(d, psi_soil, depth);
+    l.set_traits(96.0, 2.680147, 3.4, 2.680147, root_P50, 1.5, 157.44, 0.30, 0.7,
+                 0.99, 7.5, kRd25, kGammaJS22, kCMaxA, kCMaxB);
+    l.set_physiology(fixture::root_network(mrp, depth), d.PPFD, psi_soil, depth,
+                     d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
+                     d.atm_o2_kpa, d.atm_kpa);
+    l.find_root_collar_psi();
+    const Kind kind = l.operating_point_kind();
+    const std::string at = " at root_P50=" + std::to_string(root_P50);
+    if (kind == Kind::BoundaryCrit) {
+      ++continuity;
+    } else if (kind == Kind::BoundaryRootCrit) {
+      ++root_limit;
+      // The collar IS the root's critical potential on this arm, which is what
+      // distinguishes it from the continuity root beside it.
+      near(l.opt_root_psi_, l.roots_.root_psi_crit, 1e-9,
+           "the collar is the root's critical potential" + at);
+    }
+    printf("    root_P50=%4.2f  root_psi_crit=%7.4f  collar=%7.4f  %s\n", root_P50,
+           l.roots_.root_psi_crit, l.opt_root_psi_,
+           l.operating_point_kind_name(kind));
+  }
+  // The arm this exists for. The continuity arm is covered where it occurs
+  // naturally -- the golden grid pins 18 of them at 25 C and none at 40 C, and
+  // now pins this arm at zero over the same grid, which is the pair of counts
+  // that says the two are told apart rather than merged.
+  ok(root_limit > 0, "the sweep reached the root-limit arm");
+  (void)continuity;
 }
 
 void test_rd_temperature_response() {
@@ -6050,6 +6103,7 @@ int main() {
   test_temperature_parameters_are_settable();
   test_temperature_params_invalidate_cache();
   test_rd_temperature_response();
+  test_the_dry_end_reports_which_bound_closed_it();
   test_pack_kernels_are_the_models_own();
   test_light_reaches_carbon_with_a_row();
   test_every_answered_point_hands_over_finite_rows();

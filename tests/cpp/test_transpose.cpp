@@ -228,6 +228,7 @@ Arm arm_of(pl::Leaf::OperatingPointKind kind) {
     case pl::Leaf::OperatingPointKind::Interior:
     case pl::Leaf::OperatingPointKind::BoundarySoil:
     case pl::Leaf::OperatingPointKind::BoundaryCrit:
+    case pl::Leaf::OperatingPointKind::BoundaryRootCrit:
     case pl::Leaf::OperatingPointKind::ShadeDeath:
       return Arm::CarriesRows;
     // The stem holds at psi_crit and nothing defines the collar at all.

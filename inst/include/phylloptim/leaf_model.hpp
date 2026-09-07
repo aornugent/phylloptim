@@ -2322,7 +2322,20 @@ public:
     // that hard only when water is cheap relative to carbon, so this is the
     // UNstressed pin. 18 golden points at 25 C, none at 40 C. Gradient genuinely
     // non-zero.
+    //
+    // ⚠️ TWO BOUNDS MEET AT THIS END AND THEY ARE CLOSED BY DIFFERENT CONDITIONS.
+    // This kind is the CONTINUITY ROOT (`root_crit`): T1 with the stem held at
+    // psi_crit, a residual. The next one is the root's own 5% potential
+    // (`supply_psi_crit()`), an expression the chain differentiates itself. Which
+    // one binds decides which row a pinned point needs, so it is a kind rather
+    // than a selector beside one -- a tally of kinds could not report it while it
+    // was a private bool, and the two arms then had no incidence anyone could read.
     BoundaryCrit,
+    // The same end of the interval, closed by the ROOT's vulnerability limit
+    // instead. Named for the bound, like the pair above. At shipped defaults the
+    // root's own critical potential never wins the min, so a fixture for this arm
+    // has to lower it deliberately rather than wait for one.
+    BoundaryRootCrit,
     // The feasible interval collapsed to a point (width <= GSS_tol_abs), so
     // feasibility DETERMINED the collar potential and nothing was optimised.
     // There is no free variable left to differentiate.
@@ -2426,10 +2439,13 @@ private:
   clamp_counter clamps;
 
   OperatingPointKind operating_point_kind_ = OperatingPointKind::Unsolved;
-  // Which limit closed the dry end, recorded where the comparison is made.
-  // BoundaryCrit alone does not say: the bracket takes whichever of the
-  // continuity root and the root's 5% potential binds first, and the two are
-  // closed by different conditions.
+  // Which of the two bounds meeting at the dry end binds, carried from where the
+  // comparison is made to where the solve classifies the point. It is not the
+  // classification -- `BoundaryCrit` and `BoundaryRootCrit` are -- and it exists
+  // only because the comparison happens while the bracket is built and the
+  // classification happens after the solve lands. Re-deciding it there would
+  // repeat a root-find, and differentiating the comparison would manufacture a
+  // jump the model does not have.
   bool dry_bound_is_root_limit_ = false;
 };
 
@@ -2441,6 +2457,7 @@ inline const char* Leaf::operating_point_kind_name(OperatingPointKind kind) {
     case OperatingPointKind::Interior:          return "interior";
     case OperatingPointKind::BoundarySoil:      return "boundary-soil";
     case OperatingPointKind::BoundaryCrit:      return "boundary-crit";
+    case OperatingPointKind::BoundaryRootCrit:  return "boundary-root-crit";
     case OperatingPointKind::Determined:        return "determined";
     case OperatingPointKind::HydraulicShutdown: return "hydraulic-shutdown";
     case OperatingPointKind::ShadeDeath:        return "shade-death";
@@ -3571,7 +3588,12 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
     return lo;
   }
   if (f_hi >= 0.0) {
-    operating_point_kind_ = OperatingPointKind::BoundaryCrit;
+    // Which of the two bounds meeting at this end closed it was decided where the
+    // bracket was built, because re-deciding it here would repeat a root-find. It
+    // is reported as the kind rather than carried beside one.
+    operating_point_kind_ = dry_bound_is_root_limit_
+                                ? OperatingPointKind::BoundaryRootCrit
+                                : OperatingPointKind::BoundaryCrit;
     return hi;
   }
 
@@ -5723,12 +5745,13 @@ inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
       collar = bound_at<K, S>(true, opt_root_psi_, draw, pars);
       break;
     case OperatingPointKind::BoundaryCrit:
-      // Which limit closed it was recorded where the comparison was made. The
-      // root's own 5% potential is an expression; the continuity root is a
-      // residual.
-      collar = dry_bound_is_root_limit_
-                   ? root_psi_crit_at<S>(pars)
-                   : bound_at<K, S>(false, opt_root_psi_, draw, pars);
+      // The continuity root: T1 with the stem held at its critical potential.
+      collar = bound_at<K, S>(false, opt_root_psi_, draw, pars);
+      break;
+    case OperatingPointKind::BoundaryRootCrit:
+      // The root's own 5% potential, which is an expression rather than a
+      // residual -- so it needs no theorem, only its own chain.
+      collar = root_psi_crit_at<S>(pars);
       break;
     case OperatingPointKind::HydraulicShutdown:
       // The stem holds at its critical potential and nothing defines the collar
