@@ -64,7 +64,6 @@ namespace gradient {
 // Re-exported here under the names this namespace's callers already use, so the
 // move is not a rename. One definition, in the model; two ways to reach it.
 using phylloptim::n_traits;
-using phylloptim::n_pars;
 using phylloptim::par_vcmax_25;   using phylloptim::par_stem_c;
 using phylloptim::par_stem_P50;   using phylloptim::par_root_c;
 using phylloptim::par_root_P50;   using phylloptim::par_TF24_beta2;
@@ -76,13 +75,29 @@ using phylloptim::par_JS22_gamma; using phylloptim::par_CMax_a;
 using phylloptim::par_CMax_b;     using phylloptim::par_kmax;
 using phylloptim::par_resistance; using phylloptim::par_CF77_lambda;
 using phylloptim::par_TF24_floor_lambda_o;
+using phylloptim::par_PPFD;
 
 // The parameter enumeration now lives in leaf_model.hpp, beside the set_traits
 // whose argument order it IS. It was here while only this file indexed it; the
 // differentiable surface indexes it too, and a list two headers can disagree
 // about is the hazard the comment above it warns of.
 
+// How long `theta` is: one entry per `par_names()` below, indexed by the same
+// enumeration.
+//
+// ⚠️ NOT `n_pars`, WHICH IS LONGER. The pack the leaf's kernels read also holds
+// slots a calibration never proposes -- the light a cohort stands in is seated
+// from the drivers -- so reading `theta` out to `n_pars` runs past its end. The
+// proposed slots come FIRST in the enumeration and `par_PPFD` is where they stop,
+// which is why this is spelled as that index rather than as a count to keep in
+// step by hand.
+inline constexpr int n_theta = par_PPFD;
 
+// ⚠️ THESE ARE THE SLOTS A CALIBRATION PROPOSES, which is fewer than the pack
+// holds: `par_PPFD` is seated per cohort or per observation from the drivers and
+// is never fitted, so it has a slot in the enumeration and no name here. R's
+// `.gradient_par_names()` is compared against this list by
+// `test-gradient-batch.R`, so the two cannot drift apart without a failure.
 inline const std::vector<std::string>& par_names() {
   static const std::vector<std::string> names{
       "vcmax_25",  "stem_c",              "stem_P50",
@@ -344,7 +359,7 @@ struct Settings {
 // A collar potential the caller imposes, in place of the one `at` would solve
 // for, plus how that collar responds to each parameter (#88).
 //
-// ⚠️ `dpsi_dtheta` is npars long and in `pars` order, NOT n_pars: it is one value
+// ⚠️ `dpsi_dtheta` is npars long and in `pars` order, NOT n_theta: it is one value
 // per parameter ASKED FOR, because that is the vector a caller integrating its
 // own sensitivity state is carrying. Null means zero -- the partial at fixed
 // collar -- which is a different statement from the solving path's "derive it".
@@ -523,7 +538,7 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
                          double psi_star, double H, const double* dY_dpsi,
                          const Settings& s, const double* dpsi_dtheta,
                          bool envelope, double* M_out, double* out) {
-  double th[n_pars];
+  double th[n_theta];
   double up[1 + n_outputs];
   double dn[1 + n_outputs];
   bool at_base = true;
@@ -537,7 +552,7 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
     for (int side = 0; side < 2; ++side) {
       // Up first, then down: R evaluates `up <- side(1)` before `dn <- side(-1)`
       // and both mutate the leaf.
-      std::copy(theta, theta + n_pars, th);
+      std::copy(theta, theta + n_theta, th);
       th[p] = side == 0 ? theta[p] + h : theta[p] - h;
       apply(l, th, d, single, p, s.fast_stem_curve);
       double* dst = side == 0 ? up : dn;
@@ -605,7 +620,7 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
 inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
                         bool single, const int* pars, std::size_t npars,
                         const Settings& s, double* out) {
-  double th[n_pars];
+  double th[n_theta];
   double up[n_outputs];
   double dn[n_outputs];
   bool at_base = true;
@@ -617,7 +632,7 @@ inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
     at_base = false;
     const double h = step_for(p, theta[p], s.fd_step);
     for (int side = 0; side < 2; ++side) {
-      std::copy(theta, theta + n_pars, th);
+      std::copy(theta, theta + n_theta, th);
       th[p] = side == 0 ? theta[p] + h : theta[p] - h;
       apply(l, th, d, single, p, s.fast_stem_curve);
       route_solve(l, s.curve);
@@ -859,7 +874,7 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
 
 // --- the batch ---------------------------------------------------------------
 //
-// `theta` is a COLUMN-MAJOR matrix of `theta_nrow` x n_pars, as R hands one
+// `theta` is a COLUMN-MAJOR matrix of `theta_nrow` x n_theta, as R hands one
 // over: either one row per observation, or exactly one row shared by all of
 // them.
 //
@@ -890,11 +905,11 @@ inline std::vector<Result> batch(Leaf& l, const double* theta,
                                 const double* dpsi_dtheta = nullptr) {
   const std::size_t n = drivers.size();
   std::vector<Result> out(n);
-  double th[n_pars];
+  double th[n_theta];
   std::vector<double> dpsi(npars);
   for (std::size_t i = 0; i < n; ++i) {
     const std::size_t row = theta_nrow == 1 ? 0 : i;
-    for (int j = 0; j < n_pars; ++j) {
+    for (int j = 0; j < n_theta; ++j) {
       th[j] = theta[row + std::size_t(j) * theta_nrow];
     }
     Prescribed p;

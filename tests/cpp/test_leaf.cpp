@@ -3169,6 +3169,59 @@ void test_pack_kernels_are_the_models_own() {
          std::to_string(widest_gap));
 }
 
+// Light reaches carbon with a ROW, and the row is the right size.
+//
+// ⚠️ AN EXACT ZERO IS THE FAILURE THIS EXISTS FOR, not a small number. The pack
+// slot is the only route light has into the electron transport; read off the
+// `PPFD_` member instead, every trait that moves the light a cohort stands in --
+// the extinction coefficient, the leaf area a stem carries -- reaches
+// assimilation with no row and the gradient reads zero rather than wrong. The
+// transpose identity is satisfied exactly by a zero row on both sides, so it
+// cannot see this either.
+//
+// The difference is taken at a FIXED ci, so it differences the kernel and not the
+// solve, and the row is required to FALL with light: at 100 umol the leaf is
+// light-limited and at 1500 it is rubisco-limited, so a row that did not saturate
+// would be reading light somewhere it does not belong.
+void test_light_reaches_carbon_with_a_row() {
+  printf("light reaches carbon with a row\n");
+  using AD = xad::fwd<double>::active_type;
+  double previous = std::numeric_limits<double>::infinity();
+  int compared = 0;
+  for (double ppfd : {100.0, 400.0, 900.0, 1500.0}) {
+    Drivers d;
+    d.PPFD = ppfd;
+    phylloptim::Leaf l = make_leaf(d, {1.0}, {1.0});
+    l.find_root_collar_psi();
+    const double ci = l.ci_;
+    if (!std::isfinite(ci)) continue;
+    ++compared;
+    const std::string at = " at ppfd=" + std::to_string(ppfd);
+
+    phylloptim::leaf_pars<AD> p;
+    const phylloptim::leaf_pars<double> seated = l.passive_pars();
+    for (std::size_t i = 0; i < p.size(); ++i) p[i] = AD(seated[i]);
+    xad::derivative(p[phylloptim::par_PPFD]) = 1.0;
+    const double row =
+        xad::derivative(l.assim_colimited_kernel<AD>(AD(ci), p));
+
+    const double h = ppfd * 1e-6;
+    Drivers up_d = d, dn_d = d;
+    up_d.PPFD = ppfd + h;
+    dn_d.PPFD = ppfd - h;
+    phylloptim::Leaf up = make_leaf(up_d, {1.0}, {1.0});
+    phylloptim::Leaf dn = make_leaf(dn_d, {1.0}, {1.0});
+    const double fd = (up.assim_colimited(ci) - dn.assim_colimited(ci)) / (2 * h);
+
+    ok(row != 0.0, "dA/dPPFD is not an exact zero" + at);
+    ok(row > 0.0, "more light cannot lower assimilation" + at);
+    near(row, fd, 1e-7, "dA/dPPFD against a central difference" + at);
+    ok(row < previous, "the light response saturates" + at);
+    previous = row;
+  }
+  ok(compared == 4, "every light level solved");
+}
+
 void test_rd_temperature_response() {
   printf("R_d rises with temperature\n");
   Drivers d;
@@ -3440,13 +3493,13 @@ void test_stem_curve_shortcut_needs_no_rebuild() {
   // --- and through the batch, which is where the cost was being paid ---------
   const double kmax = d.K_s * d.theta / d.h;
   // ⚠️ POSITIONAL, AND IT FAILS SILENTLY. An aggregate initialiser shorter than
-  // `n_pars` is legal C++ and zero-fills the rest, so adding a trait shifts `kmax`
+  // `n_theta` is legal C++ and zero-fills the rest, so adding a trait shifts `kmax`
   // and `resistance` down a slot and drops `resistance` off the end WITHOUT a
   // compiler diagnostic. Adding JS22_gamma put `kmax` into JS22_gamma's slot and
   // left kmax itself 0.0, and the only symptom was this test's three observations
   // failing to solve. `set_traits` above catches the same mistake at compile time;
-  // this does not, so count the entries against `n_pars` when you touch it.
-  double theta[phylloptim::gradient::n_pars] = {
+  // this does not, so count the entries against `n_theta` when you touch it.
+  double theta[phylloptim::gradient::n_theta] = {
       96.0,   2.680147, P50_0, 2.680147, P50_0, 1.5,
       157.44, 0.30,     0.7,   0.99,     7.5,   kRd25, kGammaJS22,
       kCMaxA, kCMaxB,  kmax,      0.0};
@@ -3454,9 +3507,9 @@ void test_stem_curve_shortcut_needs_no_rebuild() {
   // route, which reads neither. ⚠️ THE ASSERTION IS WHAT MAKES THE SHORT
   // INITIALISER SAFE -- without it the next appended parameter shifts `kmax`
   // silently, which is the failure the comment above describes.
-  static_assert(phylloptim::gradient::n_pars == 19,
+  static_assert(phylloptim::gradient::n_theta == 19,
                 "theta above is positional and deliberately short; recount it "
-                "against n_pars and update this assertion together");
+                "against n_theta and update this assertion together");
 
   phylloptim::gradient::Drivers gd;
   gd.root_network = fixture::root_network(mrp, depth);
@@ -5879,6 +5932,7 @@ int main() {
   test_temperature_params_invalidate_cache();
   test_rd_temperature_response();
   test_pack_kernels_are_the_models_own();
+  test_light_reaches_carbon_with_a_row();
   test_set_traits_matches_a_fresh_leaf();
   test_prescribed_lambda_survives_redriving();
   test_profitmax_reports_an_emergent_lambda();

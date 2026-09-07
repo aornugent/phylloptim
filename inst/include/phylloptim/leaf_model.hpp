@@ -38,7 +38,7 @@ namespace phylloptim {
 // parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
 // them with R's, so the two cannot drift apart without a failure.
 inline constexpr int n_traits = 15;
-inline constexpr int n_pars = 19;
+inline constexpr int n_pars = 20;
 
 // Every index by name, so nothing below indexes `theta` with a bare integer.
 // The first `n_traits` are `set_traits`' arguments in its order, which is also
@@ -87,6 +87,16 @@ inline constexpr int par_CF77_lambda = 17;
 // safe way to talk about this class. R's `.gradient_model_pars()` is the single
 // table that says which model owns which slot; there is no second copy here.
 inline constexpr int par_TF24_floor_lambda_o = 18;
+// The light the leaf is standing in. A DRIVER rather than a trait, on the same
+// footing as `kmax`: the consumer seats it per cohort and it carries that
+// consumer's rows.
+//
+// ⚠️ IT IS THE ONLY ROUTE LIGHT HAS TO CARBON. Read off the `PPFD_` member the
+// forward pass seats, the electron transport is a constant in it, so every trait
+// that moves the light a cohort stands in -- the extinction coefficient, the leaf
+// area a stem carries -- reaches assimilation with no row at all and reads as an
+// exact zero, which is the signature of a missing accumulator.
+inline constexpr int par_PPFD = 19;
 
 
 // The differentiable parameters, as one array indexed by the enumeration above.
@@ -2618,6 +2628,7 @@ inline leaf_pars<double> Leaf::passive_pars() const {
                                     : roots_.network_.r_R_V_sum.front();
   p[par_CF77_lambda] = CF77_lambda_;
   p[par_TF24_floor_lambda_o] = TF24_floor_lambda_o;
+  p[par_PPFD] = PPFD_;
   return p;
 }
 
@@ -5239,8 +5250,9 @@ inline T Leaf::electron_transport_at(const leaf_pars<T>& pars) const {
   const T a_at = pars[par_a];
   const T jm = jmax_at<T>(pars);
   const T curv = pars[par_curv_fact_elec_trans];
-  return (a_at * PPFD_ + jm -
-          sqrt(pow(a_at * PPFD_ + jm, 2) - 4 * curv * a_at * PPFD_ * jm)) /
+  const T q = pars[par_PPFD];
+  return (a_at * q + jm -
+          sqrt(pow(a_at * q + jm, 2) - 4 * curv * a_at * q * jm)) /
          (2 * curv);
 }
 
