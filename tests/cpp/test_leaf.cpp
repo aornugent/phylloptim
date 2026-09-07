@@ -958,22 +958,30 @@ void test_collar_solve_refuses_rather_than_guessing() {
      "and returns the end with the higher profit");
   ok(std::abs(refused - dry_end) > 0.1, "which is not the drier end");
 
-  // A bracket lying wholly inside the infeasible sliver at bound_a, where dprofit
-  // takes its reversed-gradient exit: no usable gradient at either end. The
+  // A bracket lying wholly at or below bound_a, where dprofit takes its
+  // reversed-gradient exit: no usable gradient at either end. The
   // non-finite-gradient half of the same guard has no bracket that reaches it and
   // is not covered.
+  //
+  // ⚠️ THE BRACKET IS BELOW THE BOUND, NOT JUST INSIDE IT, and it used to be the
+  // other way round. There was an infeasible SLIVER above bound_a about 1e-07
+  // wide, and it was the stem table disagreeing with a separately fitted inverse:
+  // at zero flux the round trip put psi_stem that far below the collar, which is
+  // a reversed gradient the model does not have. G^-1 is the forward table
+  // inverted now, so zero flux returns the collar exactly and the infeasible
+  // region is exactly (-inf, bound_a] -- one ulp above it answers.
   phylloptim::Leaf s = make_leaf(d, psi, depth);
   double sa = 0.0, sb = 0.0;
   s.prepare_collar_solve<phylloptim::Leaf::CostCurve::TF24>(sa, sb);
   const double sliver = 1e-9;
   bool feasible = true;
-  s.dprofit_at_collar_psi<phylloptim::Leaf::CostCurve::TF24>(sa + 1e-6 * sliver, &feasible);
+  s.dprofit_at_collar_psi<phylloptim::Leaf::CostCurve::TF24>(sa, &feasible);
   ok(!feasible, "the wet bound admits no informative gradient");
-  const double fallen_back = s.maximise_profit_over_collar<phylloptim::Leaf::CostCurve::TF24>(sa, sa + sliver);
+  const double fallen_back = s.maximise_profit_over_collar<phylloptim::Leaf::CostCurve::TF24>(sa - sliver, sa);
   ok(s.operating_point_kind() == Kind::SolverRefused,
      "a bracket with no usable gradient at either end is refused too");
-  ok(std::isfinite(fallen_back) && fallen_back >= sa &&
-         fallen_back <= sa + sliver,
+  ok(std::isfinite(fallen_back) && fallen_back >= sa - sliver &&
+         fallen_back <= sa,
      "and the fallback stays inside the bracket it was handed");
 }
 
@@ -4277,7 +4285,7 @@ void test_out_of_domain_names_the_spline() {
   // statement "the collar cannot supply this, so no stem potential carries it".
   const std::string inv =
       message_of([&] { l.transpiration_to_psi_stem(-1e3, 0.0); });
-  ok(mentions(inv, "psi_from_transpiration"), "inverse lookup names its spline");
+  ok(mentions(inv, "INVERTED"), "inverse lookup names which direction it is");
   ok(mentions(inv, "beyond the lower end"), "inverse lookup reports which end");
   ok(mentions(inv, "E/K_max"), "inverse lookup names its argument's units");
   ok(mentions(inv, "Leaf::transpiration_to_psi_stem"),

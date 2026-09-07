@@ -137,7 +137,19 @@ public:
       double TF24_cost_scale);
 
   odelia::interpolator::Interpolator transpiration_from_psi;
-  odelia::interpolator::Interpolator psi_from_transpiration;
+  // The knots that interpolant was built on: the potential at each, and G there.
+  //
+  // ⚠️ THERE IS NO SECOND TABULATION, AND THAT IS THE POINT. G^-1 is this same
+  // table inverted -- a segment located here, then Newton on the interpolant
+  // `transpiration()` itself reads -- so the two directions are exact mutual
+  // inverses by construction rather than to a fit's own error. Tabulated
+  // separately, on these same knots with the axes swapped, they agreed only to
+  // O(h^3) in the slope: `P'(G(psi)) * G'(psi) - 1` measured 3.8e-05 at the
+  // shipped 100 knots, 5.5e-06 at 200, 6.7e-07 at 400. That reached the census
+  // gradient's water rows, which disagreed with a difference of the model by
+  // 1.8e-04 and fell 535x across a 16x resolution increase.
+  std::vector<double> stem_curve_psi_;
+  std::vector<double> stem_curve_at_psi_;
 
   // The `stem_b` the two splines above were built at, which is normally just
   // `stem_b` -- and is not, while a gradient is perturbing it.
@@ -879,8 +891,8 @@ public:
   // public plain doubles, so assigning one *compiles* -- and three separate pieces
   // of derived state go stale when it does:
   //
-  //   * the two vulnerability SPLINES. stem_b/stem_c build transpiration_from_psi
-  //     and psi_from_transpiration; root_b/root_c build the root curve. Both are
+  //   * the two vulnerability SPLINES. stem_b/stem_c build transpiration_from_psi;
+  //     root_b/root_c build the root curve. Both are
   //     pre-integrated at construction, so a bare `l.stem_b = x` leaves the hot
   //     path reading the previous curve's integral while proportion_of_conductivity
   //     reports the new one -- two answers to the same question.
@@ -1017,8 +1029,9 @@ public:
   void setup_transpiration(double resolution);
 
   // The stem cumulative-vulnerability integral G and its inverse, as the FOUR
-  // operations the model actually performs on them. Every read of
-  // transpiration_from_psi / psi_from_transpiration goes through these, which is
+  // operations the model actually performs on them. Both directions read ONE
+  // table -- the inverse by inverting it -- and every read goes through these,
+  // which is
   // what lets `stem_curve_closed_form_` be a single flag rather than a condition
   // repeated at eight call sites.
   //
@@ -1041,6 +1054,9 @@ public:
   double stem_curve_integral(double psi, const char* caller = nullptr) const;
   double stem_curve_integral_deriv(double psi) const;
   double stem_curve_integral_inverse(double w, const char* caller = nullptr) const;
+  // G^-1 by inverting the forward table, with no domain check and no rescale --
+  // both are the caller above's, which is the only caller.
+  double invert_stem_curve(double w) const;
   double stem_curve_integral_inverse_deriv(double w) const;
 
   // Domain-guarded read behind the two accessors above. The stem curve is the
@@ -4017,7 +4033,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
 
   // dpsi_stem/dpsi: psi_stem = P(E_psi_stem) with
   //   E_psi_stem = E_up_(psi)/k_max + S(psi),
-  // S = transpiration_from_psi, P = psi_from_transpiration (both C2 splines), and
+  // S = transpiration_from_psi and P its inverse, taken on that same table, and
   // E_up_(psi) the soil->collar uptake at collar suction psi. The collar variable
   // IS psi now, so there is no dr/dpsi = -1 factor to carry and the two terms add:
   //   dE_psi_stem/dpsi = E_up_'(psi)/k_max + S'(psi)
@@ -4607,18 +4623,18 @@ inline void Leaf::setup_transpiration(double resolution) {
   // 1e-10 tolerance, test_leaf takes 7 failures, and the R suite goes 1484/0 to
   // 1458/36. With the slopes supplied it is 1484/0 and the spline tier is 2.57e-08.
   //
-  // The inverse carries the reciprocal, d(psi)/dG = 1/G', finite everywhere the
-  // forward slope is.
-  std::vector<double> g_(x_psi_.size()), g_inv_(x_psi_.size());
+  std::vector<double> g_(x_psi_.size());
   for (std::size_t i = 0; i < x_psi_.size(); ++i) {
     g_[i] = proportion_of_conductivity_kernel(x_psi_[i]);
-    g_inv_[i] = 1.0 / g_[i];
   }
   transpiration_from_psi.init(x_psi_, y_cumulative_transpiration_, g_);
   transpiration_from_psi.set_extrapolate(false);
 
-  psi_from_transpiration.init(y_cumulative_transpiration_, x_psi_, g_inv_);
-  psi_from_transpiration.set_extrapolate(false);
+  // ⚠️ THE INVERSE IS NOT FITTED. It is this table, inverted -- see the members.
+  // Kept rather than re-derived because inverting needs the segment, and the
+  // interpolant does not hand its knots back.
+  stem_curve_psi_ = std::move(x_psi_);
+  stem_curve_at_psi_ = std::move(y_cumulative_transpiration_);
 
   // The splines now describe the current stem_b, so the rescaling is over.
   // Recording it HERE rather than at each caller is what makes it impossible to
@@ -4654,7 +4670,7 @@ inline void Leaf::setup_transpiration(double resolution) {
 // building costs nothing in production. Kept out of line from eval_stem_curve so
 // that function stays small enough to inline.
 [[noreturn]] inline void stem_curve_out_of_domain(
-    const odelia::interpolator::Interpolator& spline, double u, double v,
+    double lo_node, double hi_node, double u, double v,
     double scale, const char* spline_name, const char* arg_name,
     const char* caller);
 
@@ -4670,24 +4686,26 @@ inline double Leaf::eval_stem_curve(const odelia::interpolator::Interpolator& sp
   // message that names this spline and its caller.
   if (scale == 1.0) {
     if (u < spline.min() || u > spline.max()) {
-      stem_curve_out_of_domain(spline, u, u, scale, spline_name, arg_name, caller);
+      stem_curve_out_of_domain(spline.min(), spline.max(), u, u, scale,
+                               spline_name, arg_name, caller);
     }
     return spline.eval(u);
   }
   const double v = u / scale;
   if (v < spline.min() || v > spline.max()) {
-    stem_curve_out_of_domain(spline, u, v, scale, spline_name, arg_name, caller);
+    stem_curve_out_of_domain(spline.min(), spline.max(), u, v, scale,
+                             spline_name, arg_name, caller);
   }
   return scale * spline.eval(v);
 }
 
 inline void stem_curve_out_of_domain(
-    const odelia::interpolator::Interpolator& spline, double u, double v,
+    double lo_node, double hi_node, double u, double v,
     double scale, const char* spline_name, const char* arg_name,
     const char* caller) {
-    const bool below = v < spline.min();
-    const double lo = scale * spline.min();
-    const double hi = scale * spline.max();
+    const bool below = v < lo_node;
+    const double lo = scale * lo_node;
+    const double hi = scale * hi_node;
     util::stop_infeasible("stem_curve_domain",
                std::string("Leaf hydraulics: ") + spline_name +
                " evaluated outside its domain: " + arg_name + " = " +
@@ -4724,19 +4742,54 @@ inline double Leaf::stem_curve_integral_deriv(double psi) const {
   return transpiration_from_psi.deriv(psi / (stem_b / stem_b_spline_));
 }
 
+// G^-1 on the table G is read from. G is the integral of a positive
+// conductivity, so it is strictly increasing and the segment is a binary search;
+// the rest is Newton on that interpolant, bisecting whenever a step would leave
+// the bracket. The bracket is one knot wide, so it starts within O(h) and takes
+// three or four evaluations -- on a path reached once per collar evaluation, not
+// once per solver iteration.
+inline double Leaf::invert_stem_curve(double w) const {
+  const std::vector<double>& u = stem_curve_at_psi_;
+  const std::size_t at =
+      std::size_t(std::lower_bound(u.begin(), u.end(), w) - u.begin());
+  if (at == 0) return stem_curve_psi_.front();
+  if (at >= u.size()) return stem_curve_psi_.back();
+  double lo = stem_curve_psi_[at - 1], hi = stem_curve_psi_[at];
+  const double span = u[at] - u[at - 1];
+  double psi = span > 0.0 ? lo + (hi - lo) * (w - u[at - 1]) / span
+                          : 0.5 * (lo + hi);
+  for (int i = 0; i < 24; ++i) {
+    const double f = transpiration_from_psi.eval(psi) - w;
+    if (f == 0.0) return psi;
+    if (f > 0.0) hi = psi; else lo = psi;
+    const double slope = transpiration_from_psi.deriv(psi);
+    double next = slope > 0.0 ? psi - f / slope : 0.5 * (lo + hi);
+    if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
+    if (next == psi) break;
+    psi = next;
+  }
+  return psi;
+}
+
 inline double Leaf::stem_curve_integral_inverse(double w, const char* caller) const {
   const double s = (stem_b == stem_b_spline_) ? 1.0 : stem_b / stem_b_spline_;
-  return eval_stem_curve(psi_from_transpiration, w, s,
-                         "psi_from_transpiration (the INVERSE cumulative xylem "
-                         "conductivity integral G^-1, argument in E/K_max)",
-                         "E/K_max", caller);
+  const double v = (s == 1.0) ? w : w / s;
+  if (v < stem_curve_at_psi_.front() || v > stem_curve_at_psi_.back()) {
+    stem_curve_out_of_domain(stem_curve_at_psi_.front(),
+                             stem_curve_at_psi_.back(), w, v, s,
+                             "the cumulative xylem conductivity integral G, "
+                             "INVERTED (G^-1, argument in E/K_max)",
+                             "E/K_max", caller);
+  }
+  return (s == 1.0) ? invert_stem_curve(v) : s * invert_stem_curve(v);
 }
 
 inline double Leaf::stem_curve_integral_inverse_deriv(double w) const {
-  if (stem_b == stem_b_spline_) {
-    return psi_from_transpiration.deriv(w);
-  }
-  return psi_from_transpiration.deriv(w / (stem_b / stem_b_spline_));
+  // ⚠️ ONE SPELLING. dpsi/dG = 1/G'(psi) is an identity, so the reciprocal of
+  // the forward slope at the psi this inverts to IS the answer -- and taking it
+  // any other way is a second definition of one number, free to disagree with
+  // the first wherever a fit does.
+  return 1.0 / stem_curve_integral_deriv(stem_curve_integral_inverse(w));
 }
 
 inline void Leaf::perturb_stem_P50(double stem_P50_new) {
