@@ -962,7 +962,20 @@ public:
   // has to seat the same number -- plant's Control carries it -- and a literal
   // repeated there would drift from this one silently, changing which curve the
   // solve ran on while every number stayed plausible.
-  static constexpr double ncontrol_default = 100.0;
+  //
+  // ⚠️ THIS NUMBER SETS WHAT THE WATER ROWS MEAN, and 400 was chosen from the
+  // measured curve rather than for caution. The supplied `uptake x psi_soil`
+  // block against a difference of the double path scales with it -- 7.966e-06 at
+  // 100 knots, 5.217e-06 at 200, 1.406e-06 at 400, 1.046e-07 at 800 -- and
+  // plant's factorisation rung asks for 1e-05 in two AMPLIFIED directions, where
+  // the residue is divided by a cancellation the fixture measures at 16.3x. At
+  // 100 those two sat at 1.24x and 1.40x of budget; 200 leaves the worse of them
+  // at 0.92x, which is inside the budget by too little to hold.
+  //
+  // ⚠️ IT MOVES EVERY NUMBER THE LEAF REPORTS, because the knots redistribute.
+  // All three golden files are built at 100 and none can be re-blessed except on
+  // the platform that owns them.
+  static constexpr double ncontrol_default = 400.0;
 
   // The two derivations, one place each, so a caller cannot get them
   // inconsistent. `f` is the remaining-conductivity fraction.
@@ -1086,6 +1099,9 @@ public:
   // the published construction sequence (see the umbrella header) and plant's
   // bindings name it.
   void setup_root_vulnerability(double resolution) {
+    // Recorded for the reason setup_transpiration records it: `set_traits`
+    // rebuilds both curves at this member.
+    vulnerability_curve_ncontrol = resolution;
     roots_.setup_vulnerability(resolution);
   }
   // Forwards to phylloptim::cumulative_vulnerability_integral, which now lives in
@@ -2513,8 +2529,15 @@ inline Leaf::Leaf()
       // restated here: a second copy of the root Weibull pair is the exact shape
       // of hazard 1 in the developer guide.
       derive_vulnerability_curves_from_P50();
-      setup_transpiration(100); // arg: num control points for integration
-      setup_root_vulnerability(100);
+      // ⚠️ THE MEMBER, NEVER A LITERAL. Both of these were literal `100` while
+      // ncontrol_default was 100, so a default-constructed leaf built its curves
+      // at one resolution and let `set_traits` rebuild them at another the moment
+      // the default moved. Raising it to 400 put the two 4x apart and the
+      // rescale-against-rebuild identity, asserted to 1e-08, came apart at
+      // 1.4e-07 on 52 checks -- at 200, 400 and 800 knots alike, which is the
+      // signature of a resolution mismatch rather than of interpolation error.
+      setup_transpiration(vulnerability_curve_ncontrol);
+      setup_root_vulnerability(vulnerability_curve_ncontrol);
       setup_clean_leaf();
 }
 
@@ -4607,6 +4630,14 @@ inline double Leaf::proportion_of_conductivity(double psi) const {
 
 // set spline for proportion of conductivity
 inline void Leaf::setup_transpiration(double resolution) {
+  // ⚠️ RECORDED, BECAUSE `set_traits` REBUILDS AT THE MEMBER. Without this the
+  // object holds a curve at one resolution and re-traits it at another, so a
+  // re-traited leaf is not the leaf a fresh one at those traits would be -- which
+  // is the guarantee hazard 10 rests on, and it fails silently: every number
+  // stays plausible and only the curve under the solve changes. A caller that
+  // builds the two curves at DIFFERENT resolutions gets the last one recorded,
+  // which is the same one member both rebuilds have always read.
+  vulnerability_curve_ncontrol = resolution;
   std::vector<double> x_psi_, y_cumulative_transpiration_;
   build_cumulative_vulnerability_integral(stem_b, stem_c, resolution, x_psi_,
                                           y_cumulative_transpiration_);

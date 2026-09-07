@@ -53,9 +53,16 @@
   CMax_b = 0.0
 )
 
+# ⚠️ `vulnerability_curve_ncontrol` MUST MATCH `Leaf::ncontrol_default` IN
+# leaf_model.hpp, and nothing checks it. The C++ default is what plant's Control
+# seats from, so a literal here that drifts from it puts the R layer and every
+# consumer on different curves while every number stays plausible. It sets what
+# the water rows mean -- the reasoning and the measured curve are at the C++
+# constant. Grep `ncontrol` across R/ and inst/ when it changes; there are two
+# literals in this file.
 .leaf_control_defaults <- list(
   GSS_tol_abs = 1e-3,
-  vulnerability_curve_ncontrol = 100,
+  vulnerability_curve_ncontrol = 400,
   ci_abs_tol = 1e-3,
   ci_niter = 1000,
   integration_rule = 21,
@@ -239,7 +246,7 @@ leaf_traits <- function(vcmax_25 = 96,
 ##' leaf_control(GSS_tol_abs = 1e-5)
 ##' @export
 leaf_control <- function(GSS_tol_abs = 1e-3,
-                         vulnerability_curve_ncontrol = 100,
+                         vulnerability_curve_ncontrol = 400,
                          ci_abs_tol = 1e-3,
                          ci_niter = 1000,
                          integration_rule = 21,
