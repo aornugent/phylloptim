@@ -9,7 +9,7 @@ anything added later.
 | coined | what it already is |
 |---|---|
 | `SolvedPoint` / `place_solved_point` | upstream's `evaluate_root_collar_psi(target)`, which *"leaves exactly the same outputs as find_root_collar_psi"* and re-derives sigma, ci and every output **from the collar alone**. Four of five fields were redundant. What survives is one double and one enum |
-| `MarginalParts{marginal, V, dci_dpsi}` | `V` and `dci_dpsi` are `sigma.slope` and `ci.slope` -- the eighteenth spelling of the value/slope pair `two-paths.md` swept seventeen of. `marginal_assembled` returns a scalar |
+| `MarginalParts{marginal, V, dci_dpsi}` | `V` and `dci_dpsi` are `sigma.slope` and `ci.slope` -- an eighteenth spelling of the value/slope pair that seventeen other sites now spell one way. `marginal_assembled` returns a scalar |
 | `WhichBound::DryRootPsiCrit` | a bare `return in.root_psi_crit;`, which existed only because root_psi_crit was a free trait. Under (P50, c) it is an ordinary expression AD chains itself, so the arm needs no type. ⚠️ THE SELECTION DID NOT DISSOLVE WITH IT -- which of the two bounds meeting at the dry end binds still decides which expression places the collar, and it is a kind (`BoundaryRootCrit`) rather than a type of its own |
 | `with_slope` (in plant) | belongs in odelia: its `for_each_active` exists for `visit_active`, and a model carrying that hook is carrying odelia's problem. Moved |
 
@@ -63,7 +63,7 @@ Nine for nine now, in both directions.
 | | what it already was |
 |---|---|
 | `SolvedPoint` | upstream's `evaluate_root_collar_psi`, which re-derives sigma, ci and every output from the collar alone |
-| `MarginalParts` | its two extra fields are `sigma.slope` and `ci.slope` -- the eighteenth spelling of the pair `two-paths.md` swept seventeen of |
+| `MarginalParts` | its two extra fields are `sigma.slope` and `ci.slope` -- an eighteenth spelling of the pair that seventeen other sites now spell one way |
 | `WhichBound::DryRootPsiCrit` | a bare identity, live only while `root_psi_crit` was a free trait. Under `(P50, c)` it is an ordinary expression AD chains itself |
 | `with_slope` in plant | odelia's, because `for_each_active` is odelia's obligation |
 | `ProfitInputs` / `LeafInputs` | the parameter enumeration upstream already maintains, given a scalar |
