@@ -90,9 +90,10 @@ Odelia carries `af8b1e4` (compat interpolator, v0.4.0), `90f0dc8`
    and `radiation_at` -- so the parameter IS registered and the question is where
    the light field is built. It is plant's competition path, not the leaf.
 
-   Six ladder assertions hang off it: rung3's "every trait the block reads has a
-   column", floor's two classification checks, rung4's "no shortlisted trait reads
-   exactly zero", declared-zero's, and rung5's newcomer check.
+   Six gradient assertions hang off it: the one-cohort file's "every trait the
+   block reads has a column", model-invariants' two classification checks,
+   two-species' "no shortlisted trait reads exactly zero", declared-zero's, and
+   the introductions file's newcomer check.
 
 3. **plant: the finite-difference comparisons are over budget, and the AD is the
    side that is right.** Every AD-INTERNAL check passes -- the block Jacobian

@@ -17,7 +17,7 @@ on:
     # This repo's default branch is master, not main. It was [main] until
     # 2026-08-03, which meant no push ever triggered a run and the workflow sat
     # unexercised from the day it was added until the first pull request.
-    branches: [master]
+    branches: [master, 'ad/**', 'claude/**']
   pull_request:
   workflow_dispatch:
 
