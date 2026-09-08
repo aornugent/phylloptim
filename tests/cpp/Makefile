@@ -42,8 +42,8 @@ endif
 # which reads like a broken toolchain and is not. It bites on Linux, where
 # apt's libboost-dev headers land in /usr/include and CI passes BH_INC=/usr/include.
 # The compiler already searches /usr/include, so dropping the flag costs nothing.
-# ⚠️ PHYLLOPTIM NOW HAS A REVERSE-MODE PATH, and AGENTS.md hazard 3 says nothing
-# will tell you. XAD's active tape is a __thread variable whose STORAGE CLASS is
+# ⚠️ PHYLLOPTIM NOW HAS A REVERSE-MODE PATH, and nothing will tell you if these
+# disagree. XAD's active tape is a __thread variable whose STORAGE CLASS is
 # not part of the mangled name, so a mismatch against odelia's and plant's
 # Makevars links cleanly and is undefined behaviour. These two must stay equal to
 # theirs. Forward mode is tapeless and needed neither, which is why

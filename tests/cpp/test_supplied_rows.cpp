@@ -110,7 +110,7 @@ void check(const std::vector<double>& psi_soil,
      "one collar row per soil layer, not per rooted layer");
   ++compared;
   if (!std::isfinite(total_kg)) {
-    return;  // a kink: duptake_dpsi refuses by contract, and rows is all NaN
+    return;  // a kink: duptake_dpsi refuses here, and rows is all NaN
   }
 
   double sum_mol = 0.0;

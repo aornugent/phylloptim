@@ -90,11 +90,10 @@
 ##'
 ##' @section psi_crit is not a free trait:
 ##' `psi_crit` is the stem curve's **P95** and is derived from `stem_P50`/`stem_c`,
-##' not set. It used to be settable, describing a curve it was not derived from:
-##' the curve is pre-integrated over `[0, P99]`, `psi_crit` never entered that
-##' bound, and every solve evaluates the curve *at* `psi_crit` -- so anyone fitting
-##' a measured vulnerability curve picked a plausible number and got a domain error
-##' naming only the interpolator.
+##' not set, and could not safely be: the curve is pre-integrated over `[0, P99]`,
+##' `psi_crit` does not enter that bound, and every solve evaluates the curve *at*
+##' `psi_crit` -- so setting it to a plausible number off a measured vulnerability
+##' curve gives a domain error naming only the interpolator.
 ##'
 ##' At the defaults:
 ##'

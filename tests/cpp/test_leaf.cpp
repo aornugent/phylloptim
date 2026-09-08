@@ -963,13 +963,12 @@ void test_collar_solve_refuses_rather_than_guessing() {
   // non-finite-gradient half of the same guard has no bracket that reaches it and
   // is not covered.
   //
-  // ⚠️ THE BRACKET IS BELOW THE BOUND, NOT JUST INSIDE IT, and it used to be the
-  // other way round. There was an infeasible SLIVER above bound_a about 1e-07
-  // wide, and it was the stem table disagreeing with a separately fitted inverse:
-  // at zero flux the round trip put psi_stem that far below the collar, which is
-  // a reversed gradient the model does not have. G^-1 is the forward table
-  // inverted now, so zero flux returns the collar exactly and the infeasible
-  // region is exactly (-inf, bound_a] -- one ulp above it answers.
+  // ⚠️ THE BRACKET IS BELOW THE BOUND, NOT JUST INSIDE IT. G^-1 is the forward
+  // table inverted, so zero flux returns the collar exactly and the infeasible
+  // region is exactly (-inf, bound_a] -- one ulp above it answers. DO NOT fit the
+  // inverse separately: at zero flux the round trip then puts psi_stem about 1e-07
+  // below the collar, which is a reversed gradient the model does not have, and it
+  // opens an infeasible sliver that wide above bound_a.
   phylloptim::Leaf s = make_leaf(d, psi, depth);
   double sa = 0.0, sb = 0.0;
   s.prepare_collar_solve<phylloptim::Leaf::CostCurve::TF24>(sa, sb);
@@ -3244,9 +3243,9 @@ void test_light_reaches_carbon_with_a_row() {
 // three of five census drivers returned NaN in every trait column of three
 // metrics, with nothing refused.
 //
-// The two routes are separate claims. `duptake_dpsi` returns NaN by contract
-// where its analytic branch is not valid (hazard 6), and a single-layer wet bound
-// -- where the shade-death exit places the collar -- is such a point; the
+// The two routes are separate claims. `duptake_dpsi` returns NaN deliberately
+// where its analytic branch is not valid, and a single-layer wet bound -- where
+// the shade-death exit places the collar -- is such a point; the
 // coordinates additionally run the implicit function theorem, which has no
 // residual to invert wherever the model assigned ci rather than solving for it.
 void test_every_answered_point_hands_over_finite_rows() {
@@ -3526,10 +3525,10 @@ void test_rd_temperature_response() {
 // constructing afresh, so that is what is asserted -- bit-exactly, which is a
 // statement neither a tolerance nor an eyeball could make.
 //
-// Bit-exactness is the whole point here rather than strictness for its own sake:
-// the two ways to reach the same traits share no code, so any piece of derived
-// state that set_traits fails to refresh shows up as a difference. Three pieces
-// were candidates, and each is a real trap rather than a hypothetical one:
+// Bit-exactness is what makes this check work: the two ways to reach the same
+// traits share no code, so any piece of derived state that set_traits fails to
+// refresh shows up as a difference. Three pieces were candidates, and each is a
+// real trap rather than a hypothetical one:
 //
 //   * the two pre-integrated vulnerability splines (stem_b/stem_c, root_b/root_c);
 //   * vcmax_/jmax_/R_d_, behind set_physiology's (leaf_temp, atm_o2_kpa) cache --
@@ -6034,7 +6033,8 @@ void test_outputs_agree_with_the_solve() {
           bool feasible = false;
           const double up = l.dprofit_at_collar_psi<K::TF24>(p0, &feasible);
           // dprofit_at_collar_psi drives the model to that collar; put the point
-          // back before reading anything else off this leaf (hazard 8).
+          // back before reading anything else off this leaf, because every path
+          // out of the solve writes its own rates.
           l.replay_operating_point(p0, kind);
           if (feasible && std::isfinite(up)) {
             ++n_marg;

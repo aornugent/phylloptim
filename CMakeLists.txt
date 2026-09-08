@@ -171,7 +171,7 @@ if(PHYLLOPTIM_BUILD_TESTS)
   # built apart from the loop above: it needs odelia's one tape translation unit
   # and the two XAD storage-class defines, which must equal odelia's and plant's.
   # A mismatch does not change the mangled name, so it links and is undefined
-  # behaviour (AGENTS.md hazard 3).
+  # behaviour.
   if(EXISTS "${PHYLLOPTIM_ODELIA_INCLUDE_DIR}/../../src/Tape.cpp")
     add_executable(test_transpose tests/cpp/test_transpose.cpp
                    "${PHYLLOPTIM_ODELIA_INCLUDE_DIR}/../../src/Tape.cpp")

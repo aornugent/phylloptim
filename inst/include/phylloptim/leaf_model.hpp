@@ -59,14 +59,13 @@ inline constexpr int par_JS22_gamma = 12;
 inline constexpr int par_CMax_a = 13;
 inline constexpr int par_CMax_b = 14;
 // ⚠️ THESE MOVE WHENEVER A TRAIT IS ADDED, and bumping them is the whole cost.
-// They are the non-traits and they sit AFTER the contiguous trait block, which is
-// a readability convention rather than a constraint now: R's
+// They are the non-traits and they sit AFTER the contiguous trait block, which
+// is a readability convention rather than a constraint: R's
 // `.gradient_theta_matrix()` addresses EVERY column by name, including these.
-// It used to take the traits as "everything but the last two", which is what made
-// the ordering load-bearing; that is fixed. What is still load-bearing is the
-// ORDER ITSELF -- R passes integer positions into this enumeration, so appending
-// is safe and reordering silently differentiates the wrong parameter, and
-// `test-gradient-batch.R` compares this enumeration against R's copy.
+// What IS load-bearing is the ORDER ITSELF -- R passes integer positions into this
+// enumeration, so appending is safe and reordering silently differentiates the
+// wrong parameter, and `test-gradient-batch.R` compares this enumeration against
+// R's copy.
 inline constexpr int par_kmax = 15;
 inline constexpr int par_resistance = 16;
 // Cowan-Farquhar's prescribed marginal value of water. A pure APPEND after the two
@@ -1269,8 +1268,8 @@ public:
     roots_.duptake_dpsi(d.at, soil_at, d.duptake_dp);
 
     // ⚠️ A KINK IS ANSWERED HERE, ONCE, so that no consumer can read the sentinel.
-    // Hazard 6: `duptake_dpsi` returns NaN to mean "the analytic branch is not
-    // valid across this collar, difference it instead". A wet bound is one -- for
+    // `duptake_dpsi` returns NaN to mean "the analytic branch is not valid
+    // across this collar, difference it instead". A wet bound is one -- for
     // a single rooted layer it is exactly the gravity-balance point, and that is
     // where the shade-death exit places the collar.
     //
@@ -1317,7 +1316,7 @@ public:
     }
   }
 
-  // ---- the differentiable surface's coordinates ------------------------------
+  // The differentiable surface's coordinates.
   //
   // A coordinate is a value AND its response in the collar potential, so the two
   // travel as one. Written as separate scalars they were seeded from separate
@@ -1949,8 +1948,8 @@ public:
   // three decades of step it is stable to SEVEN significant figures.
   //
   // ⚠️ NOT const: it drives the model to two neighbouring collars and restores
-  // the operating point afterwards. Leaving it at p0 +/- h would be hazard 8 --
-  // every path out of the solve writes its own rates, and this is a path out.
+  // the operating point afterwards. Leaving it at p0 +/- h would break the rule
+  // that every path out of the solve writes its own rates, and this is a path out.
   template <CostCurve K>
   double marginal_collar_slope();
 
@@ -1971,11 +1970,10 @@ public:
   // an ordinary implicit value: the residual's own slope at the bound, and the
   // residual at S for the rest.
   //
-  // ⚠️ THE ROOT'S 5% POTENTIAL IS NOT ONE OF THEM. It used to be a third arm,
-  // live only while root_psi_crit was a FREE TRAIT and the bound was therefore
-  // that trait. Under (P50, c) it is derived, so it is an ordinary expression the
-  // chain differentiates itself and there is no theorem to apply. The arm
-  // dissolves; what survives is the recorded selector saying which limit bound.
+  // ⚠️ THE ROOT'S 5% POTENTIAL IS NOT ONE OF THEM. Under (P50, c) it is derived,
+  // so it is an ordinary expression the chain differentiates itself and there is
+  // no theorem to apply. It needs no arm of its own; what pins the bound is the
+  // recorded selector saying which limit bound.
   template <CostCurve K, class S>
   S bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
              const leaf_pars<S>& pars) const;
@@ -2441,7 +2439,7 @@ public:
   // ⚠️ BOTH, IN ONE CALL, BECAUSE evaluate_root_collar_psi RESTORES EVERY NUMBER
   // AND THEN TAGS THE POINT `prescribed`. That is correct from its side -- a
   // caller handed it a target -- and it is wrong for a replay, where the recorded
-  // arm is the whole point: collar_at switches on the kind, so a replayed
+  // arm is what a replay needs: collar_at switches on the kind, so a replayed
   // interior point tagged `prescribed` has no condition to place it at. Splitting
   // this into two calls is the mistake, and it costs a throw in a caller that
   // never asked for a collar.
@@ -4633,7 +4631,7 @@ inline void Leaf::setup_transpiration(double resolution) {
   // ⚠️ RECORDED, BECAUSE `set_traits` REBUILDS AT THE MEMBER. Without this the
   // object holds a curve at one resolution and re-traits it at another, so a
   // re-traited leaf is not the leaf a fresh one at those traits would be -- which
-  // is the guarantee hazard 10 rests on, and it fails silently: every number
+  // is the guarantee set_traits rests on, and it fails silently: every number
   // stays plausible and only the curve under the solve changes. A caller that
   // builds the two curves at DIFFERENT resolutions gets the last one recorded,
   // which is the same one member both rebuilds have always read.
@@ -5362,7 +5360,7 @@ inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem) const {
   return TF24_cost_scale * pow((1 - proportion_of_conductivity_kernel(psi_stem)), TF24_beta2);
 }
 
-// ---- the same kernels, against a caller's parameter pack -------------------
+// The same kernels, against a caller's parameter pack.
 //
 // Each is its member-reading twin above with every differentiated quantity taken
 // from `pars` instead. At double the pack holds exactly what the members hold
@@ -5555,7 +5553,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
                              S(inv_atm);
                 });
 
-  // ---- the collar's own channel ---------------------------------------------
+  // The collar's own channel.
   //
   // ⚠️ THE CONDUCTIVITY HERE IS THE TABLE'S, WITH THE CURVE'S ROWS. Upstream's
   // dprofit_at_collar_psi forms every one of these from stem_curve_integral_deriv,
