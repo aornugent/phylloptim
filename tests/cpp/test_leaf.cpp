@@ -12,11 +12,14 @@
 
 #include "root_network.hpp"
 
+#include <odelia/tangent.hpp>
+
 #include <chrono>
 #include <cmath>
 #include <functional>
 #include <cstdio>
 #include <limits>
+#include <map>
 #include <string>
 #include <algorithm>
 #include <iterator>
@@ -946,7 +949,8 @@ void test_collar_solve_refuses_rather_than_guessing() {
   ok(m.operating_point_kind() == Kind::SolverRefused,
      "the solve reports that it could not resolve the bracket");
   ok(m.operating_point_kind() != Kind::BoundarySoil &&
-         m.operating_point_kind() != Kind::BoundaryCrit,
+         m.operating_point_kind() != Kind::BoundaryCrit &&
+         m.operating_point_kind() != Kind::BoundaryRootCrit,
      "and does not pass it off as a constrained optimum");
   // The endpoint the solve returns is stepped a fraction of the width inside the
   // bound it came from, so compare against the bound rather than for equality.
@@ -954,22 +958,29 @@ void test_collar_solve_refuses_rather_than_guessing() {
      "and returns the end with the higher profit");
   ok(std::abs(refused - dry_end) > 0.1, "which is not the drier end");
 
-  // A bracket lying wholly inside the infeasible sliver at bound_a, where dprofit
-  // takes its reversed-gradient exit: no usable gradient at either end. The
+  // A bracket lying wholly at or below bound_a, where dprofit takes its
+  // reversed-gradient exit: no usable gradient at either end. The
   // non-finite-gradient half of the same guard has no bracket that reaches it and
   // is not covered.
+  //
+  // ⚠️ THE BRACKET IS BELOW THE BOUND, NOT JUST INSIDE IT. G^-1 is the forward
+  // table inverted, so zero flux returns the collar exactly and the infeasible
+  // region is exactly (-inf, bound_a] -- one ulp above it answers. DO NOT fit the
+  // inverse separately: at zero flux the round trip then puts psi_stem about 1e-07
+  // below the collar, which is a reversed gradient the model does not have, and it
+  // opens an infeasible sliver that wide above bound_a.
   phylloptim::Leaf s = make_leaf(d, psi, depth);
   double sa = 0.0, sb = 0.0;
   s.prepare_collar_solve<phylloptim::Leaf::CostCurve::TF24>(sa, sb);
   const double sliver = 1e-9;
   bool feasible = true;
-  s.dprofit_at_collar_psi<phylloptim::Leaf::CostCurve::TF24>(sa + 1e-6 * sliver, &feasible);
+  s.dprofit_at_collar_psi<phylloptim::Leaf::CostCurve::TF24>(sa, &feasible);
   ok(!feasible, "the wet bound admits no informative gradient");
-  const double fallen_back = s.maximise_profit_over_collar<phylloptim::Leaf::CostCurve::TF24>(sa, sa + sliver);
+  const double fallen_back = s.maximise_profit_over_collar<phylloptim::Leaf::CostCurve::TF24>(sa - sliver, sa);
   ok(s.operating_point_kind() == Kind::SolverRefused,
      "a bracket with no usable gradient at either end is refused too");
-  ok(std::isfinite(fallen_back) && fallen_back >= sa &&
-         fallen_back <= sa + sliver,
+  ok(std::isfinite(fallen_back) && fallen_back >= sa - sliver &&
+         fallen_back <= sa,
      "and the fallback stays inside the bracket it was handed");
 }
 
@@ -3088,6 +3099,308 @@ void test_temperature_params_invalidate_cache() {
 // exists. Every reference value in the model is DEFINED at 25 C, so a change to any
 // response curve is inert there by construction; the golden grid carries one hot
 // block for exactly this reason, and this test is what pins the response itself.
+// The pack-reading kernels against the member-reading ones they are twins of,
+// at double, where the two must be THE SAME NUMBERS and not merely close.
+//
+// This is the only check on the reverse-mode surface's VALUES. The transpose
+// identity reads that surface in two directions and is satisfied exactly by a
+// kernel evaluated at the wrong temperature or in the wrong light, because both
+// directions are then wrong together.
+//
+// ⚠️ THE ENERGY-BALANCE ARM IS THE POINT, not a second case for completeness.
+// Off that path the block's temperature and `leaf_temp_` are one number and a
+// kernel reading either passes; on it they run up to 10 K apart, and reading
+// `leaf_temp_` moved assimilation by 100%, electron transport by 84% and dA/dci
+// by 8.3%. The block members are compared FIRST so a failure names the cause
+// rather than the three consequences below it.
+void test_pack_kernels_are_the_models_own() {
+  printf("the pack-reading kernels are the model's own numbers\n");
+  using AD = xad::fwd<double>::active_type;
+  int compared = 0, agreed = 0, refused = 0;
+  double widest_gap = 0.0;
+  // Identical numbers, and identical refusals. At a leaf 50 C hot the
+  // colimitation discriminant leaves dA/dci NaN, and two NaNs from two spellings
+  // of one function are the agreement being asserted rather than an exception to
+  // it -- `near` cannot say that, since NaN compares false against everything.
+  // Counted, so a fixture that started refusing everywhere cannot pass by it.
+  auto same = [&](double got, double want, const std::string &what) {
+    if (std::isnan(got) && std::isnan(want)) {
+      ++refused;
+      ++checks;
+      return;
+    }
+    ++agreed;
+    near(got, want, 0.0, what);
+  };
+  for (bool gate : {false, true}) {
+    for (double psi0 : {0.5, 1.0, 2.0, 3.0}) {
+      for (double ppfd : {100.0, 1500.0}) {
+        for (double temp : {25.0, 40.0}) {
+          Drivers d;
+          d.PPFD = ppfd;
+          d.leaf_temp = temp;
+          phylloptim::Leaf l =
+              make_pm_leaf(d, {psi0, psi0 + 0.35, psi0 + 0.7}, {1.0, 2.0, 3.0},
+                           gate);
+          l.find_root_collar_psi();
+          const double ci = l.ci_;
+          if (!std::isfinite(ci)) continue;
+          ++compared;
+          widest_gap = std::max(widest_gap, std::abs(l.Tleaf_ - l.leaf_temp_));
+          const phylloptim::leaf_pars<double> p = l.passive_pars();
+          const std::string at = " at psi_soil=" + std::to_string(psi0) +
+                                 " ppfd=" + std::to_string(ppfd) + " Tair=" +
+                                 std::to_string(temp) +
+                                 (gate ? " eb=1" : " eb=0");
+          same(l.vcmax_at<double>(p), l.vcmax_, "vcmax" + at);
+          same(l.jmax_at<double>(p), l.jmax_, "jmax" + at);
+          same(l.respiration_at<double>(p), l.R_d_, "respiration" + at);
+          same(l.electron_transport_at<double>(p), l.electron_transport(),
+               "electron transport" + at);
+          same(l.assim_colimited_kernel<double>(ci, p), l.assim_colimited(ci),
+               "colimited assimilation" + at);
+          AD ci_ad = ci;
+          xad::derivative(ci_ad) = 1.0;
+          same(l.assim_slope_at<double>(ci, p),
+               xad::derivative(l.assim_colimited_kernel(ci_ad)),
+               "dA/dci" + at);
+        }
+      }
+    }
+  }
+  ok(compared >= 20, "the sweep reached at least 20 operating points");
+  ok(agreed > 4 * refused,
+     "most comparisons were of numbers, not of refusals: " +
+         std::to_string(agreed) + " numbers, " + std::to_string(refused) +
+         " refusals");
+  // The claim is only evidence where the two temperatures actually differ, so
+  // a fixture that stopped separating them would have stopped checking.
+  ok(widest_gap > 1.0,
+     "the sweep reached a leaf more than 1 K off air temperature, gap=" +
+         std::to_string(widest_gap));
+}
+
+// Light reaches carbon with a ROW, and the row is the right size.
+//
+// ⚠️ AN EXACT ZERO IS THE FAILURE THIS EXISTS FOR, not a small number. The pack
+// slot is the only route light has into the electron transport; read off the
+// `PPFD_` member instead, every trait that moves the light a cohort stands in --
+// the extinction coefficient, the leaf area a stem carries -- reaches
+// assimilation with no row and the gradient reads zero rather than wrong. The
+// transpose identity is satisfied exactly by a zero row on both sides, so it
+// cannot see this either.
+//
+// The difference is taken at a FIXED ci, so it differences the kernel and not the
+// solve, and the row is required to FALL with light: at 100 umol the leaf is
+// light-limited and at 1500 it is rubisco-limited, so a row that did not saturate
+// would be reading light somewhere it does not belong.
+void test_light_reaches_carbon_with_a_row() {
+  printf("light reaches carbon with a row\n");
+  using AD = xad::fwd<double>::active_type;
+  double previous = std::numeric_limits<double>::infinity();
+  int compared = 0;
+  for (double ppfd : {100.0, 400.0, 900.0, 1500.0}) {
+    Drivers d;
+    d.PPFD = ppfd;
+    phylloptim::Leaf l = make_leaf(d, {1.0}, {1.0});
+    l.find_root_collar_psi();
+    const double ci = l.ci_;
+    if (!std::isfinite(ci)) continue;
+    ++compared;
+    const std::string at = " at ppfd=" + std::to_string(ppfd);
+
+    phylloptim::leaf_pars<AD> p;
+    const phylloptim::leaf_pars<double> seated = l.passive_pars();
+    for (std::size_t i = 0; i < p.size(); ++i) p[i] = AD(seated[i]);
+    xad::derivative(p[phylloptim::par_PPFD]) = 1.0;
+    const double row =
+        xad::derivative(l.assim_colimited_kernel<AD>(AD(ci), p));
+
+    const double h = ppfd * 1e-6;
+    Drivers up_d = d, dn_d = d;
+    up_d.PPFD = ppfd + h;
+    dn_d.PPFD = ppfd - h;
+    phylloptim::Leaf up = make_leaf(up_d, {1.0}, {1.0});
+    phylloptim::Leaf dn = make_leaf(dn_d, {1.0}, {1.0});
+    const double fd = (up.assim_colimited(ci) - dn.assim_colimited(ci)) / (2 * h);
+
+    ok(row != 0.0, "dA/dPPFD is not an exact zero" + at);
+    ok(row > 0.0, "more light cannot lower assimilation" + at);
+    near(row, fd, 1e-7, "dA/dPPFD against a central difference" + at);
+    ok(row < previous, "the light response saturates" + at);
+    previous = row;
+  }
+  ok(compared == 4, "every light level solved");
+}
+
+// Every operating point the model answers at hands over FINITE rows.
+//
+// ⚠️ A NON-FINITE ROW IS NOT REPORTED ANYWHERE DOWNSTREAM, which is why this is
+// asserted here. plant records its rows against a constant 1.0, so the row it
+// validates is always finite and the sentinel rides in on the tape behind it;
+// its census gradient then polls for a DECLARED refusal, finds none, and hands
+// back NaN as a number the sweep computed. Measured before this check existed:
+// three of five census drivers returned NaN in every trait column of three
+// metrics, with nothing refused.
+//
+// The two routes are separate claims. `duptake_dpsi` returns NaN deliberately
+// where its analytic branch is not valid, and a single-layer wet bound -- where
+// the shade-death exit places the collar -- is such a point; the
+// coordinates additionally run the implicit function theorem, which has no
+// residual to invert wherever the model assigned ci rather than solving for it.
+void test_every_answered_point_hands_over_finite_rows() {
+  printf("every answered operating point hands over finite rows\n");
+  using T = odelia::ode::tangent_scalar<double>;
+  std::map<std::string, int> reached;
+  int draws = 0, uptakes = 0, coords = 0;
+  for (int layers : {1, 3}) {
+    for (double psi0 : {0.25, 1.0, 2.0, 4.0, 6.0}) {
+      for (double ppfd : {1.0, 100.0, 900.0}) {
+        Drivers d;
+        d.PPFD = ppfd;
+        std::vector<double> psi_soil, soil_depth;
+        for (int i = 0; i < layers; ++i) {
+          psi_soil.push_back(psi0 + 0.35 * i);
+          soil_depth.push_back(1.0 * (i + 1));
+        }
+        phylloptim::Leaf l = make_leaf(d, psi_soil, soil_depth);
+        l.find_root_collar_psi();
+        const auto kind = l.operating_point_kind();
+        const std::string name = l.operating_point_kind_name(kind);
+        if (kind == phylloptim::Leaf::OperatingPointKind::Unsolved ||
+            kind == phylloptim::Leaf::OperatingPointKind::SolverRefused ||
+            kind == phylloptim::Leaf::OperatingPointKind::NonFiniteGradient) {
+          continue;
+        }
+        ++reached[name];
+        const std::string at = " at " + name + " psi_soil=" +
+                               std::to_string(psi0) + " ppfd=" +
+                               std::to_string(ppfd) + " layers=" +
+                               std::to_string(layers);
+
+        phylloptim::leaf_pars<T> pars;
+        const phylloptim::leaf_pars<double> seated = l.passive_pars();
+        for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
+        odelia::ode::seed_direction(pars[phylloptim::par_vcmax_25], 1.0);
+        std::vector<T> soil, r_h, r_v;
+        for (int i = 0; i < l.supply_n_layers(); ++i) {
+          soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
+          r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
+          r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
+        }
+        const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
+                                             pars[phylloptim::par_root_P50],
+                                             pars[phylloptim::par_root_c]};
+        const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
+        ++draws;
+        ok(std::isfinite(odelia::util::to_passive(draw.flux.slope)),
+           "the draw's collar slope is finite" + at);
+        for (std::size_t j = 0; j < draw.duptake_dp.size(); ++j) {
+          ok(std::isfinite(draw.duptake_dp[j]),
+             "layer " + std::to_string(j) + "'s supplied collar slope is finite" + at);
+        }
+
+        const double curvature =
+            kind == phylloptim::Leaf::OperatingPointKind::Interior
+                ? l.marginal_collar_slope<phylloptim::Leaf::CostCurve::TF24>()
+                : std::numeric_limits<double>::quiet_NaN();
+        if (kind == phylloptim::Leaf::OperatingPointKind::Interior &&
+            !std::isfinite(curvature)) {
+          continue;
+        }
+        const T collar =
+            l.collar_at<phylloptim::Leaf::CostCurve::TF24, T>(draw, pars, curvature);
+        const auto out =
+            l.outputs_at<phylloptim::Leaf::CostCurve::TF24, T>(collar, draw, pars);
+        ++uptakes;
+        ok(std::isfinite(odelia::ode::derivative_along(out.profit)),
+           "profit's row is finite" + at);
+        for (std::size_t j = 0; j < out.uptake.size(); ++j) {
+          ok(std::isfinite(odelia::ode::derivative_along(out.uptake[j])),
+             "layer " + std::to_string(j) + "'s uptake row is finite" + at);
+        }
+        // The coordinates are refused by name at a shutdown; outputs_at answers
+        // there instead, which the branch above just exercised.
+        if (kind != phylloptim::Leaf::OperatingPointKind::HydraulicShutdown) {
+          const auto co =
+              l.collar_coords_at<T>(l.opt_psi_stem_, l.ci_, collar, draw, pars);
+          ++coords;
+          ok(std::isfinite(odelia::ode::derivative_along(co.sigma.value)) &&
+                 std::isfinite(odelia::util::to_passive(co.sigma.slope)),
+             "sigma's row and collar slope are finite" + at);
+          ok(std::isfinite(odelia::ode::derivative_along(co.ci.value)) &&
+                 std::isfinite(odelia::util::to_passive(co.ci.slope)),
+             "ci's row and collar slope are finite" + at);
+        }
+      }
+    }
+  }
+  std::string names;
+  for (const auto &[name, n] : reached) {
+    names += (names.empty() ? "" : ", ") + name + "(" + std::to_string(n) + ")";
+  }
+  printf("    %d draws, %d output sets, %d coordinate pairs | kinds: %s\n", draws,
+         uptakes, coords, names.c_str());
+  // ⚠️ THE CLAIM IS ONLY EVIDENCE ABOUT THE KINDS IT REACHED, and shade death is
+  // the one that carried the sentinel: a fixture that stopped reaching it would
+  // pass this while checking nothing.
+  ok(reached.count("shade-death") > 0, "the sweep reached a shade death");
+  ok(reached.count("hydraulic-shutdown") > 0, "the sweep reached a shutdown");
+  ok(reached.count("interior") > 0, "the sweep reached an interior point");
+}
+
+// The dry end has TWO bounds, closed by different conditions, and which one bound
+// is a classification a tally has to be able to report.
+//
+// ⚠️ AT SHIPPED DEFAULTS ONE ARM NEVER WINS, so it needs a fixture built for it
+// rather than a sweep that waits for one. root_psi_crit is 5.87 MPa against a
+// continuity root near 1.3, so the root's own limit is never the min until the
+// trait that sets it is lowered deliberately. Without this the kind exists and
+// nothing reaches it, which is a classification no run can produce -- and while
+// the distinction was a private bool, no tally could report it either.
+//
+// The two arms place the collar by DIFFERENT expressions -- a residual on one and
+// a closed form on the other -- so the check is the placement as well as the
+// name: at the root-limit arm the collar is root_psi_crit exactly.
+void test_the_dry_end_reports_which_bound_closed_it() {
+  printf("the dry end reports which of its two bounds closed it\n");
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  Drivers d;
+  const std::vector<double> psi_soil{2.0}, depth{1.0};
+  const std::vector<double> mrp(psi_soil.size(),
+                               1.0 / double(psi_soil.size()) / d.area_leaf);
+  int continuity = 0, root_limit = 0;
+  for (double root_P50 : {3.4, 2.0, 1.2, 0.9, 0.7, 0.5, 0.3}) {
+    phylloptim::Leaf l = make_leaf(d, psi_soil, depth);
+    l.set_traits(96.0, 2.680147, 3.4, 2.680147, root_P50, 1.5, 157.44, 0.30, 0.7,
+                 0.99, 7.5, kRd25, kGammaJS22, kCMaxA, kCMaxB);
+    l.set_physiology(fixture::root_network(mrp, depth), d.PPFD, psi_soil, depth,
+                     d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
+                     d.atm_o2_kpa, d.atm_kpa);
+    l.find_root_collar_psi();
+    const Kind kind = l.operating_point_kind();
+    const std::string at = " at root_P50=" + std::to_string(root_P50);
+    if (kind == Kind::BoundaryCrit) {
+      ++continuity;
+    } else if (kind == Kind::BoundaryRootCrit) {
+      ++root_limit;
+      // The collar IS the root's critical potential on this arm, which is what
+      // distinguishes it from the continuity root beside it.
+      near(l.opt_root_psi_, l.roots_.root_psi_crit, 1e-9,
+           "the collar is the root's critical potential" + at);
+    }
+    printf("    root_P50=%4.2f  root_psi_crit=%7.4f  collar=%7.4f  %s\n", root_P50,
+           l.roots_.root_psi_crit, l.opt_root_psi_,
+           l.operating_point_kind_name(kind));
+  }
+  // The arm this exists for. The continuity arm is covered where it occurs
+  // naturally -- the golden grid pins 18 of them at 25 C and none at 40 C, and
+  // now pins this arm at zero over the same grid, which is the pair of counts
+  // that says the two are told apart rather than merged.
+  ok(root_limit > 0, "the sweep reached the root-limit arm");
+  (void)continuity;
+}
+
 void test_rd_temperature_response() {
   printf("R_d rises with temperature\n");
   Drivers d;
@@ -3172,7 +3485,7 @@ void test_rd_temperature_response() {
     l.find_root_collar_psi();
     printf("    T = %4.1f C   R_d %6.3f   A %8.4f%s\n", T, l.R_d_,
            l.assim_colimited_,
-           l.ci_at_compensation_point_ ? "   <-- shut down" : "");
+           l.ci_at_compensation_point() ? "   <-- shut down" : "");
   }
 
   // ⚠️ AND IT MUST SHUT DOWN RATHER THAN THROW. A leaf too hot to gain carbon at
@@ -3189,7 +3502,7 @@ void test_rd_temperature_response() {
       threw = true;
     }
     ok(!threw, "a leaf too hot to gain carbon shuts down instead of throwing");
-    ok(hot.ci_at_compensation_point_,
+    ok(hot.ci_at_compensation_point(),
        "and says so, rather than reporting an ordinary operating point");
     near(hot.ci_, hot.gamma_ * hot.umol_per_mol_to_Pa_, 1e-12,
          "ci sits at the compensation point");
@@ -3202,7 +3515,7 @@ void test_rd_temperature_response() {
   {
     phylloptim::Leaf ok_leaf = make_leaf(d, {2.0}, {1.0});
     ok_leaf.find_root_collar_psi();
-    ok(!ok_leaf.ci_at_compensation_point_,
+    ok(!ok_leaf.ci_at_compensation_point(),
        "an ordinary leaf is not flagged as shut down");
   }
 }
@@ -3212,10 +3525,10 @@ void test_rd_temperature_response() {
 // constructing afresh, so that is what is asserted -- bit-exactly, which is a
 // statement neither a tolerance nor an eyeball could make.
 //
-// Bit-exactness is the whole point here rather than strictness for its own sake:
-// the two ways to reach the same traits share no code, so any piece of derived
-// state that set_traits fails to refresh shows up as a difference. Three pieces
-// were candidates, and each is a real trap rather than a hypothetical one:
+// Bit-exactness is what makes this check work: the two ways to reach the same
+// traits share no code, so any piece of derived state that set_traits fails to
+// refresh shows up as a difference. Three pieces were candidates, and each is a
+// real trap rather than a hypothetical one:
 //
 //   * the two pre-integrated vulnerability splines (stem_b/stem_c, root_b/root_c);
 //   * vcmax_/jmax_/R_d_, behind set_physiology's (leaf_temp, atm_o2_kpa) cache --
@@ -3359,13 +3672,13 @@ void test_stem_curve_shortcut_needs_no_rebuild() {
   // --- and through the batch, which is where the cost was being paid ---------
   const double kmax = d.K_s * d.theta / d.h;
   // ⚠️ POSITIONAL, AND IT FAILS SILENTLY. An aggregate initialiser shorter than
-  // `n_pars` is legal C++ and zero-fills the rest, so adding a trait shifts `kmax`
+  // `n_theta` is legal C++ and zero-fills the rest, so adding a trait shifts `kmax`
   // and `resistance` down a slot and drops `resistance` off the end WITHOUT a
   // compiler diagnostic. Adding JS22_gamma put `kmax` into JS22_gamma's slot and
   // left kmax itself 0.0, and the only symptom was this test's three observations
   // failing to solve. `set_traits` above catches the same mistake at compile time;
-  // this does not, so count the entries against `n_pars` when you touch it.
-  double theta[phylloptim::gradient::n_pars] = {
+  // this does not, so count the entries against `n_theta` when you touch it.
+  double theta[phylloptim::gradient::n_theta] = {
       96.0,   2.680147, P50_0, 2.680147, P50_0, 1.5,
       157.44, 0.30,     0.7,   0.99,     7.5,   kRd25, kGammaJS22,
       kCMaxA, kCMaxB,  kmax,      0.0};
@@ -3373,9 +3686,9 @@ void test_stem_curve_shortcut_needs_no_rebuild() {
   // route, which reads neither. ⚠️ THE ASSERTION IS WHAT MAKES THE SHORT
   // INITIALISER SAFE -- without it the next appended parameter shifts `kmax`
   // silently, which is the failure the comment above describes.
-  static_assert(phylloptim::gradient::n_pars == 19,
+  static_assert(phylloptim::gradient::n_theta == 19,
                 "theta above is positional and deliberately short; recount it "
-                "against n_pars and update this assertion together");
+                "against n_theta and update this assertion together");
 
   phylloptim::gradient::Drivers gd;
   gd.root_network = fixture::root_network(mrp, depth);
@@ -3971,7 +4284,7 @@ void test_out_of_domain_names_the_spline() {
   // statement "the collar cannot supply this, so no stem potential carries it".
   const std::string inv =
       message_of([&] { l.transpiration_to_psi_stem(-1e3, 0.0); });
-  ok(mentions(inv, "psi_from_transpiration"), "inverse lookup names its spline");
+  ok(mentions(inv, "INVERTED"), "inverse lookup names which direction it is");
   ok(mentions(inv, "beyond the lower end"), "inverse lookup reports which end");
   ok(mentions(inv, "E/K_max"), "inverse lookup names its argument's units");
   ok(mentions(inv, "Leaf::transpiration_to_psi_stem"),
@@ -5657,6 +5970,89 @@ void benchmark() {
 
 } // namespace
 
+// What plant reads, against what the solve itself left.
+//
+// outputs_at and marginal_at ASSEMBLE the leaf's answers from kernels, where the
+// solve reaches the same numbers by a different route entirely -- through
+// set_leaf_states_rates and the members. So agreement is a statement about the
+// assembly rather than a tautology, and it is asserted BIT-FOR-BIT because
+// nothing here is reassociated: the assembly is meant to be the same arithmetic.
+//
+// ⚠️ EVERY KIND, because the branches differ. An interior point reads the held
+// collar (the envelope omission), a bound reads its own condition, and the two
+// SHUT kinds are not the same point: a hydraulic shutdown holds the stem at
+// psi_crit and zeroes every layer, while shade death sits on the wet bound where
+// the flux is zero in value but the rows are the bound's own. The census below is
+// part of the result -- a fixture reaching only one of them has narrowed the
+// check without narrowing what it claims.
+void test_outputs_agree_with_the_solve() {
+  printf("outputs_at and marginal_at against the solve's own numbers\n");
+  using K = phylloptim::Leaf::CostCurve;
+  const std::vector<std::vector<double>> soils = {
+      {2.0}, {1.0, 2.0, 3.0}, {0.5, 1.0, 1.5, 2.0, 2.5}};
+  const std::vector<std::vector<double>> depths = {
+      {1.0}, {0.5, 1.0, 1.5}, {0.4, 0.8, 1.2, 1.6, 2.0}};
+  int n_interior = 0, n_bound = 0, n_shut = 0, n_marg = 0;
+  for (double T : {25.0, 40.0}) {
+    for (double psi0 : {0.5, 1.0, 2.0, 3.0, 4.0, 6.0}) {
+      for (std::size_t k = 0; k < soils.size(); ++k) {
+        Drivers d;
+        d.leaf_temp = T;
+        std::vector<double> ps;
+        bool bad = false;
+        for (double v : soils[k]) {
+          ps.push_back(v + psi0 - 1.0);
+          if (ps.back() <= 0.0) bad = true;
+        }
+        if (bad) continue;
+        phylloptim::Leaf l = make_leaf(d, ps, depths[k]);
+        l.find_root_collar_psi();
+        const auto kind = l.operating_point_kind();
+        if (kind == phylloptim::Leaf::OperatingPointKind::SolverRefused ||
+            kind == phylloptim::Leaf::OperatingPointKind::NonFiniteGradient ||
+            kind == phylloptim::Leaf::OperatingPointKind::Unsolved) {
+          continue;
+        }
+        if (kind == phylloptim::Leaf::OperatingPointKind::Interior) ++n_interior;
+        else if (kind == phylloptim::Leaf::OperatingPointKind::HydraulicShutdown ||
+                 kind == phylloptim::Leaf::OperatingPointKind::ShadeDeath) ++n_shut;
+        else ++n_bound;
+
+        const auto pars = l.passive_pars();
+        const double p0 = l.opt_root_psi_;
+        const auto draw = l.supply_draw_at<double>(p0, l.roots_.held_supply());
+        const auto got = l.outputs_at<K::TF24, double>(p0, draw, pars);
+        ok(got.profit == l.profit_, "outputs_at's profit IS the solve's");
+        ok(got.uptake.size() == l.soil_consumption_.size(),
+           "one uptake per layer");
+        for (std::size_t j = 0; j < got.uptake.size(); ++j) {
+          ok(got.uptake[j] == l.soil_consumption_[j],
+             "outputs_at's layer draw IS the solve's");
+        }
+        if (kind == phylloptim::Leaf::OperatingPointKind::Interior) {
+          bool feasible = false;
+          const double up = l.dprofit_at_collar_psi<K::TF24>(p0, &feasible);
+          // dprofit_at_collar_psi drives the model to that collar; put the point
+          // back before reading anything else off this leaf, because every path
+          // out of the solve writes its own rates.
+          l.replay_operating_point(p0, kind);
+          if (feasible && std::isfinite(up)) {
+            ++n_marg;
+            const auto d2 = l.supply_draw_at<double>(p0, l.roots_.held_supply());
+            ok(l.marginal_at<K::TF24, double>(p0, d2, pars) == up,
+               "marginal_at IS upstream's dprofit_at_collar_psi");
+          }
+        }
+      }
+    }
+  }
+  printf("    %d interior (%d refereed against dprofit), %d at a bound, %d shut\n",
+         n_interior, n_marg, n_bound, n_shut);
+  ok(n_interior > 0 && n_bound > 0 && n_shut > 0,
+     "the sweep reached an interior point, a bound and a shut point");
+  ok(n_marg > 0, "the sweep refereed the marginal somewhere");
+}
+
 int main() {
   test_defaults_are_unset();
   test_vulnerability_curve();
@@ -5683,6 +6079,7 @@ int main() {
   test_operating_point_kind_is_written_by_every_path();
   test_collar_solve_refuses_rather_than_guessing();
   test_collar_argmax_is_smooth_in_a_trait();
+  test_outputs_agree_with_the_solve();
   test_soil_conductance_is_positive();
   test_root_vulnerability_is_bounded_past_its_grid();
   test_root_psi_crit_clamp_binds();
@@ -5714,6 +6111,10 @@ int main() {
   test_temperature_parameters_are_settable();
   test_temperature_params_invalidate_cache();
   test_rd_temperature_response();
+  test_the_dry_end_reports_which_bound_closed_it();
+  test_pack_kernels_are_the_models_own();
+  test_light_reaches_carbon_with_a_row();
+  test_every_answered_point_hands_over_finite_rows();
   test_set_traits_matches_a_fresh_leaf();
   test_prescribed_lambda_survives_redriving();
   test_profitmax_reports_an_emergent_lambda();

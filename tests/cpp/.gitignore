@@ -1,0 +1,6 @@
+
+# built by the C++ suite
+test_leaf_gradient
+test_transpose
+test_supplied_rows
+probe_preaccumulation
