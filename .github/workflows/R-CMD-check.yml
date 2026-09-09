@@ -9,11 +9,7 @@ name: R-CMD-check
 
 on:
   push:
-    # ⚠️ Feature branches as well as the default one. A filter naming only the
-    # default branch means a push to a feature branch runs nothing, so failures
-    # wait for the pull request and arrive in bulk -- which is the defect the
-    # note above records from the other direction.
-    branches: [master, 'ad/**', 'claude/**']
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
