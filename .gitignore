@@ -33,3 +33,7 @@ CMakeFiles/
 
 # Doxygen output (generated; see Doxyfile)
 docs/
+
+# Agent worktrees. A worktree checked out here records as a gitlink with no
+# .gitmodules entry, which clones as an empty directory nothing can populate.
+.claude/worktrees/
