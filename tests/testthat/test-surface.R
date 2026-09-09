@@ -127,8 +127,13 @@ test_that("leaf_model() and the raw Leaf() constructor agree", {
   # onto 15 positional slots is exactly the kind of thing that goes wrong once
   # and is never noticed. So check it against a hand-written positional call
   # with the same values, on a full solve rather than on the arguments.
+  # ⚠️ THE CONTROL'S OWN VALUE IN THE 12th SLOT, NOT A LITERAL. It is the knot
+  # count, and a number pinned here compares a curve at that resolution against
+  # one leaf_model() built at the shipped default -- so the two disagree for the
+  # fixture's reason and this test reports a mapping error that is not there.
   raw <- Leaf(96, 2.680147, 3.4, 2.680147, 3.4,
-              1.5, 157.44, 0.30, 0.7, 0.99, 1e-3, 100, 1e-3, 1000, 7.5)
+              1.5, 157.44, 0.30, 0.7, 0.99, 1e-3,
+              leaf_control()$vulnerability_curve_ncontrol, 1e-3, 1000, 7.5)
   raw$initialize_integrator(21, 1e-8)
   friendly <- leaf_model()
 
