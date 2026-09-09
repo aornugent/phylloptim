@@ -1224,6 +1224,20 @@ public:
     pair<S> flux;
     std::vector<S> uptake;
     std::vector<double> duptake_dp;
+
+    // ⚠️ WHAT CARRIES A ROW, NAMED FOR visit_active. A shape that dispatch does
+    // not open is skipped in silence, and here that arrives as an exact zero in
+    // a gradient column rather than as an error -- so this exists to make the
+    // theorem's inputs reachable, not for convenience. `at` and `duptake_dp` are
+    // double and carry no row. Const because the harvest reads slots.
+    template <class F>
+    void for_each_active(F&& f) const {
+      f(flux.value);
+      f(flux.slope);
+      for (const S& u : uptake) {
+        f(u);
+      }
+    }
   };
 
   // The only way to make one, so the draw records the collar it was taken at and
@@ -5514,12 +5528,21 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // from THE TABLE because that is the derivative the model itself forms.
   const double dT1_dsigma =
       at_pars[par_kmax] * stem_curve_integral_deriv(sigma_star);
+  // The inputs are handed over rather than left for the outer sweep to find:
+  // the theorem's row is written here and the residual is rewound, so a walk of
+  // it never reaches the caller's tape. ⚠️ EVERY ACTIVE THING THE RESIDUAL READS
+  // MUST BE IN THIS LIST -- one left out is a row that never arrives, which
+  // reads as an exact zero in that column rather than as an error. `held` is
+  // to_passive and carries none.
+  std::size_t sigma_rows = 0;
   const S sigma_h = odelia::implicit_value<S>(
-      sigma_star, dT1_dsigma, [&](const S& sg) -> S {
+      sigma_star, dT1_dsigma, sigma_rows,
+      [&](const S& sg) -> S {
         return pars[par_kmax] * (leaf.template stem_integral_at<S>(sg, pars) -
                                  leaf.template stem_integral_at<S>(held, pars)) -
                draw.flux.value;
-      });
+      },
+      pars, draw.flux.value);
 
   // The stem's flux at the placed sigma. gc is built from THIS, not from the
   // draw, because that is what the model's ci solve reads -- the two agree only
@@ -5542,16 +5565,21 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
     dT2_dci = assim_slope_at<double>(ci_star, at_pars) * umol_to_mol +
               gc_per_flux * to_passive(stem_flux) * inv_atm;
   }
+  // stem_flux is active and read by the residual, so it is in the list beside
+  // pars; ca_, gc_per_flux and inv_atm are double.
+  std::size_t ci_rows = 0;
   const S ci_h =
       ci_at_compensation_point()
           ? S(ci_star)
           : odelia::implicit_value<S>(
-                ci_star, dT2_dci, [&](const S& c) -> S {
+                ci_star, dT2_dci, ci_rows,
+                [&](const S& c) -> S {
                   const S A = leaf.template assim_colimited_kernel<S>(c, pars);
                   return A * umol_to_mol -
                          S(gc_per_flux) * stem_flux * (S(leaf.ca_) - c) *
                              S(inv_atm);
-                });
+                },
+                pars, stem_flux);
 
   // The collar's own channel.
   //
@@ -5764,8 +5792,10 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
     // The residual IS the draw: uptake vanishes at this collar. implicit_value
     // evaluates at the passive bound, and the draw was taken there, so
     // re-recording the supply would put the same expression on the tape twice.
+    std::size_t wet_rows = 0;
     return odelia::implicit_value<S>(
-        bound_x, dflux_dx, [&](const S&) -> S { return draw.flux.value; });
+        bound_x, dflux_dx, wet_rows,
+        [&](const S&) -> S { return draw.flux.value; }, draw.flux.value);
   }
 
   // The dry end is T1 with the stem held at ITS critical potential: the collar at
@@ -5777,14 +5807,17 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
   const double dT_dx =
       -to_passive(pars[par_kmax]) * stem_curve_integral_deriv(bound_x) -
       dflux_dx;
+  std::size_t dry_rows = 0;
   return odelia::implicit_value<S>(
-      bound_x, dT_dx, [&](const S& x) -> S {
+      bound_x, dT_dx, dry_rows,
+      [&](const S& x) -> S {
         return pars[par_kmax] *
                    (leaf.template stem_integral_at<S>(psi_crit_at<S>(pars),
                                                       pars) -
                     leaf.template stem_integral_at<S>(x, pars)) -
                draw.flux.value;
-      });
+      },
+      pars, draw.flux.value);
 }
 
 // An interior point is the only kind whose condition is a second derivative, so
@@ -5813,10 +5846,15 @@ inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
             std::isnan(interior_curvature)
                 ? self.template marginal_collar_slope<K>()
                 : interior_curvature;
+        // The whole draw, because marginal_at reads more of it than the flux:
+        // SupplyDraw names its own active members for this.
+        std::size_t interior_rows = 0;
         collar = odelia::implicit_value<S>(
-            opt_root_psi_, curvature, [&](const S& y) -> S {
+            opt_root_psi_, curvature, interior_rows,
+            [&](const S& y) -> S {
               return marginal_at<K, S>(y, draw, pars);
-            });
+            },
+            draw, pars);
       }
       break;
     }
