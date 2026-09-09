@@ -429,6 +429,18 @@ now back. Two things follow:
 arm64, and FMA contraction differs too, so cross-platform bit-equality was never
 achievable. CI compares bit-exactly on macOS and with `--cross-platform` elsewhere.
 
+⚠️ **EVERYTHING IN THIS SECTION IS AS OF BEFORE THE STEM TABLE WAS INVERTED, AND
+BOTH GOLDEN FILES NOW EXCEED THEIR CROSS-PLATFORM TOLERANCES.** `operating_points.tsv`
+reads 222 mismatches over 576 points and `psi_stem_optima.tsv` 60 over 5184, so
+the per-class figures below and the headroom argument built on them describe a
+state that no longer holds. They cannot be re-cut except on the platform that
+owns the files, which is macOS on arm64.
+
+⚠️ **A third pass over this section must read the `golden:` SUMMARY line, not the
+FAIL lines.** Two earlier passes reported this file as passing, both by grepping
+for failures in output whose per-point failures are elided and whose only complete
+statement is the summary. An absent FAIL line is not a pass.
+
 **The size of the cross-platform disagreement is the interesting part, and it is
 not one number.** The nine reported fields split into two classes, and the gap between
 them has narrowed sharply:
