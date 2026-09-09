@@ -954,12 +954,11 @@ leaf_gradient <- function(psi_soil,
   # destroys -- `set_traits` + `set_physiology` clears it, measured 16.757 -> NaN --
   # so something has to put it back before every read.
   #
-  # It used to be PINNED at the base point, for a reason that has since been fixed:
-  # `|A|max` was the argmax of a 500-point scan, so it was piecewise constant in the
-  # traits and a total derivative through it was zeros and jumps. It is found by a
-  # root-find now, and cheaply (it sits at the dry bound on 1318 of 1320 driver
-  # rows), so re-solving it lets it follow the traits -- which is the quantity a fit
-  # needs, and removes the partial-versus-total split this route used to carry.
+  # ⚠️ DO NOT PIN IT AT THE BASE POINT. `|A|max` is found by a root-find, and
+  # cheaply (it sits at the dry bound on 1318 of 1320 driver rows), so re-solving it
+  # lets it follow the traits, which is the quantity a fit needs. Pinned, it is
+  # piecewise constant in the traits and a total derivative through it is zeros and
+  # jumps.
   #
   # A no-op on every other curve, which is why it is one function and not a pair
   # with a `capture` half that did nothing on either branch.
@@ -1304,15 +1303,14 @@ leaf_gradient <- function(psi_soil,
     # list is however many traits `set_traits()` takes, in its order, derived
     # rather than restated.
     #
-    # It used to be fifteen subscripts spelled out, and the comment here said so:
-    # "adding a trait breaks here and nowhere else -- at run time, with `argument
-    # <name> is missing` raised inside the generated binding, which names neither
-    # this line nor the count." That is how #41 broke, and adding `TF24_floor_a` broke
-    # it again in exactly the predicted way -- 118 gradient-batch rows reporting
-    # `error` where they had reported `interior`, because the R reference threw and
-    # the batch did not. A `do.call` over the derived vector costs no `.Call` (the
-    # boundary crossing is `apply_traits` either way, which `test-cost.R` counts)
-    # and removes the class rather than the instance.
+    # ⚠️ DO NOT SPELL THE SUBSCRIPTS OUT. A fixed list breaks when a trait is added,
+    # at run time, with `argument <name> is missing` raised inside the generated
+    # binding, which names neither this line nor the count. That has happened twice;
+    # adding `TF24_floor_a` put 118 gradient-batch rows into `error` where they had
+    # reported `interior`, because the R reference threw and the batch did not. A
+    # `do.call` over the derived vector costs no `.Call` (the boundary crossing is
+    # `apply_traits` either way, which `test-cost.R` counts) and removes the class
+    # rather than the instance.
     tv <- theta[trait_names]
     do.call(apply_traits, unname(as.list(tv)))
     # `resistance` is a driver, so it goes in with the others rather than through
