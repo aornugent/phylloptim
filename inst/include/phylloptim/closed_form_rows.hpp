@@ -1,6 +1,6 @@
 // -*-c++-*-
-#ifndef PHYLLOPTIM_GRAFT_HPP_
-#define PHYLLOPTIM_GRAFT_HPP_
+#ifndef PHYLLOPTIM_CLOSED_FORM_ROWS_HPP_
+#define PHYLLOPTIM_CLOSED_FORM_ROWS_HPP_
 
 #include <phylloptim/vulnerability.hpp>
 #include <odelia/ode_util.hpp>
@@ -39,7 +39,7 @@ namespace phylloptim {
 // is the whole split: the table knows the query direction, only the closed form
 // knows the others.
 template <class S>
-inline S graft_integral(double table_value, double table_slope, const S& psi,
+inline S closed_form_integral(double table_value, double table_slope, const S& psi,
                         const S& P50, const S& c) {
   using odelia::util::to_passive;
   const double at = to_passive(psi);
@@ -55,7 +55,7 @@ inline S graft_integral(double table_value, double table_slope, const S& psi,
 
 // f(psi): the surviving conductivity, the curve itself.
 template <class S>
-inline S graft_curve(double table_value, const S& psi, const S& P50,
+inline S closed_form_curve(double table_value, const S& psi, const S& P50,
                      const S& c) {
   using odelia::util::to_passive;
   const double at = to_passive(psi);

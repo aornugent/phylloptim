@@ -10,7 +10,7 @@
 #include <phylloptim/roots.hpp>
 #include <phylloptim/single_potential.hpp>
 #include <phylloptim/vulnerability.hpp>
-#include <phylloptim/graft.hpp>
+#include <phylloptim/closed_form_rows.hpp>
 #include <phylloptim/clamp_sites.hpp>
 
 #include <odelia/interpolator.hpp>
@@ -1230,7 +1230,7 @@ public:
   // its values cannot come from different ones.
   //
   // ⚠️ THE COLLAR IS PASSIVE HERE, whatever the caller hands in. This is the
-  // supply at a POINT; where the point itself moves is the graft's business, and
+  // supply at a POINT; where the point itself moves is the supplied row's business, and
   // taking it live would record the search that placed it.
   template <class S>
   SupplyDraw<S> supply_draw_at(const S& collar,
@@ -2700,10 +2700,10 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
 // untouched and only the tape sees the rows.
 template <class S>
 inline S Leaf::stem_integral_at(const S& psi, const leaf_pars<S>& pars) const {
-  // The value is the stem table's; the rows are the closed form's. One graft
-  // serves both curves -- see graft.hpp for why that is not a convenience.
+  // The value is the stem table's; the rows are the closed form's. One site
+  // serves both curves -- see closed_form_rows.hpp for why that is not a convenience.
   const double at = odelia::util::to_passive(psi);
-  return graft_integral<S>(
+  return closed_form_integral<S>(
       stem_curve_integral(at, "Leaf::stem_integral_at"),
       stem_curve_integral_deriv(at), psi, pars[par_stem_P50],
       pars[par_stem_c]);
@@ -5455,7 +5455,7 @@ inline T Leaf::assim_slope_at(const T& ci, const leaf_pars<T>& pars) const {
 }
 
 // The curve itself is closed form, so the (P50, c) chain comes out of the one
-// derivation rather than a graft: only the pre-integrated G(psi) is tabulated and
+// derivation rather than a supplied row: only the pre-integrated G(psi) is tabulated and
 // needs its rows supplied (stem_integral_at).
 template <typename T>
 inline T Leaf::proportion_of_conductivity_kernel(const T& psi,
@@ -5559,13 +5559,13 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // dprofit_at_collar_psi forms every one of these from stem_curve_integral_deriv,
   // and the solve drove THAT assembly to zero -- so a closed-form value here
   // makes M non-zero at the collar the solve placed, and the envelope omission
-  // stops being true. graft.hpp is the same rule: the value is the table's
+  // stops being true. closed_form_rows.hpp is the same rule: the value is the table's
   // because the solve ran on the table, the rows are the curve's because a table
   // carries none.
   const S kmax = pars[par_kmax];
-  const S f_p = graft_curve<S>(stem_curve_integral_deriv(to_passive(collar)),
+  const S f_p = closed_form_curve<S>(stem_curve_integral_deriv(to_passive(collar)),
                                held, pars[par_stem_P50], pars[par_stem_c]);
-  const S f_sigma = graft_curve<S>(stem_curve_integral_deriv(sigma_star),
+  const S f_sigma = closed_form_curve<S>(stem_curve_integral_deriv(sigma_star),
                                    sigma_h, pars[par_stem_P50],
                                    pars[par_stem_c]);
 
@@ -5656,7 +5656,7 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
     // that has stopped drawing on it.
     out.uptake.assign(n, S(0.0));
   } else {
-    // ⚠️ THE DRAWS ARE GRAFTED, NOT TAKEN AGAIN. The draw already holds every
+    // ⚠️ THE DRAWS CARRY SUPPLIED ROWS, NOT A SECOND SUPPLY. The draw already holds every
     // layer's uptake at the passive collar carrying the state's own rows; what
     // is missing is the channel through the collar MOVING, and that is one
     // supplied slope per layer. Taking the supply again at the live collar
@@ -5731,7 +5731,7 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
     // is: the solve ran on the table.
     C_prime = C_prime +
               pars[par_TF24_floor_lambda_o] * pars[par_kmax] *
-                  graft_curve<S>(stem_curve_integral_deriv(opt_psi_stem_),
+                  closed_form_curve<S>(stem_curve_integral_deriv(opt_psi_stem_),
                                  at.sigma.value, pars[par_stem_P50],
                                  pars[par_stem_c]);
   }

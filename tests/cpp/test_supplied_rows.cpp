@@ -1,7 +1,7 @@
 // The row the leaf hands over as a number, against a difference of the forward
 // model that produces it.
 //
-// A supplied row is grafted onto a value, so every consumer downstream reads it
+// A supplied row is supplied onto a value, so every consumer downstream reads it
 // without recomputing it -- and a difference of anything downstream returns
 // IDENTICALLY ZERO on the column it occupies, right, wrong or absent. The only
 // place it can be caught is here, where the function it claims to be the
@@ -12,7 +12,7 @@
 //   duptake_dp[j]   d(uptake_j)/d(collar), from roots_.duptake_dpsi.
 //                   supply_draw_at takes the draw at a PASSIVE collar and
 //                   supplies this row beside it, so the tape never sees a
-//                   layer's uptake move with the collar. outputs_at grafts it
+//                   layer's uptake move with the collar. outputs_at closed-form rows it
 //                   as `uptake[j] + duptake_dp[j] * step`.
 //
 // ⚠️ THE AGGREGATE IS NOT THE ROWS. duptake_dpsi's total is refereed against a
@@ -102,7 +102,7 @@ void check(const std::vector<double>& psi_soil,
 
   std::vector<double> rows;
   const double total_kg = l.roots_.duptake_dpsi(collar, l.roots_.psi_soil_, rows);
-  // ⚠️ ONE ENTRY PER SOIL LAYER, matching the uptake it is grafted onto. Sized by
+  // ⚠️ ONE ENTRY PER SOIL LAYER, matching the uptake it is supplied onto. Sized by
   // the deepest ROOTED layer instead, a shallow-rooted plant hands back a shorter
   // vector than its own uptake -- which plant's gradient ladder refuses a whole
   // sweep on, and which every fixture whose layers are all rooted is blind to.

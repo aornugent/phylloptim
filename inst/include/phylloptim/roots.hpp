@@ -5,7 +5,7 @@
 #include <phylloptim/constants.hpp>
 #include <phylloptim/util.hpp>
 #include <phylloptim/vulnerability.hpp>
-#include <phylloptim/graft.hpp>
+#include <phylloptim/closed_form_rows.hpp>
 #include <phylloptim/clamp_sites.hpp>
 
 #include <odelia/interpolator.hpp>
@@ -351,7 +351,7 @@ layer_thicknesses(const std::vector<double>& soil_depth) {
 // where an owned type would force the double path to copy its own state.
 //
 // ⚠️ THE CURVE ARRIVES AS (root_P50, root_c), NOT root_b. b is derived and
-// set_traits re-derives it, so a row in it reaches nothing -- graft.hpp carries
+// set_traits re-derives it, so a row in it reaches nothing -- closed_form_rows.hpp carries
 // the chain.
 template <class T>
 struct SupplyAt {
@@ -735,7 +735,7 @@ public:
   // gradient. Any alternative supply path must keep this contract.
   // Three entries, one body. The double one is upstream's signature and its
   // arithmetic unchanged; the second also writes each layer's own term, which is
-  // the row outputs_at grafts the draws through; the third is the same at any
+  // the row outputs_at closed-form rows the draws through; the third is the same at any
   // scalar, for a caller assembling on the tape.
   double duptake_dpsi(double T_collar,
                       const std::vector<double>& psi_soil) const {
@@ -770,16 +770,16 @@ private:
   // The collar conductance, in MOL, at any scalar. Upstream's `duptake_dpsi`
   // term for term, with the two disciplines the active path needs: ⚠️ EVERY
   // COMPARISON READS PASSIVE (a taped comparison manufactures a discontinuity),
-  // and the vulnerability reads carry their closed-form rows through graft.hpp.
+  // and the vulnerability reads carry their closed-form rows through closed_form_rows.hpp.
   //
   // ⚠️ THE MOVING BOUND'S INTEGRAND IS THE INTEGRAL'S OWN DERIVATIVE, not the
   // separate conductivity spline. The two agree on the knot domain and are
   // bounded differently past it -- the lookup clamps to the last knot, the
   // integral is capped at G(inf) -- so only this one stays consistent with the
-  // `integral` above it. graft_curve supplies the ROWS; the VALUE stays the
+  // `integral` above it. closed_form_curve supplies the ROWS; the VALUE stays the
   // derivative table's, which is what keeps that distinction.
   //
-  // At double every graft collapses to its table read, so this instantiation is
+  // At double every supplied row collapses to its table read, so this instantiation is
   // upstream's arithmetic and the number does not move.
   template <class T>
   T duptake_dpsi_impl(const T& T_collar, const SupplyAt<T>& at,
@@ -793,7 +793,7 @@ private:
     // max_soil_layer -- the deepest layer carrying roots -- and the layers under
     // it stay zero, because a layer no root reaches draws nothing and its collar
     // slope is nothing. Sized by the rooted count instead, a shallow-rooted plant
-    // hands back a shorter vector than its own uptake, and the graft in
+    // hands back a shorter vector than its own uptake, and the supplied row in
     // outputs_at pairs a row with the wrong layer or refuses on the length.
     // Measured: plant's gradient ladder refused a whole sweep on
     // "expected 5, received 2".
@@ -826,7 +826,7 @@ private:
         if constexpr (std::is_same_v<T, double>) {
           return root_vuln_integral_at(q);
         } else {
-          return graft_integral<T>(root_vuln_integral_at(q),
+          return closed_form_integral<T>(root_vuln_integral_at(q),
                                    root_vuln_integral_deriv_at(q), arg,
                                    at.root_P50, at.root_c);
         }
@@ -846,7 +846,7 @@ private:
         if constexpr (std::is_same_v<T, double>) {
           fr_at = table;
         } else {
-          fr_at = graft_curve<T>(table, T_collar, at.root_P50, at.root_c);
+          fr_at = closed_form_curve<T>(table, T_collar, at.root_P50, at.root_c);
         }
       }
       const T dinteg_dT = T(sign_var) * fr_at;
@@ -900,7 +900,7 @@ public:
   // model does not have -- so the branch is chosen at double and the ACTIVE value
   // is selected, which is what std::min compiles to anyway.
   //
-  // At double every graft below collapses to its table read and the cache path is
+  // At double every supplied row below collapses to its table read and the cache path is
   // taken, so this instantiation is the original arithmetic.
   template <class T>
   void uptake_impl(const T& T_collar, const SupplyAt<T>& at,
@@ -919,7 +919,7 @@ public:
     auto curve = [&](const T& x) -> T {
       const double q = to_passive(x);
       if constexpr (std::is_same_v<T, double>) { return root_vuln_at(q); }
-      else { return graft_curve<T>(root_vuln_at(q), x, at.root_P50, at.root_c); }
+      else { return closed_form_curve<T>(root_vuln_at(q), x, at.root_P50, at.root_c); }
     };
 
     const double G_at_T_collar =
@@ -960,7 +960,7 @@ public:
             }
             return root_vuln_integral_at(q);
           } else {
-            return graft_integral<T>(root_vuln_integral_at(q),
+            return closed_form_integral<T>(root_vuln_integral_at(q),
                                      root_vuln_integral_deriv_at(q), arg,
                                      at.root_P50, at.root_c);
           }
