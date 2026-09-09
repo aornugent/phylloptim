@@ -1906,10 +1906,16 @@ public:
   // than passed: two spellings of one fact is a place they can disagree. The DRAW
   // rather than a bare flux, so a flux and a slope from different collars cannot
   // be paired -- check_draw refuses that before anything reads it.
+  //
+  // `collar_moves` says whether profit carries the collar's channel here. At an
+  // interior point it does not -- outputs_at evaluates profit at a HELD collar,
+  // which is the envelope omission -- and the slopes are then absent rather than
+  // zero. marginal_at, the only reader of a slope, passes true.
   template <class S>
   CollarCoords<S> collar_coords_at(double sigma_star, double ci_star,
                                    const S& collar, const SupplyDraw<S>& draw,
-                                   const leaf_pars<S>& pars) const;
+                                   const leaf_pars<S>& pars,
+                                   bool collar_moves) const;
 
   // The stem's critical potential at any scalar. DERIVED from the trait pair, as
   // it is at double, which is what makes the old `no_gradient` question moot: it
@@ -1927,7 +1933,7 @@ public:
   // against. plant's TF24_Strategy is the only consumer of reverse mode.
   template <CostCurve K, class S>
   S profit_at(const S& collar, const SupplyDraw<S>& draw,
-              const leaf_pars<S>& pars) const;
+              const leaf_pars<S>& pars, bool collar_moves) const;
 
   template <CostCurve K, class S>
   LeafOutputs<S> outputs_at(const S& collar, const SupplyDraw<S>& draw,
@@ -5490,7 +5496,8 @@ inline T Leaf::hydraulic_cost_TF_kernel(const T& psi_stem,
 template <class S>
 inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
     double sigma_star, double ci_star, const S& collar,
-    const SupplyDraw<S>& draw, const leaf_pars<S>& pars) const {
+    const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
+    bool collar_moves) const {
   using odelia::util::to_passive;
   check_draw(to_passive(collar), draw);
   // ⚠️ THERE IS NO OPERATING POINT TO PLACE AT A SHUTDOWN. The stem is held at
@@ -5581,6 +5588,22 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
                 },
                 pars, stem_flux);
 
+  // Everything below is the collar's channel, and where the collar is held it is
+  // multiplied by a step that is zero in value AND carries no derivative -- so
+  // all of it records and none of it reaches a row. probe_tape_regions measures
+  // 592 statements at a live collar against 591 at a held one: the channel is
+  // worth one of them and the rest were recorded either way.
+  //
+  // ⚠️ THE SLOPES COME BACK NOT-A-NUMBER, WHICH IS DELIBERATE. They are absent
+  // here, and an absent derivative spelled 0.0 is the one failure this codebase
+  // cannot see -- a channel that has gone missing with every number still
+  // finite. A caller that reads one gets NaN instead, which record_with_derivatives
+  // refuses by name. Only marginal_at reads a slope, and it asks for the channel.
+  if (!collar_moves) {
+    const S absent(std::numeric_limits<double>::quiet_NaN());
+    return CollarCoords<S>{pair<S>{sigma_h, absent}, pair<S>{ci_h, absent}};
+  }
+
   // The collar's own channel.
   //
   // ⚠️ THE CONDUCTIVITY HERE IS THE TABLE'S, WITH THE CURVE'S ROWS. Upstream's
@@ -5649,12 +5672,12 @@ inline S Leaf::psi_crit_at(const leaf_pars<S>& pars) const {
 
 template <Leaf::CostCurve K, class S>
 inline S Leaf::profit_at(const S& collar, const SupplyDraw<S>& draw,
-                         const leaf_pars<S>& pars) const {
+                         const leaf_pars<S>& pars, bool collar_moves) const {
   static_assert(K == CostCurve::TF24 || K == CostCurve::TF24_floor,
                 "the reverse-mode surface covers TF24 and TF24_floor; another "
                 "curve is a row in profit_at and marginal_at");
-  const CollarCoords<S> at =
-      collar_coords_at<S>(opt_psi_stem_, ci_, collar, draw, pars);
+  const CollarCoords<S> at = collar_coords_at<S>(opt_psi_stem_, ci_, collar,
+                                                 draw, pars, collar_moves);
   const S A = assim_colimited_kernel<S>(at.ci.value, pars);
   S cost = hydraulic_cost_TF_kernel<S>(at.sigma.value, pars);
   if constexpr (K == CostCurve::TF24_floor) {
@@ -5719,7 +5742,8 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
     // and the two curves agree at this kind by construction.
     out.profit = -respiration_at<S>(pars) - hydraulic_cost_TF_kernel<S>(held, pars);
   } else {
-    out.profit = profit_at<K, S>(interior ? collar_held : collar, draw, pars);
+    out.profit = profit_at<K, S>(interior ? collar_held : collar, draw, pars,
+                                 !interior);
   }
   return out;
 }
@@ -5737,7 +5761,7 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
   // flipped the sign of a curvature where the collar came within 5.6e-08 of a
   // soil layer's potential.
   const CollarCoords<S> at =
-      collar_coords_at<S>(opt_psi_stem_, ci_, collar, draw, pars);
+      collar_coords_at<S>(opt_psi_stem_, ci_, collar, draw, pars, true);
   const S A_prime = assim_slope_at<S>(at.ci.value, pars);
   // dC/dpsi_stem from upstream's own arm, at a scalar: a tangent through the
   // cost kernel rather than a slope written out beside it.

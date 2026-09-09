@@ -116,6 +116,13 @@ test_supplied_rows: test_supplied_rows.cpp $(HEADERS)
 test_transpose: test_transpose.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
+# Not in `all`, for the same reason as probe_preaccumulation: what the boundary
+# and its kernels cost the tape, region by region and kernel by kernel. It is
+# how a design choice gets priced before it is made, and it is seconds where the
+# century stand is minutes.
+probe_tape_regions: probe_tape_regions.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
+
 # Not in `all`: it answers a design question rather than guarding a property, and
 # it needs the tape the same way test_transpose does.
 probe_preaccumulation: probe_preaccumulation.cpp $(HEADERS)
@@ -151,4 +158,4 @@ primitives-golden: test_primitives
 	./test_primitives --generate
 
 clean:
-	rm -f test_leaf test_supplied_rows test_transpose test_golden test_primitives bench_solve bench_gradient
+	rm -f test_leaf test_supplied_rows test_transpose test_golden test_primitives bench_solve bench_gradient probe_tape_regions

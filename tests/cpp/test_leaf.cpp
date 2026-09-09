@@ -3322,8 +3322,8 @@ void test_every_answered_point_hands_over_finite_rows() {
         // The coordinates are refused by name at a shutdown; outputs_at answers
         // there instead, which the branch above just exercised.
         if (kind != phylloptim::Leaf::OperatingPointKind::HydraulicShutdown) {
-          const auto co =
-              l.collar_coords_at<T>(l.opt_psi_stem_, l.ci_, collar, draw, pars);
+          const auto co = l.collar_coords_at<T>(l.opt_psi_stem_, l.ci_, collar,
+                                                draw, pars, true);
           ++coords;
           ok(std::isfinite(odelia::ode::derivative_along(co.sigma.value)) &&
                  std::isfinite(odelia::util::to_passive(co.sigma.slope)),
@@ -3331,6 +3331,23 @@ void test_every_answered_point_hands_over_finite_rows() {
           ok(std::isfinite(odelia::ode::derivative_along(co.ci.value)) &&
                  std::isfinite(odelia::util::to_passive(co.ci.slope)),
              "ci's row and collar slope are finite" + at);
+          // Omitting the channel is what profit asks for at an interior point,
+          // and it must move no number: the step it multiplies is exactly zero
+          // in value, so both coordinates are the residuals' own bit for bit.
+          // Asserted here because the value is where an omission would show and
+          // the row is not -- a channel that went missing leaves every number
+          // finite.
+          const auto held = l.collar_coords_at<T>(l.opt_psi_stem_, l.ci_, collar,
+                                                  draw, pars, false);
+          ok(odelia::util::to_passive(held.sigma.value) ==
+                 odelia::util::to_passive(co.sigma.value),
+             "sigma is the same number with the channel omitted" + at);
+          ok(odelia::util::to_passive(held.ci.value) ==
+                 odelia::util::to_passive(co.ci.value),
+             "ci is the same number with the channel omitted" + at);
+          ok(std::isfinite(odelia::ode::derivative_along(held.sigma.value)) &&
+                 std::isfinite(odelia::ode::derivative_along(held.ci.value)),
+             "both coordinates keep a finite row without the channel" + at);
         }
       }
     }
