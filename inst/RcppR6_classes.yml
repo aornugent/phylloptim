@@ -851,7 +851,8 @@ Leaf:
 
     # --- setup ---------------------------------------------------------------
     # Exposed because the default constructor builds both vulnerability splines
-    # at 100 control points and a caller who changes vulnerability_curve_ncontrol
+    # at Leaf::ncontrol_default control points and a caller who changes
+    # vulnerability_curve_ncontrol
     # through the constructor gets them rebuilt there -- but a caller reaching in
     # to change stem_b/root_b afterwards does not, and would otherwise be stuck
     # with splines for the old curve. See the note in setup_transpiration.
