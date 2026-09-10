@@ -1,5 +1,19 @@
-// PROBE: where the leaf boundary's tape statements go, region by region, and
-// which of them reach a row.
+// PROBE: what the leaf boundary costs, region by region and kernel by kernel.
+//
+// ⚠️ READ THE OPERATIONS, NOT THE STATEMENTS. Cost is operations times the price
+// of one; a statement is the tape's bookkeeping over a run of them, and counting
+// statements alone prices the bookkeeping and nothing else. It is also blind
+// twice over: to arithmetic that never reaches a tape at all, and to how WIDE a
+// scalar's derivative is, which is the entire cost of a nested tangent. Both
+// blind spots have already cost this project a wrong conclusion -- a curve
+// dismissed at four statements turned out to be a quarter of the instructions.
+//
+// For what the machine actually pays, run the whole probe under callgrind, whose
+// count is exact where seconds on this fixture have swung 28% between sittings
+// and 81% for one binary:
+//
+//   valgrind --tool=callgrind --callgrind-out-file=cg.out ./probe_tape_regions
+//   callgrind_annotate cg.out
 //
 // plant's TF24_Strategy::record_leaf_outputs makes three calls -- the draw, the
 // collar, the outputs -- and the century stand's cost is dominated by what they
@@ -91,6 +105,7 @@ bool interior(pl::Leaf& l, double& curv) {
 struct Regions {
   bool ok = false;
   long draw = 0, collar = 0, outputs = 0;
+  long draw_op = 0, collar_op = 0, outputs_op = 0;
   long coords_held = 0, coords_live = 0, profit_held = 0, marginal = 0;
   double profit = 0.0;
   std::vector<double> rows;
@@ -108,16 +123,19 @@ Regions measure(int layers, double psi0) {
   const pl::SupplyAt<A> supply = io.supply();
 
   // The three calls plant makes, in its order, each charged what it added.
-  const long s0 = long(tape.getNumStatements());
+  const long s0 = long(tape.getNumStatements()), o0 = long(tape.getNumOperations());
   const auto draw = l.supply_draw_at<A>(A(l.opt_root_psi_), supply);
-  const long s1 = long(tape.getNumStatements());
+  const long s1 = long(tape.getNumStatements()), o1 = long(tape.getNumOperations());
   const A collar = l.collar_at<K, A>(draw, io.in, curv);
-  const long s2 = long(tape.getNumStatements());
+  const long s2 = long(tape.getNumStatements()), o2 = long(tape.getNumOperations());
   const pl::Leaf::LeafOutputs<A> got = l.outputs_at<K, A>(collar, draw, io.in);
-  const long s3 = long(tape.getNumStatements());
-  r.draw = s1 - s0;
-  r.collar = s2 - s1;
-  r.outputs = s3 - s2;
+  const long s3 = long(tape.getNumStatements()), o3 = long(tape.getNumOperations());
+  r.draw = s1 - s0;      r.draw_op = o1 - o0;
+  r.collar = s2 - s1;    r.collar_op = o2 - o1;
+  r.outputs = s3 - s2;   r.outputs_op = o3 - o2;
+  // ⚠️ collar_at REWINDS, and resetTo TRUNCATES BOTH COUNTERS, so its figures are
+  // what SURVIVED and not what it pushed. marginal_at below is the same region
+  // measured before the rewind, which is why the two disagree by 30-fold.
 
   // The same coordinates twice: once at the collar profit is actually handed at
   // an interior point, once at the live one a bound hands it. The difference is
@@ -181,14 +199,18 @@ void kernels() {
   const pl::SupplyAt<A> supply = io.supply();
   const A collar(l.opt_root_psi_), sigma(l.opt_psi_stem_), ci(l.ci_);
   volatile double sink = 0.0;
-  long s0 = 0;
-  auto mark = [&]() { s0 = long(tape.getNumStatements()); };
+  long s0 = 0, o0 = 0;
+  auto mark = [&]() {
+    s0 = long(tape.getNumStatements());
+    o0 = long(tape.getNumOperations());
+  };
   auto say = [&](const char* what) {
-    printf("  %-44s %6ld\n", what, long(tape.getNumStatements()) - s0);
+    printf("  %-42s %5ld stmt %6ld op\n", what,
+           long(tape.getNumStatements()) - s0, long(tape.getNumOperations()) - o0);
   };
   auto keep = [&](const A& v) { sink += odelia::util::to_passive(v); };
 
-  printf("\nleaf kernels, tape statements per call\n");
+  printf("\nleaf kernels, per call\n");
   mark(); keep(l.vcmax_at<A>(io.in));                        say("vcmax_at(pars)");
   mark(); keep(l.electron_transport_at<A>(io.in));           say("electron_transport_at(pars)");
   mark(); keep(l.assim_colimited_kernel<A>(ci, io.in));      say("assim_colimited_kernel(ci, pars)");
@@ -206,19 +228,22 @@ void kernels() {
 }  // namespace
 
 int main() {
-  printf("leaf boundary, tape statements by region (surviving, after any rewind)\n\n");
-  printf("%-8s %-7s %9s %9s %9s | %11s %11s %11s %9s\n", "layers", "psi0",
-         "draw", "collar", "outputs", "coords@held", "coords@live", "profit@held",
-         "marginal");
+  printf("leaf boundary per placement, statements/operations by region\n"
+         "(collar_at REWINDS, so its pair is what SURVIVED; marginal_at is the\n"
+         " same region measured before the rewind)\n\n");
+  printf("%-6s %-5s %14s %14s %14s | %9s %9s %9s %9s\n", "layers", "psi0",
+         "draw stmt/op", "collar stmt/op", "outputs stmt/op", "cd@held",
+         "cd@live", "profit", "marginal");
   const int layer_set[] = {1, 3, 5};
   const double psi_set[] = {0.5, 1.0, 2.0};
   for (int layers : layer_set) {
     for (double psi0 : psi_set) {
       const Regions r = measure(layers, psi0);
-      if (!r.ok) { printf("%-8d %-7.2f  (not interior)\n", layers, psi0); continue; }
-      printf("%-8d %-7.2f %9ld %9ld %9ld | %11ld %11ld %11ld %9ld\n", layers,
-             psi0, r.draw, r.collar, r.outputs, r.coords_held, r.coords_live,
-             r.profit_held, r.marginal);
+      if (!r.ok) { printf("%-6d %-5.2f  (not interior)\n", layers, psi0); continue; }
+      printf("%-6d %-5.2f %7ld/%-6ld %7ld/%-6ld %7ld/%-6ld | %9ld %9ld %9ld %9ld\n",
+             layers, psi0, r.draw, r.draw_op, r.collar, r.collar_op, r.outputs,
+             r.outputs_op, r.coords_held, r.coords_live, r.profit_held,
+             r.marginal);
     }
   }
 
