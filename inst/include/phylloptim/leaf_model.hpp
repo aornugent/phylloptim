@@ -5787,7 +5787,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // stops being true. closed_form_rows.hpp is the same rule: the value is the table's
   // because the solve ran on the table, the rows are the curve's because a table
   // carries none.
-  const S kmax = pars[par_kmax];
+  const S& kmax = pars[par_kmax];
   const S f_p = closed_form_curve<S>(stem_curve_integral_deriv(to_passive(collar)),
                                held, pars[par_stem_P50], pars[par_stem_c]);
   const S f_sigma = closed_form_curve<S>(stem_curve_integral_deriv(sigma_star),
@@ -5839,7 +5839,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
 
 template <class S>
 inline S Leaf::psi_crit_at(const leaf_pars<S>& pars) const {
-  const S c = pars[par_stem_c];
+  const S& c = pars[par_stem_c];
   const S b = phylloptim::weibull_b_from_P50<S>(pars[par_stem_P50], c);
   return b * pow(S(std::log(1.0 / k_crit_fraction)), 1.0 / c);
 }
@@ -5891,10 +5891,12 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
     // records the whole of it a second time for the same numbers -- the step is
     // exactly zero in value, so every uptake here is the draw's, bit for bit.
     const S step = collar - S(draw.at);
-    out.uptake = draw.uptake;
-    odelia::util::check_length(draw.duptake_dp.size(), out.uptake.size());
-    for (std::size_t j = 0; j < out.uptake.size(); ++j) {
-      out.uptake[j] = out.uptake[j] + S(draw.duptake_dp[j]) * step;
+    odelia::util::check_length(draw.duptake_dp.size(), draw.uptake.size());
+    // Built rather than copied and then overwritten: copying the draw's vector
+    // records one statement per layer for numbers the next line replaces.
+    out.uptake.reserve(draw.uptake.size());
+    for (std::size_t j = 0; j < draw.uptake.size(); ++j) {
+      out.uptake.push_back(draw.uptake[j] + S(draw.duptake_dp[j]) * step);
     }
   }
 
@@ -5960,7 +5962,7 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
 
 template <class S>
 inline S Leaf::root_psi_crit_at(const leaf_pars<S>& pars) const {
-  const S c = pars[par_root_c];
+  const S& c = pars[par_root_c];
   const S b = phylloptim::weibull_b_from_P50<S>(pars[par_root_P50], c);
   return b * pow(S(std::log(1.0 / k_crit_fraction)), 1.0 / c);
 }

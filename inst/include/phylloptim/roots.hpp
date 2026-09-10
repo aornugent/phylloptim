@@ -859,8 +859,13 @@ public:
         at_a_kink = true;
       }
       const bool want_slope = conductance != nullptr && !at_a_kink;
-      const T T_src_min = (collar_at < soil_at) ? T_collar : psi_i;
-      const T T_src_max = (soil_at < collar_at) ? T_collar : psi_i;
+      // ⚠️ BOUND, NOT COPIED. Both arms are lvalues that outlive the layer, so
+      // this selects one; taken by value it would COPY an active, and a copy of
+      // one is a recorded statement that the sweep then walks once per census
+      // metric for nothing. Four of these a layer was 20 statements a placement
+      // at five layers.
+      const T& T_src_min = (collar_at < soil_at) ? T_collar : psi_i;
+      const T& T_src_max = (soil_at < collar_at) ? T_collar : psi_i;
 
       if (std::abs(collar_at - soil_at) < 1e-8) {
         const T f_ri = curve(T_src_max);
@@ -879,8 +884,11 @@ public:
                  std::abs((collar_at - soil_at) - grav_head_z_[i]) < 1e-8) {
         soil_consumption[std::size_t(i)] = T(0.0);
       } else {
-        const T T_pos_lo = (to_passive(T_src_min) < 0.0) ? T(0.0) : T_src_min;
-        const T T_neg_hi = (0.0 < to_passive(T_src_max)) ? T(0.0) : T_src_max;
+        // Named so both arms are lvalues and the selection binds rather than
+        // copies; T(0.0) records nothing either way.
+        const T zero(0.0);
+        const T& T_pos_lo = (to_passive(T_src_min) < 0.0) ? zero : T_src_min;
+        const T& T_neg_hi = (0.0 < to_passive(T_src_max)) ? zero : T_src_max;
 
         auto G_integral = [&](const T& arg) -> T {
           const double q = to_passive(arg);

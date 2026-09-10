@@ -199,8 +199,18 @@ Regions measure(int layers, double psi0) {
 // three quantities that sees a tangent's arithmetic. plant records about a
 // hundred placements between one newRecording and the next, so the tape is
 // shared across the loop as it is there.
-void placements(int n) {
-  pl::Leaf l = set_up(1, 0.5);
+//
+// ⚠️ FIVE LAYERS BY DEFAULT, BECAUSE THE CENTURY STAND HAS FIVE. The supply
+// draw is the largest block here and it scales with them -- 17 statements a
+// placement at one layer against 73 at five -- so a one-layer run understates
+// it four-fold.
+//
+// ⚠️ IT SWEEPS ONCE AND THE STAND SWEEPS THREE TIMES, once per census metric,
+// so this prices RECORDING and undercharges every permanent statement. A
+// statement inside an implicit_value residual is rewound and swept once
+// wherever it runs.
+void placements(int n, int layers) {
+  pl::Leaf l = set_up(layers, 0.5);
   double curv = 0.0;
   if (!interior(l, curv)) { printf("(fixture not interior)\n"); return; }
   Tape tape;
@@ -214,8 +224,9 @@ void placements(int n) {
     const pl::Leaf::LeafOutputs<A> got = l.outputs_at<K, A>(collar, draw, io.in);
     sink += odelia::util::to_passive(got.profit);
   }
-  printf("%d placements, %u statements, %u operations, sink %.17g\n", n,
-         tape.getNumStatements(), tape.getNumOperations(), double(sink));
+  printf("%d placements at %d layers, %u statements, %u operations, sink %.17g\n",
+         n, layers, tape.getNumStatements(), tape.getNumOperations(),
+         double(sink));
 }
 
 // Each kernel priced on its own, at the scalar the boundary calls it at.
@@ -260,9 +271,10 @@ void kernels() {
 }  // namespace
 
 int main(int argc, char** argv) {
-  // `placements N` runs the boundary and nothing else, for callgrind.
+  // `placements [N] [layers]` runs the boundary and nothing else, for callgrind.
   if (argc > 1 && std::string(argv[1]) == "placements") {
-    placements(argc > 2 ? std::atoi(argv[2]) : 60);
+    placements(argc > 2 ? std::atoi(argv[2]) : 60,
+               argc > 3 ? std::atoi(argv[3]) : 5);
     return 0;
   }
   printf("leaf boundary per placement, statements/operations by region\n"
