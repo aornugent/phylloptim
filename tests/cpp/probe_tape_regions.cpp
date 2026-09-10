@@ -146,12 +146,16 @@ Regions measure(int layers, double psi0) {
   const long c0 = long(tape.getNumStatements());
   volatile double sink = 0.0;
   {
-    const auto at = l.collar_coords_at<A>(l.opt_psi_stem_, l.ci_, held, draw, io.in, false);
+    const auto at = l.collar_coords_at<A>(l.opt_psi_stem_, l.ci_, held, draw,
+                                          io.in, l.photo_capacity_at<A>(io.in),
+                                          false);
     sink += odelia::util::to_passive(at.sigma.value);
   }
   const long c1 = long(tape.getNumStatements());
   {
-    const auto at = l.collar_coords_at<A>(l.opt_psi_stem_, l.ci_, collar, draw, io.in, true);
+    const auto at = l.collar_coords_at<A>(l.opt_psi_stem_, l.ci_, collar, draw,
+                                          io.in, l.photo_capacity_at<A>(io.in),
+                                          true);
     sink += odelia::util::to_passive(at.sigma.value);
   }
   const long c2 = long(tape.getNumStatements());

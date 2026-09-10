@@ -1268,21 +1268,18 @@ public:
       return d;
     }
 
+    // ONE WALK for all three. The per-layer collar slopes are SUPPLIED at
+    // double: the draws already carry their own rows, and what is missing is
+    // only the channel through the collar moving -- taking the supply again at
+    // a live collar would record the whole of it a second time for the same
+    // numbers.
     const S held = S(d.at);
     d.uptake.assign(n, S(0.0));
-    roots_.template uptake_at<S>(held, supply, d.uptake, d.flux.value);
-    d.flux.slope = roots_.template duptake_dpsi<S>(held, supply);
-
-    // The per-layer collar slopes, SUPPLIED at double: the draws already carry
-    // their own rows, and what is missing is only the channel through the collar
-    // moving. Taking the supply again at a live collar would record the whole of
-    // it a second time for the same numbers.
-    std::vector<double> soil_at;
-    soil_at.reserve(supply.psi_soil.size());
-    for (const S& v : supply.psi_soil) {
-      soil_at.push_back(odelia::util::to_passive(v));
-    }
-    roots_.duptake_dpsi(d.at, soil_at, d.duptake_dp);
+    CollarConductance<S> conductance;
+    roots_.template uptake_at<S>(held, supply, d.uptake, d.flux.value,
+                                 &conductance);
+    d.flux.slope = conductance.total;
+    d.duptake_dp = std::move(conductance.per_layer);
 
     // ⚠️ A KINK IS ANSWERED HERE, ONCE, so that no consumer can read the sentinel.
     // `duptake_dpsi` returns NaN to mean "the analytic branch is not valid
@@ -1307,6 +1304,11 @@ public:
                     [](double x) { return !std::isfinite(x); });
     if (at_a_kink) {
       const double step = 1e-6;
+      std::vector<double> soil_at;
+      soil_at.reserve(supply.psi_soil.size());
+      for (const S& v : supply.psi_soil) {
+        soil_at.push_back(odelia::util::to_passive(v));
+      }
       std::vector<double> up_layer(d.duptake_dp.size(), 0.0);
       std::vector<double> down_layer(d.duptake_dp.size(), 0.0);
       double up = 0.0, down = 0.0;
@@ -1996,6 +1998,7 @@ public:
   CollarCoords<S> collar_coords_at(double sigma_star, double ci_star,
                                    const S& collar, const SupplyDraw<S>& draw,
                                    const leaf_pars<S>& pars,
+                                   const PhotoCapacity<S>& cap,
                                    bool collar_moves) const;
 
   // The stem's critical potential at any scalar. DERIVED from the trait pair, as
@@ -5663,7 +5666,7 @@ template <class S>
 inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
     double sigma_star, double ci_star, const S& collar,
     const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
-    bool collar_moves) const {
+    const PhotoCapacity<S>& cap, bool collar_moves) const {
   using odelia::util::to_passive;
   check_draw(to_passive(collar), draw);
   // ⚠️ THERE IS NO OPERATING POINT TO PLACE AT A SHUTDOWN. The stem is held at
@@ -5695,16 +5698,14 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
       atm_kpa_ * kg_to_mol_h2o / vpd_leaf_ / H2O_CO2_stom_diff_ratio_;
   const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
   const Leaf& leaf = *this;
-  const leaf_pars<double> at_pars = passive_pars();
-  // Recorded BEFORE the ci residual, so the residual reads four numbers instead
-  // of a twenty-slot pack and the chain from them back to the traits is this
-  // tape's rather than a walk's.
-  const PhotoCapacity<S> cap = photo_capacity_at<S>(pars);
 
   // dT1/dsigma: the stem curve at the operating point, scaled by kmax, and taken
-  // from THE TABLE because that is the derivative the model itself forms.
+  // from THE TABLE because that is the derivative the model itself forms. kmax
+  // is read off the PACK the residual below multiplies by, not off the member
+  // holding the same number, so the supplied slope is the slope of the residual
+  // as written.
   const double dT1_dsigma =
-      at_pars[par_kmax] * stem_curve_integral_deriv(sigma_star);
+      to_passive(pars[par_kmax]) * stem_curve_integral_deriv(sigma_star);
   // The inputs are handed over rather than left for the outer sweep to find:
   // the theorem's row is written here and the residual is rewound, so a walk of
   // it never reaches the caller's tape. ⚠️ EVERY ACTIVE THING THE RESIDUAL READS
@@ -5849,9 +5850,12 @@ inline S Leaf::profit_at(const S& collar, const SupplyDraw<S>& draw,
   static_assert(K == CostCurve::TF24 || K == CostCurve::TF24_floor,
                 "the reverse-mode surface covers TF24 and TF24_floor; another "
                 "curve is a row in profit_at and marginal_at");
+  // One capacity for the point and for the assimilation read off it, so the ci
+  // the residual placed and the A evaluated there are the same function.
+  const PhotoCapacity<S> cap = photo_capacity_at<S>(pars);
   const CollarCoords<S> at = collar_coords_at<S>(opt_psi_stem_, ci_, collar,
-                                                 draw, pars, collar_moves);
-  const S A = assim_colimited_kernel<S>(at.ci.value, photo_capacity_at<S>(pars));
+                                                 draw, pars, cap, collar_moves);
+  const S A = assim_colimited_kernel<S>(at.ci.value, cap);
   S cost = hydraulic_cost_TF_kernel<S>(at.sigma.value, pars);
   if constexpr (K == CostCurve::TF24_floor) {
     // TF24's own cost plus a part LINEAR IN THE FLUX: Theta(E) = Theta~(psi) +
@@ -5933,9 +5937,10 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
   // by the interpolation error -- which is harmless at first order and is what
   // flipped the sign of a curvature where the collar came within 5.6e-08 of a
   // soil layer's potential.
+  const PhotoCapacity<S> cap = photo_capacity_at<S>(pars);
   const CollarCoords<S> at =
-      collar_coords_at<S>(opt_psi_stem_, ci_, collar, draw, pars, true);
-  const S A_prime = assim_slope_at<S>(at.ci.value, photo_capacity_at<S>(pars));
+      collar_coords_at<S>(opt_psi_stem_, ci_, collar, draw, pars, cap, true);
+  const S A_prime = assim_slope_at<S>(at.ci.value, cap);
   // dC/dpsi_stem, the same way: a tangent through the cost kernel rather than a
   // slope written out beside it.
   S C_prime = cost_slope_at<S>(at.sigma.value, pars);

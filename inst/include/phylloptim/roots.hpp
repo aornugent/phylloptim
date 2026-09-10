@@ -362,6 +362,19 @@ struct SupplyAt {
   const T& root_c;
 };
 
+// How the draw responds when the collar pulls harder: dE_up/dT_collar in total,
+// and each layer's own term.
+//
+// ⚠️ THE TOTAL IS AT THE CALLER'S SCALAR AND THE LAYERS ARE AT DOUBLE, which is
+// the split SupplyDraw keeps: the layer terms cross as SUPPLIED rows, and
+// recording them would take the whole supply a second time for the same numbers.
+// Units follow the draw's -- kg for the total, mol per layer.
+template <class T>
+struct CollarConductance {
+  T total{};
+  std::vector<double> per_layer;
+};
+
 class MultiLayerRoots {
 public:
   // How often each clamp held. Shared storage, so a consumer copying this object
@@ -695,14 +708,23 @@ public:
   // The same, at any scalar. The cache is refused on the active path: it returns
   // a table read with no rows, which is a value that has quietly stopped
   // responding to anything -- the one failure this whole surface exists to avoid.
+  //
+  // ⚠️ THE COLLAR RESPONSE COMES OUT OF THE SAME WALK OR NOT AT ALL. It shares
+  // this layer's span, integral and resistance, and a second walk forming them
+  // again is a second spelling that has to agree bit for bit -- which is what
+  // the deleted `duptake_dpsi_impl` said of itself, and what cost 73 tape
+  // statements against this walk's 48 over five layers for one number. Pass
+  // nullptr on the path that reads no slope; the forward solve calls this ~10^3
+  // times per collar and is that path.
   template <class T>
   void uptake_at(const T& T_collar, const SupplyAt<T>& at,
-                 std::vector<T>& soil_consumption, T& E_up) const {
+                 std::vector<T>& soil_consumption, T& E_up,
+                 CollarConductance<T>* conductance = nullptr) const {
     const bool cache = std::is_same_v<T, double> &&
                        (&at.psi_soil == reinterpret_cast<const std::vector<T>*>(&psi_soil_)) &&
                        root_vuln_integral_soil_.size() ==
                            static_cast<size_t>(max_soil_layer);
-    uptake_impl<T>(T_collar, at, cache, soil_consumption, E_up);
+    uptake_impl<T>(T_collar, at, cache, soil_consumption, E_up, conductance);
   }
 
   void uptake_at(double T_collar, const std::vector<double>& psi_soil,
@@ -714,18 +736,12 @@ public:
                 soil_consumption, E_up);
   }
 
-  // Analytic d(E_up)/d(T_collar): the collar-suction derivative of the uptake,
-  // mirroring the general branch of uptake_impl. It is a CONDUCTANCE and is
-  // positive by construction -- pulling harder at the collar draws more water --
-  // which is the whole reason for working in magnitudes (#25). Per layer, with
-  // span = |T_collar - T_soil[i]| and integral = \int f_r over
-  // [T_src_min, T_src_max] (root_vuln_integral_from_psi, whose integrand is
-  // root_vuln_from_psi):
-  //   E_i        = (T_collar - T_soil[i] - grav) / r_R,
-  //   r_R        = r_R_H_min[i] * span / integral + r_R_V_sum[i],
-  //   dspan/dT   = sign_var   (+1 if T_collar is the upper bound, else -1),
-  //   dinteg/dT  = sign_var * f_r(T_collar)  for T_collar>0  (else sign_var, f_r==1),
-  // and dE_i/dT follows by the quotient rule.
+  // d(E_up)/d(T_collar), for a caller that wants the conductance and not the
+  // draw. It is a CONDUCTANCE and is positive by construction -- pulling harder
+  // at the collar draws more water -- which is the whole reason for working in
+  // magnitudes. The derivation is at the walk above; the per-layer terms stay in
+  // MOL, matching the per-layer draws rather than the aggregate, and the kg
+  // conversion is applied once, to the total.
   //
   // CONTRACT: returns NaN when any layer sits on a branch kink (T_collar ==
   // T_soil[i], the gravity-balance point, or T_collar == 0). That is deliberate,
@@ -733,31 +749,26 @@ public:
   // those, and the caller falls back to a central difference. An implementation
   // that threw, or returned 0, would silently degrade TF24f's acclimation
   // gradient. Any alternative supply path must keep this contract.
-  // Three entries, one body. The double one is upstream's signature and its
-  // arithmetic unchanged; the second also writes each layer's own term, which is
-  // the row outputs_at closed-form rows the draws through; the third is the same at any
-  // scalar, for a caller assembling on the tape.
+  //
+  // It answers only where the draw does, because the walk that forms the slope
+  // is the walk that forms the draw: a collar the uptake refuses as infeasible
+  // refuses from here too, rather than handing back a slope for a point with no
+  // flux.
   double duptake_dpsi(double T_collar,
                       const std::vector<double>& psi_soil) const {
-    return duptake_dpsi_impl<double>(
-               T_collar, supply_over(psi_soil), nullptr) * kg_per_mol_h2o;
+    std::vector<double> per_layer;
+    return duptake_dpsi(T_collar, psi_soil, per_layer);
   }
 
-  // The same number, plus the per-layer terms that sum to it. They stay in MOL,
-  // matching the per-layer draws rather than the aggregate -- the kg conversion
-  // is applied once, to the total, exactly as uptake_impl applies it.
   double duptake_dpsi(double T_collar, const std::vector<double>& psi_soil,
                       std::vector<double>& per_layer) const {
-    return duptake_dpsi_impl<double>(
-               T_collar, supply_over(psi_soil), &per_layer) * kg_per_mol_h2o;
-  }
-
-  // At any scalar, against a caller's own view. No per-layer out-parameter here
-  // on purpose: those rows are SUPPLIED at double, so a caller wanting them wants
-  // the overload above.
-  template <class T>
-  T duptake_dpsi(const T& T_collar, const SupplyAt<T>& at) const {
-    return duptake_dpsi_impl<T>(T_collar, at, nullptr) * T(kg_per_mol_h2o);
+    CollarConductance<double> conductance;
+    std::vector<double> draw(psi_soil.size(), 0.0);
+    double E_up = 0.0;
+    uptake_impl<double>(T_collar, supply_over(psi_soil), false, draw, E_up,
+                        &conductance);
+    per_layer = std::move(conductance.per_layer);
+    return conductance.total;
   }
 
 private:
@@ -767,111 +778,6 @@ private:
     return {psi_soil, network_.r_R_H_min, network_.r_R_V_sum, root_P50, root_c};
   }
 
-  // The collar conductance, in MOL, at any scalar. Upstream's `duptake_dpsi`
-  // term for term, with the two disciplines the active path needs: ⚠️ EVERY
-  // COMPARISON READS PASSIVE (a taped comparison manufactures a discontinuity),
-  // and the vulnerability reads carry their closed-form rows through closed_form_rows.hpp.
-  //
-  // ⚠️ THE MOVING BOUND'S INTEGRAND IS THE INTEGRAL'S OWN DERIVATIVE, not the
-  // separate conductivity spline. The two agree on the knot domain and are
-  // bounded differently past it -- the lookup clamps to the last knot, the
-  // integral is capped at G(inf) -- so only this one stays consistent with the
-  // `integral` above it. closed_form_curve supplies the ROWS; the VALUE stays the
-  // derivative table's, which is what keeps that distinction.
-  //
-  // At double every supplied row collapses to its table read, so this instantiation is
-  // upstream's arithmetic and the number does not move.
-  template <class T>
-  T duptake_dpsi_impl(const T& T_collar, const SupplyAt<T>& at,
-                      std::vector<double>* per_layer) const {
-    using odelia::util::to_passive;
-    const std::vector<T>& psi_soil = at.psi_soil;
-    const double collar_at = to_passive(T_collar);
-    const double kink_tol = 1e-8;
-    // ⚠️ ONE ENTRY PER SOIL LAYER, NOT PER ROOTED LAYER, which is the convention
-    // the uptake already keeps: the loop below writes only as far as
-    // max_soil_layer -- the deepest layer carrying roots -- and the layers under
-    // it stay zero, because a layer no root reaches draws nothing and its collar
-    // slope is nothing. Sized by the rooted count instead, a shallow-rooted plant
-    // hands back a shorter vector than its own uptake, and the supplied row in
-    // outputs_at pairs a row with the wrong layer or refuses on the length.
-    // Measured: plant's gradient ladder refused a whole sweep on
-    // "expected 5, received 2".
-    const std::size_t n = psi_soil.size();
-    if (per_layer != nullptr) per_layer->assign(n, 0.0);
-    T dEup_dT_mol = T(0.0);
-
-    for (int i = 0; i < max_soil_layer; i++) {
-      const T& psi_i = psi_soil[std::size_t(i)];
-      const double soil_at = to_passive(psi_i);
-      if (std::abs(collar_at - soil_at) < kink_tol ||
-          std::abs((collar_at - soil_at) - grav_head_z_[i]) < kink_tol ||
-          std::abs(collar_at) < kink_tol) {
-        const double nan = std::numeric_limits<double>::quiet_NaN();
-        if (per_layer != nullptr) per_layer->assign(n, nan);
-        return T(nan);
-      }
-
-      const T T_src_min = (collar_at < soil_at) ? T_collar : psi_i;
-      const T T_src_max = (soil_at < collar_at) ? T_collar : psi_i;
-      const T span = T_src_max - T_src_min;
-      const double sign_var = (collar_at > soil_at) ? 1.0 : -1.0;  // = dspan/dT_collar
-
-      // integral, replicated bit-for-bit from uptake_impl.
-      const T T_pos_lo = (to_passive(T_src_min) < 0.0) ? T(0.0) : T_src_min;
-      const T T_neg_hi = (0.0 < to_passive(T_src_max)) ? T(0.0) : T_src_max;
-
-      auto G_integral = [&](const T& arg) -> T {
-        const double q = to_passive(arg);
-        if constexpr (std::is_same_v<T, double>) {
-          return root_vuln_integral_at(q);
-        } else {
-          return closed_form_integral<T>(root_vuln_integral_at(q),
-                                   root_vuln_integral_deriv_at(q), arg,
-                                   at.root_P50, at.root_c);
-        }
-      };
-
-      T integral = T(0.0);
-      if (to_passive(T_pos_lo) < to_passive(T_src_max)) {
-        integral += G_integral(T_src_max) - G_integral(T_pos_lo);
-      }
-      if (to_passive(T_src_min) < to_passive(T_neg_hi)) {
-        integral += (T_neg_hi - T_src_min);
-      }
-
-      T fr_at = T(1.0);
-      if (collar_at > 0.0) {
-        const double table = root_vuln_integral_deriv_at(collar_at);
-        if constexpr (std::is_same_v<T, double>) {
-          fr_at = table;
-        } else {
-          fr_at = closed_form_curve<T>(table, T_collar, at.root_P50, at.root_c);
-        }
-      }
-      const T dinteg_dT = T(sign_var) * fr_at;
-
-      const T r_R_H = at.r_R_H_min[std::size_t(i)] * span / integral;
-      const T r_R = r_R_H + at.r_R_V_sum[std::size_t(i)];
-      const T dr_R_H_dT = at.r_R_H_min[std::size_t(i)] *
-                          (T(sign_var) * integral - span * dinteg_dT) /
-                          (integral * integral);
-      const T dr_R_dT = dr_R_H_dT;
-
-      const T num = T_collar - psi_i - T(grav_head_z_[i]);
-      const T dnum_dT = T(1.0);
-      // E_i = num / r_R  ->  quotient rule.
-      const T term = (dnum_dT * r_R - num * dr_R_dT) / (r_R * r_R);
-      if (per_layer != nullptr) (*per_layer)[std::size_t(i)] = to_passive(term);
-      dEup_dT_mol += term;
-    }
-
-    return dEup_dT_mol;
-  }
-
-public:
-
-private:
   // Total water drawn from all layers to the collar. Writes E_up (kg H2O m^-2
   // leaf s^-1) and soil_consumption[i] (mol H2O m^-2 leaf s^-1, note the unit
   // split); a negative E_i in a layer means that layer is *gaining* water
@@ -905,16 +811,31 @@ public:
   template <class T>
   void uptake_impl(const T& T_collar, const SupplyAt<T>& at,
                    bool use_integral_cache, std::vector<T>& soil_consumption,
-                   T& E_up) const {
+                   T& E_up, CollarConductance<T>* conductance) const {
     using odelia::util::to_passive;
     const std::vector<T>& psi_soil = at.psi_soil;
     const double collar_at = to_passive(T_collar);
+    const double kink_tol = 1e-8;
     if (!std::isfinite(collar_at)) {
       util::stop_infeasible("uptake",
           "E_from_Soil_to_Root_Collar invalid input; T_collar=" +
           util::to_string(collar_at));
     }
     E_up = T(0.0);
+    // ⚠️ ONE ENTRY PER SOIL LAYER, NOT PER ROOTED LAYER, which is the convention
+    // the uptake already keeps: the loop below writes only as far as
+    // max_soil_layer -- the deepest layer carrying roots -- and the layers under
+    // it stay zero, because a layer no root reaches draws nothing and its collar
+    // slope is nothing. Sized by the rooted count instead, a shallow-rooted plant
+    // hands back a shorter vector than its own uptake, and the supplied row in
+    // outputs_at pairs a row with the wrong layer or refuses on the length.
+    // Measured: plant's gradient ladder refused a whole sweep on
+    // "expected 5, received 2".
+    if (conductance != nullptr) {
+      conductance->total = T(0.0);
+      conductance->per_layer.assign(psi_soil.size(), 0.0);
+    }
+    bool at_a_kink = false;
 
     auto curve = [&](const T& x) -> T {
       const double q = to_passive(x);
@@ -928,6 +849,16 @@ public:
     for (int i = 0; i < max_soil_layer; i++) {
       const T& psi_i = psi_soil[std::size_t(i)];
       const double soil_at = to_passive(psi_i);
+      // The three collars the analytic slope is not valid across. Tested here
+      // rather than in a second walk, because the layer that fails is the layer
+      // whose span, integral and resistance are being formed anyway.
+      if (conductance != nullptr &&
+          (std::abs(collar_at - soil_at) < kink_tol ||
+           std::abs((collar_at - soil_at) - grav_head_z_[i]) < kink_tol ||
+           std::abs(collar_at) < kink_tol)) {
+        at_a_kink = true;
+      }
+      const bool want_slope = conductance != nullptr && !at_a_kink;
       const T T_src_min = (collar_at < soil_at) ? T_collar : psi_i;
       const T T_src_max = (soil_at < collar_at) ? T_collar : psi_i;
 
@@ -977,9 +908,44 @@ public:
         const T span = T_src_max - T_src_min;
         const T r_R = at.r_R_H_min[std::size_t(i)] * span / integral +
                       at.r_R_V_sum[std::size_t(i)];
-        const T E_i = (T_collar - psi_i - T(grav_head_z_[i])) / r_R;
+        const T num = T_collar - psi_i - T(grav_head_z_[i]);
+        const T E_i = num / r_R;
         soil_consumption[std::size_t(i)] = E_i;
         E_up += E_i;
+
+        if (want_slope) {
+          // dE_i/dT_collar by the quotient rule, on the span, integral and
+          // resistance THIS layer just formed. With
+          //   dspan/dT  = sign_var  (+1 where the collar is the upper bound),
+          //   dinteg/dT = sign_var * f_r(T_collar)  for T_collar > 0, else
+          //               sign_var, since f_r is 1 there,
+          //   dnum/dT   = 1,
+          // and only r_R_H depends on the collar.
+          const double sign_var = (collar_at > soil_at) ? 1.0 : -1.0;
+          // ⚠️ THE MOVING BOUND'S INTEGRAND IS THE INTEGRAL'S OWN DERIVATIVE,
+          // not the separate conductivity spline. The two agree on the knot
+          // domain and are bounded differently past it -- the lookup clamps to
+          // the last knot, the integral is capped at G(inf) -- so only this one
+          // stays consistent with the `integral` above. closed_form_curve
+          // supplies the ROWS; the VALUE stays the derivative table's, which is
+          // what keeps that distinction.
+          T fr_at = T(1.0);
+          if (collar_at > 0.0) {
+            const double table = root_vuln_integral_deriv_at(collar_at);
+            if constexpr (std::is_same_v<T, double>) {
+              fr_at = table;
+            } else {
+              fr_at = closed_form_curve<T>(table, T_collar, at.root_P50, at.root_c);
+            }
+          }
+          const T dinteg_dT = T(sign_var) * fr_at;
+          const T dr_R_dT = at.r_R_H_min[std::size_t(i)] *
+                            (T(sign_var) * integral - span * dinteg_dT) /
+                            (integral * integral);
+          const T term = (r_R - num * dr_R_dT) / (r_R * r_R);
+          conductance->per_layer[std::size_t(i)] = to_passive(term);
+          conductance->total += term;
+        }
       }
     }
 
@@ -993,6 +959,15 @@ public:
     // 1/0.018015. Which is how it was caught here: a ratio that round is a
     // missing constant, not drift.
     E_up = E_up * T(kg_per_mol_h2o);
+    if (conductance != nullptr) {
+      if (at_a_kink) {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        conductance->per_layer.assign(psi_soil.size(), nan);
+        conductance->total = T(nan);
+      } else {
+        conductance->total = conductance->total * T(kg_per_mol_h2o);
+      }
+    }
   }
 
   void uptake_impl(double T_collar, const std::vector<double>& psi_soil,

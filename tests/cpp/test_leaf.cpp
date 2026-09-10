@@ -3331,8 +3331,9 @@ void test_every_answered_point_hands_over_finite_rows() {
         // The coordinates are refused by name at a shutdown; outputs_at answers
         // there instead, which the branch above just exercised.
         if (kind != phylloptim::Leaf::OperatingPointKind::HydraulicShutdown) {
+          const auto cap = l.photo_capacity_at<T>(pars);
           const auto co = l.collar_coords_at<T>(l.opt_psi_stem_, l.ci_, collar,
-                                                draw, pars, true);
+                                                draw, pars, cap, true);
           ++coords;
           ok(std::isfinite(odelia::ode::derivative_along(co.sigma.value)) &&
                  std::isfinite(odelia::util::to_passive(co.sigma.slope)),
@@ -3347,7 +3348,7 @@ void test_every_answered_point_hands_over_finite_rows() {
           // the row is not -- a channel that went missing leaves every number
           // finite.
           const auto held = l.collar_coords_at<T>(l.opt_psi_stem_, l.ci_, collar,
-                                                  draw, pars, false);
+                                                  draw, pars, cap, false);
           ok(odelia::util::to_passive(held.sigma.value) ==
                  odelia::util::to_passive(co.sigma.value),
              "sigma is the same number with the channel omitted" + at);
