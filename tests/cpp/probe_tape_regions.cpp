@@ -151,13 +151,20 @@ Regions measure(int layers, double psi0) {
   r.marginal = c4 - c3;
   (void)sink;
 
-  // The rows plant reads: the objective's, swept once.
-  A* target = const_cast<A*>(&got.profit);
-  tape.registerOutput(*target);
-  xad::derivative(*target) = 1.0;
-  tape.computeAdjoints();
+  // ⚠️ EVERY OUTPUT, NOT ONLY PROFIT. At an interior point profit reads the HELD
+  // collar, so the collar's own rows reach the UPTAKES and never the objective --
+  // and a check that sweeps profit alone is green whatever happens to the collar.
+  // One sweep per output, derivatives cleared between, rows concatenated.
+  std::vector<A*> outs{const_cast<A*>(&got.profit)};
+  for (const A& u : got.uptake) outs.push_back(const_cast<A*>(&u));
+  for (A* o : outs) tape.registerOutput(*o);
+  for (A* o : outs) {
+    tape.clearDerivatives();
+    xad::derivative(*o) = 1.0;
+    tape.computeAdjoints();
+    for (double v : io.rows()) r.rows.push_back(v);
+  }
   r.profit = odelia::util::to_passive(got.profit);
-  r.rows = io.rows();
   r.ok = true;
   return r;
 }
@@ -192,7 +199,7 @@ void kernels() {
                                         sigma, io.in[pl::par_stem_P50],
                                         io.in[pl::par_stem_c]));
                                                              say("closed_form_curve(table, psi, P50, c)");
-  mark(); keep(l.assim_slope_at<A>(ci, io.in));              say("assim_slope_at(ci, pars)   <- NESTED");
+  mark(); keep(l.assim_slope_at<A>(ci, io.in));              say("assim_slope_at(ci, pars)   <- SUPPLIED");
   (void)sink;
 }
 

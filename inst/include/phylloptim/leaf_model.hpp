@@ -23,6 +23,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 #include <XAD/XAD.hpp>
 
@@ -1864,13 +1865,36 @@ public:
   template <typename T> T electron_transport_at(const leaf_pars<T>& pars) const;
   template <typename T>
   T assim_colimited_kernel(const T& ci, const leaf_pars<T>& pars) const;
-  // dA/dci, by a TANGENT THROUGH THE KERNEL ABOVE rather than a slope written
-  // out beside it. Upstream takes A' this way at double for exactly the reason it
-  // matters here: a hand-written twin is a second definition of one function,
-  // free to disagree with it by an amount that stays finite and plausible in
-  // every column. At a nested tangent this is the same statement one order up.
+  // The slope of a kernel in its first argument, carrying rows.
+  //
+  // A slope like dA/dci is SECOND order in the traits, and taking it at the
+  // caller's scalar means nesting a tangent above an adjoint -- which
+  // `odelia/tangent.hpp` forbids by name, and which measures 521 tape statements
+  // against the 17 of the kernel it differentiates. Taken here through the
+  // kernel alone, over a tangent of a tangent at double, and handed over as
+  // supplied rows: nothing is recorded, and the slope still cannot disagree with
+  // the function because it IS a tangent through it.
+  //
+  // ⚠️ THE ROW AGAINST `x` IS WHY THE OUTER WALK CARRIES n_pars + 1 DIRECTIONS.
+  // The slope is read at a point that MOVES with the traits, so the kernel's
+  // second derivative in its own argument is a first-order channel exactly like
+  // every parameter's. Left out, it is an exact zero in a column rather than an
+  // error.
+  //
+  // `kernel` must DECLARE its return type (`-> U`): a deduced one hands back an
+  // XAD expression template over temporaries that are dead on return.
+  template <class S, class Kernel>
+  S kernel_slope_at(Kernel&& kernel, const S& x, const leaf_pars<S>& pars,
+                    const char* what) const;
+
+  // dA/dci and dC/dsigma, each a tangent through its own kernel rather than a
+  // slope written out beside it: a hand-written twin is a second definition of
+  // one function, free to disagree with it by an amount that stays finite and
+  // plausible in every column.
   template <typename T>
   T assim_slope_at(const T& ci, const leaf_pars<T>& pars) const;
+  template <typename T>
+  T cost_slope_at(const T& sigma, const leaf_pars<T>& pars) const;
 
   // The STEM's flux at a held stem potential and collar: kmax * (G(sigma) -
   // G(collar)), which is upstream's `transpiration()` given its parameters.
@@ -5454,24 +5478,87 @@ inline T Leaf::transpiration_at(const T& sigma, const T& collar,
                            stem_integral_at<T>(collar, pars));
 }
 
+template <class S, class Kernel>
+inline S Leaf::kernel_slope_at(Kernel&& kernel, const S& x,
+                               const leaf_pars<S>& pars,
+                               const char* what) const {
+  using odelia::util::to_passive;
+  // Both levels are tangents and both sit at double, so none of this reaches a
+  // tape whatever S is. The inner direction is x's, which makes the value a
+  // slope; the outer walk carries x first and then every parameter slot, which
+  // is where the rows come from.
+  using inner = odelia::ode::tangent_scalar<double>;
+  using outer = typename xad::fwd<inner, n_pars + 1>::active_type;
+
+  // ⚠️ THE FORWARD SOLVE TAKES THE INNER LEVEL ONLY. At double there are no rows
+  // to carry, and the outer walk would cost n_pars + 1 directions for numbers
+  // nothing reads -- on the path that places every operating point.
+  if constexpr (std::is_same_v<S, double>) {
+    inner xd(x);
+    odelia::ode::seed_direction(xd, 1.0);
+    leaf_pars<inner> pd;
+    for (std::size_t i = 0; i < pd.size(); ++i) pd[i] = inner(pars[i]);
+    return odelia::ode::derivative_along(kernel(xd, pd));
+  }
+
+  outer xt(to_passive(x));
+  odelia::ode::seed_direction(xad::value(xt), 1.0);
+  xad::value(xad::derivative(xt)[0]) = 1.0;
+  leaf_pars<outer> pt;
+  for (std::size_t i = 0; i < pt.size(); ++i) {
+    pt[i] = outer(to_passive(pars[i]));
+    xad::value(xad::derivative(pt[i])[i + 1]) = 1.0;
+  }
+  const outer y = kernel(xt, pt);
+  const double slope = odelia::ode::derivative_along(xad::value(y));
+  {
+    // ⚠️ THE ROWS THE WALK FOUND, AND NOT A LIST OF SLOTS THIS KERNEL IS
+    // BELIEVED TO READ. A zero here is MEASURED absence -- the tangent carried
+    // that direction through and nothing came back -- which is the one kind of
+    // zero that is safe to drop, and it is what keeps a slot from going missing
+    // because someone maintained a list wrongly.
+    //
+    // Dropping them is also forced. The pack carries NaN in the slots of the
+    // cost curves this leaf does not run (par_CF77_lambda among them, unset by
+    // set_physiology and seated all the same), and record_with_derivatives
+    // refuses the WHOLE row set on one non-finite input -- rightly, since its
+    // arithmetic form multiplies a zero partial by NaN. A slot the kernel does
+    // not read cannot poison the ones it does.
+    std::vector<odelia::input_and_derivative<S>> rows;
+    rows.reserve(n_pars + 1);
+    const auto keep = [&](const S& input, std::size_t i) {
+      const double d = odelia::ode::derivative_along(xad::derivative(y)[i]);
+      if (d != 0.0) rows.push_back({input, d});
+    };
+    keep(x, 0);
+    for (std::size_t i = 0; i < pars.size(); ++i) keep(pars[i], i + 1);
+    S out;
+    const odelia::record_report report =
+        odelia::record_with_derivatives<S>(slope, rows, out);
+    if (!report.whole) {
+      util::stop(std::string("Leaf::kernel_slope_at: ") + what + ": " +
+                 report.why);
+    }
+    return out;
+  }
+}
+
 template <typename T>
 inline T Leaf::assim_slope_at(const T& ci, const leaf_pars<T>& pars) const {
-  // ⚠️ A NESTED ACTIVE IS BUILT BY ASSIGNING INTO ITS VALUE, not by converting.
-  // The outer scalar's constructor takes the INNERMOST value type, so
-  // `nested(inner)` either refuses to compile or strips the inner rows -- and a
-  // stripped row here is a slope that is right at double and zero in every trait.
-  using nested = odelia::ode::tangent_scalar<T>;
-  auto lift = [](const T& x) -> nested {
-    nested out;
-    xad::value(out) = x;
-    return out;
-  };
-  leaf_pars<nested> np;
-  for (std::size_t i = 0; i < np.size(); ++i) np[i] = lift(pars[i]);
-  nested c = lift(ci);
-  odelia::ode::seed_direction(c, 1.0);
-  return odelia::ode::derivative_along(
-      assim_colimited_kernel<nested>(c, np));
+  return kernel_slope_at<T>(
+      [this]<class U>(const U& c, const leaf_pars<U>& p) -> U {
+        return assim_colimited_kernel<U>(c, p);
+      },
+      ci, pars, "assimilation in intercellular CO2");
+}
+
+template <typename T>
+inline T Leaf::cost_slope_at(const T& sigma, const leaf_pars<T>& pars) const {
+  return kernel_slope_at<T>(
+      [this]<class U>(const U& s, const leaf_pars<U>& p) -> U {
+        return hydraulic_cost_TF_kernel<U>(s, p);
+      },
+      sigma, pars, "hydraulic cost in stem potential");
 }
 
 // The curve itself is closed form, so the (P50, c) chain comes out of the one
@@ -5763,20 +5850,9 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
   const CollarCoords<S> at =
       collar_coords_at<S>(opt_psi_stem_, ci_, collar, draw, pars, true);
   const S A_prime = assim_slope_at<S>(at.ci.value, pars);
-  // dC/dpsi_stem from upstream's own arm, at a scalar: a tangent through the
-  // cost kernel rather than a slope written out beside it.
-  using nested = odelia::ode::tangent_scalar<S>;
-  auto lift = [](const S& x) -> nested {
-    nested out;
-    xad::value(out) = x;
-    return out;
-  };
-  leaf_pars<nested> np;
-  for (std::size_t i = 0; i < np.size(); ++i) np[i] = lift(pars[i]);
-  nested sg = lift(at.sigma.value);
-  odelia::ode::seed_direction(sg, 1.0);
-  S C_prime =
-      odelia::ode::derivative_along(hydraulic_cost_TF_kernel<nested>(sg, np));
+  // dC/dpsi_stem, the same way: a tangent through the cost kernel rather than a
+  // slope written out beside it.
+  S C_prime = cost_slope_at<S>(at.sigma.value, pars);
   if constexpr (K == CostCurve::TF24_floor) {
     // d/dsigma of lambda_o * kmax * (G(sigma) - G(collar)) is lambda_o*kmax*f,
     // and the conductivity is the TABLE's for the reason every other one here
