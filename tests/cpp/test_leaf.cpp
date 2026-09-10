@@ -3157,13 +3157,22 @@ void test_pack_kernels_are_the_models_own() {
           same(l.respiration_at<double>(p), l.R_d_, "respiration" + at);
           same(l.electron_transport_at<double>(p), l.electron_transport(),
                "electron transport" + at);
-          same(l.assim_colimited_kernel<double>(ci, p), l.assim_colimited(ci),
+          const phylloptim::Leaf::PhotoCapacity<double> cap =
+              l.photo_capacity_at<double>(p);
+          same(l.assim_colimited_kernel<double>(ci, cap), l.assim_colimited(ci),
                "colimited assimilation" + at);
           AD ci_ad = ci;
           xad::derivative(ci_ad) = 1.0;
-          same(l.assim_slope_at<double>(ci, p),
+          same(l.assim_slope_at<double>(ci, cap),
                xad::derivative(l.assim_colimited_kernel(ci_ad)),
                "dA/dci" + at);
+          // The cost's slope walks its own four arguments rather than the pack,
+          // so it needs the same referee the assimilation's has.
+          AD sigma_ad = l.opt_psi_stem_;
+          xad::derivative(sigma_ad) = 1.0;
+          same(l.cost_slope_at<double>(l.opt_psi_stem_, p),
+               xad::derivative(l.hydraulic_cost_TF_kernel(sigma_ad)),
+               "dC/dsigma" + at);
         }
       }
     }
@@ -3213,8 +3222,8 @@ void test_light_reaches_carbon_with_a_row() {
     const phylloptim::leaf_pars<double> seated = l.passive_pars();
     for (std::size_t i = 0; i < p.size(); ++i) p[i] = AD(seated[i]);
     xad::derivative(p[phylloptim::par_PPFD]) = 1.0;
-    const double row =
-        xad::derivative(l.assim_colimited_kernel<AD>(AD(ci), p));
+    const double row = xad::derivative(
+        l.assim_colimited_kernel<AD>(AD(ci), l.photo_capacity_at<AD>(p)));
 
     const double h = ppfd * 1e-6;
     Drivers up_d = d, dn_d = d;

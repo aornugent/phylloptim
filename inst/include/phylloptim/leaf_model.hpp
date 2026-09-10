@@ -21,8 +21,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <concepts>
 #include <limits>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <XAD/XAD.hpp>
@@ -1796,9 +1798,6 @@ public:
 
   // proportion of conductivity in xylem at a given water potential (return: unitless)
   double proportion_of_conductivity(double psi) const;
-  // Scalar-generic core of the above. See the `_kernel` block below the assim
-  // declarations for why these exist.
-  template <typename T> T proportion_of_conductivity_kernel(T psi) const;
 
   // supply-side transpiration for a given water potential gradient between leaves and soil, 
   // references setup_transpiraiton for values (return: kg h20 s^-1 m^-2 LA)
@@ -1820,6 +1819,31 @@ public:
   double assim_electron_limited(double ci_);
   double assim_colimited(double ci_);
 
+  // Photosynthesis at this leaf's temperature and light, as the assimilation
+  // kernel reads it: the two limiting capacities, the curvature that colimits
+  // them, and the dark respiration. Nothing in it moves with intercellular CO2,
+  // which is what makes dA/dci a slope in FOUR directions rather than in one per
+  // pack slot -- and the chain from these back to the traits is the tape's,
+  // because they are recorded before the slope is taken.
+  template <class T>
+  struct PhotoCapacity {
+    T vcmax;
+    T transport;
+    T curvature;
+    T respiration;
+
+    // ⚠️ WHAT CARRIES A ROW, NAMED FOR visit_active -- see SupplyDraw. A shape
+    // dispatch does not open is skipped in silence, and the ci residual reads
+    // every one of these.
+    template <class F>
+    void for_each_active(F&& f) const {
+      f(vcmax);
+      f(transport);
+      f(curvature);
+      f(respiration);
+    }
+  };
+
   // --- the scalar-generic cores -------------------------------------------
   //
   // These are the SINGLE definition of the photosynthesis and cost algebra. The
@@ -1838,24 +1862,41 @@ public:
   // set TF24f's acclimation rate; load-bearing because the collar solve
   // root-find on it. Measured cost of the fix: 4.98e-07 on the golden grid.
   //
-  // Why members templated on the scalar type, rather than free functions taking
-  // their parameters explicitly (which is what #4 comment 1 proposed): a free
-  // function needs seven or eight arguments threaded from the members at each call
-  // site, and a transposed pair there is exactly the class of silent error the
-  // replicas were. Reading the members directly makes that unrepresentable. It is
-  // also the shape item 11's `Leaf<T>` wants, so it is a step rather than a
-  // detour.
+  // ⚠️ A KERNEL TAKES THE SCALARS THAT MOVE, AS ARGUMENTS. That is what makes the
+  // read set checkable: the parameter list IS the declaration of what the kernel
+  // differentiates against, so a row cannot go missing because someone maintained
+  // a list wrongly, and a slope through the kernel walks as many directions as it
+  // has arguments rather than as many as the pack is wide. Fixed physiology that
+  // no trait reaches -- `gamma_`, `km_`, the atmosphere -- stays a member, because
+  // nothing differentiates it.
   //
   // Keep them PURE -- no writes to members. `hydraulic_cost_TF` caches into
   // `hydraulic_cost_`; its kernel must not, or the AD pass would write model state
   // while probing.
+  template <typename T> T assim_rubisco_limited_kernel(const T& ci,
+                                                       const T& vcmax) const;
+  template <typename T> T assim_electron_limited_kernel(const T& ci,
+                                                        const T& transport) const;
+  template <typename T> T assim_colimited_kernel(const T& ci,
+                                                 const PhotoCapacity<T>& cap) const;
+  template <typename T> T proportion_of_conductivity_kernel(const T& psi,
+                                                            const T& b,
+                                                            const T& c) const;
+  template <typename T> T hydraulic_cost_TF_kernel(const T& psi_stem,
+                                                   const T& scale, const T& b,
+                                                   const T& c,
+                                                   const T& beta2) const;
+
+  // The same kernels reading the members, for the forward model, which has one
+  // set of these and no reason to thread them through every call.
   template <typename T> T assim_rubisco_limited_kernel(T ci) const;
   template <typename T> T assim_electron_limited_kernel(T ci) const;
   template <typename T> T assim_colimited_kernel(T ci) const;
+  template <typename T> T proportion_of_conductivity_kernel(T psi) const;
   template <typename T> T hydraulic_cost_TF_kernel(T psi_stem) const;
 
-  // The same kernels against a caller's parameter pack, for the path that needs
-  // rows in the traits.
+  // The kernels' arguments, read off a caller's parameter pack, for the path
+  // that needs rows in the traits.
   //
   // ⚠️ FROM THE PACK, NOT THE MEMBERS. At double the two are the same numbers, so
   // a member read answers correctly and differentiates to a silent ZERO in every
@@ -1872,8 +1913,13 @@ public:
   template <typename T> T jmax_at(const leaf_pars<T>& pars) const;
   template <typename T> T respiration_at(const leaf_pars<T>& pars) const;
   template <typename T> T electron_transport_at(const leaf_pars<T>& pars) const;
+
+  // The one place that says which pack slots each kernel reads.
+  template <typename T> PhotoCapacity<T> photo_capacity_at(const leaf_pars<T>& pars) const;
+  template <typename T> PhotoCapacity<T> photo_capacity() const;
   template <typename T>
-  T assim_colimited_kernel(const T& ci, const leaf_pars<T>& pars) const;
+  T hydraulic_cost_TF_kernel(const T& psi_stem, const leaf_pars<T>& pars) const;
+
   // The slope of a kernel in its first argument, carrying rows.
   //
   // A slope like dA/dci is SECOND order in the traits, and taking it at the
@@ -1884,24 +1930,31 @@ public:
   // supplied rows: nothing is recorded, and the slope still cannot disagree with
   // the function because it IS a tangent through it.
   //
-  // ⚠️ THE ROW AGAINST `x` IS WHY THE OUTER WALK CARRIES n_pars + 1 DIRECTIONS.
-  // The slope is read at a point that MOVES with the traits, so the kernel's
-  // second derivative in its own argument is a first-order channel exactly like
-  // every parameter's. Left out, it is an exact zero in a column rather than an
-  // error.
+  // ⚠️ ONE DIRECTION PER ARGUMENT, AND THE ARGUMENTS ARE THE WHOLE READ SET. The
+  // walk costs the kernel's arithmetic times the direction count, so handing it
+  // a twenty-slot pack to read four numbers out of prices seventeen columns of
+  // structural zero: measured, the pack walk was 34.7% of the boundary's
+  // instructions and `xad::FReal`'s constructor alone was 18.9% of the run. Every
+  // argument's row is supplied whether or not it came back non-zero, because a
+  // slot the kernel cannot read is a slot it cannot be handed.
+  //
+  // ⚠️ THE ROW AGAINST `x` IS AS REAL AS THE OTHERS. The slope is read at a point
+  // that MOVES with the traits, so the kernel's second derivative in its own
+  // argument is a first-order channel exactly like every argument's. Left out, it
+  // is an exact zero in a column rather than an error.
   //
   // `kernel` must DECLARE its return type (`-> U`): a deduced one hands back an
   // XAD expression template over temporaries that are dead on return.
-  template <class S, class Kernel>
-  S kernel_slope_at(Kernel&& kernel, const S& x, const leaf_pars<S>& pars,
-                    const char* what) const;
+  template <class S, class Kernel, std::same_as<S>... Args>
+  S kernel_slope_at(Kernel&& kernel, const char* what, const S& x,
+                    const Args&... args) const;
 
   // dA/dci and dC/dsigma, each a tangent through its own kernel rather than a
   // slope written out beside it: a hand-written twin is a second definition of
   // one function, free to disagree with it by an amount that stays finite and
   // plausible in every column.
   template <typename T>
-  T assim_slope_at(const T& ci, const leaf_pars<T>& pars) const;
+  T assim_slope_at(const T& ci, const PhotoCapacity<T>& cap) const;
   template <typename T>
   T cost_slope_at(const T& sigma, const leaf_pars<T>& pars) const;
 
@@ -1918,11 +1971,6 @@ public:
   template <typename T>
   T transpiration_at(const T& sigma, const T& collar,
                      const leaf_pars<T>& pars) const;
-  template <typename T>
-  T proportion_of_conductivity_kernel(const T& psi,
-                                      const leaf_pars<T>& pars) const;
-  template <typename T>
-  T hydraulic_cost_TF_kernel(const T& psi_stem, const leaf_pars<T>& pars) const;
 
   // G(psi) at any scalar: the table's value at the passive point, carrying the
   // query slope and the two TRAIT rows the closed form gives exactly.
@@ -4672,8 +4720,14 @@ inline double Leaf::leaf_temp_from_E(double E, double* dT_dE) const {
 
 // returns proportion of conductance taken from hydraulic vulnerability curve (unitless)
 template <typename T>
+inline T Leaf::proportion_of_conductivity_kernel(const T& psi, const T& b,
+                                                 const T& c) const {
+  return exp(-pow((psi / b), c));
+}
+
+template <typename T>
 inline T Leaf::proportion_of_conductivity_kernel(T psi) const {
-  return exp(-pow((psi / stem_b), stem_c));
+  return proportion_of_conductivity_kernel<T>(psi, T(stem_b), T(stem_c));
 }
 
 inline double Leaf::proportion_of_conductivity(double psi) const {
@@ -4989,23 +5043,43 @@ inline double Leaf::electron_transport() {
 // the DERIVATIVE, which now comes from this code instead of from the drifted
 // replica.
 template <typename T>
-inline T Leaf::assim_rubisco_limited_kernel(T ci) const {
-  return (vcmax_ * (ci - gamma_ * umol_per_mol_to_Pa_)) / (ci + km_);
+inline T Leaf::assim_rubisco_limited_kernel(const T& ci, const T& vcmax) const {
+  return (vcmax * (ci - gamma_ * umol_per_mol_to_Pa_)) / (ci + km_);
 }
 
 template <typename T>
-inline T Leaf::assim_electron_limited_kernel(T ci) const {
-  return electron_transport_ / 4 *
+inline T Leaf::assim_rubisco_limited_kernel(T ci) const {
+  return assim_rubisco_limited_kernel<T>(ci, T(vcmax_));
+}
+
+template <typename T>
+inline T Leaf::assim_electron_limited_kernel(const T& ci,
+                                             const T& transport) const {
+  return transport / 4 *
   ((ci - gamma_ * umol_per_mol_to_Pa_) / (ci + 2 * gamma_ * umol_per_mol_to_Pa_));
 }
 
 template <typename T>
-inline T Leaf::assim_colimited_kernel(T ci) const {
-  T assim_rubisco_limited_ = assim_rubisco_limited_kernel(ci);
-  T assim_electron_limited_ = assim_electron_limited_kernel(ci);
+inline T Leaf::assim_electron_limited_kernel(T ci) const {
+  return assim_electron_limited_kernel<T>(ci, T(electron_transport_));
+}
 
-  return (assim_rubisco_limited_ + assim_electron_limited_ - sqrt(pow(assim_rubisco_limited_ + assim_electron_limited_, 2) - 4 * curv_fact_colim * assim_rubisco_limited_ * assim_electron_limited_)) /
-             (2 * curv_fact_colim)- R_d_;
+template <typename T>
+inline T Leaf::assim_colimited_kernel(const T& ci,
+                                      const PhotoCapacity<T>& cap) const {
+  const T rubisco = assim_rubisco_limited_kernel<T>(ci, cap.vcmax);
+  const T electron = assim_electron_limited_kernel<T>(ci, cap.transport);
+
+  return (rubisco + electron -
+          sqrt(pow(rubisco + electron, 2) -
+               4 * cap.curvature * rubisco * electron)) /
+             (2 * cap.curvature) -
+         cap.respiration;
+}
+
+template <typename T>
+inline T Leaf::assim_colimited_kernel(T ci) const {
+  return assim_colimited_kernel<T>(ci, photo_capacity<T>());
 }
 
 inline double Leaf::assim_rubisco_limited(double ci_) {
@@ -5410,17 +5484,25 @@ inline double Leaf::g1_eff() const {
 // Pure: no write to hydraulic_cost_, so the AD pass cannot scribble model state
 // while probing. The caching is the double entry point's job.
 template <typename T>
-inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem) const {
-  return TF24_cost_scale * pow((1 - proportion_of_conductivity_kernel(psi_stem)), TF24_beta2);
+inline T Leaf::hydraulic_cost_TF_kernel(const T& psi_stem, const T& scale,
+                                        const T& b, const T& c,
+                                        const T& beta2) const {
+  return scale *
+         pow((1 - proportion_of_conductivity_kernel<T>(psi_stem, b, c)), beta2);
 }
 
-// The same kernels, against a caller's parameter pack.
+template <typename T>
+inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem) const {
+  return hydraulic_cost_TF_kernel<T>(psi_stem, T(TF24_cost_scale), T(stem_b),
+                                     T(stem_c), T(TF24_beta2));
+}
+
+// The kernels' arguments, read off a caller's parameter pack.
 //
-// Each is its member-reading twin above with every differentiated quantity taken
-// from `pars` instead. At double the pack holds exactly what the members hold
-// (passive_pars builds it from them), the temperature responses are taken at the
-// temperature the block itself holds (photo_temp_), and the operation order is
-// unchanged, so these instantiate to the same numbers bit for bit -- which
+// At double the pack holds exactly what the members hold (passive_pars builds it
+// from them) and the temperature responses are taken at the temperature the
+// block itself holds (photo_temp_), so filling a kernel from the pack and
+// filling it from the members give the same numbers bit for bit -- which
 // test_leaf asserts on both temperature paths rather than leaving to the reader.
 
 template <typename T>
@@ -5462,23 +5544,19 @@ inline T Leaf::electron_transport_at(const leaf_pars<T>& pars) const {
          (2 * curv);
 }
 
+// gamma_ and km_ are temperature responses of fixed physiology -- no trait
+// reaches either -- so they stay members and the capacity carries the four that
+// do.
 template <typename T>
-inline T Leaf::assim_colimited_kernel(const T& ci,
-                                      const leaf_pars<T>& pars) const {
-  // gamma_ and km_ are temperature responses of fixed physiology -- no trait
-  // reaches either -- so they stay members.
-  const T vc = vcmax_at<T>(pars);
-  const T J = electron_transport_at<T>(pars);
-  const T curv = pars[par_curv_fact_colim];
-  const T rubisco = (vc * (ci - gamma_ * umol_per_mol_to_Pa_)) / (ci + km_);
-  const T electron =
-      J / 4 *
-      ((ci - gamma_ * umol_per_mol_to_Pa_) /
-       (ci + 2 * gamma_ * umol_per_mol_to_Pa_));
-  return (rubisco + electron -
-          sqrt(pow(rubisco + electron, 2) - 4 * curv * rubisco * electron)) /
-             (2 * curv) -
-         respiration_at<T>(pars);
+inline Leaf::PhotoCapacity<T> Leaf::photo_capacity_at(
+    const leaf_pars<T>& pars) const {
+  return {vcmax_at<T>(pars), electron_transport_at<T>(pars),
+          pars[par_curv_fact_colim], respiration_at<T>(pars)};
+}
+
+template <typename T>
+inline Leaf::PhotoCapacity<T> Leaf::photo_capacity() const {
+  return {T(vcmax_), T(electron_transport_), T(curv_fact_colim), T(R_d_)};
 }
 
 template <typename T>
@@ -5488,60 +5566,49 @@ inline T Leaf::transpiration_at(const T& sigma, const T& collar,
                            stem_integral_at<T>(collar, pars));
 }
 
-template <class S, class Kernel>
-inline S Leaf::kernel_slope_at(Kernel&& kernel, const S& x,
-                               const leaf_pars<S>& pars,
-                               const char* what) const {
+template <class S, class Kernel, std::same_as<S>... Args>
+inline S Leaf::kernel_slope_at(Kernel&& kernel, const char* what, const S& x,
+                               const Args&... args) const {
   using odelia::util::to_passive;
   // Both levels are tangents and both sit at double, so none of this reaches a
   // tape whatever S is. The inner direction is x's, which makes the value a
-  // slope; the outer walk carries x first and then every parameter slot, which
-  // is where the rows come from.
+  // slope; the outer walk carries x first and then each argument, which is where
+  // the rows come from.
   using inner = odelia::ode::tangent_scalar<double>;
-  using outer = typename xad::fwd<inner, n_pars + 1>::active_type;
+  constexpr std::size_t n_dir = 1 + sizeof...(Args);
+  using outer = typename xad::fwd<inner, n_dir>::active_type;
 
   // ⚠️ THE FORWARD SOLVE TAKES THE INNER LEVEL ONLY. At double there are no rows
-  // to carry, and the outer walk would cost n_pars + 1 directions for numbers
-  // nothing reads -- on the path that places every operating point.
+  // to carry, and the outer walk would cost n_dir directions for numbers nothing
+  // reads -- on the path that places every operating point.
   if constexpr (std::is_same_v<S, double>) {
     inner xd(x);
     odelia::ode::seed_direction(xd, 1.0);
-    leaf_pars<inner> pd;
-    for (std::size_t i = 0; i < pd.size(); ++i) pd[i] = inner(pars[i]);
-    return odelia::ode::derivative_along(kernel(xd, pd));
-  }
-
-  outer xt(to_passive(x));
-  odelia::ode::seed_direction(xad::value(xt), 1.0);
-  xad::value(xad::derivative(xt)[0]) = 1.0;
-  leaf_pars<outer> pt;
-  for (std::size_t i = 0; i < pt.size(); ++i) {
-    pt[i] = outer(to_passive(pars[i]));
-    xad::value(xad::derivative(pt[i])[i + 1]) = 1.0;
-  }
-  const outer y = kernel(xt, pt);
-  const double slope = odelia::ode::derivative_along(xad::value(y));
-  {
-    // ⚠️ THE ROWS THE WALK FOUND, AND NOT A LIST OF SLOTS THIS KERNEL IS
-    // BELIEVED TO READ. A zero here is MEASURED absence -- the tangent carried
-    // that direction through and nothing came back -- which is the one kind of
-    // zero that is safe to drop, and it is what keeps a slot from going missing
-    // because someone maintained a list wrongly.
-    //
-    // Dropping them is also forced. The pack carries NaN in the slots of the
-    // cost curves this leaf does not run (par_CF77_lambda among them, unset by
-    // set_physiology and seated all the same), and record_with_derivatives
-    // refuses the WHOLE row set on one non-finite input -- rightly, since its
-    // arithmetic form multiplies a zero partial by NaN. A slot the kernel does
-    // not read cannot poison the ones it does.
-    std::vector<odelia::input_and_derivative<S>> rows;
-    rows.reserve(n_pars + 1);
-    const auto keep = [&](const S& input, std::size_t i) {
-      const double d = odelia::ode::derivative_along(xad::derivative(y)[i]);
-      if (d != 0.0) rows.push_back({input, d});
+    return odelia::ode::derivative_along(kernel(xd, inner(args)...));
+  } else {
+    std::array<outer, n_dir> lift;
+    std::size_t d = 0;
+    const auto seed = [&](const S& v) {
+      lift[d] = outer(to_passive(v));
+      xad::value(xad::derivative(lift[d])[d]) = 1.0;
+      ++d;
     };
-    keep(x, 0);
-    for (std::size_t i = 0; i < pars.size(); ++i) keep(pars[i], i + 1);
+    seed(x);
+    (seed(args), ...);
+    odelia::ode::seed_direction(xad::value(lift[0]), 1.0);
+
+    const outer y = std::apply(kernel, lift);
+    const double slope = odelia::ode::derivative_along(xad::value(y));
+
+    // Every argument gets a row, in the order the walk seeded them. A braced
+    // list is sequenced left to right, so the counter follows the walk; a stack
+    // array rather than a vector because the rows cross as a span, which borrows
+    // storage instead of owning it.
+    std::size_t r = 0;
+    const auto row = [&](const S& v) -> odelia::input_and_derivative<S> {
+      return {v, odelia::ode::derivative_along(xad::derivative(y)[r++])};
+    };
+    const odelia::input_and_derivative<S> rows[n_dir]{row(x), row(args)...};
     S out;
     const odelia::record_report report =
         odelia::record_with_derivatives<S>(slope, rows, out);
@@ -5554,40 +5621,42 @@ inline S Leaf::kernel_slope_at(Kernel&& kernel, const S& x,
 }
 
 template <typename T>
-inline T Leaf::assim_slope_at(const T& ci, const leaf_pars<T>& pars) const {
+inline T Leaf::assim_slope_at(const T& ci, const PhotoCapacity<T>& cap) const {
   return kernel_slope_at<T>(
-      [this]<class U>(const U& c, const leaf_pars<U>& p) -> U {
-        return assim_colimited_kernel<U>(c, p);
+      [this]<class U>(const U& c, const U& vcmax, const U& transport,
+                      const U& curvature, const U& respiration) -> U {
+        return assim_colimited_kernel<U>(
+            c, PhotoCapacity<U>{vcmax, transport, curvature, respiration});
       },
-      ci, pars, "assimilation in intercellular CO2");
+      "assimilation in intercellular CO2", ci, cap.vcmax, cap.transport,
+      cap.curvature, cap.respiration);
 }
 
 template <typename T>
 inline T Leaf::cost_slope_at(const T& sigma, const leaf_pars<T>& pars) const {
+  // Named rather than passed inline: a row borrows its input by reference, and a
+  // temporary is not a thing to hand one.
+  const T b =
+      phylloptim::weibull_b_from_P50<T>(pars[par_stem_P50], pars[par_stem_c]);
   return kernel_slope_at<T>(
-      [this]<class U>(const U& s, const leaf_pars<U>& p) -> U {
-        return hydraulic_cost_TF_kernel<U>(s, p);
+      [this]<class U>(const U& s, const U& scale, const U& bb, const U& c,
+                      const U& beta2) -> U {
+        return hydraulic_cost_TF_kernel<U>(s, scale, bb, c, beta2);
       },
-      sigma, pars, "hydraulic cost in stem potential");
+      "hydraulic cost in stem potential", sigma, pars[par_TF24_cost_scale], b,
+      pars[par_stem_c], pars[par_TF24_beta2]);
 }
 
 // The curve itself is closed form, so the (P50, c) chain comes out of the one
 // derivation rather than a supplied row: only the pre-integrated G(psi) is tabulated and
 // needs its rows supplied (stem_integral_at).
 template <typename T>
-inline T Leaf::proportion_of_conductivity_kernel(const T& psi,
-                                                 const leaf_pars<T>& pars) const {
-  const T c = pars[par_stem_c];
-  const T b = phylloptim::weibull_b_from_P50<T>(pars[par_stem_P50], c);
-  return exp(-pow((psi / b), c));
-}
-
-template <typename T>
 inline T Leaf::hydraulic_cost_TF_kernel(const T& psi_stem,
                                         const leaf_pars<T>& pars) const {
-  return pars[par_TF24_cost_scale] *
-         pow((1 - proportion_of_conductivity_kernel<T>(psi_stem, pars)),
-             pars[par_TF24_beta2]);
+  return hydraulic_cost_TF_kernel<T>(
+      psi_stem, pars[par_TF24_cost_scale],
+      phylloptim::weibull_b_from_P50<T>(pars[par_stem_P50], pars[par_stem_c]),
+      pars[par_stem_c], pars[par_TF24_beta2]);
 }
 
 template <class S>
@@ -5627,6 +5696,10 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
   const Leaf& leaf = *this;
   const leaf_pars<double> at_pars = passive_pars();
+  // Recorded BEFORE the ci residual, so the residual reads four numbers instead
+  // of a twenty-slot pack and the chain from them back to the traits is this
+  // tape's rather than a walk's.
+  const PhotoCapacity<S> cap = photo_capacity_at<S>(pars);
 
   // dT1/dsigma: the stem curve at the operating point, scaled by kmax, and taken
   // from THE TABLE because that is the derivative the model itself forms.
@@ -5666,11 +5739,14 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // finite.
   double dT2_dci = 0.0;
   if (!ci_at_compensation_point()) {
-    dT2_dci = assim_slope_at<double>(ci_star, at_pars) * umol_to_mol +
+    const PhotoCapacity<double> at_cap{
+        to_passive(cap.vcmax), to_passive(cap.transport),
+        to_passive(cap.curvature), to_passive(cap.respiration)};
+    dT2_dci = assim_slope_at<double>(ci_star, at_cap) * umol_to_mol +
               gc_per_flux * to_passive(stem_flux) * inv_atm;
   }
-  // stem_flux is active and read by the residual, so it is in the list beside
-  // pars; ca_, gc_per_flux and inv_atm are double.
+  // The capacity and stem_flux are the active things the residual reads, so they
+  // are the list; ca_, gc_per_flux and inv_atm are double.
   std::size_t ci_rows = 0;
   const S ci_h =
       ci_at_compensation_point()
@@ -5678,12 +5754,12 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
           : odelia::implicit_value<S>(
                 ci_star, dT2_dci, ci_rows,
                 [&](const S& c) -> S {
-                  const S A = leaf.template assim_colimited_kernel<S>(c, pars);
+                  const S A = leaf.template assim_colimited_kernel<S>(c, cap);
                   return A * umol_to_mol -
                          S(gc_per_flux) * stem_flux * (S(leaf.ca_) - c) *
                              S(inv_atm);
                 },
-                pars, stem_flux);
+                cap, stem_flux);
 
   // Everything below is the collar's channel, and where the collar is held it is
   // multiplied by a step that is zero in value AND carries no derivative -- so
@@ -5745,7 +5821,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // the slope is zero, not small.
   S dci_dp = S(0.0);
   if (!ci_at_compensation_point()) {
-    const S A_prime = assim_slope_at<S>(ci_h, pars);
+    const S A_prime = assim_slope_at<S>(ci_h, cap);
     const S g_ci = A_prime * umol_to_mol + gc * inv;
     const S ca_minus_ci = S(ca_) - ci_h;
     const S dci_dsigma = (dgc_dsigma * ca_minus_ci * inv) / g_ci;
@@ -5775,7 +5851,7 @@ inline S Leaf::profit_at(const S& collar, const SupplyDraw<S>& draw,
                 "curve is a row in profit_at and marginal_at");
   const CollarCoords<S> at = collar_coords_at<S>(opt_psi_stem_, ci_, collar,
                                                  draw, pars, collar_moves);
-  const S A = assim_colimited_kernel<S>(at.ci.value, pars);
+  const S A = assim_colimited_kernel<S>(at.ci.value, photo_capacity_at<S>(pars));
   S cost = hydraulic_cost_TF_kernel<S>(at.sigma.value, pars);
   if constexpr (K == CostCurve::TF24_floor) {
     // TF24's own cost plus a part LINEAR IN THE FLUX: Theta(E) = Theta~(psi) +
@@ -5859,7 +5935,7 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
   // soil layer's potential.
   const CollarCoords<S> at =
       collar_coords_at<S>(opt_psi_stem_, ci_, collar, draw, pars, true);
-  const S A_prime = assim_slope_at<S>(at.ci.value, pars);
+  const S A_prime = assim_slope_at<S>(at.ci.value, photo_capacity_at<S>(pars));
   // dC/dpsi_stem, the same way: a tangent through the cost kernel rather than a
   // slope written out beside it.
   S C_prime = cost_slope_at<S>(at.sigma.value, pars);

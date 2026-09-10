@@ -34,6 +34,8 @@
 #include <odelia/ode_interface.hpp>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 namespace pl = phylloptim;
@@ -188,6 +190,30 @@ Regions measure(int layers, double psi0) {
 }
 
 
+// The three calls, N times on one tape, and nothing else -- so a run under
+// callgrind prices a placement in INSTRUCTIONS, which is the only one of the
+// three quantities that sees a tangent's arithmetic. plant records about a
+// hundred placements between one newRecording and the next, so the tape is
+// shared across the loop as it is there.
+void placements(int n) {
+  pl::Leaf l = set_up(1, 0.5);
+  double curv = 0.0;
+  if (!interior(l, curv)) { printf("(fixture not interior)\n"); return; }
+  Tape tape;
+  Inputs io;
+  io.seed(tape, l);
+  const pl::SupplyAt<A> supply = io.supply();
+  volatile double sink = 0.0;
+  for (int i = 0; i < n; ++i) {
+    const auto draw = l.supply_draw_at<A>(A(l.opt_root_psi_), supply);
+    const A collar = l.collar_at<K, A>(draw, io.in, curv);
+    const pl::Leaf::LeafOutputs<A> got = l.outputs_at<K, A>(collar, draw, io.in);
+    sink += odelia::util::to_passive(got.profit);
+  }
+  printf("%d placements, %u statements, %u operations, sink %.17g\n", n,
+         tape.getNumStatements(), tape.getNumOperations(), double(sink));
+}
+
 // Each kernel priced on its own, at the scalar the boundary calls it at.
 void kernels() {
   pl::Leaf l = set_up(1, 0.5);
@@ -213,7 +239,8 @@ void kernels() {
   printf("\nleaf kernels, per call\n");
   mark(); keep(l.vcmax_at<A>(io.in));                        say("vcmax_at(pars)");
   mark(); keep(l.electron_transport_at<A>(io.in));           say("electron_transport_at(pars)");
-  mark(); keep(l.assim_colimited_kernel<A>(ci, io.in));      say("assim_colimited_kernel(ci, pars)");
+  const pl::Leaf::PhotoCapacity<A> cap = l.photo_capacity_at<A>(io.in);
+  mark(); keep(l.assim_colimited_kernel<A>(ci, cap));        say("assim_colimited_kernel(ci, capacity)");
   mark(); keep(l.stem_integral_at<A>(sigma, io.in));         say("stem_integral_at(psi, pars)");
   mark(); keep(l.transpiration_at<A>(sigma, collar, io.in)); say("transpiration_at(sigma, collar, pars)");
   mark(); keep(l.hydraulic_cost_TF_kernel<A>(sigma, io.in)); say("hydraulic_cost_TF_kernel(sigma, pars)");
@@ -221,13 +248,19 @@ void kernels() {
                                         sigma, io.in[pl::par_stem_P50],
                                         io.in[pl::par_stem_c]));
                                                              say("closed_form_curve(table, psi, P50, c)");
-  mark(); keep(l.assim_slope_at<A>(ci, io.in));              say("assim_slope_at(ci, pars)   <- SUPPLIED");
+  mark(); keep(l.assim_slope_at<A>(ci, cap));                say("assim_slope_at(ci, capacity)  <- SUPPLIED");
+  mark(); keep(l.cost_slope_at<A>(sigma, io.in));            say("cost_slope_at(sigma, pars)    <- SUPPLIED");
   (void)sink;
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  // `placements N` runs the boundary and nothing else, for callgrind.
+  if (argc > 1 && std::string(argv[1]) == "placements") {
+    placements(argc > 2 ? std::atoi(argv[2]) : 60);
+    return 0;
+  }
   printf("leaf boundary per placement, statements/operations by region\n"
          "(collar_at REWINDS, so its pair is what SURVIVED; marginal_at is the\n"
          " same region measured before the rewind)\n\n");
@@ -248,10 +281,10 @@ int main() {
   }
 
   // What each kernel costs, which is where a region total has to be explained.
-  // ⚠️ A TANGENT NESTED ABOVE THE ACTIVE SCALAR IS WHAT odelia/tangent.hpp
-  // FORBIDS, and the last two rows are it: every operand and cached value of a
-  // nested BinaryExpr is copied, and a copy of an active scalar is a recorded
-  // statement.
+  // ⚠️ THE TWO SLOPES ARE THE CHEAPEST ROWS HERE AND THE MOST EXPENSIVE CALLS.
+  // Each records one statement whatever its row count and runs a tangent of a
+  // tangent that no counter here can see, so read them under callgrind --
+  // `placements` is the mode for that -- and not off this table.
   kernels();
 
   // The rows, at full precision, so an edit that claims to remove dead work can
