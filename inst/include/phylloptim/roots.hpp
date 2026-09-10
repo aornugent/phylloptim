@@ -815,6 +815,11 @@ public:
     using odelia::util::to_passive;
     const std::vector<T>& psi_soil = at.psi_soil;
     const double collar_at = to_passive(T_collar);
+    // The band in which two potentials count as equal. It is the uptake's
+    // branch width AND the slope's kink width because they are the same
+    // condition: where the span vanishes the general branch divides by nothing,
+    // and the derivative of the branch that replaces it is not the derivative
+    // of this one.
     const double kink_tol = 1e-8;
     if (!std::isfinite(collar_at)) {
       util::stop_infeasible("uptake",
@@ -867,7 +872,7 @@ public:
       const T& T_src_min = (collar_at < soil_at) ? T_collar : psi_i;
       const T& T_src_max = (soil_at < collar_at) ? T_collar : psi_i;
 
-      if (std::abs(collar_at - soil_at) < 1e-8) {
+      if (std::abs(collar_at - soil_at) < kink_tol) {
         const T f_ri = curve(T_src_max);
         if (!std::isfinite(to_passive(f_ri)) || to_passive(f_ri) <= 0.0) {
           util::stop_infeasible("uptake",
@@ -881,7 +886,7 @@ public:
         soil_consumption[std::size_t(i)] = E_i;
         E_up += E_i;
       } else if (std::is_same_v<T, double> &&
-                 std::abs((collar_at - soil_at) - grav_head_z_[i]) < 1e-8) {
+                 std::abs((collar_at - soil_at) - grav_head_z_[i]) < kink_tol) {
         soil_consumption[std::size_t(i)] = T(0.0);
       } else {
         // Named so both arms are lvalues and the selection binds rather than
