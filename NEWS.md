@@ -1,5 +1,34 @@
 # phylloptim 0.9.0
 
+## ⚠️ Breaking: the leaf supplies its own derivative rows, and three counts moved
+
+`Leaf` is templated on its scalar and supplies the derivative of its operating
+point from the implicit function theorem at the converged point, instead of
+being recorded and differentiated. What that changes for a caller:
+
+* **`vulnerability_curve_ncontrol` defaults to 400, was 100.** The
+  pre-integrated vulnerability tables are built on four times the knots, and
+  every number read off them moves. `leaf_control()` carries the new default.
+  ⚠️ The same number is written in three places -- `Leaf::ncontrol_default` in
+  `leaf_model.hpp`, `.leaf_control_defaults` and `leaf_control()`'s formals --
+  and nothing checks them against each other.
+* **`n_pars` is 20, and the fitted length is `n_theta` = 19.** The pack the
+  kernels read also holds `par_PPFD`, which is seated per observation from the
+  drivers and is never fitted, so it has a slot and no name. Read `theta` out to
+  `n_pars` and you run past its end.
+* **odelia `>= 0.5.0`** is required, for the reverse-mode surface and the
+  interpolator this leaf's supplied rows are read through. ⚠️ odelia 0.5.0
+  retracts its own 0.2.2 promise that an out-of-domain interpolator read is
+  refused with a located message: `hermite_interpolator` extends linearly from
+  the end knot and there is no switch. Each of this package's three curves now
+  states its own bound where it applies it -- `root_vuln_at` clamps the
+  argument, `root_vuln_integral_at` caps the value, `eval_stem_curve` raises.
+
+⚠️ **This retracts two earlier entries.** "`n_pars` is unchanged" under the
+`Tleaf` reporting entry, and "`n_pars` is unchanged at 19" under the
+`shadow_cost` entry, were true when written and are not now: the count is 20 and
+the one a caller wants is `n_theta`.
+
 ## ⚠️ Breaking: root layer thickness is per layer, and it was a 3.7× error
 
 `root_network_from_carbon()`'s C++ signature takes a **vector** of layer
