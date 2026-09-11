@@ -86,6 +86,14 @@ were wanted — a width vector that increases with depth passes every check and
 yields plausible, different widths. That limit is asserted rather than left
 implicit, so the guard is not mistaken for protection it does not give.
 
+## `Remotes:` tracks odelia v0.4.0
+
+A package's `Remotes:` are honoured wherever it is installed from source, so this pin is not private to phylloptim's own CI. Anything depending on both phylloptim and a different odelia ref ends up with two pinned refs for one package in a single graph, which `pkgdepends` refuses with an unexplained `dependency conflict`. That blocked plant's fix for traitecoevo/plant#642, which needs odelia 0.4.0 for step rejection on the pinned-time path.
+
+The `LinkingTo: odelia (>= 0.2.0)` floor is deliberately unchanged: phylloptim uses nothing added since 0.2.0 and should stay installable against older odelia. It is the pin that has to track, not the floor.
+
+Also released as [`v0.8.1`](https://github.com/traitecoevo/phylloptim/tree/release/0.8.x) — the same one-line change off `v0.8.0`, so plant could take odelia 0.4.0 without also taking 0.9.0's breaking root-thickness change.
+
 # phylloptim 0.8.0
 
 ## `leaf_solve()` reports the seated curve's lambda
