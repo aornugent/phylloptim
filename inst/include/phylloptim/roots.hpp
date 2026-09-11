@@ -690,12 +690,14 @@ public:
 
   // Uptake at a collar suction, against the soil state begin_solve() cached.
   // This is the hot path: ~10^3 calls per collar solve.
+  //
+  // ⚠️ THE SAME WALK THE DERIVATIVE TAKES, at T = double and with no conductance
+  // asked for. A second body for this path is a second answer to the same
+  // question, free to drift from the one the rows are formed against -- which is
+  // the whole reason the templated walk exists.
   void uptake(double T_collar, std::vector<double>& soil_consumption,
               double& E_up) const {
-    uptake_impl(T_collar, psi_soil_,
-                root_vuln_integral_soil_.size() ==
-                    static_cast<size_t>(max_soil_layer),
-                soil_consumption, E_up);
+    uptake_at<double>(T_collar, supply_over(psi_soil_), soil_consumption, E_up);
   }
 
   // Uptake against an arbitrary vector of layer suctions, for callers that
@@ -732,11 +734,7 @@ public:
 
   void uptake_at(double T_collar, const std::vector<double>& psi_soil,
                  std::vector<double>& soil_consumption, double& E_up) const {
-    uptake_impl(T_collar, psi_soil,
-                (&psi_soil == &psi_soil_) &&
-                    root_vuln_integral_soil_.size() ==
-                        static_cast<size_t>(max_soil_layer),
-                soil_consumption, E_up);
+    uptake_at<double>(T_collar, supply_over(psi_soil), soil_consumption, E_up);
   }
 
   // d(E_up)/d(T_collar), for a caller that wants the conductance and not the
@@ -1004,168 +1002,6 @@ public:
         conductance->total = conductance->total * T(kg_per_mol_h2o);
       }
     }
-  }
-
-  void uptake_impl(double T_collar, const std::vector<double>& psi_soil,
-                   bool use_integral_cache,
-                   std::vector<double>& soil_consumption, double& E_up) const {
-
-    if (!std::isfinite(T_collar)) {
-      util::stop_infeasible("uptake",
-          "E_from_Soil_to_Root_Collar invalid input; T_collar=" + util::to_string(T_collar));
-    }
-
-    E_up = 0;
-
-    // Cumulative-integral spline caching (bit-identical fast path). The only two
-    // arguments ever passed to root_vuln_integral_from_psi in the loop below are
-    // T_src_max and T_pos_lo, each of which resolves to exactly one of
-    // {psi_soil[i], T_collar, 0}. T_collar is constant across all layers (compute
-    // once), and psi_soil[i] is constant across the whole solve (precomputed in
-    // begin_solve).
-    const double G_at_T_collar =
-        use_integral_cache ? root_vuln_integral_at(T_collar) : 0.0;
-
-    // GUARD POLICY (the per-layer isfinite/stop guards here were added while
-    // debugging the #485 drought-NaN, now fixed at source by the soil residual-
-    // moisture floor). Most were defensive and redundant, so they have been
-    // removed from this hot loop; the remaining two are load-bearing:
-    //   * the equal-potentials f_ri <= 0 check below: it USED to be the only
-    //     thing standing between a deep-drought layer and the negative
-    //     conductivity root_vuln_from_psi's extrapolant produced past its
-    //     domain -- negative-but-FINITE r_R, so a wrong-sign E_i the post-loop
-    //     isfinite(E_up) net would not catch. That case is now prevented at
-    //     source: root_vuln_at clamps its argument to the last knot, so f_ri is
-    //     bounded below by the last knot's ~1% (issue #1). The check stays as a
-    //     cheap assertion on that, not as the enforcement.
-    //   * the post-loop isfinite(E_up) check: any non-finite produced anywhere
-    //     in the loop propagates into the sum and is caught there once per call.
-    // Everything else is provably safe to drop on the valid path: psi_soil is
-    // validated in Leaf::set_physiology; T_src_min<=T_src_max by construction;
-    // the general-branch integral comes from a monotone-increasing spline so it
-    // is strictly > 0 (span>0), giving r_R>0 and finite E_i; and any stray
-    // NaN/Inf still reaches the post-loop net.
-    for(int i = 0; i < max_soil_layer; i++){
-
-    // The wetter end of the interval spanned between this layer and the collar --
-    // the SMALLER suction, where the signed convention took a minimum.
-    double T_src_min = std::min(psi_soil[i], T_collar);
-
-    // The drier end: the LARGER suction.
-    double T_src_max = std::max(psi_soil[i], T_collar);
-
-     // If root collar soil water potential equals the soil water potential in a given layer
-    if(std::abs(T_collar - psi_soil[i]) < 1e-8){
-
-      // Fraction of conductance in roots in a given layer at the driest suction
-      // (which here equals the root collar's).
-      // root_vuln_from_psi is a pre-built spline of exp(-(psi/b_root)^c_root),
-      // read through root_vuln_at so a layer drier than the grid gets the last
-      // knot's conductivity rather than an extrapolated (eventually negative) one.
-      double f_ri = root_vuln_at(T_src_max);
-      if (!std::isfinite(f_ri) || f_ri <= 0.0) {
-        util::stop_infeasible("uptake",
-            "E_from_Soil_to_Root_Collar invalid f_ri; layer=" + std::to_string(i) +
-                   "; f_ri=" + util::to_string(f_ri) +
-                   "; T_src_max=" + util::to_string(T_src_max) +
-                   "; T_collar=" + util::to_string(T_collar));
-      }
-
-      // Fraction of conductance in roots in a given layer at the driest suction
-      double r_R_H = network_.r_R_H_min[i] / f_ri; // [MPa * s * (mol H2O)^-1]
-
-      // Total root resistance (horizantal plus vertical)
-      double r_R = r_R_H + network_.r_R_V_sum[i];
-
-      // Transpiration is equivalent to gravitational water loss (i.e. layer gains water)
-      double E_i = -grav_head_z_[i] / r_R ;
-
-      soil_consumption[i] = E_i;
-      E_up += E_i;
-
-    }
-    else if(std::abs((T_collar - psi_soil[i]) - grav_head_z_[i]) < 1e-8){
-      // If pressure difference perfectly balances gravity transpiration is equal to zero
-      double E_i = 0.0; // [mol H2O / m^2 / s]
-
-      soil_consumption[i] = E_i;
-
-      E_up += E_i;
-
-    } else{
-
-      // Mean fractional root conductivity over the suction interval
-      // [T_src_min, T_src_max], i.e. (1/(b-a)) * integral_a^b f_r dT.
-      // Computed from the pre-integrated curve G(m) = integral_0^m f_r(s) ds
-      // (root_vuln_integral_from_psi, indexed by the suction magnitude) with 2
-      // evals instead of the old (n+1)-point sample mean. The interval is split
-      // at T = 0: for T < 0 (an above-atmospheric potential) vulnerability is 1.
-      double T_pos_lo = std::max(T_src_min, 0.0); // wet end of the T>=0 part
-      double T_neg_hi = std::min(T_src_max, 0.0); // dry end of the T<0 part
-
-      // Memoised cumulative-integral lookup. Returns the exact same double the
-      // spline would (same input -> same output); the comparisons select the
-      // precomputed value because T_src_max / T_pos_lo are bit-for-bit equal to
-      // one of the cached arguments in the common (T>=0) case.
-      auto G_integral = [&](double arg) -> double {
-        if (use_integral_cache) {
-          if (arg == T_collar) return G_at_T_collar;
-          if (arg == psi_soil[i]) return root_vuln_integral_soil_[i];
-        }
-        return root_vuln_integral_at(arg);
-      };
-
-      double integral = 0.0;
-      if (T_pos_lo < T_src_max) {
-        // T>=0 part: suction runs from T_pos_lo up to T_src_max
-        integral += G_integral(T_src_max) - G_integral(T_pos_lo);
-      }
-      if (T_src_min < T_neg_hi) {
-        // T<0 part: f_r == 1 over its length
-        integral += (T_neg_hi - T_src_min);
-      }
-
-    // span = T_src_max - T_src_min > 0 here (the equal-potentials case is
-    // handled in the branch above). integral comes from the monotone-increasing
-    // cumulative-vulnerability curve so it is > 0 over a span>0 interval;
-    // forming r_R_H as r_R_H_min * span / integral is one division (vs the old
-    // f_r_average = integral/span then r_R_H_min/f_r_average two), and needs no
-    // per-layer finiteness guard (any stray NaN/Inf propagates to the post-loop
-    // isfinite(E_up) net).
-    //
-    // The exception, since the cap: with BOTH bounds past 7.3132 MPa the integral
-    // is exactly 0 and r_R_H +Inf. E_i is then -0 and duptake_dpsi NaN, which its
-    // caller reads as "use central differences".
-    const double span = T_src_max - T_src_min;
-
-    // Find the horizantal resistance in a given layer by dividing the minimum resistance (i.e. maximum conductivity) by the fractional loss of conductivity
-    double r_R_H = network_.r_R_H_min[i] * span / integral; // [MPa * s * (mol H2O)^-1]
-
-    // Find the total resistance in a given layer by adding the vertical resistance in that layer
-    double r_R = r_R_H + network_.r_R_V_sum[i]; // [MPa * s * (mol H2O)^-1]
-
-    // Transpiration is equal to the potential gradient between the root collar
-    // and the soil, accounting for gravitational potential. In magnitudes the
-    // collar has to pull HARDER than the soil holds, plus enough to lift the
-    // water -- hence the subtraction order. E_i < 0 still means the layer gains.
-    double E_i = (T_collar - psi_soil[i] - grav_head_z_[i]) / r_R; // [mol H2O / m^2 / s]
-
-    soil_consumption[i] = E_i;
-    E_up += E_i;
-
-    }
-  }
-  // Convert the summed uptake to kg H2O m^-2 s^-1, consistent with the rest of
-  // the leaf model and environment. NOTE (review #10): only the aggregate E_up
-  // is converted to kg here; the per-layer soil_consumption[i] above is left in
-  // mol H2O m^-2 s^-1 and converted downstream in TF24_Strategy::compute_rates.
-  // The two siblings therefore carry different units by design.
-  E_up = E_up * kg_per_mol_h2o;
-  if (!std::isfinite(E_up)) {
-    util::stop_infeasible("uptake",
-        "E_from_Soil_to_Root_Collar non-finite E_up_; T_collar=" + util::to_string(T_collar) +
-               "; max_soil_layer=" + std::to_string(max_soil_layer));
-  }
   }
 };
 
