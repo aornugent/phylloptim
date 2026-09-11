@@ -5706,9 +5706,8 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // MUST BE IN THIS LIST -- one left out is a row that never arrives, which
   // reads as an exact zero in that column rather than as an error. `held` is
   // to_passive and carries none.
-  std::size_t sigma_rows = 0;
   const S sigma_h = odelia::implicit_value<S>(
-      sigma_star, dT1_dsigma, sigma_rows,
+      sigma_star, dT1_dsigma,
       [&](const S& sg) -> S {
         return pars[par_kmax] * (leaf.template stem_integral_at<S>(sg, pars) -
                                  leaf.template stem_integral_at<S>(held, pars)) -
@@ -5742,12 +5741,11 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   }
   // The capacity and stem_flux are the active things the residual reads, so they
   // are the list; ca_, gc_per_flux and inv_atm are double.
-  std::size_t ci_rows = 0;
   const S ci_h =
       ci_at_compensation_point()
           ? S(ci_star)
           : odelia::implicit_value<S>(
-                ci_star, dT2_dci, ci_rows,
+                ci_star, dT2_dci,
                 [&](const S& c) -> S {
                   const S A = leaf.template assim_colimited_kernel<S>(c, cap);
                   return A * umol_to_mol -
@@ -5979,10 +5977,10 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
     // The residual IS the draw: uptake vanishes at this collar. implicit_value
     // evaluates at the passive bound, and the draw was taken there, so
     // re-recording the supply would put the same expression on the tape twice.
-    std::size_t wet_rows = 0;
-    return odelia::implicit_value<S>(
-        bound_x, dflux_dx, wet_rows,
+    const S wet = odelia::implicit_value<S>(
+        bound_x, dflux_dx,
         [&](const S&) -> S { return draw.flux.value; }, draw.flux.value);
+    return wet;
   }
 
   // The dry end is T1 with the stem held at ITS critical potential: the collar at
@@ -5994,9 +5992,8 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
   const double dT_dx =
       -to_passive(pars[par_kmax]) * stem_curve_integral_deriv(bound_x) -
       dflux_dx;
-  std::size_t dry_rows = 0;
-  return odelia::implicit_value<S>(
-      bound_x, dT_dx, dry_rows,
+  const S dry = odelia::implicit_value<S>(
+      bound_x, dT_dx,
       [&](const S& x) -> S {
         return pars[par_kmax] *
                    (leaf.template stem_integral_at<S>(psi_crit_at<S>(pars),
@@ -6005,6 +6002,7 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
                draw.flux.value;
       },
       pars, draw.flux.value);
+  return dry;
 }
 
 // An interior point is the only kind whose condition is a second derivative, so
@@ -6034,9 +6032,8 @@ inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
                 : interior_curvature;
         // The whole draw, because marginal_at reads more of it than the flux:
         // SupplyDraw names its own active members for this.
-        std::size_t interior_rows = 0;
         collar = odelia::implicit_value<S>(
-            opt_root_psi_, curvature, interior_rows,
+            opt_root_psi_, curvature,
             [&](const S& y) -> S {
               return marginal_at<K, S>(y, draw, pars);
             },
