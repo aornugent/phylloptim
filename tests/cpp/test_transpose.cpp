@@ -137,7 +137,7 @@ Inputs<S> inputs_of(const pl::Leaf& l) {
 }
 
 // <v, J u>: one tangent, every input seeded at once.
-double forward_side(const pl::Leaf& l, const std::vector<double>& u,
+double forward_side(pl::Leaf l, const std::vector<double>& u,
                     const std::vector<double>& v, double curvature,
                     bool has_coords) {
   Inputs<T> in = inputs_of<T>(l);
@@ -172,7 +172,7 @@ struct Pairing {
 };
 
 // One recording, one sweep.
-Pairing reverse_side(const pl::Leaf& l, const std::vector<double>& u,
+Pairing reverse_side(pl::Leaf l, const std::vector<double>& u,
                      const std::vector<double>& v, double curvature,
                      bool hold_collar, bool has_coords) {
   Tape tape;
