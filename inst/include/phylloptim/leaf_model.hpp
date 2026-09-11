@@ -138,7 +138,7 @@ public:
        double ci_niter,
       double TF24_cost_scale);
 
-  odelia::interpolator::Interpolator transpiration_from_psi;
+  odelia::interpolator::hermite_interpolator<double> transpiration_from_psi;
   // The knots that interpolant was built on: the potential at each, and G there.
   //
   // ⚠️ THERE IS NO SECOND TABULATION, AND THAT IS THE POINT. G^-1 is this same
@@ -1082,7 +1082,7 @@ public:
   // "u = 7.5 beyond the upper end" is ambiguous in exactly the way that matters.
   // Nor can it name the caller -- the same spline is read from four places, and
   // localising plant#576 came down to which.
-  static double eval_stem_curve(const odelia::interpolator::Interpolator& spline,
+  static double eval_stem_curve(const odelia::interpolator::hermite_interpolator<double>& spline,
                                 double u, double scale, const char* spline_name,
                                 const char* arg_name, const char* caller);
 
@@ -4805,7 +4805,7 @@ inline void Leaf::setup_transpiration(double resolution) {
     double scale, const char* spline_name, const char* arg_name,
     const char* caller);
 
-inline double Leaf::eval_stem_curve(const odelia::interpolator::Interpolator& spline,
+inline double Leaf::eval_stem_curve(const odelia::interpolator::hermite_interpolator<double>& spline,
                                     double u, double scale,
                                     const char* spline_name,
                                     const char* arg_name, const char* caller) {
@@ -4871,9 +4871,9 @@ inline double Leaf::stem_curve_integral(double psi, const char* caller) const {
 
 inline double Leaf::stem_curve_integral_deriv(double psi) const {
   if (stem_b == stem_b_spline_) {
-    return transpiration_from_psi.deriv(psi);
+    return transpiration_from_psi.slope(psi);
   }
-  return transpiration_from_psi.deriv(psi / (stem_b / stem_b_spline_));
+  return transpiration_from_psi.slope(psi / (stem_b / stem_b_spline_));
 }
 
 // G^-1 on the table G is read from. G is the integral of a positive
@@ -4896,7 +4896,7 @@ inline double Leaf::invert_stem_curve(double w) const {
     const double f = transpiration_from_psi.eval(psi) - w;
     if (f == 0.0) return psi;
     if (f > 0.0) hi = psi; else lo = psi;
-    const double slope = transpiration_from_psi.deriv(psi);
+    const double slope = transpiration_from_psi.slope(psi);
     double next = slope > 0.0 ? psi - f / slope : 0.5 * (lo + hi);
     if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
     if (next == psi) break;

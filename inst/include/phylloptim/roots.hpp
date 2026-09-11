@@ -398,11 +398,11 @@ public:
   // model. In plant that is TF24_Strategy.
 
   // pre-computed root vulnerability curve f_r(m) = exp(-(m/root_b)^root_c)
-  odelia::interpolator::Interpolator root_vuln_from_psi;
+  odelia::interpolator::hermite_interpolator<double> root_vuln_from_psi;
   // cumulative integral of it, G(m) = int_0^m f_r(s) ds, indexed by magnitude
   // m = -psi. Lets uptake() obtain the mean conductivity over a potential
   // interval from 2 evals instead of (n+1).
-  odelia::interpolator::Interpolator root_vuln_integral_from_psi;
+  odelia::interpolator::hermite_interpolator<double> root_vuln_integral_from_psi;
   // What the two splines do past their last knot, cached by setup_vulnerability.
   // Both are read through the accessors below, never as bare .eval() calls --
   // see the accessors for why. util::na_value until a curve is built.
@@ -571,7 +571,7 @@ public:
     if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
       return 0.0;
     }
-    return root_vuln_integral_from_psi.deriv(psi);
+    return root_vuln_integral_from_psi.slope(psi);
   }
 
   // Per-timestep soil state: the layer potentials, the layer depths, and the
