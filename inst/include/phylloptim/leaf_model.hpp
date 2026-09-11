@@ -1046,9 +1046,8 @@ public:
   // The stem cumulative-vulnerability integral G and its inverse, as the FOUR
   // operations the model actually performs on them. Both directions read ONE
   // table -- the inverse by inverting it -- and every read goes through these,
-  // which is
-  // what lets `stem_curve_closed_form_` be a single flag rather than a condition
-  // repeated at eight call sites.
+  // which is what keeps the rescale below in one place rather than as a
+  // condition repeated at eight call sites.
   //
   // At stem_b == stem_b_spline_ they are the splines, and bit-identically so --
   // the scale is exactly 1.0, and dividing by it is the identity. Otherwise they

@@ -883,7 +883,7 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
 // cannot handle -- that is what a proposal distribution does -- and that has to
 // cost those rows rather than the whole dataset. Throwing would take out a
 // likelihood evaluation, and with it the draw, for one observation the sampler
-// was entitled to reject on its own. `leaf_predict()` isolates per row for the
+// was entitled to reject on its own. `batch()` below isolates per row for the
 // same reason.
 //
 // A failed row's gradient is ALL NA rather than partially filled. A parameter

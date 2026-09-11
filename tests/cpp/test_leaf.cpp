@@ -259,8 +259,9 @@ void test_spline_matches_direct_integration() {
   printf("pre-integrated spline vs direct quadrature\n");
   Drivers d;
   phylloptim::Leaf l = make_leaf(d, {2.0}, {1.0});
-  // This is the check plant makes at test-leaf.r:214. The spline is what the hot
-  // path reads; adaptive Simpson integrates the curve directly.
+  // The same check plant makes in test-leaf.r, on transpiration against
+  // transpiration_full_integration. The spline is what the hot path reads;
+  // adaptive Simpson integrates the curve directly.
   for (double psi_stem : {2.5, 3.0, 4.0, 5.0}) {
     near(l.transpiration(psi_stem, 2.0),
          l.transpiration_full_integration(psi_stem, 2.0), 1e-6,

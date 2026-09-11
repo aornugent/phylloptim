@@ -339,8 +339,8 @@ layer_thicknesses(const std::vector<double>& soil_depth) {
 // TWO OUTPUTS ARE NOT OWNED HERE. E_up and the per-layer soil_consumption
 // buffer are passed in by reference rather than stored, because plant reaches
 // into `leaf.E_up_` / `leaf.soil_consumption_[a]` by name and *writes back*
-// into them after crown integration (tf24_strategy.cpp:501-508). They are
-// plant's buffers, not this object's state. Note the deliberate unit split:
+// into them after crown integration, in TF24_Strategy::net_mass_production_dt.
+// They are plant's buffers, not this object's state. Note the deliberate unit split:
 // E_up is kg H2O m^-2 s^-1, soil_consumption[i] is mol, converted downstream.
 
 // The active inputs the uptake path reads, as a view.
@@ -518,10 +518,11 @@ public:
     // above -- so this pair costs nothing beyond passing it.
     root_vuln_integral_from_psi.init(x_psi_root, y_integral, y_f_r);
 
-    // The last knot, NOT vulnerability_psi_max: the knot loop advances by
-    // accumulation and stops one step short of psi_max (6.8229 against 6.8918 at
-    // the root defaults), so psi_max is itself outside the domain and clamping to
-    // it would throw.
+    // Read off the spline rather than recomputed. cumulative_vulnerability_integral
+    // sets its final knot to vulnerability_psi_max EXACTLY -- the `i == n` branch
+    // is there so the two cannot disagree by a rounding -- so this is that number
+    // (6.8918 MPa at the root defaults). Taking it from the curve keeps it one
+    // number rather than two spellings of one.
     root_vuln_last_knot_ = root_vuln_from_psi.max();
     root_vuln_integral_limit_ =
         cumulative_vulnerability_integral_limit(root_b, root_c);

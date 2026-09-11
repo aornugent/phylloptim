@@ -26,8 +26,8 @@ enum clamp_site {
   // the end-knot polynomial would otherwise accumulate for ever.
   CLAMP_ROOT_VULN_INTEGRAL_CAP = 0,
   // The conductivity lookup's argument, clamped into the knot domain. The upper
-  // end is the curve's last knot (6.8229 MPa at the root defaults), the lower is
-  // zero.
+  // end is the curve's last knot, which is vulnerability_psi_max exactly
+  // (6.8918 MPa at the root defaults); the lower is zero.
   CLAMP_ROOT_VULN_ARGUMENT,
   // The energy-balance leaf temperature, held inside a physical range so an
   // extreme non-equilibrium transpiration cannot drive the Arrhenius block
