@@ -42,12 +42,16 @@ endif
 # which reads like a broken toolchain and is not. It bites on Linux, where
 # apt's libboost-dev headers land in /usr/include and CI passes BH_INC=/usr/include.
 # The compiler already searches /usr/include, so dropping the flag costs nothing.
-# ⚠️ PHYLLOPTIM NOW HAS A REVERSE-MODE PATH, and nothing will tell you if these
-# disagree. XAD's active tape is a __thread variable whose STORAGE CLASS is
-# not part of the mangled name, so a mismatch against odelia's and plant's
-# Makevars links cleanly and is undefined behaviour. These two must stay equal to
-# theirs. Forward mode is tapeless and needed neither, which is why
-# src/Makevars was exempt -- it is not exempt once the R layer reaches the tape.
+# ⚠️ MUST EQUAL odelia's AND plant's Makevars, AND NOTHING WILL TELL YOU IF THEY
+# DISAGREE. XAD's active tape is a __thread variable whose STORAGE CLASS is not
+# part of the mangled name, so a mismatch links cleanly and is undefined
+# behaviour. Two programs here record: test_transpose and the probes.
+#
+# src/Makevars carries the pair too. Measured, it need not: the shipped
+# phylloptim.so contains no XAD tape symbol at all, because the R layer uses
+# xad::fwd only and forward mode is tapeless. It is set there because the
+# exemption is silent -- the first reverse-mode path added to src/ needs both,
+# and nothing raises.
 XADFLAGS = -DXAD_NO_THREADLOCAL -DXAD_USE_STRONG_INLINE
 # The one translation unit odelia compiles the tape into. The installed package
 # ships headers only, so this comes from a checkout -- and ODELIA_INC resolves to
@@ -158,4 +162,5 @@ primitives-golden: test_primitives
 	./test_primitives --generate
 
 clean:
-	rm -f test_leaf test_supplied_rows test_transpose test_golden test_primitives bench_solve bench_gradient probe_tape_regions
+	rm -f test_leaf test_supplied_rows test_transpose test_golden test_primitives \
+	      bench_solve bench_gradient probe_tape_regions probe_preaccumulation

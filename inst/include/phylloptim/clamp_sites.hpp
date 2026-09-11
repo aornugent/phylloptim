@@ -34,8 +34,9 @@ enum clamp_site {
   // non-finite. Reached only with use_energy_balance on.
   CLAMP_LEAF_TEMPERATURE,
   // A collar potential projected into the feasible interval. For a partial taken
-  // at a held collar the unclamped alternative is profit_at_fixed_collar, which
-  // refuses instead; this one is for a tracked collar being nudged.
+  // at a held collar the unclamped alternative is a `_checked` reader --
+  // dprofit_droot_collar_psi_checked -- which refuses instead; this one is for a
+  // tracked collar being nudged.
   CLAMP_COLLAR_POTENTIAL,
   CLAMP_SITE_COUNT
 };

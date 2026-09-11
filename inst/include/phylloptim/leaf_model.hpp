@@ -1201,17 +1201,6 @@ public:
     std::vector<T> uptake;
   };
 
-  // The same two, at double, plus whether the collar could be evaluated at all.
-  // DERIVES rather than repeating them.
-  //
-  // The flag is not an error channel and should not become one: an infeasible
-  // collar is an EXPECTED outcome on a sweep -- 1536 of the golden file's 5184
-  // rows refuse -- so unwinding for it would be the wrong shape. This is the same
-  // convention the `_checked` readers use, under a name that says which collar.
-  struct FixedCollarEval : LeafOutputs<double> {
-    bool feasible = false;
-  };
-
   // The soil's draw at ONE collar, with the collar it was taken at, so a flux
   // from one and a slope from another cannot be paired. check_draw enforces that
   // at every read rather than trusting the caller.
