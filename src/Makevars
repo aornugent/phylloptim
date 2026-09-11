@@ -7,3 +7,12 @@ CXX_STD = CXX20
 ## a warning in the model does not fail a consumer's build with -Werror; the
 ## headers get their own -Wall -Wextra treatment in tests/cpp.
 PKG_CPPFLAGS = -isystem../inst/include/
+
+## The same two defines odelia and plant set. Measured inert here today --
+## phylloptim.so carries no XAD tape symbol at all, because the package uses
+## xad::fwd only and forward mode is tapeless -- and set anyway, because the
+## exemption is silent: the first reverse-mode path added to this package needs
+## both, a storage-class mismatch does not change the mangled name, and the
+## linker resolves it quietly. Four build files carrying one pair is an easier
+## invariant to hold than three carrying it and one exempt until it is not.
+PKG_CPPFLAGS += -DXAD_NO_THREADLOCAL -DXAD_USE_STRONG_INLINE

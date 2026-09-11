@@ -500,21 +500,23 @@ public:
       y_f_r_slope[i] = -y_f_r[i] * (root_c / root_b) * std::pow(u, root_c - 1.0);
     }
     root_vuln_from_psi.init(x_psi_root, y_f_r, y_f_r_slope);
-    root_vuln_from_psi.set_extrapolate(false);
 
-    // Integral: extrapolation stays ON, under a ceiling. Its limit is finite and
+    // ⚠️ NEITHER SPLINE REFUSES AN OUT-OF-DOMAIN READ. A hermite interpolator
+    // extends linearly from the end knot in eval, value_at and slope alike, and
+    // there is no switch to turn that off -- DO NOT reach for one, and do not
+    // read a bound into the init call above. What bounds each curve is its
+    // accessor below: root_vuln_at clamps the argument, root_vuln_integral_at
+    // caps the value, and those are the only way the rest of this class reads a
+    // curve.
+    //
+    // Integral: the extension is wanted, under a ceiling. Its limit is finite and
     // non-zero, and the end-knot polynomial tracks the true G closely over the
     // half-MPa it takes to reach that limit (3.46212 against 3.46176 at 7 MPa), so
     // capping the VALUE is both smooth and tighter than clamping the argument
     // would be. root_vuln_integral_at applies the cap.
-    //
-    // Do not set this false "to match" the conductivity spline: odelia's deriv()
-    // has no extrapolation check where eval() does, so eval would throw while
-    // deriv went on extrapolating.
     // dG_root/dpsi IS f_r by the fundamental theorem, and y_f_r is already built
     // above -- so this pair costs nothing beyond passing it.
     root_vuln_integral_from_psi.init(x_psi_root, y_integral, y_f_r);
-    root_vuln_integral_from_psi.set_extrapolate(true);
 
     // The last knot, NOT vulnerability_psi_max: the knot loop advances by
     // accumulation and stops one step short of psi_max (6.8229 against 6.8918 at
@@ -525,9 +527,9 @@ public:
         cumulative_vulnerability_integral_limit(root_b, root_c);
   }
 
-  // f_r at a suction, clamped into the knot domain -- set_extrapolate(false)
-  // throws at both ends, and the last knot's ~1% is the driest conductivity this
-  // curve describes.
+  // f_r at a suction, clamped into the knot domain. This clamp is the whole of
+  // the bound: past the last knot the spline extends linearly and runs negative,
+  // and the last knot's ~1% is the driest conductivity this curve describes.
   //
   // Operand order is load-bearing: written this way both clamps return psi when
   // psi is NaN, where the reversed forms return the bound. The uptake call site's
@@ -836,6 +838,26 @@ public:
     // outputs_at pairs a row with the wrong layer or refuses on the length.
     // Measured: plant's gradient ladder refused a whole sweep on
     // "expected 5, received 2".
+    //
+    // ⚠️ max_soil_layer BELONGS TO THE ROOT NETWORK, NOT TO THE CALLER'S SOIL
+    // VECTOR, and the loop below indexes all three by it. A caller probing the
+    // supply at a shorter psi_soil than the network was built over -- which
+    // duptake_dpsi and the R-facing E_from_Soil_to_Root_Collar both accept --
+    // reads past the end of psi_soil and WRITES past the end of
+    // soil_consumption. Checked here, once, against the bound the loop actually
+    // uses, rather than at each entry point against a length each of them
+    // derives differently.
+    const std::size_t layers = static_cast<std::size_t>(max_soil_layer);
+    if (psi_soil.size() < layers) {
+      util::stop("uptake: the root network reaches " + util::to_string(max_soil_layer) +
+                 " layers and psi_soil carries " + util::to_string(static_cast<int>(psi_soil.size())) +
+                 "; a supply probe must cover every rooted layer");
+    }
+    // Grown rather than assigned: a caller handing a longer vector keeps its
+    // length, which is the per-soil-layer convention above.
+    if (soil_consumption.size() < layers) {
+      soil_consumption.resize(layers, T(0.0));
+    }
     if (conductance != nullptr) {
       conductance->total = T(0.0);
       conductance->per_layer.assign(psi_soil.size(), 0.0);

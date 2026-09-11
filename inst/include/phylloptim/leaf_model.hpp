@@ -2065,10 +2065,14 @@ public:
   // curvature it cannot divide by -- passes it as `interior_curvature` rather
   // than letting this take it again: it is the same call with the same argument,
   // and it costs two model evaluations.
+  // NOT const. The interior arm takes the curvature by differencing, which
+  // drives the model off the operating point and puts it back -- so this mutates
+  // the leaf even though it leaves it where it found it. Declared const it
+  // const_cast itself, which hid that from every caller.
   template <CostCurve K, class S>
   S collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
               double interior_curvature =
-                  std::numeric_limits<double>::quiet_NaN()) const;
+                  std::numeric_limits<double>::quiet_NaN());
 
   // The conditions that pin a collar. Neither is a second derivative, so each is
   // an ordinary implicit value: the residual's own slope at the bound, and the
@@ -4768,7 +4772,6 @@ inline void Leaf::setup_transpiration(double resolution) {
     g_[i] = proportion_of_conductivity_kernel(x_psi_[i]);
   }
   transpiration_from_psi.init(x_psi_, y_cumulative_transpiration_, g_);
-  transpiration_from_psi.set_extrapolate(false);
 
   // ⚠️ THE INVERSE IS NOT FITTED. It is this table, inverted -- see the members.
   // Kept rather than re-derived because inverting needs the segment, and the
@@ -4821,9 +4824,12 @@ inline double Leaf::eval_stem_curve(const odelia::interpolator::Interpolator& sp
   // scale == 1.0 is the production path (no stem_b rescale), and it must not pay
   // for the rescaled one: dividing and re-multiplying by 1.0 is exact but not
   // free, and collapsing the two cases into one measured +5% on
-  // find_root_collar_psi. The check itself is a duplicate of the one inside
-  // odelia's eval and costs nothing measurable -- it exists only to raise a
-  // message that names this spline and its caller.
+  // find_root_collar_psi.
+  //
+  // ⚠️ THIS CHECK IS THE ONLY ONE -- DO NOT DROP IT AS A DUPLICATE OF ONE INSIDE
+  // odelia. eval extends linearly past the end knot and raises nothing, so
+  // without this a stem potential off the table is answered with a straight line
+  // rather than refused.
   if (scale == 1.0) {
     if (u < spline.min() || u > spline.max()) {
       stem_curve_out_of_domain(spline.min(), spline.max(), u, u, scale,
@@ -6018,7 +6024,7 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
 // condition is first order and composes here.
 template <Leaf::CostCurve K, class S>
 inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
-                         double interior_curvature) const {
+                         double interior_curvature) {
   check_draw(opt_root_psi_, draw);
   S collar = S(opt_root_psi_);
   switch (operating_point_kind_) {
@@ -6034,10 +6040,9 @@ inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
       // forward model for a derivative it discards is what made a century stand
       // 191 s against 32 s.
       if constexpr (!std::is_same_v<S, double>) {
-        Leaf& self = const_cast<Leaf&>(*this);
         const double curvature =
             std::isnan(interior_curvature)
-                ? self.template marginal_collar_slope<K>()
+                ? this->template marginal_collar_slope<K>()
                 : interior_curvature;
         // The whole draw, because marginal_at reads more of it than the flux:
         // SupplyDraw names its own active members for this.
