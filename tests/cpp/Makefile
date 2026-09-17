@@ -85,9 +85,11 @@ GOLDEN_ARGS ?=
 # ⚠️ EVERY TEST PROGRAM MUST BE NAMED HERE. This Makefile lists its sources
 # explicitly, and that is exactly how tests/validate/ rotted through two interface
 # changes without anyone noticing (#64): a file no build touches compiles in
-# nobody's head. Adding a .cpp under tests/cpp/ without adding it to `build`, to
-# `all`, to CMakeLists.txt and to cpp-tests.yml leaves it in the same state, with a
-# newer date on it.
+# nobody's head. A new .cpp under tests/cpp/ has to be named in eight places, in
+# four languages, with nothing checking that they agree -- its own rule here,
+# `build` or `bench`, `all`, `clean`, CMakeLists.txt, tests/cpp.R, .Rbuildignore
+# and tests/cpp/.gitignore. Leave it out of one and it is in the same state as
+# tests/validate/, with a newer date on it.
 all: build
 	./test_leaf
 	./test_supplied_rows
