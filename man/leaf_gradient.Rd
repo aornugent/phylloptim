@@ -360,7 +360,7 @@ It is better in a second way, which is sharper than accuracy. \code{psi_crit} do
 not appear in the profit function at all -- it only sets the dry end of the
 feasible collar interval -- so the composite necessarily returns \strong{exactly
 zero} for it. At an interior optimum that is correct. At a boundary-crit optimum
-\code{psi_crit} \emph{is} the binding constraint, the true \code{dA/dθ} is about \code{1.26}, and a
+\code{psi_crit} \emph{is} the binding constraint, the true \verb{dA/dθ} is about \code{1.26}, and a
 zero is arguably a worse answer than a wildly wrong one: it tells an optimiser
 the parameter does nothing, and nothing about it looks suspicious. The
 difference of the solve gets it for free.

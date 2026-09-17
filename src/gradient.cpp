@@ -177,9 +177,9 @@ Rcpp::List gradient_batch_run(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_,
   const std::size_t n = batch_drivers->size();
   const std::size_t npars = static_cast<std::size_t>(pars.size());
 
-  if (theta.ncol() != phylloptim::gradient::n_pars) {
+  if (theta.ncol() != phylloptim::gradient::n_theta) {
     Rcpp::stop("gradient_batch_run(): `theta` must have %d columns",
-               phylloptim::gradient::n_pars);
+               phylloptim::gradient::n_theta);
   }
   const std::size_t theta_nrow = static_cast<std::size_t>(theta.nrow());
   if (theta_nrow != 1 && theta_nrow != n) {
@@ -187,7 +187,7 @@ Rcpp::List gradient_batch_run(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_,
                "observation");
   }
   for (R_xlen_t k = 0; k < pars.size(); ++k) {
-    if (pars[k] < 0 || pars[k] >= phylloptim::gradient::n_pars) {
+    if (pars[k] < 0 || pars[k] >= phylloptim::gradient::n_theta) {
       Rcpp::stop("gradient_batch_run(): `pars` is out of range");
     }
   }
