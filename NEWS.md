@@ -9,9 +9,11 @@ being recorded and differentiated. What that changes for a caller:
 * **`vulnerability_curve_ncontrol` defaults to 400, was 100.** The
   pre-integrated vulnerability tables are built on four times the knots, and
   every number read off them moves. `leaf_control()` carries the new default.
-  ⚠️ The same number is written in three places -- `Leaf::ncontrol_default` in
-  `leaf_model.hpp`, `.leaf_control_defaults` and `leaf_control()`'s formals --
-  and nothing checks them against each other.
+  ⚠️ The number is written twice -- `Leaf::ncontrol_default` in
+  `leaf_model.hpp`, which plant's `Control` reads, and `leaf_control()`'s formal,
+  which R has to pass because only the 15-argument constructor is bound. plant's
+  `test-control.R` compares the two with `expect_identical`; nothing in this
+  package does, and the golden file cannot see the difference.
 * **`n_pars` is 20, and the fitted length is `n_theta` = 19.** The pack the
   kernels read also holds `par_PPFD`, which is seated per observation from the
   drivers and is never fitted, so it has a slot and no name. Read `theta` out to
