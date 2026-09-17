@@ -6,7 +6,7 @@
 \usage{
 leaf_control(
   GSS_tol_abs = 0.001,
-  vulnerability_curve_ncontrol = 100,
+  vulnerability_curve_ncontrol = 400,
   ci_abs_tol = 0.001,
   ci_niter = 1000,
   integration_rule = 21,

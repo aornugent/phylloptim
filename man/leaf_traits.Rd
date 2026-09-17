@@ -104,11 +104,10 @@ the resulting \code{Leaf} and not settable anywhere. See \code{\link[=weibull_p5
 \section{psi_crit is not a free trait}{
 
 \code{psi_crit} is the stem curve's \strong{P95} and is derived from \code{stem_P50}/\code{stem_c},
-not set. It used to be settable, describing a curve it was not derived from:
-the curve is pre-integrated over \verb{[0, P99]}, \code{psi_crit} never entered that
-bound, and every solve evaluates the curve \emph{at} \code{psi_crit} -- so anyone fitting
-a measured vulnerability curve picked a plausible number and got a domain error
-naming only the interpolator.
+not set, and could not safely be: the curve is pre-integrated over \verb{[0, P99]},
+\code{psi_crit} does not enter that bound, and every solve evaluates the curve \emph{at}
+\code{psi_crit} -- so setting it to a plausible number off a measured vulnerability
+curve gives a domain error naming only the interpolator.
 
 At the defaults:
 

@@ -53,15 +53,6 @@
   CMax_b = 0.0
 )
 
-.leaf_control_defaults <- list(
-  GSS_tol_abs = 1e-3,
-  vulnerability_curve_ncontrol = 100,
-  ci_abs_tol = 1e-3,
-  ci_niter = 1000,
-  integration_rule = 21,
-  integration_tol = 1e-8
-)
-
 ##' Physiological traits for a leaf
 ##'
 ##' The traits, and only the traits. Numerical settings live in
@@ -83,11 +74,10 @@
 ##'
 ##' @section psi_crit is not a free trait:
 ##' `psi_crit` is the stem curve's **P95** and is derived from `stem_P50`/`stem_c`,
-##' not set. It used to be settable, describing a curve it was not derived from:
-##' the curve is pre-integrated over `[0, P99]`, `psi_crit` never entered that
-##' bound, and every solve evaluates the curve *at* `psi_crit` -- so anyone fitting
-##' a measured vulnerability curve picked a plausible number and got a domain error
-##' naming only the interpolator.
+##' not set, and could not safely be: the curve is pre-integrated over `[0, P99]`,
+##' `psi_crit` does not enter that bound, and every solve evaluates the curve *at*
+##' `psi_crit` -- so setting it to a plausible number off a measured vulnerability
+##' curve gives a domain error naming only the interpolator.
 ##'
 ##' At the defaults:
 ##'
@@ -238,8 +228,21 @@ leaf_traits <- function(vcmax_25 = 96,
 ##' leaf_control()
 ##' leaf_control(GSS_tol_abs = 1e-5)
 ##' @export
+# ⚠️ `vulnerability_curve_ncontrol` MUST EQUAL `Leaf::ncontrol_default` in
+# leaf_model.hpp. RcppR6 binds only the 15-argument constructor, so R has to pass
+# the number in and cannot read the C++ one -- this literal is the copy. What
+# holds the two together is plant's test-control.R, which compares plant's
+# Control (seated from the constant in plant/src/control.cpp) against
+# `leaf_control()` with expect_identical. It runs in plant's check and not in
+# this package's, so a drift introduced here surfaces one repository away.
+#
+# ⚠️ AND THE GOLDEN FILE DOES NOT CATCH IT, whatever helper-golden.R's note about
+# drifting defaults suggests: that argument holds for a trait, which enters the
+# answer, and not for a spline resolution, which only refines it. Measured on the
+# golden grid's own driver rows, 400 -> 40 moves every field by 3.0e-06 and
+# 400 -> 20 by 5.0e-06, against per-class tolerances of 1e-05 and 5e-03.
 leaf_control <- function(GSS_tol_abs = 1e-3,
-                         vulnerability_curve_ncontrol = 100,
+                         vulnerability_curve_ncontrol = 400,
                          ci_abs_tol = 1e-3,
                          ci_niter = 1000,
                          integration_rule = 21,

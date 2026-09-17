@@ -129,11 +129,12 @@ test_that("R's hex parser is exact, which is what the expected values rely on", 
 
 test_that("leaf_model()'s defaults are the C++ default constructor's", {
   # tests/cpp/test_golden.cpp solves with a default-constructed phylloptim::Leaf, and
-  # every comparison below goes through leaf_model(). So the golden rows are
-  # already the strong form of this check. This is the cheap, legible form that
-  # says which thing broke when they fail: the stem vulnerability curve is built
-  # from stem_b and stem_c at construction, so proportion_of_conductivity is a
-  # fingerprint of that pair.
+  # every comparison below goes through leaf_model(). So for a TRAIT the golden
+  # rows are already the strong form of this check -- see helper-golden.R for the
+  # measurement that says leaf_control()'s settings are not covered by it. This is
+  # the cheap, legible form that says which thing broke when they fail: the stem
+  # vulnerability curve is built from stem_b and stem_c at construction, so
+  # proportion_of_conductivity is a fingerprint of that pair.
   l <- leaf_model()
   # exp(-(2/3.898245)^2.680147), the Weibull survival at psi = 2 MPa.
   expect_equal(l$proportion_of_conductivity(2.0),

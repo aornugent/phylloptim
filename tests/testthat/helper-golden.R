@@ -4,9 +4,15 @@
 # 1 bound only the 19-argument constructor and the R side had to name them all.
 # It no longer does, and that is the improvement: `leaf_model()` carries the
 # package's own defaults now, so solving through it here is what CHECKS those
-# defaults still equal `phylloptim::Leaf`'s. If the two ever drift apart the bit-exact
-# comparisons in test-golden.R fail, rather than quietly measuring a different
-# model than the one the golden file was generated from.
+# defaults still equal `phylloptim::Leaf`'s, rather than quietly measuring a
+# different model than the one the golden file was generated from.
+#
+# ⚠️ THAT REACHES THE TRAITS AND NOT leaf_control()'s NUMERICAL SETTINGS. A trait
+# enters the answer, so a drifted one moves these rows past tolerance; a spline
+# resolution only refines it. Measured: vulnerability_curve_ncontrol at 40 rather
+# than 400 moves every field here by 3.0e-06, and at 20 by 5.0e-06, against the
+# per-class tolerances of 1e-05 and 5e-03 below. What holds THAT default to the
+# C++ one is plant's test-control.R, one repository away.
 default_leaf <- function() leaf_model()
 
 # --- how exactly to compare -------------------------------------------------
