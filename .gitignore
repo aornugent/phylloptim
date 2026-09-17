@@ -10,16 +10,11 @@
 # plot_model_overview() written out by hand, as vignette("the-models") suggests
 overview.pdf
 
-# C++ / test harness
+# C++ / test harness. The binaries under tests/cpp/ are ignored beside themselves,
+# in tests/cpp/.gitignore, so that one list matches what the Makefile builds.
 *.o
 *.so
 *.dylib
-tests/cpp/test_leaf
-tests/cpp/test_golden
-tests/cpp/test_primitives
-tests/cpp/bench_solve
-tests/cpp/bench_gradient
-tests/cpp/*.dSYM/
 
 # macOS
 .DS_Store

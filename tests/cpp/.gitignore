@@ -1,7 +1,19 @@
-
-# built by the C++ suite
-test_leaf_gradient
-test_transpose
+# Every binary the Makefile builds, which is what `clean` removes: the five in
+# `build`, the two in `bench`, and the two probes that are neither. Here rather
+# than in the package .gitignore because the names are the Makefile's own and
+# cannot drift from the directory they are built in.
+#
+# ⚠️ .Rbuildignore carries these same nine for a different reason -- R CMD check's
+# check_executables() WARNS on an undeclared executable, and phylloptim's check leg
+# makes a WARNING red -- so a binary added here belongs there too, and nothing
+# checks that the two agree.
+test_leaf
 test_supplied_rows
-probe_preaccumulation
+test_transpose
+test_golden
+test_primitives
+bench_solve
+bench_gradient
 probe_tape_regions
+probe_preaccumulation
+*.dSYM/
