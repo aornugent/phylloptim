@@ -43,12 +43,27 @@
 
 # Built by make -C tests/cpp. The sources and ALL THREE golden files must ship --
 # the check in tests/cpp.R compiles and runs them -- but the binaries must not.
+#
+# ⚠️ ONE LINE PER TARGET THE MAKEFILE BUILDS, and the list is not optional
+# housekeeping: R CMD check's check_executables() WARNS on an undeclared
+# executable, and check-r-package sets no error-on, so the action's default
+# makes a WARNING a red leg for this package. Four binaries left off this list
+# took the tarball from 1,277,427 bytes to 2,500,921.
 ^tests/cpp/test_leaf$
 ^tests/cpp/test_golden$
 ^tests/cpp/test_primitives$
+^tests/cpp/test_supplied_rows$
+^tests/cpp/test_transpose$
 ^tests/cpp/bench_solve$
 ^tests/cpp/bench_gradient$
+^tests/cpp/probe_tape_regions$
+^tests/cpp/probe_preaccumulation$
 ^tests/cpp/.*\.dSYM$
+
+# The two probes are measurements rather than checks -- neither is in `all` --
+# and they read the suite's own root_network.hpp, which is why they sit beside
+# it rather than under notes/. They have no business in a tarball.
+^tests/cpp/probe_.*\.cpp$
 
 # Validation scripts, not tests: they need an installed plant and take minutes.
 # See the header comment in each.

@@ -42,6 +42,29 @@ endif
 # which reads like a broken toolchain and is not. It bites on Linux, where
 # apt's libboost-dev headers land in /usr/include and CI passes BH_INC=/usr/include.
 # The compiler already searches /usr/include, so dropping the flag costs nothing.
+# ⚠️ MUST EQUAL odelia's AND plant's Makevars, AND NOTHING WILL TELL YOU IF THEY
+# DISAGREE. XAD's active tape is a __thread variable whose STORAGE CLASS is not
+# part of the mangled name, so a mismatch links cleanly and is undefined
+# behaviour. Two programs here record: test_transpose and the probes.
+#
+# src/Makevars carries the pair too. Measured, it need not: the shipped
+# phylloptim.so contains no XAD tape symbol at all, because the R layer uses
+# xad::fwd only and forward mode is tapeless. It is set there because the
+# exemption is silent -- the first reverse-mode path added to src/ needs both,
+# and nothing raises.
+XADFLAGS = -DXAD_NO_THREADLOCAL -DXAD_USE_STRONG_INLINE
+# The one translation unit odelia compiles the tape into. The installed package
+# ships headers only, so this comes from a checkout -- and ODELIA_INC resolves to
+# the INSTALLED headers whenever odelia is installed, which is the normal case
+# here, so deriving this from it alone finds no Tape.cpp. Only test_transpose
+# needs the tape, so the rest of the suite builds and runs and the transpose
+# identity is the one target that silently stops being checked.
+ODELIA_SRC ?= $(ODELIA_INC)/../../src
+ifeq ($(wildcard $(ODELIA_SRC)/Tape.cpp),)
+  ODELIA_SRC := ../../../odelia/src
+endif
+TAPE_SRC = $(ODELIA_SRC)/Tape.cpp
+
 DEP_INC  = $(ODELIA_INC) $(BH_INC)
 SYS_INC  = $(foreach d,$(filter-out /usr/include /usr/include/,$(strip $(DEP_INC))),-isystem $(d))
 INCLUDES = -I$(PHYLLOPTIM_INC) $(SYS_INC)
@@ -62,15 +85,19 @@ GOLDEN_ARGS ?=
 # ⚠️ EVERY TEST PROGRAM MUST BE NAMED HERE. This Makefile lists its sources
 # explicitly, and that is exactly how tests/validate/ rotted through two interface
 # changes without anyone noticing (#64): a file no build touches compiles in
-# nobody's head. Adding a .cpp under tests/cpp/ without adding it to `build`, to
-# `all`, to CMakeLists.txt and to cpp-tests.yml leaves it in the same state, with a
-# newer date on it.
+# nobody's head. A new .cpp under tests/cpp/ has to be named in eight places, in
+# four languages, with nothing checking that they agree -- its own rule here,
+# `build` or `bench`, `all`, `clean`, CMakeLists.txt, tests/cpp.R, .Rbuildignore
+# and tests/cpp/.gitignore. Leave it out of one and it is in the same state as
+# tests/validate/, with a newer date on it.
 all: build
 	./test_leaf
+	./test_supplied_rows
+	./test_transpose
 	./test_golden $(GOLDEN_ARGS)
 	./test_primitives $(GOLDEN_ARGS)
 
-build: test_leaf test_golden test_primitives
+build: test_leaf test_supplied_rows test_transpose test_golden test_primitives
 
 # Not built or run by `make all` -- it takes a few seconds and measures the
 # machine as much as the code. Run it deliberately when a change might have
@@ -81,6 +108,31 @@ bench: bench_solve bench_gradient
 
 test_leaf: test_leaf.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+
+# The one row this surface SUPPLIES rather than records, against a difference of
+# the function it claims to describe. A difference of anything downstream is
+# identically zero on that column, so this is the only place it can be caught.
+test_supplied_rows: test_supplied_rows.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
+
+# The transpose identity, which needs no reference gradient: one tangent against
+# one sweep. It is the only thing here that can see a wrong SUPPLIED row, and the
+# only one that can referee the collar responses at the shipped spline
+# resolution. The one program here that links the tape.
+test_transpose: test_transpose.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
+
+# Not in `all`, for the same reason as probe_preaccumulation: what the boundary
+# and its kernels cost the tape, region by region and kernel by kernel. It is
+# how a design choice gets priced before it is made, and it is seconds where the
+# century stand is minutes.
+probe_tape_regions: probe_tape_regions.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
+
+# Not in `all`: it answers a design question rather than guarding a property, and
+# it needs the tape the same way test_transpose does.
+probe_preaccumulation: probe_preaccumulation.cpp $(HEADERS)
+	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(XADFLAGS) $(INCLUDES) $< $(TAPE_SRC) -o $@
 
 test_golden: test_golden.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@
@@ -112,4 +164,5 @@ primitives-golden: test_primitives
 	./test_primitives --generate
 
 clean:
-	rm -f test_leaf test_golden test_primitives bench_solve bench_gradient
+	rm -f test_leaf test_supplied_rows test_transpose test_golden test_primitives \
+	      bench_solve bench_gradient probe_tape_regions probe_preaccumulation

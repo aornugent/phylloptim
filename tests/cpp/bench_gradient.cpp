@@ -333,16 +333,16 @@ int main(int argc, char **argv) {
   // the fixed cost of the composite. Say which one you mean.
   {
     const double kmax = kKs * kTheta / kH;
-    double theta[phylloptim::gradient::n_pars] = {
+    double theta[phylloptim::gradient::n_theta] = {
         kBase.v[0], kBase.v[1], kBase.v[2],  kBase.v[3], kBase.v[4],
         kBase.v[5], kBase.v[6], kBase.v[7],  kBase.v[8], kBase.v[9],
         // ⚠️ POSITIONAL and silently short-fillable -- see test_leaf.cpp's copy of
-        // this array for what adding a trait did to it. Count against `n_pars`.
+        // this array for what adding a trait did to it. Count against `n_theta`.
         kBase.v[10], 1.44,      /*JS22_gamma=*/1.0,
         /*CMax_a=*/0.6, /*CMax_b=*/0.0, kmax, 0.0};
-    static_assert(phylloptim::gradient::n_pars == 19,
+    static_assert(phylloptim::gradient::n_theta == 19,
                   "theta above is positional and deliberately short; recount it "
-                  "against n_pars and update this assertion together");
+                  "against n_theta and update this assertion together");
 
     std::vector<double> root{1.0 / kAreaLeaf}, psi_soil{2.0}, depth{1.0};
     phylloptim::gradient::Drivers gd;

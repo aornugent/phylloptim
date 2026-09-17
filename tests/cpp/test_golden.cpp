@@ -190,6 +190,11 @@ int check_operating_kinds(const std::vector<Row> &rows) {
         {Kind::Interior, e.interior},
         {Kind::BoundarySoil, e.boundary_soil},
         {Kind::BoundaryCrit, e.boundary_crit},
+        // The dry end's other bound. At these traits root_psi_crit is 5.87 MPa
+        // and the continuity root never reaches it, so the arm is zero over the
+        // whole grid -- asserted rather than left out, because a kind absent from
+        // this list is a kind the golden file stops covering.
+        {Kind::BoundaryRootCrit, 0},
         {Kind::HydraulicShutdown, e.shutdown},
         {Kind::Determined, 0},        {Kind::ShadeDeath, 0},
         {Kind::Prescribed, 0},        {Kind::SolverRefused, 0},
