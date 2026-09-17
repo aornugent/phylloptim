@@ -6,8 +6,7 @@ CXX_STD = CXX20
 ## include path during the package's own build. -isystem rather than -I so that
 ## a warning in the model does not fail a consumer's build with -Werror; the
 ## headers get their own -Wall -Wextra treatment in tests/cpp.
-PKG_CPPFLAGS = -isystem../inst/include/
-
+##
 ## The same two defines odelia and plant set. Measured inert here today --
 ## phylloptim.so carries no XAD tape symbol at all, because the package uses
 ## xad::fwd only and forward mode is tapeless -- and set anyway, because the
@@ -15,4 +14,9 @@ PKG_CPPFLAGS = -isystem../inst/include/
 ## both, a storage-class mismatch does not change the mangled name, and the
 ## linker resolves it quietly. Four build files carrying one pair is an easier
 ## invariant to hold than three carrying it and one exempt until it is not.
-PKG_CPPFLAGS += -DXAD_NO_THREADLOCAL -DXAD_USE_STRONG_INLINE
+##
+## One assignment rather than two: appending to a variable in a second line is a
+## GNU make extension, R CMD check warns on it, and this package's
+## check-r-package sets no error-on -- so the action's default makes that
+## warning a red leg here.
+PKG_CPPFLAGS = -isystem../inst/include/ -DXAD_NO_THREADLOCAL -DXAD_USE_STRONG_INLINE
