@@ -21,7 +21,7 @@ namespace phylloptim {
 // all formulated against a *single* soil water potential, so comparing them
 // against TF24 under a multi-layer root network compares two things at once.
 //
-// It implements the same four-method contract as MultiLayerRoots:
+// It implements the same four methods as MultiLayerRoots:
 //
 //   begin_solve()   -> wettest (here: the only) suction
 //   uptake(...)     -> E_up and the per-layer consumption buffer
