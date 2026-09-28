@@ -2,7 +2,9 @@
 
 ## Fix: the collar solve maximised the wrong objective for four cost curves
 
-On the collar route, a cost that reads the upstream potential depends on the collar directly as well as through `psi_stem`. The first-order condition carried only the second channel, so for **CF77, JS22, CMax and TF24_floor** the collar solve converged, to `|dprofit| ~ 1e-15`, onto a point that was not the maximum of the `profit_` it reported. TF24, SOX, JW26 and ProfitMax read `psi_stem` alone and are unaffected, as are all eight stem routes (upstream is `psi_soil` there, and fixed).
+On the collar route the solve chooses the root-collar potential, and `psi_stem` follows from it through the supply. Every cost is billed through `psi_stem`, and the first-order condition carries that channel. Four costs also read the collar itself, because they price the stem path between collar and leaf rather than the state of the leaf end. **CF77** and **TF24_floor** charge for the flow `E = kmax·(G(psi_stem) − G(psi_collar))`. **JS22** charges for the drop `psi_stem − psi_collar`. **CMax** integrates its price from `psi_collar` to `psi_stem`. That direct dependence was missing from the first-order condition, so for these four the collar solve converged, to `|dprofit| ~ 1e-15`, onto a point that was not the maximum of the `profit_` it reported.
+
+The other four price the leaf end alone: **TF24** by the stem conductivity lost at `psi_stem`, **SOX** and **JW26** by a reduction factor of `psi_stem`, **ProfitMax** by `k(psi_stem)` against a fixed soil conductance. They see the collar only through `psi_stem` and are unaffected. So are all eight stem routes, which hold the upstream end at `psi_soil`.
 
 The missing term is `dC/dpsi_upstream`, now a table beside `cost_deriv<K>()` (`cost_reads_upstream<K>()` and `cost_deriv_upstream<K>()`), and appended to the collar FOC so the curves that do not read upstream compile to the same code: `bench_solve` is byte-identical, and all three golden baselines and `gradient_golden.tsv` are bit-identical, because none of them solves an upstream-reading curve on the collar route. `test_collar_foc_matches_profit` is the first test that does.
 
