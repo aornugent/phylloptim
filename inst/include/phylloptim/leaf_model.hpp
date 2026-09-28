@@ -152,6 +152,16 @@ public:
   // 1.8e-04 and fell 535x across a 16x resolution increase.
   std::vector<double> stem_curve_psi_;
   std::vector<double> stem_curve_at_psi_;
+  // G^-1's span lookup in O(1): cell j of an even grid over G's range holds the
+  // first knot index whose G is >= the cell's left edge, so a query starts there
+  // and steps at most a knot or two. It returns exactly the index
+  // std::lower_bound would.
+  std::vector<std::size_t> stem_curve_inverse_cell_;
+  double stem_curve_inverse_scale_ = 0.0;
+  // G'' at each knot, the closed-form slope of the surviving conductivity. With
+  // G' (the table's own slopes) it gives the inverse curve's second derivative,
+  // -G''/G'^3, which is what lets the span inverse below be quintic.
+  std::vector<double> stem_curve_curvature_;
 
   // The `stem_b` the two splines above were built at, which is normally just
   // `stem_b` -- and is not, while a gradient is perturbing it.
@@ -1067,10 +1077,11 @@ public:
   // splines cannot identify themselves and why the caller has to.
   double stem_curve_integral(double psi, const char* caller = nullptr) const;
   double stem_curve_integral_deriv(double psi) const;
-  double stem_curve_integral_inverse(double w, const char* caller = nullptr) const;
+  double stem_curve_integral_inverse(double w, const char* caller = nullptr,
+                                     bool converge = false) const;
   // G^-1 by inverting the forward table, with no domain check and no rescale --
   // both are the caller above's, which is the only caller.
-  double invert_stem_curve(double w) const;
+  double invert_stem_curve(double w, bool converge = false) const;
   double stem_curve_integral_inverse_deriv(double w) const;
 
   // Domain-guarded read behind the two accessors above. The stem curve is the
@@ -1863,19 +1874,18 @@ public:
   // Keep them PURE -- no writes to members. `hydraulic_cost_TF` caches into
   // `hydraulic_cost_`; its kernel must not, or the AD pass would write model state
   // while probing.
-  template <typename T> T assim_rubisco_limited_kernel(const T& ci,
-                                                       const T& vcmax) const;
-  template <typename T> T assim_electron_limited_kernel(const T& ci,
-                                                        const T& transport) const;
-  template <typename T> T assim_colimited_kernel(const T& ci,
-                                                 const PhotoCapacity<T>& cap) const;
-  template <typename T> T proportion_of_conductivity_kernel(const T& psi,
-                                                            const T& b,
-                                                            const T& c) const;
-  template <typename T> T hydraulic_cost_TF_kernel(const T& psi_stem,
-                                                   const T& scale, const T& b,
-                                                   const T& c,
-                                                   const T& beta2) const;
+  template <typename T, typename U> T assim_rubisco_limited_kernel(const T& ci, const U& vcmax) const;
+  template <typename T, typename U> T assim_electron_limited_kernel(const T& ci, const U& transport) const;
+  template <typename T, typename U> T assim_colimited_kernel(const T& ci,
+                                                 const PhotoCapacity<U>& cap) const;
+  // The curve parameters take their own scalar U: the forward model and its
+  // tangents pass the members as plain doubles, and pow(tangent, double) needs
+  // no log where pow(tangent, tangent) differentiates the exponent too.
+  template <typename T, typename U> T proportion_of_conductivity_kernel(
+      const T& psi, const U& b, const U& c) const;
+  template <typename T, typename U> T hydraulic_cost_TF_kernel(
+      const T& psi_stem, const U& scale, const U& b, const U& c,
+      const U& beta2) const;
 
   // The same kernels reading the members, for the forward model, which has one
   // set of these and no reason to thread them through every call.
@@ -4069,7 +4079,11 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
                                  "dpsi_stem/dpsi at the operating point");
     const double dEpsistem_dpsi =
         dEup_dpsi / leaf_specific_conductance_max_ + stem_curve_integral_deriv(psi);
-    dpsistem_dpsi = stem_curve_integral_inverse_deriv(E_psi_stem) * dEpsistem_dpsi;
+    // dpsi_stem/dE_psi_stem = 1/G'(G^-1(E_psi_stem)), and G^-1(E_psi_stem) is
+    // psi_stem, already inverted at the top of this function from the same
+    // E_up_ and psi. Read the slope there rather than inverting a second time.
+    (void)E_psi_stem;
+    dpsistem_dpsi = (1.0 / stem_curve_integral_deriv(psi_stem)) * dEpsistem_dpsi;
   } else {
     // Near a branch kink the analytic conductance returns NaN; fall back to a
     // central difference on the transport, as this path has always done.
@@ -4714,15 +4728,15 @@ inline double Leaf::leaf_temp_from_E(double E, double* dT_dE) const {
 // transpiration supply functions
 
 // returns proportion of conductance taken from hydraulic vulnerability curve (unitless)
-template <typename T>
-inline T Leaf::proportion_of_conductivity_kernel(const T& psi, const T& b,
-                                                 const T& c) const {
+template <typename T, typename U>
+inline T Leaf::proportion_of_conductivity_kernel(const T& psi, const U& b,
+                                                 const U& c) const {
   return exp(-pow((psi / b), c));
 }
 
 template <typename T>
 inline T Leaf::proportion_of_conductivity_kernel(T psi) const {
-  return proportion_of_conductivity_kernel<T>(psi, T(stem_b), T(stem_c));
+  return proportion_of_conductivity_kernel<T, double>(psi, stem_b, stem_c);
 }
 
 inline double Leaf::proportion_of_conductivity(double psi) const {
@@ -4766,6 +4780,31 @@ inline void Leaf::setup_transpiration(double resolution) {
   // interpolant does not hand its knots back.
   stem_curve_psi_ = std::move(x_psi_);
   stem_curve_at_psi_ = std::move(y_cumulative_transpiration_);
+
+  {
+    const std::vector<double>& u = stem_curve_at_psi_;
+    const std::size_t cells = 4 * u.size();
+    const double range = u.back() - u.front();
+    stem_curve_inverse_scale_ = range > 0.0 ? cells / range : 0.0;
+    stem_curve_inverse_cell_.assign(cells + 1, 0);
+    std::size_t at = 0;
+    for (std::size_t j = 0; j <= cells; ++j) {
+      const double edge = u.front() + j / stem_curve_inverse_scale_;
+      while (at < u.size() && u[at] < edge) ++at;
+      stem_curve_inverse_cell_[j] = at;
+    }
+  }
+  {
+    // d/dpsi of exp(-(psi/b)^c), at the curve the table was built for.
+    const std::vector<double>& psi = stem_curve_psi_;
+    stem_curve_curvature_.resize(psi.size());
+    for (std::size_t i = 0; i < psi.size(); ++i) {
+      const double q = psi[i] / stem_b;
+      stem_curve_curvature_[i] = psi[i] > 0.0
+          ? -(stem_c / stem_b) * std::pow(q, stem_c - 1.0) * std::exp(-std::pow(q, stem_c))
+          : 0.0;
+    }
+  }
 
   // The splines now describe the current stem_b, so the rescaling is over.
   // Recording it HERE rather than at each caller is what makes it impossible to
@@ -4882,30 +4921,95 @@ inline double Leaf::stem_curve_integral_deriv(double psi) const {
 // the bracket. The bracket is one knot wide, so it starts within O(h) and takes
 // three or four evaluations -- on a path reached once per collar evaluation, not
 // once per solver iteration.
-inline double Leaf::invert_stem_curve(double w) const {
+inline double Leaf::invert_stem_curve(double w, bool converge) const {
   const std::vector<double>& u = stem_curve_at_psi_;
-  const std::size_t at =
-      std::size_t(std::lower_bound(u.begin(), u.end(), w) - u.begin());
-  if (at == 0) return stem_curve_psi_.front();
-  if (at >= u.size()) return stem_curve_psi_.back();
-  double lo = stem_curve_psi_[at - 1], hi = stem_curve_psi_[at];
+  const std::vector<double>& x = stem_curve_psi_;
+  std::size_t at;
+  if (!converge && !stem_curve_inverse_cell_.empty() && w >= u.front()) {
+    std::size_t j = std::size_t((w - u.front()) * stem_curve_inverse_scale_);
+    if (j >= stem_curve_inverse_cell_.size()) j = stem_curve_inverse_cell_.size() - 1;
+    at = stem_curve_inverse_cell_[j];
+    while (at < u.size() && u[at] < w) ++at;
+  } else {
+    at = std::size_t(std::lower_bound(u.begin(), u.end(), w) - u.begin());
+  }
+  if (at == 0) return x.front();
+  if (at >= u.size()) return x.back();
+  double lo = x[at - 1], hi = x[at];
   const double span = u[at] - u[at - 1];
   double psi = span > 0.0 ? lo + (hi - lo) * (w - u[at - 1]) / span
                           : 0.5 * (lo + hi);
+  if (!converge && span > 0.0) {
+    // The span's own inverse, formed on the fly: a Hermite in G through the two
+    // knots, with the exact inverse slopes 1/G'(psi) the forward table already
+    // holds. At least the forward table's order, so the start is within
+    // rounding of the root wherever the curve is not steep, and one Newton step
+    // is the answer there -- accepted only when its correction proves it (below
+    // 1e-9 of psi). Elsewhere, chiefly the steep dry tail where G' goes to zero,
+    // the loop carries on from the improved point inside the same bracket.
+    const std::vector<double>& g = transpiration_from_psi.slopes();
+    const double g0 = g[at - 1], g1 = g[at];
+    if (g0 > 0.0 && g1 > 0.0 && stem_curve_curvature_.size() == x.size()) {
+      // Quintic Hermite in G: value, slope 1/G' and curvature -G''/G'^3 of the
+      // inverse at both knots. Two orders more accurate than the cubic at the
+      // same knots, which is what makes the single step pass in the dry tail.
+      const double t = (w - u[at - 1]) / span;
+      const double t2 = t * t, t3 = t2 * t, t4 = t3 * t, t5 = t4 * t;
+      const double d0 = 1.0 / g0, d1 = 1.0 / g1;
+      const double c0 = -stem_curve_curvature_[at - 1] * d0 * d0 * d0;
+      const double c1 = -stem_curve_curvature_[at] * d1 * d1 * d1;
+      const double start =
+          (1 - 10 * t3 + 15 * t4 - 6 * t5) * lo +
+          (t - 6 * t3 + 8 * t4 - 3 * t5) * span * d0 +
+          0.5 * (t2 - 3 * t3 + 3 * t4 - t5) * span * span * c0 +
+          (10 * t3 - 15 * t4 + 6 * t5) * hi +
+          (-4 * t3 + 7 * t4 - 3 * t5) * span * d1 +
+          0.5 * (t3 - 2 * t4 + t5) * span * span * c1;
+      if (start > lo && start < hi) {
+        psi = start;
+        double value, slope;
+        transpiration_from_psi.value_and_slope(psi, value, slope);
+        if (slope > 0.0) {
+          const double step = (value - w) / slope;
+          // After one Newton step the error left is ~ |G''/(2 G')| step^2, and
+          // G'' is the stored curvature at the nearer knot, so accept when that
+          // predicted error is a few ulps -- the bound, not a fixed tolerance.
+          const double curv = std::abs(stem_curve_curvature_[
+              (w - u[at - 1] < u[at] - w) ? at - 1 : at]);
+          if (0.5 * curv / slope * step * step <=
+              4.0 * std::numeric_limits<double>::epsilon() * std::abs(psi)) {
+            return psi - step;
+          }
+          if (value - w > 0.0) hi = psi; else lo = psi;
+          const double next = psi - step;
+          if (next > lo && next < hi) psi = next;
+        }
+      }
+    }
+  }
   for (int i = 0; i < 24; ++i) {
-    const double f = transpiration_from_psi.eval(psi) - w;
+    // One span lookup and one Horner pass for the pair: the same numbers
+    // eval() and slope() return, read together.
+    double value, slope;
+    transpiration_from_psi.value_and_slope(psi, value, slope);
+    const double f = value - w;
     if (f == 0.0) return psi;
     if (f > 0.0) hi = psi; else lo = psi;
-    const double slope = transpiration_from_psi.slope(psi);
     double next = slope > 0.0 ? psi - f / slope : 0.5 * (lo + hi);
     if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
     if (next == psi) break;
+    // Newton's error squares each step, so a Newton correction this small puts
+    // `next` at rounding and a further read would only confirm it. The full
+    // inversion (converge) keeps confirming, and stays the reference.
+    if (!converge && slope > 0.0 && std::abs(next - psi) <= 1e-9 * std::abs(psi)) {
+      return next;
+    }
     psi = next;
   }
   return psi;
 }
 
-inline double Leaf::stem_curve_integral_inverse(double w, const char* caller) const {
+inline double Leaf::stem_curve_integral_inverse(double w, const char* caller, bool converge) const {
   const double s = (stem_b == stem_b_spline_) ? 1.0 : stem_b / stem_b_spline_;
   const double v = (s == 1.0) ? w : w / s;
   if (v < stem_curve_at_psi_.front() || v > stem_curve_at_psi_.back()) {
@@ -4915,7 +5019,7 @@ inline double Leaf::stem_curve_integral_inverse(double w, const char* caller) co
                              "INVERTED (G^-1, argument in E/K_max)",
                              "E/K_max", caller);
   }
-  return (s == 1.0) ? invert_stem_curve(v) : s * invert_stem_curve(v);
+  return (s == 1.0) ? invert_stem_curve(v, converge) : s * invert_stem_curve(v, converge);
 }
 
 inline double Leaf::stem_curve_integral_inverse_deriv(double w) const {
@@ -5007,8 +5111,19 @@ inline double Leaf::transpiration_to_psi_stem(double transpiration_, double psi_
   // wetter than saturation. There is no such potential, so widening the domain is
   // not the fix -- the caller should not have asked. Naming the argument E/K_max
   // rather than a bare `u` is what makes that readable from the message.
-  return stem_curve_integral_inverse(
+  const double psi_stem = stem_curve_integral_inverse(
       E_psi_stem, "Leaf::transpiration_to_psi_stem, inverting for psi_stem");
+  // The single Newton step the inversion takes is below a double's resolution
+  // everywhere except where it matters most: at a flux near zero the stem sits
+  // within a few ulps of the upstream potential, and the ORDER of the two is
+  // what the wet bound reads (zero or reversed flux must not put the stem one
+  // ulp drier than the collar). There, converge fully, as the loop always did.
+  if (std::abs(psi_stem - psi_upstream) <= 64.0 * std::numeric_limits<double>::epsilon() *
+                                                std::abs(psi_upstream)) {
+    return stem_curve_integral_inverse(
+        E_psi_stem, "Leaf::transpiration_to_psi_stem, inverting for psi_stem", true);
+  }
+  return psi_stem;
   }
 
 // returns stomatal conductance to CO2, mol C m^-2 LA s^-1
@@ -5039,33 +5154,38 @@ inline double Leaf::electron_transport() {
 // meant to move results, and the golden file is the check on that. What moves is
 // the DERIVATIVE, which now comes from this code instead of from the drifted
 // replica.
-template <typename T>
-inline T Leaf::assim_rubisco_limited_kernel(const T& ci, const T& vcmax) const {
+// The capacity's scalar U is independent of the kernel's T on purpose: on the
+// value and tangent paths the capacity is four cached doubles, and a double
+// times a tangent costs one multiply where a tangent times a tangent costs
+// three. Wrapping the constants in T doubled the kernel's cost per solve
+// (measured 5% to 10% of a collar solve).
+template <typename T, typename U>
+inline T Leaf::assim_rubisco_limited_kernel(const T& ci, const U& vcmax) const {
   return (vcmax * (ci - gamma_ * umol_per_mol_to_Pa_)) / (ci + km_);
 }
 
 template <typename T>
 inline T Leaf::assim_rubisco_limited_kernel(T ci) const {
-  return assim_rubisco_limited_kernel<T>(ci, T(vcmax_));
+  return assim_rubisco_limited_kernel<T, double>(ci, vcmax_);
 }
 
-template <typename T>
+template <typename T, typename U>
 inline T Leaf::assim_electron_limited_kernel(const T& ci,
-                                             const T& transport) const {
+                                             const U& transport) const {
   return transport / 4 *
   ((ci - gamma_ * umol_per_mol_to_Pa_) / (ci + 2 * gamma_ * umol_per_mol_to_Pa_));
 }
 
 template <typename T>
 inline T Leaf::assim_electron_limited_kernel(T ci) const {
-  return assim_electron_limited_kernel<T>(ci, T(electron_transport_));
+  return assim_electron_limited_kernel<T, double>(ci, electron_transport_);
 }
 
-template <typename T>
+template <typename T, typename U>
 inline T Leaf::assim_colimited_kernel(const T& ci,
-                                      const PhotoCapacity<T>& cap) const {
-  const T rubisco = assim_rubisco_limited_kernel<T>(ci, cap.vcmax);
-  const T electron = assim_electron_limited_kernel<T>(ci, cap.transport);
+                                      const PhotoCapacity<U>& cap) const {
+  const T rubisco = assim_rubisco_limited_kernel<T, U>(ci, cap.vcmax);
+  const T electron = assim_electron_limited_kernel<T, U>(ci, cap.transport);
 
   return (rubisco + electron -
           sqrt(pow(rubisco + electron, 2) -
@@ -5076,7 +5196,7 @@ inline T Leaf::assim_colimited_kernel(const T& ci,
 
 template <typename T>
 inline T Leaf::assim_colimited_kernel(T ci) const {
-  return assim_colimited_kernel<T>(ci, photo_capacity<T>());
+  return assim_colimited_kernel<T, double>(ci, photo_capacity<double>());
 }
 
 inline double Leaf::assim_rubisco_limited(double ci_) {
@@ -5480,18 +5600,18 @@ inline double Leaf::g1_eff() const {
 
 // Pure: no write to hydraulic_cost_, so the AD pass cannot scribble model state
 // while probing. The caching is the double entry point's job.
-template <typename T>
-inline T Leaf::hydraulic_cost_TF_kernel(const T& psi_stem, const T& scale,
-                                        const T& b, const T& c,
-                                        const T& beta2) const {
+template <typename T, typename U>
+inline T Leaf::hydraulic_cost_TF_kernel(const T& psi_stem, const U& scale,
+                                        const U& b, const U& c,
+                                        const U& beta2) const {
   return scale *
-         pow((1 - proportion_of_conductivity_kernel<T>(psi_stem, b, c)), beta2);
+         pow((1 - proportion_of_conductivity_kernel<T, U>(psi_stem, b, c)), beta2);
 }
 
 template <typename T>
 inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem) const {
-  return hydraulic_cost_TF_kernel<T>(psi_stem, T(TF24_cost_scale), T(stem_b),
-                                     T(stem_c), T(TF24_beta2));
+  return hydraulic_cost_TF_kernel<T, double>(psi_stem, TF24_cost_scale, stem_b,
+                                             stem_c, TF24_beta2);
 }
 
 // The kernels' arguments, read off a caller's parameter pack.
@@ -5638,7 +5758,7 @@ inline T Leaf::cost_slope_at(const T& sigma, const leaf_pars<T>& pars) const {
   return kernel_slope_at<T>(
       [this]<class U>(const U& s, const U& scale, const U& bb, const U& c,
                       const U& beta2) -> U {
-        return hydraulic_cost_TF_kernel<U>(s, scale, bb, c, beta2);
+        return hydraulic_cost_TF_kernel<U, U>(s, scale, bb, c, beta2);
       },
       "hydraulic cost in stem potential", sigma, pars[par_TF24_cost_scale], b,
       pars[par_stem_c], pars[par_TF24_beta2]);

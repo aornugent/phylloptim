@@ -373,6 +373,9 @@ template <class T>
 struct CollarConductance {
   T total{};
   std::vector<double> per_layer;
+  // False for a caller that reads only the total: the walk then leaves
+  // per_layer alone rather than refilling it on every call.
+  bool keep_per_layer = true;
 };
 
 class MultiLayerRoots {
@@ -423,6 +426,11 @@ public:
   // multiply per layer per (re)evaluation.
   std::vector<double> grav_head_z_;
   bool use_precomputed_z_soil_mid_ = false;
+  // Scratch for duptake_dpsi(): sized on first use, reused after. Mutable and
+  // unsynchronised, which is the same contract as the clamp counter above --
+  // one solve at a time per object.
+  mutable std::vector<double> draw_scratch_;
+  mutable CollarConductance<double> conductance_scratch_;
   // NOTE: `dz_` used to live here, a scalar layer thickness re-derived from the
   // profile on every set_soil_state. Nothing in this package had read it since
   // #33, and #626 removed the last reason to carry it: layer thickness is stated
@@ -568,10 +576,14 @@ public:
   // spline eval, which is affordable here and would not be on the uptake hot path
   // -- duptake_dpsi runs once per gradient, not ~10^3 times per solve.
   double root_vuln_integral_deriv_at(double psi) const {
-    if (root_vuln_integral_from_psi.eval(psi) >= root_vuln_integral_limit_) {
+    // One span lookup for the pair: the same two numbers eval() and slope()
+    // return separately.
+    double value, slope;
+    root_vuln_integral_from_psi.value_and_slope(psi, value, slope);
+    if (value >= root_vuln_integral_limit_) {
       return 0.0;
     }
-    return root_vuln_integral_from_psi.slope(psi);
+    return slope;
   }
 
   // Per-timestep soil state: the layer potentials, the layer depths, and the
@@ -755,21 +767,29 @@ public:
   // is the walk that forms the draw: a collar the uptake refuses as infeasible
   // refuses from here too, rather than handing back a slope for a point with no
   // flux.
+  // ⚠️ ON THE HOT PATH. The analytic marginal reads this once per collar
+  // evaluation, so a solve calls it ~10^3 times, and the two vectors it needs
+  // are scratch this object keeps rather than heap it takes per call: at 0.9.0
+  // the per-call `draw` and `per_layer` allocations were 5% of a solve.
+  // The draw vector is scratch the walk overwrites entry by entry, so it is
+  // not refilled; the per-layer terms are not kept unless asked for.
   double duptake_dpsi(double T_collar,
                       const std::vector<double>& psi_soil) const {
-    std::vector<double> per_layer;
-    return duptake_dpsi(T_collar, psi_soil, per_layer);
+    double E_up = 0.0;
+    conductance_scratch_.keep_per_layer = false;
+    uptake_impl<double>(T_collar, supply_over(psi_soil), false, draw_scratch_,
+                        E_up, &conductance_scratch_);
+    return conductance_scratch_.total;
   }
 
   double duptake_dpsi(double T_collar, const std::vector<double>& psi_soil,
                       std::vector<double>& per_layer) const {
-    CollarConductance<double> conductance;
-    std::vector<double> draw(psi_soil.size(), 0.0);
     double E_up = 0.0;
-    uptake_impl<double>(T_collar, supply_over(psi_soil), false, draw, E_up,
-                        &conductance);
-    per_layer = std::move(conductance.per_layer);
-    return conductance.total;
+    conductance_scratch_.keep_per_layer = true;
+    uptake_impl<double>(T_collar, supply_over(psi_soil), false, draw_scratch_,
+                        E_up, &conductance_scratch_);
+    per_layer = conductance_scratch_.per_layer;
+    return conductance_scratch_.total;
   }
 
 private:
@@ -859,7 +879,9 @@ public:
     }
     if (conductance != nullptr) {
       conductance->total = T(0.0);
-      conductance->per_layer.assign(psi_soil.size(), 0.0);
+      if (conductance->keep_per_layer) {
+        conductance->per_layer.assign(psi_soil.size(), 0.0);
+      }
     }
     bool at_a_kink = false;
 
@@ -872,15 +894,30 @@ public:
     const double G_at_T_collar =
         use_integral_cache ? root_vuln_integral_at(collar_at) : 0.0;
 
+    // Raw pointers taken once: the walk writes soil_consumption, which the
+    // compiler cannot prove is not one of the vectors it reads, so indexing
+    // through the references reloaded every data pointer on every layer.
+    const T* const psi_p = psi_soil.data();
+    const T* const rH_p = at.r_R_H_min.data();
+    const T* const rV_p = at.r_R_V_sum.data();
+    const double* const zg_p = grav_head_z_.data();
+    const double* const Gs_p = root_vuln_integral_soil_.data();
+    T* const out_p = soil_consumption.data();
+    // At double, plain copies: the walk writes through out_p, which the
+    // compiler cannot prove misses the collar or the soil vector, so a
+    // reference was reloaded after every store. At an active scalar a copy is a
+    // recorded statement, so there the references stay.
+    using hold_t = std::conditional_t<std::is_same_v<T, double>, const T, const T&>;
+    hold_t Tc = T_collar;
     for (int i = 0; i < max_soil_layer; i++) {
-      const T& psi_i = psi_soil[std::size_t(i)];
+      hold_t psi_i = psi_p[i];
       const double soil_at = to_passive(psi_i);
       // The three collars the analytic slope is not valid across. Tested here
       // rather than in a second walk, because the layer that fails is the layer
       // whose span, integral and resistance are being formed anyway.
       if (conductance != nullptr &&
           (std::abs(collar_at - soil_at) < kink_tol ||
-           std::abs((collar_at - soil_at) - grav_head_z_[i]) < kink_tol ||
+           std::abs((collar_at - soil_at) - zg_p[i]) < kink_tol ||
            std::abs(collar_at) < kink_tol)) {
         at_a_kink = true;
       }
@@ -890,8 +927,8 @@ public:
       // one is a recorded statement that the sweep then walks once per census
       // metric for nothing. Four of these a layer was 20 statements a placement
       // at five layers.
-      const T& T_src_min = (collar_at < soil_at) ? T_collar : psi_i;
-      const T& T_src_max = (soil_at < collar_at) ? T_collar : psi_i;
+      hold_t T_src_min = (collar_at < soil_at) ? Tc : psi_i;
+      hold_t T_src_max = (soil_at < collar_at) ? Tc : psi_i;
 
       if (std::abs(collar_at - soil_at) < kink_tol) {
         const T f_ri = curve(T_src_max);
@@ -901,14 +938,14 @@ public:
               std::to_string(i) + "; f_ri=" +
               util::to_string(to_passive(f_ri)));
         }
-        const T r_R = at.r_R_H_min[std::size_t(i)] / f_ri +
-                      at.r_R_V_sum[std::size_t(i)];
-        const T E_i = T(-grav_head_z_[i]) / r_R;
-        soil_consumption[std::size_t(i)] = E_i;
+        const T r_R = rH_p[i] / f_ri +
+                      rV_p[i];
+        const T E_i = T(-zg_p[i]) / r_R;
+        out_p[i] = E_i;
         E_up += E_i;
       } else if (std::is_same_v<T, double> &&
-                 std::abs((collar_at - soil_at) - grav_head_z_[i]) < kink_tol) {
-        soil_consumption[std::size_t(i)] = T(0.0);
+                 std::abs((collar_at - soil_at) - zg_p[i]) < kink_tol) {
+        out_p[i] = T(0.0);
       } else {
         // Named so both arms are lvalues and the selection binds rather than
         // copies; T(0.0) records nothing either way.
@@ -921,7 +958,7 @@ public:
           if constexpr (std::is_same_v<T, double>) {
             if (use_integral_cache) {
               if (q == collar_at) return G_at_T_collar;
-              if (q == soil_at) return root_vuln_integral_soil_[std::size_t(i)];
+              if (q == soil_at) return Gs_p[i];
             }
             return root_vuln_integral_at(q);
           } else {
@@ -940,11 +977,11 @@ public:
         }
 
         const T span = T_src_max - T_src_min;
-        const T r_R = at.r_R_H_min[std::size_t(i)] * span / integral +
-                      at.r_R_V_sum[std::size_t(i)];
-        const T num = T_collar - psi_i - T(grav_head_z_[i]);
+        const T r_R = rH_p[i] * span / integral +
+                      rV_p[i];
+        const T num = Tc - psi_i - T(zg_p[i]);
         const T E_i = num / r_R;
-        soil_consumption[std::size_t(i)] = E_i;
+        out_p[i] = E_i;
         E_up += E_i;
 
         if (want_slope) {
@@ -973,11 +1010,13 @@ public:
             }
           }
           const T dinteg_dT = T(sign_var) * fr_at;
-          const T dr_R_dT = at.r_R_H_min[std::size_t(i)] *
+          const T dr_R_dT = rH_p[i] *
                             (T(sign_var) * integral - span * dinteg_dT) /
                             (integral * integral);
           const T term = (r_R - num * dr_R_dT) / (r_R * r_R);
-          conductance->per_layer[std::size_t(i)] = to_passive(term);
+          if (conductance->keep_per_layer) {
+            conductance->per_layer[std::size_t(i)] = to_passive(term);
+          }
           conductance->total += term;
         }
       }
