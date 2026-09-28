@@ -7,10 +7,10 @@ interior-5layer	interior	ift	vcmax_25	0x1.a77aaa18863afp-5	0x1.f4ced2d995a0ap-16
 interior-5layer	interior	ift	stem_P50	0x1.007740aaa55f6p+1	0x1.6ff08c9060deap-6	0x1.62e8cd8032237p-1	0x1.2953b7e51cc18p-1	0x1.4a71f77b2a91fp+1
 interior-5layer	interior	ift	stem_c	-0x1.65e26ea696691p-1	-0x1.00b85c290e2a1p-7	-0x1.7b7bece384a54p-2	-0x1.9ee77578435cep-3	0x1.5e3fe4bc7bfebp-3
 interior-5layer	interior	ift	R_d_25	-0x1.5305e84748c46p-1	-0x1.75a705f1bfffap-10	-0x1.ed4802a7d42fbp-5	-0x1.2df186187dcdap-5	-0x1.11e93f09e198p-1
-pinned-dry-3layer	pinned	fd	vcmax_25	0x1.1f9ef36f5e8abp-6	0x0p+0	0x0p+0	0x0p+0	0x1.1f9ef36f5e8abp-6
-pinned-dry-3layer	pinned	fd	stem_P50	0x1.e3de885003bf6p+2	0x1.1ef2b685784b4p-5	0x1.b9ff6d1ba05ccp+0	0x1.6b75b873422f2p-1	0x1.e3de884f086d2p+2
-pinned-dry-3layer	pinned	fd	stem_c	-0x1.1b045a24d98dep+2	-0x1.4fac91a982b9bp-6	-0x1.323874d87eaa4p+0	-0x1.a92d99fc36554p-2	-0x1.1b045a24d98dep+2
-pinned-dry-3layer	pinned	fd	R_d_25	-0x1.b414830778572p-3	0x0p+0	0x0p+0	0x0p+0	-0x1.b414830778572p-3
+pinned-dry-3layer	pinned	fd	vcmax_25	0x1.1f9ef37474ap-6	0x0p+0	0x0p+0	0x0p+0	0x1.1f9ef37474ap-6
+pinned-dry-3layer	pinned	fd	stem_P50	0x1.e3de884d7d7e3p+2	0x1.1ef2b683a58ep-5	0x1.b9ff6d1693da6p+0	0x1.6b75b87222f5bp-1	0x1.e3de884d7d7e3p+2
+pinned-dry-3layer	pinned	fd	stem_c	-0x1.1b045a280d627p+2	-0x1.4fac91a982b9bp-6	-0x1.323874d2cd306p+0	-0x1.a92d99fc36554p-2	-0x1.1b045a294c351p+2
+pinned-dry-3layer	pinned	fd	R_d_25	-0x1.b41483470c61dp-3	0x0p+0	0x0p+0	0x0p+0	-0x1.b41483470c61dp-3
 shutdown-1layer	no-gradient	fd	vcmax_25	0x0p+0	0x0p+0	0x0p+0	0x0p+0	0x0p+0
 shutdown-1layer	no-gradient	fd	stem_P50	0x0p+0	0x0p+0	0x1.b9ff6d1693da6p+0	0x1.b9ff6d1693da6p+0	0x0p+0
 shutdown-1layer	no-gradient	fd	stem_c	0x0p+0	0x0p+0	-0x1.323874d87eaa4p+0	-0x1.323874d87eaa4p+0	0x0p+0

@@ -1734,7 +1734,23 @@ public:
   // cost. Only opt_root_psi_ differs between the cases, so it is the argument
   // (a positive magnitude, like every other psi here).
   template <CostCurve K> void set_shutdown_state(double root_collar);
-  double find_root_psi(double wettest_soil_layer, const std::vector<double>& psi_soil, int find_root_crit);
+  double find_root_psi(double wettest_soil_layer, const std::vector<double>& psi_soil, int find_root_crit,
+                       double f_wettest, double f_crit);
+  // The same root, taking its own endpoint values: for a caller outside the solve.
+  double find_root_psi(double wettest_soil_layer, const std::vector<double>& psi_soil, int find_root_crit) {
+    const auto f = [&](double x) {
+      return find_root_crit == 1 ? E_column(x, psi_soil, psi_crit)
+                                 : E_column_zero(x, psi_soil);
+    };
+    const double f_wettest = f(wettest_soil_layer);
+    return find_root_psi(wettest_soil_layer, psi_soil, find_root_crit, f_wettest,
+                         f(psi_crit));
+  }
+  // A bracket bound find_root_psi placed at its 1e-4 tolerance, solved again to
+  // collar_root_tol from where it stopped. Called only where the bound IS the
+  // answer; see its definition for why the answer needs it.
+  double polish_bracket_bound(double x0, const std::vector<double>& psi_soil,
+                              int find_root_crit);
   double find_psi_stem_from_psi_root(double psi_root, const std::vector<double>& psi_soil);
   double E_column(double x, const std::vector<double>& psi_soil, double psi_leaf);
   double E_column_zero(double x, const std::vector<double>& psi_soil);
@@ -2583,6 +2599,12 @@ private:
   // repeat a root-find, and differentiating the comparison would manufacture a
   // jump the model does not have.
   bool dry_bound_is_root_limit_ = false;
+  // The zero-flux collar a wet pin was solved against, to collar precision, or NaN
+  // where no solve placed one. A pinned solve returns a point a step INSIDE it,
+  // and bound_at reads the flux at that point; knowing the root lets it correct
+  // the residual back to the root, so the row is the root's derivative rather
+  // than one proportional to the step.
+  double wet_bound_root_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 // Human-readable tag. The switch has no default, so a missing name is a -Wswitch
@@ -3170,7 +3192,8 @@ inline double Leaf::E_column_zero(double x, const std::vector<double>& psi_soil)
 // it does not arise on the brackets this finder is actually handed. Like
 // psi_stem_to_ci (Phase 6) this is a same-tolerance method swap, NOT a tolerance
 // loosening: same root, fewer evals.
-inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<double>& psi_soil, int find_root_crit) {
+inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<double>& psi_soil, int find_root_crit,
+                                  double f_wettest, double f_crit) {
   // tol and iterations copied from control defaults (for now) - changed recently to 1e-6
   if (find_root_crit == 1) {
     auto target = [&](double x) -> double {
@@ -3180,7 +3203,8 @@ inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<d
       // Ends swapped, not just renamed: a bracketing solver needs opposite signs
       // at the two endpoints, but the LOWER bound must come first, and in
       // magnitudes the wettest layer is the smallest suction (#25).
-      return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, 1e-4, ci_niter);
+      return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, f_wettest,
+                                  f_crit, 1e-4, ci_niter);
     } catch (const std::exception& e) {
       util::stop_infeasible("collar_bracket",
                  "find_root_psi(find_root_crit=1) failed: " + std::string(e.what()) +
@@ -3193,7 +3217,8 @@ inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<d
     return E_column_zero(x, psi_soil);
   };
   try {
-    return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, 1e-4, ci_niter);
+    return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, f_wettest,
+                                f_crit, 1e-4, ci_niter);
   } catch (const std::exception& e) {
     util::stop_infeasible("collar_bracket",
                "find_root_psi(find_root_crit=0) failed: " + std::string(e.what()) +
@@ -3201,6 +3226,56 @@ inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<d
                "; max=" + util::to_string(psi_crit));
   }
 
+}
+
+// ⚠️ WHY A PINNED OPTIMUM NEEDS ITS BOUND SOLVED TIGHTLY. find_root_psi stops at
+// 1e-4 MPa, which is plenty for a BRACKET -- the interior root-find refines to
+// collar_root_tol inside it whatever the ends are. But at a pinned optimum the
+// bound is the answer, and where a 1e-4 root-find stops moves with the parameters
+// through its own iterates, not the way the root does. The derivative rows
+// (collar_at -> bound_at) differentiate the root itself, so the two disagreed:
+// at psi_soil = 4 the zero-flux bound sat 1.3e-4 MPa from the true root, its
+// d/droot_c was 1.2e-4 against the root's 1.1e-6, and the profit rows for the
+// root traits came out 100x off a finite difference of the solve.
+//
+// Solving every bound this tightly costs +2% on every solve; polishing only the
+// bound that answers costs nothing on an interior one. The root is within ~1e-4
+// of x0, so the first bracket tried almost always holds it.
+inline double Leaf::polish_bracket_bound(double x0,
+                                         const std::vector<double>& psi_soil,
+                                         int find_root_crit) {
+  auto target = [&](double x) -> double {
+    return find_root_crit == 1 ? E_column(x, psi_soil, psi_crit)
+                               : E_column_zero(x, psi_soil);
+  };
+  // Tighter than collar_root_tol, which at a collar of ~5 MPa is ~6e-12: near
+  // psi_crit the stem curve is steep enough to turn that into ~2e-11 of psi_stem,
+  // which a finite difference at a 1e-6 step reads as a 2e-6 error in a row.
+  constexpr double polish_tol = 1e-15;
+  const double f0 = target(x0);
+  if (f0 == 0.0 || !std::isfinite(f0)) {
+    return x0;
+  }
+  // Both targets rise with the collar, so f0 > 0 puts the root below x0; that side
+  // is tried first and the other only if it holds no sign change. The first width
+  // is the bracket's own tolerance (1e-4 absolute plus relative), which holds the
+  // root it was placed around, so one probe usually suffices.
+  const double sign = f0 > 0.0 ? -1.0 : 1.0;
+  for (double d = 1.5e-4 * (1.0 + std::abs(x0)); d <= 0.1; d *= 4.0) {
+    for (double side : {sign, -sign}) {
+      const double x = x0 + side * d;
+      const double fx = target(x);
+      if (std::isfinite(fx) && fx * f0 <= 0.0) {
+        return side < 0.0
+                   ? util::uniroot_smooth(target, x, x0, fx, f0, polish_tol,
+                                          static_cast<size_t>(ci_niter))
+                   : util::uniroot_smooth(target, x0, x, f0, fx, polish_tol,
+                                          static_cast<size_t>(ci_niter));
+      }
+    }
+  }
+  // No sign change near x0: keep the bracket's answer rather than guess.
+  return x0;
 }
 
 // When root pressure is known, find E from soil, then use E from soil to find psi stem
@@ -3336,6 +3411,7 @@ inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b){
   // reports "unclassified" rather than the previous plant's kind of operating
   // point (hazard 8). Every exit below, and both callers, write it again.
   operating_point_kind_ = OperatingPointKind::Unsolved;
+  wet_bound_root_ = std::numeric_limits<double>::quiet_NaN();
 
   // Hand the supply path the start of a solve: it builds its per-solve caches and
   // reports back the wettest rooted layer -- the SMALLEST suction, and the lower
@@ -3350,14 +3426,23 @@ inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b){
     return false;
   }
 
-if(E_column(psi_crit, supply_psi_soil(), psi_crit) < 0){
+// ⚠️ THE TWO BRACKET ROOT-FINDS SHARE THEIR ENDPOINT VALUES, and they are handed
+// over rather than re-taken. At psi_crit the column term is exactly zero, so
+// E_column there IS the uptake E_column_zero reads; at the wettest layer both read
+// one uptake. The same doubles either way, so the iterates are unchanged -- it is
+// three flux evaluations a solve, which is what pays for polishing a pinned bound.
+const double E_at_crit = E_column(psi_crit, supply_psi_soil(), psi_crit);
+if(E_at_crit < 0){
       set_shutdown_state<K>(supply_psi_crit());
       return false;
 }
+const double E_up_at_wettest = E_column_zero(wettest_soil_layer, supply_psi_soil());
 
   // Avoid loop if the wettest psi layer is drier than psi_crit in stem, transpiration not possible and so all variables set to
   // shut down
-double root_crit = find_root_psi(wettest_soil_layer, supply_psi_soil(), 1);
+double root_crit = find_root_psi(
+    wettest_soil_layer, supply_psi_soil(), 1,
+    E_up_at_wettest - transpiration(psi_crit, wettest_soil_layer), E_at_crit);
 
 // If root crit would have to be larger than psi crit, also avoid loop as above
 
@@ -3367,7 +3452,8 @@ double root_crit = find_root_psi(wettest_soil_layer, supply_psi_soil(), 1);
   }
 
 // Find root collar where transpiration from soil is 0
-double root_zero_E = find_root_psi(wettest_soil_layer, supply_psi_soil(), 0);
+double root_zero_E = find_root_psi(wettest_soil_layer, supply_psi_soil(), 0,
+                                   E_up_at_wettest, E_at_crit);
 
 // If assimilation would be less than 0 even at Ca, also end loop
 if(assim_max_ < 0){
@@ -3375,6 +3461,11 @@ if(assim_max_ < 0){
     // gradient), so the operating point is root_zero_E for both -- and now they
     // are literally the same number, where #7 had to pair a magnitude with its
     // negation to say the same thing.
+    //
+    // The bound IS the answer here, so it is solved to collar precision first,
+    // for the reason polish_bracket_bound gives.
+    root_zero_E = polish_bracket_bound(root_zero_E, supply_psi_soil(), 0);
+    wet_bound_root_ = root_zero_E;
     opt_psi_stem_ = root_zero_E;
     opt_root_psi_ = root_zero_E;
     E_from_Soil_to_Root_Collar(opt_root_psi_, supply_psi_soil());
@@ -3712,6 +3803,55 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   //
   // The gradients cannot say which of the two bounds it is; the profits can,
   // since f_lo <= 0 makes lo a local maximum and f_hi >= 0 makes hi one.
+  // A pin's bound IS the answer, so it is solved to collar_root_tol before the
+  // tests below read it (polish_bracket_bound says why the rows need this). Only
+  // a side that would pin is touched, so an interior solve pays nothing; and a
+  // polish whose re-evaluation fails keeps the bracket's answer.
+  if (f_lo <= 0.0) {
+    const double a = polish_bracket_bound(bound_a, supply_psi_soil(), 0);
+    wet_bound_root_ = a;
+    if (a != bound_a && a < hi) {
+      // Stepped in on the bound's own scale, not the width's: a step that is a
+      // fraction of the width moves with the DRY bound, a parameter dependence
+      // the rows do not have -- and for root_c the same size as the answer.
+      //
+      // ⚠️ Do not start smaller than 1e-6. The rows read the flux at the stepped
+      // point rather than at the root, an error proportional to the step (~1e-6
+      // of profit per unit of a root trait, visible where the true derivative
+      // is zero: a one-layer wet bound is the gravity balance). But at 1e-7 and
+      // 1e-8 the forward model's stem-potential inversion reaches its rounding
+      // floor, and a finite-difference referee found 56 rows wrong against 3.
+      //
+      // Only the no-flow test is repeated here, not the whole gradient: the sign
+      // f_lo already has cannot flip across the ~1e-4 the bound moved at a pin,
+      // and re-taking dprofit on every pinned row cost 1.5% of every solve.
+      const double scale = std::max(a, 1e-3);
+      const double limit = 0.5 * (bound_b - a);
+      for (double frac = 1e-6; frac * scale < limit; frac *= 10.0) {
+        const double x = a + frac * scale;
+        const double s = find_psi_stem_from_psi_root(x, supply_psi_soil());
+        if (std::isfinite(s) && x < s) {
+          lo = x;
+          break;
+        }
+      }
+    }
+  }
+  if (f_hi >= 0.0 && hi == bound_b && !dry_bound_is_root_limit_) {
+    const double b = polish_bracket_bound(bound_b, supply_psi_soil(), 1);
+    // The dry end is feasible wherever it has been measured, and the sign f_hi
+    // has cannot flip across the ~1e-4 the bound moved. If the polished root
+    // passes the root's own limit, that limit is the bound instead.
+    if (b != bound_b && b > lo) {
+      if (b < supply_psi_crit()) {
+        hi = b;
+      } else {
+        hi = supply_psi_crit();
+        dry_bound_is_root_limit_ = true;
+      }
+    }
+  }
+
   if (f_lo <= 0.0 && f_hi >= 0.0) {
     operating_point_kind_ = OperatingPointKind::SolverRefused;
     const double p_lo = profit_psi_stem_for<K>(
@@ -6097,6 +6237,22 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
     // The residual IS the draw: uptake vanishes at this collar. implicit_value
     // evaluates at the passive bound, and the draw was taken there, so
     // re-recording the supply would put the same expression on the tape twice.
+    //
+    // ⚠️ AND THE DRAW WAS TAKEN A STEP INSIDE THE ROOT, NOT AT IT. A pinned solve
+    // returns root + step, so the flux here is flux(root) + slope * step, and its
+    // parameter dependence carries slope's times the step: an error in the row
+    // proportional to the step, visible wherever the root's own derivative is
+    // zero (a one-layer wet bound is the gravity balance, independent of the root
+    // curve). Taking the step's worth of slope back off is the Taylor correction
+    // to the root, and the slope is already on the tape.
+    const double step = std::isfinite(wet_bound_root_)
+                            ? bound_x - wet_bound_root_
+                            : 0.0;
+    if (step != 0.0) {
+      const S at_root = draw.flux.value - step * draw.flux.slope;
+      return odelia::implicit_value<S>(
+          bound_x, dflux_dx, [&](const S&) -> S { return at_root; }, at_root);
+    }
     const S wet = odelia::implicit_value<S>(
         bound_x, dflux_dx,
         [&](const S&) -> S { return draw.flux.value; }, draw.flux.value);

@@ -91,15 +91,15 @@ golden_rows <- list(
   list(
     inputs = list(psi_soil = 4.0, ppfd = 500, vpd = 1.0, layers = 5L),
     expected = list(
-      psi_stem      = "0x1.77b2b652c7188p+2",
-      opt_root_psi  = "0x1.37e82d92c5a68p+2",
-      ci            = "0x1.0bd5e9cb2b8acp+3",
-      assim         = "0x1.9da2a5e827b9fp+1",
-      transpiration = "0x1.9c8a84db34353p-19",
-      gc            = "0x1.53213b776685cp-7",
-      profit        = "-0x1.db45b577ed4edp+1",
-      e_up          = "0x1.9c8a84db34361p-19",
-      uptake        = "0x1.65cf76ff10700p-13"
+      psi_stem      = "0x1.77b2b65270b1p+2",
+      opt_root_psi  = "0x1.37e82d92b8d2bp+2",
+      ci            = "0x1.0bd5e9cb0bdcep+3",
+      assim         = "0x1.9da2a5e7a0c17p+1",
+      transpiration = "0x1.9c8a84daa0addp-19",
+      gc            = "0x1.53213b76ed3f1p-7",
+      profit        = "-0x1.db45b577f2b1dp+1",
+      e_up          = "0x1.9c8a84daa0ae3p-19",
+      uptake        = "0x1.65cf76fe907abp-13"
     )
   ),
   list(

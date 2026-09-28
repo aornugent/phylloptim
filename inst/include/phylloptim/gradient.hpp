@@ -755,18 +755,21 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
                "has nothing to stand on. This is a shut-down or otherwise "
                "determined operating point; use method = \"auto\".");
   }
+  // ⚠️ REFUSED BY NAME, as R/gradient.R does and in the same place. The step
+  // check below caught every pinned row only while psi* sat 1e-06 of a bracket
+  // width from a bound found to 1e-04; with the bound solved exactly it can fit.
+  if (use_ift && prescribed == nullptr && out.status == Status::Pinned) {
+    util::stop("leaf_gradient(): method = \"ift\" was asked for at a pinned "
+               "optimum, where psi* is held by a bound and the "
+               "implicit-function composite does not apply. Use "
+               "method = \"auto\".");
+  }
 
   double dY_dpsi[n_outputs];
   if (use_ift) {
-    // dY/dpsi at fixed traits, and a SECOND, INDEPENDENT detector of a pinned
-    // optimum. At a pinned point psi* sits one step-in fraction (1e-06 of the
-    // bracket width) from its bound, so a step of `step * psi` crosses it
-    // whenever the bracket is narrower than psi -- which every pinned row in
-    // this package's grid is. Measured, that catches all 42 pinned rows and all
-    // 48 shut-down ones on its own.
-    //
-    // It is NOT a substitute for the stationarity test: it fires only when the
-    // bracket is narrow, so a pinned optimum on a wide bracket would pass it.
+    // dY/dpsi at fixed traits. It also catches SOME pinned optima -- psi* within
+    // h_psi of a bound -- but not all, and nothing relies on it for that: a
+    // forced Method::Ift at a pinned point is refused by name above.
     double hi[n_outputs];
     double lo[n_outputs];
     // Both, unconditionally, before the test -- R computes `hi` and `lo` on
@@ -806,8 +809,8 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
       //
       // ⚠️ THIS IS THE READER #87 SAID DID NOT EXIST YET. Until the prescribed
       // path landed, the only consumer was `gradient_ift` with `envelope` false --
-      // a forced Method::Ift at a pinned point, which throws at all 42 pinned rows
-      // of the grid. A prescribed psi away from the optimum is not stationary, so
+      // a forced Method::Ift at a pinned point, which is refused. A prescribed psi
+      // away from the optimum is not stationary, so
       // it takes this branch for real, and the exactness now matters.
       dY_dpsi[out_profit] = resid;
     }

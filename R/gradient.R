@@ -744,6 +744,16 @@ leaf_gradient <- function(psi_soil,
          "on. This is a shut-down or otherwise determined operating point; use ",
          "method = \"auto\".", call. = FALSE)
   }
+  # ⚠️ REFUSED BY NAME, NOT LEFT TO THE STEP CHECK BELOW. At a pinned optimum the
+  # composite divides by a curvature the argmax does not sit on, and its answer is
+  # O(1) where the truth is ~1e-07. The step check used to catch every pinned row
+  # only because psi* sat 1e-06 of a bracket width from a bound found to 1e-04;
+  # with the bound solved exactly, psi* sits beside it and a step can fit.
+  if (use_ift && !prescribed && identical(status, "pinned")) {
+    stop("leaf_gradient(): method = \"ift\" was asked for at a pinned optimum, ",
+         "where psi* is held by a bound and the implicit-function composite ",
+         "does not apply. Use method = \"auto\".", call. = FALSE)
+  }
   # ⚠️ A CLAMPED PRESCRIBED PSI GETS NO GRADIENT, RATHER THAN THE DIRECT TERM.
   # It is not a failure -- the outputs at the clamped collar are perfectly good,
   # and TF24f relies on the clamp to pull an out-of-range tracked state back
@@ -764,20 +774,9 @@ leaf_gradient <- function(psi_soil,
     # evaluation would silently make this a one-sided difference over a shorter
     # interval, which is the same class of error as the pinned case.
     #
-    # This turns out to be a SECOND, INDEPENDENT detector of a pinned optimum
-    # rather than the unreachable guard it was written as, and the measurement is
-    # worth recording. At a pinned point psi* sits one step-in fraction (1e-06 of
-    # the bracket width) from the bound, so a step of `step` * psi in psi crosses
-    # it whenever the bracket is narrower than psi -- which every pinned row in
-    # the package's grid is, being at the dry end where the feasible interval has
-    # nearly closed. Measured: forcing method = "ift" fails here on all 42 pinned
-    # rows and on all 48 shut-down ones, so the composite's silently-wrong answer
-    # is not reachable through this function at all.
-    #
-    # It is NOT a substitute for the stationarity test, and reading it as one
-    # would be the mistake: it fires only when the bracket is narrow, so a pinned
-    # optimum on a wide bracket would pass it. The stationarity test is the one
-    # that is scale-free and the one the default relies on.
+    # It also catches SOME pinned optima -- psi* within h_psi of a bound -- but
+    # not all, and nothing relies on it for that: a forced "ift" at a pinned point
+    # is refused by name above, on the stationarity test, which is scale-free.
     hi <- .gradient_outputs_at(l, psi_star + h_psi, route)
     lo <- .gradient_outputs_at(l, psi_star - h_psi, route)
     if (is.null(hi) || is.null(lo)) {
@@ -809,8 +808,8 @@ leaf_gradient <- function(psi_soil,
       #
       # ⚠️ THIS IS THE READER #87 SAID DID NOT EXIST YET. Until the prescribed path
       # landed, the only consumer was `.gradient_ift(envelope = FALSE)` -- a forced
-      # method = "ift" at a pinned point, which throws at all 42 pinned rows of the
-      # grid. A prescribed psi away from the optimum is not stationary, so it takes
+      # method = "ift" at a pinned point, which is refused. A prescribed psi away
+      # from the optimum is not stationary, so it takes
       # this branch for real, and the exactness now matters.
       dY_dpsi[["profit"]] <- resid
     }
