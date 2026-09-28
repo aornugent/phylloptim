@@ -677,7 +677,7 @@ Everything is an argument to that call. A new cost curve is a row in
 `benefit_link<K>()`, `cost_deriv<K>()` and `cost_reads_upstream<K>()` (plus
 `cost_deriv_upstream<K>()` if it does). ⚠️ The last is the one that fails silently:
 a cost reading the upstream potential moves with the collar directly, and without
-its row the collar solve converges onto a point that is not the maximum (0.9.1
+its row the collar solve converges onto a point that is not the maximum (#141
 fixed four curves for this). A new topology is a bracket and a chain
 factor. A configuration that needs a basin scan passes `n > 0`; one that does not
 passes `0`, which makes the same function the endpoints-plus-root-find method.

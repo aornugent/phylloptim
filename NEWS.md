@@ -1,4 +1,4 @@
-# phylloptim 0.9.1
+# phylloptim 0.9.0
 
 ## Fix: the collar solve maximised the wrong objective for four cost curves
 
@@ -17,8 +17,6 @@ Measured over 24 driver rows per case (1 and 3 layers), every moved row's `profi
 | CF77, lambda = 1e4 | 0/24 (all pinned) | 0 | 0 |
 
 A trait gradient on these curves moves with the solve, since `leaf_gradient()` reaches the FOC through `dprofit_droot_collar_psi`.
-
-# phylloptim 0.9.0
 
 ## ⚠️ Breaking: root layer thickness is per layer, and it was a 3.7× error
 
