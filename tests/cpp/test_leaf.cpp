@@ -94,6 +94,12 @@ const double kCMaxB = 0.0;
 // its scale is set by the leaf, whose own marginal cost of water runs 9e4 to 3e5 at
 // these drivers.
 const double kFloorLambdaO = 1.5e5;
+// The price CF77 and TF24_floor are given where a test only needs the price's own
+// term to be visible, not a particular operating point. Both prices are caller
+// inputs with no default (NA until set), so any test of a priced curve must name
+// one. At 1e4 the upstream term in the collar FOC is ~0.2 umol m^-2 s^-1 MPa^-1,
+// three orders above the difference's floor.
+const double kPriceForFOC = 1e4;
 
 phylloptim::Leaf make_leaf(const Drivers &d, std::vector<double> psi_soil,
                      std::vector<double> soil_depth) {
@@ -573,8 +579,11 @@ int check_collar_foc_matches_profit(const Drivers &d) {
   int compared = 0;
   for (const auto &s : soils) {
     phylloptim::Leaf l = make_leaf(d, s.psi, s.depth);
-    l.CF77_lambda_ = 1e4;
-    l.TF24_floor_lambda_o = 1e4;
+    l.CF77_lambda_ = kPriceForFOC;
+    l.TF24_floor_lambda_o = kPriceForFOC;
+    l.JS22_gamma = kGammaJS22;
+    l.CMax_a = kCMaxA;
+    l.CMax_b = kCMaxB;
     l.set_model(K, true);
     l.optimise();
     const double p0 = l.opt_root_psi_;
