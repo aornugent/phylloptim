@@ -71,8 +71,8 @@ const double kLeafTemps[] = {25.0, 40.0};
 Row solve(double psi_soil, double ppfd, double vpd, int layers,
           double leaf_temp) {
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
+  l.setup_transpiration(phylloptim::Leaf::ncontrol_default);
+  l.setup_root_vulnerability(phylloptim::Leaf::ncontrol_default);
 
   // Spread the soil profile over `layers` equal 1 m layers, drying with depth so
   // that multi-layer runs are not just a repeated single layer, and split root
@@ -793,8 +793,8 @@ OptRow solve_one(Solver s, Topology t, double psi_soil, double ppfd,
   OptRow r{s, t, psi_soil, ppfd, leaf_temp, eb, tc, false, "ok", "-",
            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   phylloptim::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
+  l.setup_transpiration(phylloptim::Leaf::ncontrol_default);
+  l.setup_root_vulnerability(phylloptim::Leaf::ncontrol_default);
   l.use_energy_balance_ = eb;
   l.use_thermal_cost_ = tc;
   try {
@@ -848,8 +848,8 @@ std::vector<OptRow> run_optima_grid() {
     for (bool eb : {false, true})
       for (bool tc : {false, true}) {
         phylloptim::Leaf l;
-        l.setup_transpiration(100);
-        l.setup_root_vulnerability(100);
+        l.setup_transpiration(phylloptim::Leaf::ncontrol_default);
+        l.setup_root_vulnerability(phylloptim::Leaf::ncontrol_default);
         l.use_energy_balance_ = eb;
         l.use_thermal_cost_ = tc;
         for (double ps : kReusePsiSoils)
