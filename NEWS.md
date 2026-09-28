@@ -1,3 +1,23 @@
+# phylloptim 0.9.1
+
+## Fix: the collar solve maximised the wrong objective for four cost curves
+
+On the collar route, a cost that reads the upstream potential depends on the collar directly as well as through `psi_stem`. The first-order condition carried only the second channel, so for **CF77, JS22, CMax and TF24_floor** the collar solve converged, to `|dprofit| ~ 1e-15`, onto a point that was not the maximum of the `profit_` it reported. TF24, SOX, JW26 and ProfitMax read `psi_stem` alone and are unaffected, as are all eight stem routes (upstream is `psi_soil` there, and fixed).
+
+The missing term is `dC/dpsi_upstream`, now a table beside `cost_deriv<K>()` (`cost_reads_upstream<K>()` and `cost_deriv_upstream<K>()`), and appended to the collar FOC so the curves that do not read upstream compile to the same code: `bench_solve` is byte-identical, and all three golden baselines and `gradient_golden.tsv` are bit-identical, because none of them solves an upstream-reading curve on the collar route. `test_collar_foc_matches_profit` is the first test that does.
+
+Measured over 24 driver rows per case (1 and 3 layers), every moved row's `profit_` rose, so the old point was strictly worse by the model's own objective:
+
+| curve | rows moved | worst collar shift, MPa | worst transpiration change |
+|---|---|---|---|
+| CMax | 24/24 | 0.346 | 34% |
+| JS22 | 24/24 | 0.269 | 19% |
+| TF24_floor, lambda_o = 1e4 | 24/24 | 0.057 | 5.9% |
+| TF24_floor, lambda_o = 1e3 | 24/24 | 0.0054 | 0.5% |
+| CF77, lambda = 1e4 | 0/24 (all pinned) | 0 | 0 |
+
+A trait gradient on these curves moves with the solve, since `leaf_gradient()` reaches the FOC through `dprofit_droot_collar_psi`.
+
 # phylloptim 0.9.0
 
 ## ⚠️ Breaking: the leaf supplies its own derivative rows, and three counts moved
