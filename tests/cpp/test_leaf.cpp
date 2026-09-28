@@ -91,6 +91,12 @@ const double kCMaxB = 0.0;
 // its scale is set by the leaf, whose own marginal cost of water runs 9e4 to 3e5 at
 // these drivers.
 const double kFloorLambdaO = 1.5e5;
+// The price CF77 and TF24_floor are given where a test only needs the price's own
+// term to be visible, not a particular operating point. Both prices are caller
+// inputs with no default (NA until set), so any test of a priced curve must name
+// one. At 1e4 the upstream term in the collar FOC is ~0.2 umol m^-2 s^-1 MPa^-1,
+// three orders above the difference's floor.
+const double kPriceForFOC = 1e4;
 
 phylloptim::Leaf make_leaf(const Drivers &d, std::vector<double> psi_soil,
                      std::vector<double> soil_depth) {
@@ -547,6 +553,69 @@ void test_analytic_gradient_matches_finite_difference() {
   const double fd = (up - dn) / (2 * eps);
   ok(std::isfinite(analytic), "analytic gradient is finite");
   near(analytic, fd, 2e-3, "analytic gradient matches central difference");
+}
+
+// The collar solve root-finds `dprofit_droot_collar_psi == 0`, so that function has
+// to be the derivative of the profit the solve REPORTS, on every curve. A cost that
+// reads the upstream potential moves with the collar directly, and a first-order
+// condition missing that term still converges -- to a point that is not the
+// maximum -- with every reported number plausible. So this checks the slope
+// against a difference of `profit_`, on each curve whose objective IS `profit_`
+// (the identity-link ones; the log links report the product, not its log), at two
+// collars wetter than the solved one. Not AT it: a curve pinned to the dry bound
+// would put a central difference across the bound, which halves the slope.
+// Through the `_for<K>` entry points, not the seated-curve wrappers: those are the
+// functions the solve itself calls, whatever the wrappers dispatch to.
+template <phylloptim::Leaf::CostCurve K>
+int check_collar_foc_matches_profit(const Drivers &d) {
+  const struct {
+    std::vector<double> psi;
+    std::vector<double> depth;
+  } soils[] = {{{1.0}, {1.0}}, {{1.0, 2.0, 3.0}, {0.5, 1.0, 1.5}}};
+  int compared = 0;
+  for (const auto &s : soils) {
+    phylloptim::Leaf l = make_leaf(d, s.psi, s.depth);
+    l.CF77_lambda_ = kPriceForFOC;
+    l.TF24_floor_lambda_o = kPriceForFOC;
+    l.JS22_gamma = kGammaJS22;
+    l.CMax_a = kCMaxA;
+    l.CMax_b = kCMaxB;
+    l.set_model(K, true);
+    l.optimise();
+    const double p0 = l.opt_root_psi_;
+    for (double target : {p0 - 0.05, p0 - 0.1}) {
+      const double eps = 1e-5;
+      const double analytic = l.template dprofit_droot_collar_psi_for<K>(target);
+      const double up = l.template evaluate_root_collar_psi_for<K>(target + eps);
+      const double dn = l.template evaluate_root_collar_psi_for<K>(target - eps);
+      if (!std::isfinite(up) || !std::isfinite(dn)) {
+        continue;
+      }
+      // The difference's own floor is ~3e-5 on the three-layer supply (TF24
+      // included, which reads no upstream); the term this guards is O(1).
+      near(analytic, (up - dn) / (2 * eps), 1e-4,
+           phylloptim::Leaf::curve_name(static_cast<int>(K)) + " at collar " +
+               std::to_string(target) + ", " + std::to_string(s.psi.size()) +
+               " layer(s)");
+      ++compared;
+    }
+  }
+  return compared;
+}
+
+void test_collar_foc_matches_profit() {
+  printf("collar dprofit is the derivative of the reported profit, every curve\n");
+  using CC = phylloptim::Leaf::CostCurve;
+  Drivers d;
+  d.PPFD = 1500.0;
+  const int compared = check_collar_foc_matches_profit<CC::TF24>(d) +
+                       check_collar_foc_matches_profit<CC::CF77>(d) +
+                       check_collar_foc_matches_profit<CC::JS22>(d) +
+                       check_collar_foc_matches_profit<CC::CMax>(d) +
+                       check_collar_foc_matches_profit<CC::TF24_floor>(d);
+  // Hazard 16: a row whose difference straddles the feasible edge is skipped.
+  printf("    %d points compared\n", compared);
+  ok(compared == 20, "every curve, layer count and point was compared");
 }
 
 // lambda = dA/dE is the first-order condition every model in this family shares,
@@ -5674,6 +5743,7 @@ int main() {
   test_shallow_roots_do_not_inherit_deep_uptake();
   test_negative_assim_exit_writes_its_own_rates();
   test_analytic_gradient_matches_finite_difference();
+  test_collar_foc_matches_profit();
   test_gradient_needs_no_prior_solve();
   test_gradient_is_zero_in_reversed_gradient_state();
   test_gradient_reports_feasibility();

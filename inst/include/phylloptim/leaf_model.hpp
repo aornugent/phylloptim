@@ -1354,6 +1354,9 @@ public:
   template <CostCurve K> void check_cost_parameters();
   template <CostCurve K> double cost_deriv(double psi_stem,
                                            double psi_upstream);
+  template <CostCurve K> static constexpr bool cost_reads_upstream();
+  template <CostCurve K> double cost_deriv_upstream(double psi_stem,
+                                                    double psi_upstream);
   template <CostCurve K> double profit_psi_stem_for(double psi_stem,
                                                     double psi_upstream);
   template <CostCurve K> double lambda_for(double psi_stem,
@@ -3374,6 +3377,9 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   if (ci_at_compensation_point_) {
     const double C_prime0 = cost_deriv<K>(psi_stem, psi);
     double dprofit = -C_prime0 * dpsistem_dpsi;
+    if constexpr (cost_reads_upstream<K>()) {
+      dprofit = dprofit - cost_deriv_upstream<K>(psi_stem, psi);
+    }
     if (use_energy_balance_ && dT_dE != 0.0) {
       const double Rd_T = respiration_temp_deriv(Tleaf_here);
       // dE/dpsi from the same spline derivatives the main branch uses;
@@ -3443,6 +3449,11 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
     const double A = assim_colimited_kernel(ci);
     base = benefit_link_deriv<K>(A) * (A_prime * dci_dpsi) - C_prime * dpsistem_dpsi;
   }
+  // The cost's direct dependence on the collar, appended so a curve that does not
+  // read upstream keeps the arm above operation for operation.
+  if constexpr (cost_reads_upstream<K>()) {
+    base = base - cost_deriv_upstream<K>(psi_stem, psi);
+  }
   // Gated at the CALL SITE, not just inside the callee: the block is out of line
   // (deliberately, so adding it cannot change FMA contraction in this inlined
   // body), and an out-of-line call costs even when it returns 0.0 immediately.
@@ -3478,7 +3489,8 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
 // golden files pin.
 // dC/dpsi_stem for one cost curve: THE ONLY PLACE THE COST CURVE ENTERS a
 // derivative, and shared by both routes. `dprofit_dpsi_stem` uses it directly;
-// `dprofit_at_collar_psi` multiplies it by dpsi_stem/dpsi_collar. Factored out so
+// `dprofit_at_collar_psi` multiplies it by dpsi_stem/dpsi_collar, and adds
+// `cost_deriv_upstream<K>` for a cost that also reads the collar. Factored out so
 // there is one dispatch table rather than one per solver -- adding a curve must not
 // mean remembering a second place.
 template <Leaf::CostCurve K>
@@ -3540,6 +3552,62 @@ inline double Leaf::cost_deriv(double psi_stem, double psi_upstream) {
     C_prime = CMax_a * psi_stem + CMax_b;
   }
   return C_prime;
+}
+
+
+// Whether a curve's cost reads the UPSTREAM potential as well as psi_stem. On the
+// stem routes upstream is psi_soil and fixed, so this never matters there; on the
+// collar route upstream IS the decision variable, and a cost that reads it moves
+// with the collar directly as well as through psi_stem.
+//
+// ⚠️ A CURVE THAT SAYS FALSE HERE AND READS UPSTREAM ANYWAY SOLVES THE WRONG
+// FIRST-ORDER CONDITION ON THE COLLAR ROUTE, and nothing else notices: the root-find
+// still drives its own dprofit to ~1e-15, and every reported number is plausible.
+// The symptom is `dprofit_droot_collar_psi` disagreeing with a central difference
+// of `profit_` from `evaluate_root_collar_psi` -- which is what
+// `test_collar_foc_matches_profit` asserts, for every curve. Every arm is explicit
+// for the reason `cost_deriv`'s are.
+template <Leaf::CostCurve K>
+constexpr bool Leaf::cost_reads_upstream() {
+  if constexpr (K == CostCurve::CF77 || K == CostCurve::JS22 ||
+                K == CostCurve::CMax || K == CostCurve::TF24_floor) {
+    return true;
+  } else {
+    static_assert(K == CostCurve::TF24 || K == CostCurve::SOX ||
+                      K == CostCurve::JW26 || K == CostCurve::ProfitMax,
+                  "unhandled CostCurve in cost_reads_upstream");
+    return false;
+  }
+}
+
+
+// dC/dpsi_upstream at fixed psi_stem, for the curves `cost_reads_upstream` names.
+// The collar FOC subtracts it with a unit chain factor, since upstream is the
+// collar there.
+template <Leaf::CostCurve K>
+inline double Leaf::cost_deriv_upstream(double psi_stem, double psi_upstream) {
+  static_assert(cost_reads_upstream<K>(),
+                "cost_deriv_upstream is only defined where the cost reads upstream");
+  if constexpr (K == CostCurve::CF77) {
+    // lambda * kmax * (G(psi_stem) - G(psi_up)), so -lambda * kmax * G'(psi_up),
+    // with G' the table's own slope: the solve ran on the table.
+    (void)psi_stem;
+    return -(cf77_price() * leaf_specific_conductance_max_ *
+             stem_curve_integral_deriv(psi_upstream));
+  } else if constexpr (K == CostCurve::JS22) {
+    return -2.0 * JS22_gamma * (psi_stem - psi_upstream);
+  } else if constexpr (K == CostCurve::CMax) {
+    // d/du of (psi - u)*(a*(psi + u)/2 + b) is -(a*u + b): the integrand at the
+    // lower limit, as for any integral of the price.
+    (void)psi_stem;
+    return -(CMax_a * psi_upstream + CMax_b);
+  } else {
+    static_assert(K == CostCurve::TF24_floor, "unhandled CostCurve");
+    // TF24's half reads psi_stem alone; the floor's lambda_o*E is CF77's arm.
+    (void)psi_stem;
+    return -(TF24_floor_lambda_o * leaf_specific_conductance_max_ *
+             stem_curve_integral_deriv(psi_upstream));
+  }
 }
 
 template <Leaf::CostCurve K>
