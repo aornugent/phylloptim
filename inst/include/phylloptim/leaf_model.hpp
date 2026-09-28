@@ -14,7 +14,7 @@
 #include <phylloptim/clamp_sites.hpp>
 
 #include <odelia/interpolator.hpp>
-#include <odelia/with_slope.hpp>
+#include <odelia/value_with_slope.hpp>
 #include <odelia/tangent.hpp>
 #include <odelia/implicit_node.hpp>
 
@@ -138,7 +138,7 @@ public:
        double ci_niter,
       double TF24_cost_scale);
 
-  odelia::interpolator::hermite_interpolator<double> transpiration_from_psi;
+  odelia::interpolator::hermite_spline<double> transpiration_from_psi;
   // The knots that interpolant was built on: the potential at each, and G there.
   //
   // ⚠️ THERE IS NO SECOND TABULATION, AND THAT IS THE POINT. G^-1 is this same
@@ -1093,7 +1093,7 @@ public:
   // "u = 7.5 beyond the upper end" is ambiguous in exactly the way that matters.
   // Nor can it name the caller -- the same spline is read from four places, and
   // localising plant#576 came down to which.
-  static double eval_stem_curve(const odelia::interpolator::hermite_interpolator<double>& spline,
+  static double eval_stem_curve(const odelia::interpolator::hermite_spline<double>& spline,
                                 double u, double scale, const char* spline_name,
                                 const char* arg_name, const char* caller);
 
@@ -1201,7 +1201,7 @@ public:
 
 
   // A value and its response in the collar potential, travelling as one pair.
-  template <class T> using pair = odelia::with_slope<T>;
+  template <class T> using pair = odelia::value_with_slope<T>;
 
   // What the leaf hands over: the objective plant bills, and the water it drew
   // from each layer. At any scalar, because both re-enter plant's chain.
@@ -4844,7 +4844,7 @@ inline void Leaf::setup_transpiration(double resolution) {
     double scale, const char* spline_name, const char* arg_name,
     const char* caller);
 
-inline double Leaf::eval_stem_curve(const odelia::interpolator::hermite_interpolator<double>& spline,
+inline double Leaf::eval_stem_curve(const odelia::interpolator::hermite_spline<double>& spline,
                                     double u, double scale,
                                     const char* spline_name,
                                     const char* arg_name, const char* caller) {

@@ -18,13 +18,12 @@ being recorded and differentiated. What that changes for a caller:
   kernels read also holds `par_PPFD`, which is seated per observation from the
   drivers and is never fitted, so it has a slot and no name. Read `theta` out to
   `n_pars` and you run past its end.
-* **odelia `>= 0.5.0`** is required, for the reverse-mode surface and the
-  interpolator this leaf's supplied rows are read through. ⚠️ odelia 0.5.0
-  retracts its own 0.2.2 promise that an out-of-domain interpolator read is
-  refused with a located message: `hermite_interpolator` extends linearly from
-  the end knot and there is no switch. Each of this package's three curves now
-  states its own bound where it applies it -- `root_vuln_at` clamps the
-  argument, `root_vuln_integral_at` caps the value, `eval_stem_curve` raises.
+* **odelia `>= 0.6.0`** is required, for the reverse-mode surface and the
+  Hermite interpolant (`hermite_spline`, odelia 0.5.0) this leaf's supplied rows
+  are read through. The curves read the interpolant directly rather than
+  through odelia's refusing front end, so each states its own bound where it
+  applies it -- `root_vuln_at` clamps the argument, `root_vuln_integral_at`
+  caps the value, `eval_stem_curve` raises.
 
 ⚠️ **This retracts two earlier entries.** "`n_pars` is unchanged" under the
 `Tleaf` reporting entry, and "`n_pars` is unchanged at 19" under the
