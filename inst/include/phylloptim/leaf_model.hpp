@@ -6277,7 +6277,17 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
                                  pars[par_stem_c]);
   }
 
-  return A_prime * at.ci.slope - C_prime * at.sigma.slope;
+  S M = A_prime * at.ci.slope - C_prime * at.sigma.slope;
+  if constexpr (cost_reads_upstream<K>()) {
+    using odelia::util::to_passive;
+    // -dC/dcollar at fixed sigma: the floor's lambda_o*E reads the collar as its
+    // upstream end, as cost_deriv_upstream bills it in the solve. At the LIVE
+    // collar, so the term's own dM/dcollar reaches the implicit row.
+    M = M + pars[par_TF24_floor_lambda_o] * pars[par_kmax] *
+                closed_form_curve<S>(stem_curve_integral_deriv(to_passive(collar)),
+                                     collar, pars[par_stem_P50], pars[par_stem_c]);
+  }
+  return M;
 }
 
 template <class S>

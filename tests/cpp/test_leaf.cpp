@@ -3437,6 +3437,84 @@ void test_every_answered_point_hands_over_finite_rows() {
   ok(reached.count("interior") > 0, "the sweep reached an interior point");
 }
 
+// TF24_floor's rows at a nonzero price, against re-solving at a perturbed price.
+//
+// ⚠️ THE TWO ROWS FAIL DIFFERENTLY, which is why both are asserted. The profit row
+// is the envelope theorem, so it is right only if the solve's collar is stationary
+// in the profit it reports; the collar row is the implicit function theorem on
+// marginal_at, so it is right only if marginal_at is the FOC the solve drove to
+// zero. The floor's price reads the collar directly, so a solve or a marginal
+// missing that term fails one row or the other -- and a difference taken through
+// the same solve cannot see it, because it re-solves the same wrong condition.
+void test_tf24_floor_rows_at_a_price() {
+  printf("TF24_floor's collar and profit rows at lambda_o > 0 match a re-solve\n");
+  using T = odelia::ode::tangent_scalar<double>;
+  using K = phylloptim::Leaf::CostCurve;
+  int compared = 0;
+  for (int layers : {1, 3}) {
+    for (double price : {1e3, 1e4}) {
+      Drivers d;
+      d.PPFD = 1500.0;
+      std::vector<double> psi_soil, soil_depth;
+      for (int i = 0; i < layers; ++i) {
+        psi_soil.push_back(1.0 + 0.35 * i);
+        soil_depth.push_back(1.0 * (i + 1));
+      }
+      auto solved = [&](double lam) {
+        phylloptim::Leaf l = make_leaf(d, psi_soil, soil_depth);
+        l.TF24_floor_lambda_o = lam;
+        l.set_model(K::TF24_floor, true);
+        l.optimise();
+        return l;
+      };
+      phylloptim::Leaf l = solved(price);
+      const std::string at = " at lambda_o=" + std::to_string(price) +
+                             " layers=" + std::to_string(layers);
+      if (l.operating_point_kind() != phylloptim::Leaf::OperatingPointKind::Interior) {
+        continue;
+      }
+
+      phylloptim::leaf_pars<T> pars;
+      const phylloptim::leaf_pars<double> seated = l.passive_pars();
+      for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
+      odelia::ode::seed_direction(pars[phylloptim::par_TF24_floor_lambda_o], 1.0);
+      std::vector<T> soil, r_h, r_v;
+      for (int i = 0; i < l.supply_n_layers(); ++i) {
+        soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
+        r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
+        r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
+      }
+      const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
+                                           pars[phylloptim::par_root_P50],
+                                           pars[phylloptim::par_root_c]};
+      const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
+      const double curvature = l.marginal_collar_slope<K::TF24_floor>();
+      const T collar = l.collar_at<K::TF24_floor, T>(draw, pars, curvature);
+      const auto out = l.outputs_at<K::TF24_floor, T>(collar, draw, pars);
+
+      const double h = 1e-4 * price;
+      const phylloptim::Leaf up = solved(price + h), dn = solved(price - h);
+      const double dcollar = (up.opt_root_psi_ - dn.opt_root_psi_) / (2 * h);
+      const double dprofit = (up.profit_ - dn.profit_) / (2 * h);
+      // Scaled by the row's own size: both are small numbers per unit price.
+      auto rel = [](double got, double want) {
+        return std::abs(got - want) / std::max(std::abs(want), 1e-300);
+      };
+      ok(rel(odelia::ode::derivative_along(collar), dcollar) < 1e-4,
+         "the collar row matches a re-solve" + at + ": " +
+             std::to_string(odelia::ode::derivative_along(collar)) + " vs " +
+             std::to_string(dcollar));
+      ok(rel(odelia::ode::derivative_along(out.profit), dprofit) < 1e-4,
+         "the profit row matches a re-solve" + at + ": " +
+             std::to_string(odelia::ode::derivative_along(out.profit)) + " vs " +
+             std::to_string(dprofit));
+      ++compared;
+    }
+  }
+  printf("    %d interior points compared\n", compared);
+  ok(compared == 4, "every layer count and price reached an interior point");
+}
+
 // The dry end has TWO bounds, closed by different conditions, and which one bound
 // is a classification a tally has to be able to report.
 //
@@ -6204,6 +6282,7 @@ int main() {
   test_pack_kernels_are_the_models_own();
   test_light_reaches_carbon_with_a_row();
   test_every_answered_point_hands_over_finite_rows();
+  test_tf24_floor_rows_at_a_price();
   test_set_traits_matches_a_fresh_leaf();
   test_prescribed_lambda_survives_redriving();
   test_profitmax_reports_an_emergent_lambda();
