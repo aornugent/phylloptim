@@ -1,5 +1,33 @@
 # phylloptim 0.9.0
 
+## ⚠️ Breaking: every root-find stops at roundoff
+
+`uniroot()` and `uniroot_smooth()` take no tolerance: each stops once the ends
+of its bracket agree to 4 `DBL_EPSILON` relative, a few units in the last place
+(adjacent doubles, for a bracket closing on zero). `maximise_over_closed_interval_foc()`
+loses its `tol` argument and `Leaf::collar_root_tol` is deleted, so a stale call
+is a compile error. A root resolved to a tolerance moves with its inputs in steps
+of that tolerance, and a difference across a small change in a trait reads those
+steps as noise.
+
+What moves, over the golden grid against the previous commit on Linux:
+
+* No operating point changes kind.
+* Interior collar optima move by at most 1e-10, and the single-layer optimisers
+  by at most 1.8e-8.
+* Where the collar is a bound of its interval (pinned at the wet end, refused,
+  or shade-death), it moves by up to 3.2e-5 of itself and profit by up to
+  1.3e-4, since the bound was the continuity root-find's at a tolerance of 1e-4.
+  Transpiration, tiny at the wet bound, moves by up to 0.996 of itself.
+* A stem conductance as small as 1e-30 is solved, at a collar where the leaf
+  barely transpires, where it was refused as `stem_curve_domain`. The refusal
+  came from the same bound. The infeasibility tests starve the iteration budget
+  instead (`ci_niter = 3`, code `collar_bracket`).
+
+The searches by comparison, `golden_section_max()` and `brent_fmin()`, keep
+their tolerances: their brackets cannot resolve a flat maximum below about
+`sqrt(DBL_EPSILON)`, and neither is on the collar route except as a fallback.
+
 ## ⚠️ Breaking: the leaf supplies its own derivative rows, and three counts moved
 
 `Leaf` is templated on its scalar and supplies the derivative of its operating

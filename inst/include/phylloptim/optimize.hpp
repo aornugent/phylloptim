@@ -216,7 +216,7 @@ double golden_section_max(Function f, double ax, double bx, double tol) {
 // which is what the scan already guaranteed.
 template <typename Function, typename Deriv>
 double maximise_over_closed_interval_foc(Function f, Deriv df, double lo, double hi,
-                                         int n, double tol, size_t max_iterations,
+                                         int n, size_t max_iterations,
                                          double* fmax = nullptr) {
   double best_x = lo;
   double best_f = -std::numeric_limits<double>::infinity();
@@ -283,7 +283,7 @@ double maximise_over_closed_interval_foc(Function f, Deriv df, double lo, double
   if (ok_a && ok_b && std::isfinite(da) && std::isfinite(db) &&
       da > 0.0 && db < 0.0) {
     const double x = util::uniroot_smooth(
-        [&](double v) { bool ok = false; return df(v, &ok); }, xa, xb, da, db, tol,
+        [&](double v) { bool ok = false; return df(v, &ok); }, xa, xb, da, db,
         max_iterations);
     consider(x, f(x));
   } else {

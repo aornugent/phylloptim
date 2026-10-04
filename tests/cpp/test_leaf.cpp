@@ -4228,16 +4228,16 @@ void test_infeasible_is_a_distinct_failure() {
   Drivers d;
   std::vector<double> mrp{1.0 / d.area_leaf}, psi_soil{2.0}, depth{1.0};
 
-  // A well-formed call whose operating point cannot be evaluated: with the stem
-  // conductance this small the transpiration the solve needs is off the end of the
-  // inverse spline's domain.
+  // A well-formed call whose operating point cannot be found: three iterations do
+  // not bring the continuity root-find's bracket to roundoff.
   {
     phylloptim::Leaf l;
+    l.ci_niter = 3;
     l.setup_transpiration(100);
     l.setup_root_vulnerability(100);
     l.set_physiology(fixture::root_network(mrp, depth), d.PPFD, psi_soil, depth,
-                     1e-30, d.atm_vpd, d.ca, d.leaf_temp, d.atm_o2_kpa,
-                     d.atm_kpa);
+                     d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
+                     d.atm_o2_kpa, d.atm_kpa);
     bool caught_as_infeasible = false;
     std::string msg;
     try {
@@ -4250,7 +4250,7 @@ void test_infeasible_is_a_distinct_failure() {
     }
     ok(caught_as_infeasible,
        "an unevaluable operating point throws util::infeasible_error");
-    ok(msg.rfind(phylloptim::util::infeasible_token("stem_curve_domain"), 0) == 0,
+    ok(msg.rfind(phylloptim::util::infeasible_token("collar_bracket"), 0) == 0,
        "and its message opens with the token R parses");
   }
 
@@ -4928,7 +4928,6 @@ void test_profitmax_finds_a_closed_optimum() {
 void test_maximise_over_closed_interval_foc() {
   printf("maximise_over_closed_interval_foc\n");
   const int n = 64;
-  const double tol = 1e-12;
   const size_t iters = 200;
   // The derivative contract: `df(x, ok)` sets `*ok` false to mean "no usable
   // derivative here", which is what the leaf's shut-down exits report.
@@ -4941,7 +4940,7 @@ void test_maximise_over_closed_interval_foc() {
   {
     double fmax = 0.0;
     const double x = phylloptim::util::maximise_over_closed_interval_foc(
-        [](double v) { return -v; }, ok_deriv(-1.0), 0.0, 1.0, n, tol, iters,
+        [](double v) { return -v; }, ok_deriv(-1.0), 0.0, 1.0, n, iters,
         &fmax);
     ok(x == 0.0, "a maximum at the left endpoint is returned exactly");
     ok(fmax == 0.0, "with its value");
@@ -4950,7 +4949,7 @@ void test_maximise_over_closed_interval_foc() {
   {
     double fmax = 0.0;
     const double x = phylloptim::util::maximise_over_closed_interval_foc(
-        [](double v) { return v; }, ok_deriv(1.0), 0.0, 1.0, n, tol, iters,
+        [](double v) { return v; }, ok_deriv(1.0), 0.0, 1.0, n, iters,
         &fmax);
     ok(x == 1.0, "a maximum at the right endpoint is returned exactly");
     ok(fmax == 1.0, "with its value");
@@ -4963,7 +4962,7 @@ void test_maximise_over_closed_interval_foc() {
     const double x = phylloptim::util::maximise_over_closed_interval_foc(
         [](double v) { return -(v - 0.3) * (v - 0.3); },
         [](double v, bool* o) { if (o) *o = true; return -2.0 * (v - 0.3); },
-        0.0, 1.0, n, tol, iters, &fmax);
+        0.0, 1.0, n, iters, &fmax);
     ok(std::abs(x - 0.3) < 1e-9,
        "an interior maximum is refined off the scan grid");
     ok(fmax <= 0.0 && fmax > -1e-18, "and its value is the peak's");
@@ -4985,7 +4984,7 @@ void test_maximise_over_closed_interval_foc() {
     };
     double fmax = 0.0;
     const double x = phylloptim::util::maximise_over_closed_interval_foc(
-        two_humps, d_two_humps, 0.0, 1.0, n, tol, iters, &fmax);
+        two_humps, d_two_humps, 0.0, 1.0, n, iters, &fmax);
     ok(std::abs(x - 0.75) < 1e-5, "the TALLER of two humps is found");
     ok(fmax > 1.9, "and its height is reported");
     // The premise: a bare Brent on the same interval really does miss it, so this
@@ -5001,11 +5000,11 @@ void test_maximise_over_closed_interval_foc() {
   {
     double fmax = 0.0;
     const double x = phylloptim::util::maximise_over_closed_interval_foc(
-        [](double v) { return -v; }, ok_deriv(-1.0), 0.5, 0.5, n, tol, iters,
+        [](double v) { return -v; }, ok_deriv(-1.0), 0.5, 0.5, n, iters,
         &fmax);
     ok(x == 0.5, "a collapsed interval returns its one point");
     const double y = phylloptim::util::maximise_over_closed_interval_foc(
-        [](double v) { return v; }, ok_deriv(1.0), 0.0, 1.0, 1, tol, iters,
+        [](double v) { return v; }, ok_deriv(1.0), 0.0, 1.0, 1, iters,
         &fmax);
     ok(y == 1.0, "and n < 2 still compares the endpoints");
   }
@@ -5022,7 +5021,7 @@ void test_maximise_over_closed_interval_foc() {
           if (o) *o = !(v > 0.6);
           return v > 0.6 ? std::numeric_limits<double>::quiet_NaN() : 1.0;
         },
-        0.0, 1.0, n, tol, iters, &fmax);
+        0.0, 1.0, n, iters, &fmax);
     ok(x <= 0.6 && std::isfinite(fmax), "a NaN region is not selected");
   }
   // 7. ⚠️ THE PROPERTY THE DELETED MAXIMISER COULD NOT HAVE. Brent terminates on
@@ -5040,7 +5039,7 @@ void test_maximise_over_closed_interval_foc() {
     };
     double fmax = 0.0;
     const double x = phylloptim::util::maximise_over_closed_interval_foc(
-        f, df, 0.0, 1.0, n, tol, iters, &fmax);
+        f, df, 0.0, 1.0, n, iters, &fmax);
     bool o = false;
     const double resid = std::abs(df(x, &o));
     ok(resid < 1e-11, "the returned interior point is STATIONARY, not merely "

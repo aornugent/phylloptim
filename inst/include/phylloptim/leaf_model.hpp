@@ -378,21 +378,13 @@ public:
   // narrow to solve over" threshold, and the tolerance of the golden-section
   // FALLBACK maximise_profit_over_collar drops to when neither bracket endpoint
   // has a usable gradient. It does NOT reach the stem route, which refines by a
-  // root-find at collar_root_tol, and it no longer sets how well the reported
-  // operating point is determined -- collar_root_tol does.
+  // root-find, and it no longer sets how well the reported operating point is
+  // determined -- the root-find, which stops at roundoff, does.
   double GSS_tol_abs;
   double vulnerability_curve_ncontrol;
   double ci_abs_tol;
   double ci_niter;
   double TF24_cost_scale;
-
-  // Tolerance on the collar potential for the profit-maximising root-find.
-  // Hard-coded rather than a control field, for the same reason
-  // find_root_psi's 1e-4 and psi_stem_to_ci's 1e-7 are: it is a property of the
-  // solve, not a knob. 1e-12 sits ~8 orders below the 1e-4 at which this package
-  // calls a difference real, and the cost of going there from GSS_tol_abs's 1e-3
-  // is a handful of evaluations, because TOMS748 is superlinear.
-  static constexpr double collar_root_tol = 1e-12;
 
 
   double ci_;
@@ -570,7 +562,7 @@ public:
   // balance off. This is only the size of the scan, not whether there is one.
   //
   // ⚠️ THE REFINEMENT TOLERANCE IS NOT `GSS_tol_abs` AND IS NOT SETTABLE. The
-  // winning cell is refined by a ROOT-FIND on dJ/dpsi == 0 at `collar_root_tol`;
+  // winning cell is refined by a ROOT-FIND on dJ/dpsi == 0, to roundoff;
   // the `(cell width) * 1e-4` figure belongs to
   // maximise_over_closed_interval_foc's golden-section FALLBACK, which fires only
   // where neither cell end has a usable derivative. `GSS_tol_abs` reaches neither,
@@ -3161,7 +3153,6 @@ inline double Leaf::E_column_zero(double x, const std::vector<double>& psi_soil)
 // psi_stem_to_ci (Phase 6) this is a same-tolerance method swap, NOT a tolerance
 // loosening: same root, fewer evals.
 inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<double>& psi_soil, int find_root_crit) {
-  // tol and iterations copied from control defaults (for now) - changed recently to 1e-6
   if (find_root_crit == 1) {
     auto target = [&](double x) -> double {
       return E_column(x, psi_soil, psi_crit);
@@ -3170,7 +3161,7 @@ inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<d
       // Ends swapped, not just renamed: a bracketing solver needs opposite signs
       // at the two endpoints, but the LOWER bound must come first, and in
       // magnitudes the wettest layer is the smallest suction (#25).
-      return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, 1e-4, ci_niter);
+      return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, ci_niter);
     } catch (const std::exception& e) {
       util::stop_infeasible("collar_bracket",
                  "find_root_psi(find_root_crit=1) failed: " + std::string(e.what()) +
@@ -3183,7 +3174,7 @@ inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<d
     return E_column_zero(x, psi_soil);
   };
   try {
-    return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, 1e-4, ci_niter);
+    return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, ci_niter);
   } catch (const std::exception& e) {
     util::stop_infeasible("collar_bracket",
                "find_root_psi(find_root_crit=0) failed: " + std::string(e.what()) +
@@ -3525,7 +3516,7 @@ if(assim_max_ < 0){
             }
             return dprofit_dpsi_stem<K>(psi_stem, opt_root_psi, ok);
           },
-          opt_root_psi, psi_crit, basin_scan_cells(), collar_root_tol,
+          opt_root_psi, psi_crit, basin_scan_cells(),
           static_cast<size_t>(ci_niter), &collapsed_profit);
       profit_ = profit_psi_stem_for<K>(opt_psi_stem_, opt_root_psi);
       (void)psi_stem_single;
@@ -3679,8 +3670,8 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // What lo buys, stated honestly: on a boundary-soil row the true argmax sits
   // essentially ON the feasibility boundary -- a fine scan puts it at 6.4e-07 and
   // 3.2e-09 of the bracket width from bound_a on the two worst rows -- so lo
-  // resolves it to the step-in scale (~1e-6 of the width), not to
-  // collar_root_tol. That is still ~100x tighter than the GSS_tol_abs it replaces,
+  // resolves it to the step-in scale (~1e-6 of the width), not to roundoff.
+  // That is still ~100x tighter than the GSS_tol_abs it replaces,
   // and it beat golden section on profit at both of those rows. Bisecting for the
   // exact feasibility boundary would cost ~40 gradient evaluations on the hot path
   // to gain ~1e-07 of profit on a flat maximum, which is not a trade worth making.
@@ -3734,7 +3725,7 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // uniroot_smooth's throw-on-bad-bracket cannot fire; passing the two endpoint
   // values it already has saves it re-evaluating them.
   operating_point_kind_ = OperatingPointKind::Interior;
-  return util::uniroot_smooth(dprofit, lo, hi, f_lo, f_hi, collar_root_tol,
+  return util::uniroot_smooth(dprofit, lo, hi, f_lo, f_hi,
                               static_cast<size_t>(ci_niter));
 }
 
@@ -4506,9 +4497,8 @@ inline double Leaf::dprofit_energy_balance_term(
   // update_temperature_dependent_params as the T=double instantiation of a
   // templated kernel changes which expressions share an inlined body, and
   // That exact move was measured changing results even where the algebra
-  // was identical. That risks the gate-off path to buy precision nobody can
-  // observe: at h = 1e-3 K the truncation error is ~2e-9 relative against a
-  // model whose own floor (psi_stem_to_ci at 1e-10) is ~1e-9.
+  // was identical. That risks the gate-off path to buy ~2e-9 of relative
+  // precision, the truncation error at h = 1e-3 K.
   //
   // ⚠️ h is FIXED and ABSOLUTE, not relative to T. A relative step would make
   // the estimator itself a function of psi, which is exactly the kind of thing
@@ -5137,49 +5127,12 @@ inline double Leaf::psi_stem_to_ci(double psi_stem, double psi_upstream) {
   // keeps bisection (its target is not smooth -- see the warning on
   // util::uniroot_smooth).
   //
-  // ⚠️ **The 1e-10 is load-bearing and was chosen by measurement, not taste. It
-  // sets the floor of what every reported output of this model MEANS.** It used to
-  // be 1e-7, which was invisible while golden section's GSS_tol_abs (1e-3)
-  // dominated; with that gone, this became the model's dominant
-  // amplifier -- a last-bit change anywhere upstream shifts which point TOMS748
-  // lands on inside its tolerance band, and that surfaces in ci, assim, gc and
-  // profit. Measured by perturbing the model identically at each tolerance and
-  // reading the golden grid:
-  //
-  //   ci tol   worst diff vs a converged (1e-15) solve   us/solve (indicative)
-  //   1e-7                       1.82e-07                      2.655
-  //   1e-8                       3.15e-08                      2.640
-  //   1e-10                      5.41e-10                      2.695   <- here
-  //   1e-11                      5.41e-10                      2.768
-  //   1e-13                      7.48e-13                      2.885
-  //   1e-15                      0                             2.945
-  //
-  // 1e-10 is the knee: it lands **335x closer to a converged solve** than 1e-7
-  // did, where going on to 1e-13 buys ~700x more for roughly three times the extra
-  // time. The plateaus (1e-8 = 1e-9, 1e-10 = 1e-11) are TOMS748's discrete
-  // iterations, so tightening *between* them buys nothing and still costs.
-  //
-  // ⚠️ **The precision column is solid; the timing column is only indicative and
-  // reads ~2x too cheap.** Those seven binaries were built in one loop in a
-  // scratch tree, and code-layout luck moves this benchmark by ~2%. The controlled
-  // figure for the step actually taken -- both binaries built from the same tree,
-  // interleaved x5 -- is **+3.4%** (2.65 -> 2.75 us/solve), against the +1.5% the
-  // table implies. Still a good trade next to the root-find's 24.5%, and still
-  // 21.7% faster than the 3.51 us this package ran at before 11a. If you re-derive
-  // the curve, build every point from one tree.
-  //
-  // Do not tighten further without a use that needs it, and do not loosen it back
-  // without re-reading the guide's rounding-versus-bug magnitudes, which this
-  // figure sets.
-  //
   // ⚠️ Not the same knob as `ci_abs_tol` (the settable control, default 1e-3).
-  // `ci_abs_tol` is read in exactly one place,
+  // `ci_abs_tol` is read in exactly one place, the minimiser in
   // solve_medlyn_ci_numerical, i.e. the empirical Medlyn-conductance route. It
-  // reaches NEITHER family of optimality solver -- both go through this function
-  // and so through the 1e-10 above. A caller tightening it gets no extra precision
-  // anywhere in the optimality model.
+  // reaches NEITHER family of optimality solver -- both go through this function.
   try {
-    return ci_ = util::uniroot_smooth(target, gamma_ * umol_per_mol_to_Pa_, ca_, 1e-10, ci_niter);
+    return ci_ = util::uniroot_smooth(target, gamma_ * umol_per_mol_to_Pa_, ca_, ci_niter);
   } catch (const std::exception& e) {
     // Assimilation can be negative across the WHOLE [gamma*, ca] bracket -- the
     // leaf is too hot to gain carbon at any internal CO2 -- and then there is no
@@ -6554,7 +6507,6 @@ inline void Leaf::prepare_profitmax() {
   double a_hi = -std::numeric_limits<double>::infinity();
   if (width > 0.0) {
     util::maximise_over_closed_interval_foc(A_of, dA_of, lo, psi_crit, 0,
-                                            collar_root_tol,
                                             static_cast<size_t>(ci_niter), &a_hi);
   }
   double a_max = (std::isfinite(a_hi) && a_hi > 0.0) ? a_hi : 0.0;
@@ -6570,7 +6522,7 @@ inline void Leaf::prepare_profitmax() {
     util::maximise_over_closed_interval_foc(
         [&](double psi) { return -A_of(psi); },
         [&](double psi, bool* ok) { return -dA_of(psi, ok); }, lo, psi_crit, 0,
-        collar_root_tol, static_cast<size_t>(ci_niter), &neg);
+        static_cast<size_t>(ci_niter), &neg);
     if (std::isfinite(neg) && neg > 0.0) a_max = neg;
   }
   profitmax_A_max_ = a_max;
@@ -7088,7 +7040,7 @@ inline void Leaf::optimise_psi_stem_single() {
         }
         return dprofit_dpsi_stem<K>(psi_stem, psi_soil, ok);
       },
-      psi_soil, psi_crit, basin_scan_cells(), collar_root_tol,
+      psi_soil, psi_crit, basin_scan_cells(),
       static_cast<size_t>(ci_niter), &profit_opt);
   profit_ = profit_psi_stem_for<K>(opt_psi_stem_, psi_soil);
   lambda_emergent_ = lambda_for<K>(opt_psi_stem_, psi_soil);
@@ -7165,7 +7117,7 @@ inline void Leaf::solve_medlyn_ci_numerical(){
     ci_ = ci_peak;
   } else {
     try {
-      ci_ = util::uniroot(target, ci_peak, hi, ci_abs_tol, ci_niter);
+      ci_ = util::uniroot(target, ci_peak, hi, ci_niter);
     } catch (const std::exception& e) {
       util::stop_infeasible("ci_solve", "solve_medlyn_ci_numerical failed: " + std::string(e.what()) +
                  "; ci_peak=" + util::to_string(ci_peak) +

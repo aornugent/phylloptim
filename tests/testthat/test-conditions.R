@@ -59,33 +59,31 @@ test_that("an untagged error stays an ordinary error", {
 })
 
 test_that("an infeasible exit is catchable by class and carries its code", {
-  # A REACHABLE one, end to end, through the ordinary public entry point. The driver
-  # is extreme but well formed and in range: with the stem conductance this small the
-  # transpiration the solve needs falls outside the inverse spline's domain, so the
-  # operating point genuinely cannot be evaluated. That is infeasibility rather than
-  # a caller error, which is exactly the distinction being tested.
+  # A REACHABLE one, end to end, through the ordinary public entry point. The control
+  # is well formed: three iterations do not bring the continuity root-find's bracket
+  # to roundoff, so no collar potential is found. That is infeasibility rather
+  # than a caller error, which is exactly the distinction being tested.
+  starved <- leaf_control(ci_niter = 3)
   caught <- tryCatch(
-    leaf_solve(psi_soil = 2.0, PPFD = 900,
-               leaf_specific_conductance_max = 1e-30),
+    leaf_solve(psi_soil = 2.0, PPFD = 900, control = starved),
     condition = function(e) e)
 
   expect_s3_class(caught, "phylloptim_infeasible")
   expect_s3_class(caught, "phylloptim_error")
   expect_s3_class(caught, "error")
-  expect_identical(caught$code, "stem_curve_domain")
+  expect_identical(caught$code, "collar_bracket")
   expect_true(caught$code %in% names(leaf_infeasible_codes()))
 
   # ⚠️ leaf_solve() classifies WITHOUT the caller wrapping anything -- it routes
   # through the wrapper itself. That is the property a fit depends on.
   expect_identical(
-    tryCatch(leaf_solve(psi_soil = 2.0, PPFD = 900,
-                        leaf_specific_conductance_max = 1e-30),
+    tryCatch(leaf_solve(psi_soil = 2.0, PPFD = 900, control = starved),
              phylloptim_infeasible = function(e) e$code),
-    "stem_curve_domain")
+    "collar_bracket")
 
   # The token stays in the message on purpose: a log line should still say which
   # code it was, and the parsed `code` is what programs read.
-  expect_match(conditionMessage(caught), "phylloptim:infeasible:stem_curve_domain",
+  expect_match(conditionMessage(caught), "phylloptim:infeasible:collar_bracket",
                fixed = TRUE)
 })
 
@@ -93,9 +91,8 @@ test_that("the same failure driven by hand needs the wrapper, and gets it", {
   # `$find_root_collar_psi()` is generated glue, so it cannot classify on its own --
   # this is the case with_phylloptim_conditions() exists for, and the reason it is
   # exported rather than internal.
-  l <- leaf_model()
-  set_drivers(l, psi_soil = 2.0, PPFD = 900,
-              leaf_specific_conductance_max = 1e-30)
+  l <- leaf_model(control = leaf_control(ci_niter = 3))
+  set_drivers(l, psi_soil = 2.0, PPFD = 900)
 
   bare <- tryCatch(l$find_root_collar_psi(), condition = function(e) e)
   expect_s3_class(bare, "error")
@@ -104,7 +101,7 @@ test_that("the same failure driven by hand needs the wrapper, and gets it", {
   wrapped <- tryCatch(with_phylloptim_conditions(l$find_root_collar_psi()),
                       condition = function(e) e)
   expect_s3_class(wrapped, "phylloptim_infeasible")
-  expect_identical(wrapped$code, "stem_curve_domain")
+  expect_identical(wrapped$code, "collar_bracket")
 })
 
 test_that("catching phylloptim_error catches every classified failure", {
