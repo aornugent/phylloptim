@@ -35,7 +35,10 @@
 # matches leaf_temp where it means layers and pulls the wrong row. Select on the
 # named column, not on position in a remembered layout.
 #
-# Last regenerated for the (P50, c) reparameterisation, which moved 30 of these 36
+# Last regenerated for odelia 0.5.0's Hermite spline, which moved 22 of these 54
+# values at the rounding level (spline tier only in primitives.tsv).
+#
+# Before that, the (P50, c) reparameterisation moved 30 of these 36
 # values by ~1e-08 relative. The six that did not are the shut-down row's four
 # exact zeros plus its ci and assim: that row never reaches the collar solve, so
 # nothing it reports depends on the vulnerability curve -- except psi_stem, which
@@ -63,29 +66,29 @@ golden_rows <- list(
   list(
     inputs = list(psi_soil = 0.5, ppfd = 1500, vpd = 0.5, layers = 1L),
     expected = list(
-      psi_stem      = "0x1.709c089a30e11p+1",
-      opt_root_psi  = "0x1.066f36de62f92p+1",
-      ci            = "0x1.9f4d94f1ca6b8p+4",
+      psi_stem      = "0x1.709c089a30e14p+1",
+      opt_root_psi  = "0x1.066f36de62f93p+1",
+      ci            = "0x1.9f4d94f1ca6bap+4",
       assim         = "0x1.215cb35114283p+4",
-      transpiration = "0x1.450056e104a38p-16",
-      gc            = "0x1.0b2aebfd57a1cp-3",
-      profit        = "0x1.07970cae93315p+4",
-      e_up          = "0x1.4500579e60a2bp-16",
-      uptake        = "0x1.19e2624e09a31p-10"
+      transpiration = "0x1.450056e104a3cp-16",
+      gc            = "0x1.0b2aebfd57a1fp-3",
+      profit        = "0x1.07970cae93314p+4",
+      e_up          = "0x1.4500579e60a2cp-16",
+      uptake        = "0x1.19e2624e09a32p-10"
     )
   ),
   list(
     inputs = list(psi_soil = 2.0, ppfd = 900, vpd = 2.0, layers = 3L),
     expected = list(
-      psi_stem      = "0x1.b1bde93bb54b8p+1",
-      opt_root_psi  = "0x1.8217d564af11ep+1",
+      psi_stem      = "0x1.b1bde93bb54b3p+1",
+      opt_root_psi  = "0x1.8217d564af11ap+1",
       ci            = "0x1.0de739697d312p+3",
       assim         = "0x1.b2de947994e03p+1",
       transpiration = "0x1.b29b590bf94b5p-18",
       gc            = "0x1.6544db916f446p-7",
-      profit        = "0x1.8a7e18bae99dcp-1",
-      e_up          = "0x1.b29b5c3c10411p-18",
-      uptake        = "0x1.78f2e3db6c197p-12"
+      profit        = "0x1.8a7e18bae9a04p-1",
+      e_up          = "0x1.b29b5c3c10402p-18",
+      uptake        = "0x1.78f2e3db6c18ap-12"
     )
   ),
   list(
@@ -192,15 +195,15 @@ golden_rows_40 <- list(
     inputs = list(psi_soil = 0.5, ppfd = 1500, vpd = 0.5, layers = 3L,
                   leaf_temp = 40.0),
     expected = list(
-      psi_stem      = "0x1.ca0d1f625981ap+0",
-      opt_root_psi  = "0x1.8cdaba05d728ap+0",
-      ci            = "0x1.1428b2c0cf1f6p+5",
-      assim         = "0x1.3ba43a8d6e84fp+1",
-      transpiration = "0x1.c63fc674096e2p-18",
-      gc            = "0x1.756a7b3df666dp-5",
-      profit        = "0x1.1563763793734p+1",
-      e_up          = "0x1.c63fc67bd843ep-18",
-      uptake        = "0x1.89fc33020b6fbp-12"
+      psi_stem      = "0x1.ca0d1f625981dp+0",
+      opt_root_psi  = "0x1.8cdaba05d728cp+0",
+      ci            = "0x1.1428b2c0cf1f5p+5",
+      assim         = "0x1.3ba43a8d6e847p+1",
+      transpiration = "0x1.c63fc674096eap-18",
+      gc            = "0x1.756a7b3df6674p-5",
+      profit        = "0x1.156376379372bp+1",
+      e_up          = "0x1.c63fc67bd8442p-18",
+      uptake        = "0x1.89fc33020b6fep-12"
     )
   )
 )

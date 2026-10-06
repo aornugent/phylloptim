@@ -634,7 +634,7 @@ test_that("profit's gradient is the direct term alone at an interior optimum", {
   #
   # ⚠️ Those figures are macOS/arm64's, and the second half of this test says why
   # that matters. Read it before adding an assertion on a magnitude here.
-  d <- grid_drivers(1.0, ppfd = 1500, vpd = 1.0, layers = 1L)
+  d <- grid_drivers(0.5, ppfd = 1500, vpd = 2.0, layers = 1L)
   g <- do.call(leaf_gradient, c(d, list(pars = "vcmax_25")))
   expect_identical(g$status, "interior")
 
@@ -668,8 +668,9 @@ test_that("profit's gradient is the direct term alone at an interior optimum", {
 
   # ⚠️ THE MAGNITUDES BELOW ARE PLATFORM-SPECIFIC, AND THE FIRST VERSION OF THIS
   # TEST ASSERTED THEM EVERYWHERE. It passed on macOS/arm64 and failed on Linux
-  # CI, where the same operating point gives `exact` = 6.6e-11 and `fd` = 8.0e-10
-  # rather than 2.4e-15 and 2.1e-04.
+  # CI, where the point then in use gave `exact` = 6.6e-11 and `fd` = 8.0e-10
+  # rather than macOS's 2.4e-15 and 2.1e-04. At this point macOS gives 1.2e-14
+  # and 3.3e-04.
   #
   # That is not a different answer, it is a different NOISE FLOOR: which side of
   # the collar solver's tolerance the root-find lands on is set by libm's exp/pow,

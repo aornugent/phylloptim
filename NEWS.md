@@ -1,3 +1,11 @@
+# phylloptim 0.9.1
+
+## `Remotes:` tracks odelia 0.6.0
+
+`Remotes:` and the C++ workflow's odelia checkout move from v0.4.0 to `815a54f`, the merge of traitecoevo/odelia#63 (an R-side ODE stepper, which regnans steps the canonical equation with). plant pins the same odelia as phylloptim and must move to 0.6.0 for regnans, which is why this release exists. No code changes.
+
+The golden baselines move with the pin, as they did on the `release/0.8.x` line (0.8.2, #139): odelia 0.5.0 made the spline behind the soil and leaf lookups a local cubic Hermite, which reads the same natural cubic spline as before with values alone, so the goldens differ at rounding only — `operating_points.tsv`, `psi_stem_optima.tsv`, `primitives.tsv` and `gradient_golden.tsv` are the 0.8.x line's, re-verified bit-identical here against the 0.6.0 headers. `test-gradient.R`'s operating point is the 0.8.x line's as well. The `LinkingTo: odelia (>= 0.2.0)` floor is unchanged.
+
 # phylloptim 0.9.0
 
 ## Fix: the collar solve maximised the wrong objective for four cost curves
