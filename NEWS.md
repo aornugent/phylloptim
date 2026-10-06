@@ -1,4 +1,4 @@
-# phylloptim 0.9.0
+# phylloptim 0.9.1
 
 ## ⚠️ Breaking: every root-find stops at roundoff
 
@@ -27,6 +27,11 @@ What moves, over the golden grid against the previous commit on Linux:
 The searches by comparison, `golden_section_max()` and `brent_fmin()`, keep
 their tolerances: their brackets cannot resolve a flat maximum below about
 `sqrt(DBL_EPSILON)`, and neither is on the collar route except as a fallback.
+
+`uniroot()` refuses a bisection that spends its whole iteration budget, as
+`uniroot_smooth()` already did; its check could not fire before.
+
+# phylloptim 0.9.0
 
 ## ⚠️ Breaking: the leaf supplies its own derivative rows, and three counts moved
 

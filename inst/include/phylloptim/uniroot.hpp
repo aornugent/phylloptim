@@ -15,9 +15,8 @@ namespace phylloptim {
 namespace util {
 
 namespace internals {
-// Stops once the bracket's ends agree to 4 DBL_EPSILON relative, a few units in
-// the last place, so a root moves with its inputs to roundoff rather than in
-// steps of a tolerance. A bracket closing on zero stops at adjacent doubles.
+// True once the bracket's ends agree to 4 DBL_EPSILON relative, or are adjacent
+// doubles where it closes on zero, so a root moves with its inputs to roundoff.
 inline bool within_roundoff(double a, double b) {
   return std::abs(a - b) <= 4 * DBL_EPSILON * std::max(std::abs(a), std::abs(b)) ||
          std::nextafter(a, b) == b;
@@ -31,7 +30,7 @@ double uniroot(Function f, double min, double max, size_t max_iterations) {
   boost::uintmax_t it = max_iterations;
   std::pair<double, double> root =
       bisect(f, min, max, internals::within_roundoff, it);
-  if (it > static_cast<boost::uintmax_t>(max_iterations)) {
+  if (it >= static_cast<boost::uintmax_t>(max_iterations)) {
     util::stop_infeasible("root_find_iterations",
                           "exceeded max_iterations");
   }
@@ -45,25 +44,6 @@ double uniroot(Function f, double min, double max, size_t max_iterations) {
 // TOMS748 converges super-linearly (~5-8 evals) versus bisection's ~one bit per
 // iteration, so it is attractive for deeply nested, expensive-per-eval solvers.
 //
-// HISTORY (empirical, root_water_uptake branch, #486): an early *blanket* swap
-// of this for util::uniroot across BOTH nested leaf hydraulic root-finds at once
-// destabilised the coupled soil-water ODE (NaN soil potentials, slower overall),
-// which was first read as "the hydraulic path is too non-smooth for a
-// superlinear solver". That conclusion was too broad. Re-examined target by
-// target, both leaf solvers are in fact smooth and strictly monotone over the
-// brackets they are actually handed, and both moved to this solver (same root,
-// fewer evals, at the tolerances they then had):
-//   * psi_stem_to_ci (Phase 6): A_colim demand minus the linear gc supply over
-//     (gamma*, ca]; ~29 -> ~9 evals at 1e-7.
-//   * find_root_psi (Phase 8): the soil->collar continuity residual over
-//     [-psi_crit, wettest_soil_layer]; ~15-16 -> ~6-8 evals at 1e-4. Its
-//     brackets are guaranteed opposite-sign/finite by find_root_collar_psi's
-//     early-exits.
-// The genuine non-smoothness (vulnerability-curve clamps, the root vulnerability
-// spline extrapolating negative beyond its domain, near-flat regions) lives in
-// E_from_Soil_to_Root_Collar itself, NOT in the root-finders, and would break
-// bisection too. So: use this where the target is smooth and well-behaved across
-// the whole bracket -- which the leaf solvers are, on their operating brackets.
 // One gotcha vs bisect: this validates its bracket and THROWS on non-finite or
 // same-sign endpoints where boost::bisect returned NaN silently (guard upstream
 // if a finite-but-degenerate bracket can occur; see psi_stem_to_ci's NA guard).
