@@ -2,7 +2,7 @@
 #ifndef PHYLLOPTIM_HPP_
 #define PHYLLOPTIM_HPP_
 
-// leaf: a header-only leaf gas-exchange and hydraulics model.
+// phylloptim: a header-only leaf gas-exchange and hydraulics model.
 //
 // One include gets you phylloptim::Leaf, which couples Farquhar-von Caemmerer-Berry
 // photosynthesis to an explicit soil-root-stem-leaf hydraulic path and picks the
@@ -13,9 +13,7 @@
 //
 //   #include <phylloptim.hpp>
 //
-//   phylloptim::Leaf l;                 // default Eucalyptus saligna traits
-//   l.setup_transpiration(100);         // build the vulnerability splines
-//   l.setup_root_vulnerability(100);
+//   phylloptim::Leaf l;                 // default traits; vulnerability tables built
 //   l.set_physiology(root_network, PPFD, psi_soil, soil_depth,
 //                    leaf_specific_conductance_max, atm_vpd, ca,
 //                    leaf_temp, atm_o2_kpa, atm_kpa);
@@ -25,7 +23,10 @@
 // resistances per unit leaf area. If you have root carbon rather than
 // resistances, phylloptim::root_network_from_carbon is the architecture model
 // that maps one to the other -- but it is a helper you call, not something the
-// solve does for you (#33).
+// solve does for you.
+//
+// To differentiate the operating point, see the derivative surface at the top of
+// phylloptim/leaf_model.hpp.
 
 #include <phylloptim/closed_form.hpp>
 #include <phylloptim/constants.hpp>

@@ -3537,6 +3537,89 @@ void test_tf24_floor_rows_at_a_price() {
 // The two arms place the collar by DIFFERENT expressions -- a residual on one and
 // a closed form on the other -- so the check is the placement as well as the
 // name: at the root-limit arm the collar is root_psi_crit exactly.
+// d(profit)/d(pars[par]) through the three calls, at whatever point the leaf
+// holds, on the tangent scalar.
+double profit_row_at_current_point(phylloptim::Leaf &l, int par) {
+  using T = odelia::ode::tangent_scalar<double>;
+  phylloptim::leaf_pars<T> pars;
+  const phylloptim::leaf_pars<double> seated = l.passive_pars();
+  for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
+  odelia::ode::seed_direction(pars[par], 1.0);
+  std::vector<T> soil, r_h, r_v;
+  for (int i = 0; i < l.supply_n_layers(); ++i) {
+    soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
+    r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
+    r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
+  }
+  const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
+                                       pars[phylloptim::par_root_P50],
+                                       pars[phylloptim::par_root_c]};
+  const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
+  const double curvature =
+      l.operating_point_kind() == phylloptim::Leaf::OperatingPointKind::Interior
+          ? l.marginal_collar_slope<phylloptim::Leaf::CostCurve::TF24>()
+          : std::numeric_limits<double>::quiet_NaN();
+  const T collar =
+      l.collar_at<phylloptim::Leaf::CostCurve::TF24, T>(draw, pars, curvature);
+  const auto out =
+      l.outputs_at<phylloptim::Leaf::CostCurve::TF24, T>(collar, draw, pars);
+  return odelia::ode::derivative_along(out.profit);
+}
+
+// A consumer that records each solve and replays it later (plant does, on every
+// step of a reverse sweep) must be handed the rows the solve itself would hand
+// over. A pinned solve places its collar at a POLISHED bound and corrects its
+// rows back to that bound's root, and neither is in the replay's inputs; a
+// replay that lost them gave root-trait rows of the wrong sign at one-layer wet
+// bounds. Asserted bit for bit, across interior and both pinned kinds.
+void test_a_replay_hands_over_the_rows_its_solve_did() {
+  printf("a replayed operating point hands over its solve's rows\n");
+  std::map<std::string, int> seen;
+  int compared = 0, differ = 0;
+  for (int layers : {1, 2}) {
+    for (double psi0 : {2.5, 4.0, 5.0, 5.5}) {
+      for (double ppfd : {100.0, 900.0}) {
+        for (double temp : {25.0, 40.0}) {
+          Drivers d;
+          d.PPFD = ppfd;
+          d.leaf_temp = temp;
+          std::vector<double> psi_soil, soil_depth;
+          for (int i = 0; i < layers; ++i) {
+            psi_soil.push_back(psi0 + 0.35 * i);
+            soil_depth.push_back(1.0 * (i + 1));
+          }
+          phylloptim::Leaf fresh = make_leaf(d, psi_soil, soil_depth);
+          fresh.find_root_collar_psi();
+          const auto kind = fresh.operating_point_kind();
+          if (kind != phylloptim::Leaf::OperatingPointKind::Interior &&
+              kind != phylloptim::Leaf::OperatingPointKind::BoundarySoil &&
+              kind != phylloptim::Leaf::OperatingPointKind::BoundaryCrit) {
+            continue;
+          }
+          ++seen[phylloptim::Leaf::operating_point_kind_name(kind)];
+          const double collar = fresh.opt_root_psi_;
+          phylloptim::Leaf replay = make_leaf(d, psi_soil, soil_depth);
+          replay.replay_operating_point(collar, kind);
+          if (replay.opt_root_psi_ != collar) ++differ;
+          for (int par : {phylloptim::par_vcmax_25, phylloptim::par_stem_P50,
+                          phylloptim::par_root_c, phylloptim::par_root_P50}) {
+            ++compared;
+            if (profit_row_at_current_point(replay, par) !=
+                profit_row_at_current_point(fresh, par)) {
+              ++differ;
+            }
+          }
+        }
+      }
+    }
+  }
+  printf("       (%d rows; interior %d, boundary-soil %d, boundary-crit %d points)\n",
+         compared, seen["interior"], seen["boundary-soil"], seen["boundary-crit"]);
+  ok(seen["interior"] > 0 && seen["boundary-soil"] > 0,
+     "the grid reaches an interior point and a wet bound (test is not vacuous)");
+  ok(differ == 0, "every replayed collar and row equals its solve's, bit for bit");
+}
+
 void test_the_dry_end_reports_which_bound_closed_it() {
   printf("the dry end reports which of its two bounds closed it\n");
   using Kind = phylloptim::Leaf::OperatingPointKind;
@@ -6291,6 +6374,7 @@ int main() {
   test_pack_kernels_are_the_models_own();
   test_light_reaches_carbon_with_a_row();
   test_every_answered_point_hands_over_finite_rows();
+  test_a_replay_hands_over_the_rows_its_solve_did();
   test_tf24_floor_rows_at_a_price();
   test_set_traits_matches_a_fresh_leaf();
   test_prescribed_lambda_survives_redriving();

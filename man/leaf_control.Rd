@@ -14,15 +14,15 @@ leaf_control(
 )
 }
 \arguments{
-\item{GSS_tol_abs}{absolute tolerance for a golden-section search over stem
-water potential. ⚠️ \strong{This does not set how well the operating point is
+\item{GSS_tol_abs}{a width on the collar potential, despite its name, which
+dates from a golden-section search the solve no longer uses. ⚠️ \strong{This does not set how well the operating point is
 determined.} Every solver in the package now root-finds its own first-order
 condition instead of searching the objective, so changing this leaves the
 answer bit-identical on the production path. What it still does, and it is
 less than the name suggests: it is read in exactly two places, both on the
 COLLAR route -- the width below which the feasible collar interval is treated
 as a single point, and the tolerance of the golden-section FALLBACK used when
-neither bracket endpoint has a usable gradient (no driver sweep has reached
+either bracket endpoint has no usable gradient (no driver sweep has reached
 that fallback).
 
 ⚠️ \strong{It does not reach the stem route at all.} That refines by a root-find

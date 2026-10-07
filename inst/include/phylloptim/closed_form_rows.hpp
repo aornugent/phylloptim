@@ -24,9 +24,11 @@ namespace phylloptim {
 //   G  dG/dpsi IS formed -- stem_curve_integral_deriv and
 //      root_vuln_integral_deriv_at, both read by the physics -- so
 //      closed_form_integral takes the table's slope as an argument.
-//   f  df/dpsi is formed nowhere. root_vuln_from_psi is built WITH slopes and
-//      .slope() is never called on it, and odelia's interpolator reads no second
-//      derivative at all, so closed_form_curve uses the curve's own.
+//   f  df/dpsi is formed from the closed form where it is formed at all (the
+//      stem's stem_curve_curvature_ table is closed-form at its knots), never as
+//      a table slope: root_vuln_from_psi is built WITH slopes and .slope() is
+//      never called on it, and odelia's interpolator reads no second derivative.
+//      So closed_form_curve uses the curve's own, and there is one value of it.
 //
 // Every bracket below is exactly zero in VALUE at the recording point, so the
 // number is untouched and only the tape sees the rows.

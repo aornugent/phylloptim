@@ -827,8 +827,9 @@ public:
   // model does not have -- so the branch is chosen at double and the ACTIVE value
   // is selected, which is what std::min compiles to anyway.
   //
-  // At double every supplied row below collapses to its table read and the cache path is
-  // taken, so this instantiation is the original arithmetic.
+  // At double every supplied row below collapses to its table read, so this
+  // instantiation is the original arithmetic; the integral cache is taken where
+  // the caller asks for it (use_integral_cache), which duptake_dpsi does not.
   template <class T>
   void uptake_impl(const T& T_collar, const SupplyAt<T>& at,
                    bool use_integral_cache, std::vector<T>& soil_consumption,

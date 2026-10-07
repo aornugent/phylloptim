@@ -29,13 +29,68 @@
 #include <vector>
 #include <XAD/XAD.hpp>
 
+// The leaf.
+//
+// `Leaf` holds a leaf's traits, its environment and its water-supply path, and
+// find_root_collar_psi() finds its operating point: the root-collar water
+// potential that maximises carbon profit (assimilation through a benefit link,
+// minus a hydraulic cost) subject to continuity from soil to stem. The answer is
+// left in members (opt_root_psi_, opt_psi_stem_, ci_, profit_, E_up_, ...).
+// The eight cost curves share that solve and differ only in their cost (see
+// CostCurve).
+//
+// THE DERIVATIVE SURFACE. A consumer differentiating a model that contains this
+// leaf takes the operating point's derivative from three member templates, at
+// whatever scalar it holds, after the solve has run at double:
+//
+//   SupplyDraw<S>  draw = leaf.supply_draw_at<S>(S(leaf.opt_root_psi_), supply);
+//   S              psi  = leaf.collar_at<K, S>(draw, pars, curvature);
+//   LeafOutputs<S> out  = leaf.outputs_at<K, S>(psi, draw, pars);
+//
+// `out.profit` and each layer's `out.uptake[j]` then carry their derivatives in
+// `pars` and `supply`, supplied from the implicit function theorem at the
+// converged point; nothing the root-find did is recorded. S is double, a tangent
+// (odelia::ode::tangent_scalar) or an adjoint (odelia::ode::active_scalar).
+// Preconditions, none checked beyond the first:
+//
+//   - the draw is taken at the solved collar (collar_at refuses another);
+//   - nothing moves the leaf between the solve and outputs_at;
+//   - `pars` and `supply` hold, in value, the seated traits (passive_pars()) and
+//     the seated soil state and root network;
+//   - K is the curve the solve used, TF24 or TF24_floor;
+//   - the supply path is multi-layer;
+//   - `curvature` is marginal_collar_slope<K>() at an Interior point, and is
+//     not read at any other kind.
+//
+// operating_point_kind() says which condition placed the point. Branch on it,
+// never on a returned value. What collar_at does at each:
+//
+//   Interior            stationarity of profit in the collar
+//   BoundarySoil        zero flux at the wet bound (polished root)
+//   ShadeDeath          the same wet bound
+//   BoundaryCrit        the stem reaching psi_crit at the dry bound
+//   BoundaryRootCrit    the root's own critical potential at the dry bound
+//   HydraulicShutdown   the collar is held; uptake rows are exactly zero
+//   Unsolved, Prescribed, Determined, SolverRefused, NonFiniteGradient: refused
+//
+// A recorded point is put back with replay_operating_point(collar, kind), which
+// hands over the same rows the solve did. profit_row_at_current_point in
+// tests/cpp/test_leaf.cpp is a complete, compiled use of the three calls; the
+// vignette "Differentiating the operating point" explains the design.
+//
+// "Hazard N" in comments below refers to the numbered hazards in the
+// repository's .claude/CLAUDE.md, which is not shipped with the package.
+
 namespace phylloptim {
 
 // --- the parameter enumeration, which R indexes into --------------------------
 //
-// The fifteen traits in `Leaf::set_traits`' argument order, then the two
-// quantities a calibration fits that are not traits: the conductance driver and
-// the single-potential path's series resistance.
+// The fifteen traits in `Leaf::set_traits`' argument order, then five slots that
+// are not traits: `kmax` (the conductance driver), `resistance` (the
+// single-potential path's series resistance), the two model-owned prices
+// (`CF77_lambda`, `TF24_floor_lambda_o`), and `PPFD`. The first nineteen are what
+// a calibration fits, `gradient::n_theta`; `PPFD` is seated per observation from
+// the drivers and is never fitted, and `n_pars` (20) counts it.
 //
 // ⚠️ R INDEXES THESE POSITIONS, so a reordering silently differentiates the wrong
 // parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
@@ -45,7 +100,7 @@ inline constexpr int n_pars = 20;
 
 // Every index by name, so nothing below indexes `theta` with a bare integer.
 // The first `n_traits` are `set_traits`' arguments in its order, which is also
-// `leaf_traits()`'; the two non-traits follow and take a relative step.
+// `leaf_traits()`'; the non-traits follow and take a relative step.
 inline constexpr int par_vcmax_25 = 0;
 inline constexpr int par_stem_c = 1;
 inline constexpr int par_stem_P50 = 2;
@@ -66,9 +121,10 @@ inline constexpr int par_CMax_b = 14;
 // is a readability convention rather than a constraint: R's
 // `.gradient_theta_matrix()` addresses EVERY column by name, including these.
 // What IS load-bearing is the ORDER ITSELF -- R passes integer positions into this
-// enumeration, so appending is safe and reordering silently differentiates the
-// wrong parameter, and `test-gradient-batch.R` compares this enumeration against
-// R's copy.
+// enumeration, so reordering silently differentiates the wrong parameter, and
+// `test-gradient-batch.R` compares this enumeration against R's copy. A new
+// FITTED slot goes before `par_PPFD`, not after it: `gradient::n_theta` is
+// `par_PPFD`, so a slot appended last is outside every caller's theta.
 inline constexpr int par_kmax = 15;
 inline constexpr int par_resistance = 16;
 // Cowan-Farquhar's prescribed marginal value of water. A pure APPEND after the two
@@ -119,7 +175,6 @@ template <class S> using leaf_pars = std::array<S, n_pars>;
 
 class Leaf {
 public:
-  //anonymous Leaf function as in canopy.h
   Leaf();
   
   Leaf(double vcmax_25, 
@@ -383,11 +438,11 @@ public:
   double a;
   double curv_fact_elec_trans; // unitless - obtained from Smith and Keenan (2020)
   double curv_fact_colim;
-  // Still a settable control, and it still has two jobs after the root-find replaced
-  // the collar golden-section search: prepare_collar_solve's "this interval is too
-  // narrow to solve over" threshold, and the tolerance of the golden-section
-  // FALLBACK maximise_profit_over_collar drops to when neither bracket endpoint
-  // has a usable gradient. It does NOT reach the stem route, which refines by a
+  // Despite its name, no longer the tolerance of the collar solve, which is a
+  // root-find on dprofit = 0. It has two jobs: the width below which the feasible
+  // collar interval counts as collapsed (the point is then tagged `Determined`),
+  // and the tolerance of the golden-section FALLBACK maximise_profit_over_collar
+  // drops to when either bracket endpoint has no usable gradient. It does NOT reach the stem route, which refines by a
   // root-find at collar_root_tol, and it no longer sets how well the reported
   // operating point is determined -- collar_root_tol does.
   double GSS_tol_abs;
@@ -1195,11 +1250,6 @@ public:
         break;
     }
   }
-  // Which cost curve a psi_stem derivative differentiates. The cost enters the
-  // chain through exactly ONE quantity -- dC/dpsi_stem -- so this selects that
-  // and nothing else.
-
-
   // A value and its response in the collar potential, travelling as one pair.
   template <class T> using pair = odelia::value_with_slope<T>;
 
@@ -1242,8 +1292,9 @@ public:
     }
   };
 
-  // The only way to make one, so the draw records the collar it was taken at and
-  // its values cannot come from different ones.
+  // How a draw is meant to be made: it records the collar it was taken at, so its
+  // values cannot come from different ones, and collar_at refuses a draw whose
+  // collar is not the solve's.
   //
   // ⚠️ THE COLLAR IS PASSIVE HERE, whatever the caller hands in. This is the
   // supply at a POINT; where the point itself moves is the supplied row's business, and
@@ -1355,7 +1406,7 @@ public:
 
   // ⚠️ THE ONE ABSTRACTION THAT MAKES EVERY MODEL THE SAME MODEL.
   //
-  // All seven maximise `h(A(psi)) - C(psi)`: a BENEFIT LINK `h` composed with
+  // All eight maximise `h(A(psi)) - C(psi)`: a BENEFIT LINK `h` composed with
   // assimilation, minus a cost curve. That is not a convenience -- it is why the
   // derivative below is one expression rather than three, and `h'` is the only
   // thing that varies:
@@ -2027,11 +2078,10 @@ public:
 
   // The objective at a placed operating point, and everything plant reads.
   //
-  // ⚠️ TEMPLATED ON THE CURVE, IMPLEMENTED FOR TF24. The `if constexpr` chain
-  // ends in a static_assert naming the rest, so a second curve is a row here
-  // rather than a redesign -- and until something differentiates one, an arm
-  // written for it would be a path with no caller and no reference to check it
-  // against. plant's TF24_Strategy is the only consumer of reverse mode.
+  // ⚠️ TEMPLATED ON THE CURVE, IMPLEMENTED FOR TF24 AND TF24_floor. A
+  // static_assert refuses the other six, so another curve is a branch here rather
+  // than a redesign -- and until something differentiates one, a branch written
+  // for it would have no caller and no reference to check it against.
   template <CostCurve K, class S>
   S profit_at(const S& collar, const SupplyDraw<S>& draw,
               const leaf_pars<S>& pars, bool collar_moves) const;
@@ -2097,8 +2147,8 @@ public:
   //
   // ⚠️ THE ROOT'S 5% POTENTIAL IS NOT ONE OF THEM. Under (P50, c) it is derived,
   // so it is an ordinary expression the chain differentiates itself and there is
-  // no theorem to apply. It needs no arm of its own; what pins the bound is the
-  // recorded selector saying which limit bound.
+  // no theorem to apply: a point the root's limit pins is tagged
+  // `BoundaryRootCrit`, and collar_at places it at root_psi_crit_at.
   template <CostCurve K, class S>
   S bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
              const leaf_pars<S>& pars) const;
@@ -2491,9 +2541,10 @@ public:
     // root's own critical potential never wins the min, so a fixture for this arm
     // has to lower it deliberately rather than wait for one.
     BoundaryRootCrit,
-    // The feasible interval collapsed to a point (width <= GSS_tol_abs), so
-    // feasibility DETERMINED the collar potential and nothing was optimised.
-    // There is no free variable left to differentiate.
+    // The feasible collar interval is narrower than GSS_tol_abs. The collar is
+    // held at the interval's midpoint and only the stem potential is optimised,
+    // with the collar pinned; continuity between the two is not re-imposed, so
+    // the point is not a solution of the full problem. collar_at refuses it.
     Determined,
     // Shutdown on water: no collar potential both moves water and stays inside
     // the stem's and the root's critical potentials. The stem holds at psi_crit,
@@ -2526,9 +2577,6 @@ public:
     NonFiniteGradient,
   };
 
-  // Read-only on purpose: the tag is an output of the solve, and a settable one
-  // would be a way to disagree with it. Same argument as `supply_kind_`'s two
-  // entry points above, one step further.
   // This leaf's own sites plus the supply model's, which are ONE list. Summed on
   // read rather than shared on construction, so rebuilding the root network
   // cannot silently detach the tally.
@@ -2555,6 +2603,9 @@ public:
   static constexpr std::size_t operating_point_kind_count =
       static_cast<std::size_t>(OperatingPointKind::NonFiniteGradient) + 1;
 
+  // Read-only on purpose: the kind is an output of the solve, and a settable one
+  // would be a way to disagree with it. replay_operating_point is the one way to
+  // put a recorded kind back.
   OperatingPointKind operating_point_kind() const {
     return operating_point_kind_;
   }
@@ -2572,27 +2623,33 @@ public:
   // This is the replay half of a recorded decision: the collar MOVES and is
   // re-derived from, the arm SELECTS and is put back. Differentiating the choice
   // would manufacture a jump the model does not have.
+  //
+  // A BoundarySoil point also needs the polished root of its zero-flux bound,
+  // which bound_at's step-back correction reads (wet_bound_root_). The solve
+  // finds it inside the optimiser, which a replay does not run, so the replay
+  // re-takes the same polish from the same bracket: the rows it hands over are
+  // then the fresh solve's, bit for bit.
   double replay_operating_point(double collar, OperatingPointKind kind) {
-    const double out = evaluate_root_collar_psi(collar);
-    operating_point_kind_ = kind;
-    return out;
+    return with_curve(cost_curve_, [&](auto tag) {
+      return replay_operating_point_for<tag.value>(collar, kind);
+    });
   }
+  template <CostCurve K>
+  double replay_operating_point_for(double collar, OperatingPointKind kind);
   static const char* operating_point_kind_name(OperatingPointKind kind);
 
 private:
-  // Written by every path out of the collar solve, and reset to Unsolved at the
-  // top of prepare_collar_solve. Hazard 8 in the developer guide is why: `Leaf`
-  // is a value member that plant reuses for every individual in a patch, so a
-  // branch that declines to write this would leave the PREVIOUS plant's
-  // classification -- a plausible answer about a different plant, which is the
-  // worst failure shape available here. Defaulting the reset to Unsolved means a
-  // path that forgets reports "unclassified" instead.
   // Where this model replaces a value by a bound. A row severed that way and a
   // row that is honestly zero are the same number, and a consumer DIFFERENCING
   // through a clamp gets a finite value with no response in it and nothing to
   // notice by -- so the derivative kill is invisible unless it is counted.
   clamp_counter clamps;
 
+  // Written by every path out of the collar solve, and reset to Unsolved at the
+  // top of prepare_collar_solve. A `Leaf` is often reused for one solve after
+  // another, so a branch that declined to write this would leave the PREVIOUS
+  // solve's kind: a plausible answer about a different point. Resetting to
+  // Unsolved means a path that forgets reports "unclassified" instead.
   OperatingPointKind operating_point_kind_ = OperatingPointKind::Unsolved;
   // Which of the two bounds meeting at the dry end binds, carried from where the
   // comparison is made to where the solve classifies the point. It is not the
@@ -3292,8 +3349,7 @@ inline double Leaf::find_psi_stem_from_psi_root(double psi_root, const std::vect
 // ---------------------------------------------------------------------------
 // MASTER SOLVER: optimal root-collar (and stem) water potential
 // ---------------------------------------------------------------------------
-// This is the entry point called once per individual per environment update
-// (from TF24_Strategy::net_mass_production_dt). It solves the whole
+// find_root_collar_psi is the entry point, called once per solve. It solves the whole
 // soil -> root -> stem -> leaf hydraulic continuum and stores the optimal
 // operating point in opt_psi_stem_, opt_root_psi_ and profit_.
 //
@@ -3304,25 +3360,26 @@ inline double Leaf::find_psi_stem_from_psi_root(double psi_root, const std::vect
 //      must equal water transpired through the stem (transpiration()). This is
 //      a 1-D root-find on the collar potential.
 //
-//   2. OPTIMISATION (Golden-Section Search): among feasible collar potentials,
-//      choose the one that maximises carbon profit = assimilation - hydraulic
-//      cost (profit_psi_stem_TF). The collar potential is bracketed between
+//   2. OPTIMISATION: among feasible collar potentials, choose the one that
+//      maximises carbon profit = assimilation - hydraulic cost. This is a
+//      root-find (TOMS748) on dprofit/dcollar = 0, with golden-section search
+//      only as a fallback when an endpoint has no usable gradient. The collar potential is bracketed between
 //      `root_zero_E` (collar where soil uptake is zero, the wettest feasible
 //      point) and `root_crit` (collar at which the stem reaches psi_crit, the
 //      driest feasible point), clamped to root_psi_crit.
 //
-// Several early-exit short-circuits avoid the (expensive) GSS loop when no
-// meaningful optimisation is possible. In each case the plant is effectively
+// Several early exits skip the optimisation when no meaningful choice is
+// possible. In each case the plant is effectively
 // shut down (operating at psi_crit, paying only respiration + hydraulic cost):
 //   * wettest soil layer is already drier than psi_crit -> no transpiration;
 //   * even at psi_crit the soil cannot supply the demanded flux (E_column<0);
 //   * the continuity root would require the collar drier than psi_crit;
 //   * maximum possible assimilation (at ci = ca) is negative.
 //
-// Implementation note: psi_soil is a positive magnitude here as everywhere else
-// (#25), so nothing is flipped. The GSS reuses one
-// profit evaluation per iteration (golden ratio) to halve function calls, and
-// a collapsed-interval branch handles the degenerate single-feasible-point case.
+// psi_soil is a positive magnitude here as everywhere else, so nothing is
+// flipped. A collapsed-interval branch handles the degenerate case (kind
+// `Determined`).
+//
 // Shut-down operating point shared by find_root_collar_psi's early-exits: the
 // stem is held at psi_crit (transpiration not possible), so the plant pays only
 // respiration (R_d_) plus the hydraulic cost at psi_crit. Only the recorded
@@ -3634,8 +3691,8 @@ if(assim_max_ < 0){
       profit_ = profit_psi_stem_for<K>(opt_psi_stem_, opt_root_psi);
       (void)psi_stem_single;
       opt_root_psi_ = opt_root_psi;
-      // Feasibility DETERMINED this point; no maximisation happened, and there is
-      // no free variable left for a derivative to move.
+      // The collar is held, not optimised; see the enumerator for what that
+      // leaves out. collar_at refuses this kind.
       operating_point_kind_ = OperatingPointKind::Determined;
 
       if (!std::isfinite(profit_)) {
@@ -4069,6 +4126,28 @@ inline double Leaf::evaluate_root_collar_psi_for(double target_opt_root_psi){
     }
 
     return profit_at_collar_psi<K>(target_opt_root_psi, bound_a, bound_b);
+}
+
+template <Leaf::CostCurve K>
+inline double Leaf::replay_operating_point_for(double collar,
+                                               OperatingPointKind kind) {
+    double bound_a, bound_b;
+    double out;
+    if (!prepare_collar_solve<K>(bound_a, bound_b)) {
+      out = profit_;
+    } else {
+      if (kind == OperatingPointKind::BoundarySoil) {
+        wet_bound_root_ = polish_bracket_bound(bound_a, supply_psi_soil(), 0);
+      }
+      // The recorded collar is where this solve put the point, and a pinned
+      // solve puts it at a POLISHED bound, which can lie up to ~1e-4 outside the
+      // bracket prepare_collar_solve returns. Clamping it back into the bracket
+      // would replay a different point, so the interval is widened to hold it.
+      out = profit_at_collar_psi<K>(collar, std::min(bound_a, collar),
+                                    std::max(bound_b, collar));
+    }
+    operating_point_kind_ = kind;
+    return out;
 }
 
 // Post-prepare body of evaluate_root_collar_psi (see header). Kept as a separate
@@ -6004,7 +6083,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   }
 
   // ⚠️ THE RESIDUALS SEE A HELD COLLAR, AND THE COLLAR'S CHANNEL IS ADDED BACK AS
-  // ONE SUPPLIED SLOPE. That is the split RECORDED-DECISIONS states, and here it
+  // ONE SUPPLIED SLOPE. That is the split closed_form_rows.hpp states, and here it
   // is forced rather than preferred: sigma is placed by an INVERSE TABLE, so its
   // response to the collar is that table's own slope -- while the implicit
   // function theorem on T1 divides by G'(sigma). The two agree only if the two

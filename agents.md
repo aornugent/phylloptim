@@ -4,7 +4,7 @@ This repo keeps its developer guidance in **[`.claude/CLAUDE.md`](.claude/CLAUDE
 so that one file serves every agent and tool.
 
 **👉 Read [`.claude/CLAUDE.md`](.claude/CLAUDE.md)** — layout, how to build and test,
-the golden-file discipline, and the sixteen hazards in this code that have each cost
+the golden-file discipline, and the seventeen hazards in this code that have each cost
 someone real numbers.
 
 The work queue is [the issue tracker](https://github.com/traitecoevo/phylloptim/issues),

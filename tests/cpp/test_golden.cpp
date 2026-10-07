@@ -146,10 +146,14 @@ std::vector<Row> run_grid() {
 // not reproduce this split, because dprofit's shut-down sentinel is exactly 0.0
 // and would move all 48 shutdown points into `interior`.
 //
-// Three kinds are expected to be EMPTY here: `shade-death` because assim_max_ never
-// gets there (it is reached by light, not by drying, and not by heat either at 40 C);
-// `solver-refused` and `non-finite-gradient` because both bracket endpoints admit a
-// usable gradient on every feasible row.
+// Seven kinds are expected to be EMPTY here, and the table below asserts each:
+// `shade-death` because assim_max_ never gets there (it is reached by light, not by
+// drying, and not by heat either at 40 C); `solver-refused` and
+// `non-finite-gradient` because both bracket endpoints admit a usable gradient on
+// every feasible row; `boundary-root-crit` because the continuity root never
+// reaches the root's own limit at these traits; `determined` because no interval
+// collapses at the package's GSS_tol_abs; and `prescribed` and `unsolved` because
+// every row is solved rather than evaluated at a given collar.
 //
 // ⚠️ The hot end does NOT reach the compensation-point exit either, which is worth
 // knowing before reading the zeros as coverage: at the defaults that needs about

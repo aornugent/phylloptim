@@ -4,6 +4,14 @@
 
 `LinkingTo: odelia (>= 0.7.0)`; `Remotes:` and the C++ workflow's odelia checkout pin `688142e`, the head of traitecoevo/odelia#59 (reverse mode), to be re-pinned to `v0.7.0` once that merges and is tagged. The rows below are taken on odelia 0.7.0's `implicit_node.hpp`, `tangent.hpp` and `value_with_slope.hpp`.
 
+## A replayed boundary point hands over its solve's rows
+
+`replay_operating_point(collar, kind)`, which puts a recorded operating point back, lost two things a pinned solve has and a replay does not compute: the polished root of the zero-flux bound, which `bound_at` corrects a `boundary-soil` row back to, and the collar itself where that polished root sits outside the unpolished bracket, which the replay clamped back in. Rows from a replayed `boundary-soil` point therefore differed from the solve's: over 1,048 rows on a grid of dry and hot cases, 258 of the 643 larger than 1e-6 moved by more than 1e-4, worst 25×, with sign flips on `root_c` and `root_P50` at one-layer wet bounds. plant re-solves every recorded leaf through this call during a reverse sweep, so its gradient took those rows. The replay now re-takes the polish from the same bracket and evaluates at the recorded collar; replayed rows are bit-identical to the solve's at interior, `boundary-soil` and `boundary-crit` points, and `test_leaf.cpp` asserts it. Forward values are unchanged.
+
+## The derivative surface is documented in the package
+
+`vignette("derivative-surface")` explains the three calls, the eleven operating-point kinds and what `collar_at` does at each, why the derivative comes from the implicit function theorem, and how it differs from `leaf_gradient()`. `leaf_model.hpp` opens with the same map and the preconditions. The README is retitled and gains a section on it; the developer guide gains a map of the headers.
+
 ## ⚠️ Breaking: the leaf supplies its own derivative rows, and three counts moved
 
 `Leaf`'s derivative surface is a set of member templates on the caller's scalar

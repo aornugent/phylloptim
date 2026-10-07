@@ -1,0 +1,153 @@
+---
+title: "Differentiating the operating point"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Differentiating the operating point}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+A model that contains this leaf and is itself differentiated, such as plant's stand gradient, needs the derivative of the leaf's operating point with respect to its traits and its soil. This vignette is how the leaf supplies it: the three calls a consumer makes, what each operating point does, why the derivative comes from the implicit function theorem rather than from recording the solve, and what a consumer must not get wrong. It contains no runnable R; the C++ below is compiled and run by `tests/cpp/test_leaf.cpp`.
+
+## Two routes to a derivative
+
+The package has two, and they answer different questions.
+
+| | `leaf_gradient()` and `gradient::batch` | the derivative surface |
+|---|---|---|
+| caller | R, or C++ calibrating a leaf against data | a C++ model that differentiates a run containing the leaf |
+| scalar | `double`; derivatives are returned as numbers | the caller's: `double`, a tangent, or an adjoint on the caller's tape |
+| method | implicit function theorem, with the curvature by finite difference | implicit function theorem, with every row from automatic differentiation of closed forms |
+| curves | all eight | TF24 and TF24_floor |
+| outputs | A, gc, psi_stem, collar, profit | profit and each layer's water uptake |
+| classification | a status (`interior`, `pinned`, ...) from a stationarity test | a kind (`interior`, `boundary-soil`, ...) written by the branch the solve took |
+
+The two classifications are decided differently and are not interchangeable: a status reads the converged numbers, and a kind records which exit the solve took. Only `prescribed` appears in both. The rest of this vignette is about the second route.
+
+## Terms
+
+- **row**: one output's derivatives against a list of inputs.
+- **supplied row**: a row computed here and handed to the caller as data, with nothing recorded behind it. The caller's tape gets one statement per output, however long the leaf's arithmetic is.
+- **kind**: `Leaf::OperatingPointKind`, which condition placed the operating point. There are eleven.
+- **draw**: `SupplyDraw<S>`, the soil's water draw at one collar potential: the total flux and its slope in the collar, and each layer's uptake. It records the collar it was taken at.
+- **the three scalars**: the leaf's derivative surface is a set of member templates on a scalar `S`. At `double` they are an ordinary evaluation; at `odelia::ode::tangent_scalar<double>` they carry a directional derivative; at `odelia::ode::active_scalar<double>` they record onto the caller's reverse tape. One source, not three copies.
+- **the pack**: `leaf_pars<S>`, the twenty differentiable parameters as one array indexed by `par_*`. The first nineteen are what a calibration fits (`gradient::n_theta`); the twentieth, `par_PPFD`, is the light the leaf stands in, seated per observation.
+
+## The three calls
+
+After the ordinary solve at `double`, a consumer at scalar `S` makes three calls. `K` is the cost curve the solve used.
+
+```cpp
+l.find_root_collar_psi();                                   // the solve, at double
+
+phylloptim::leaf_pars<S> pars = /* the seated traits, at S, seeded as needed */;
+phylloptim::SupplyAt<S> supply{psi_soil, r_R_H_min, r_R_V_sum,
+                               pars[phylloptim::par_root_P50],
+                               pars[phylloptim::par_root_c]};
+
+auto draw = l.supply_draw_at<S>(S(l.opt_root_psi_), supply);
+S    psi  = l.collar_at<K, S>(draw, pars, curvature);
+auto out  = l.outputs_at<K, S>(psi, draw, pars);
+// out.profit and out.uptake[j] carry their derivatives in pars and supply
+```
+
+`curvature` is `l.marginal_collar_slope<K>()` at an interior point and is not read at any other kind. `profit_row_at_current_point` in `tests/cpp/test_leaf.cpp` is this sequence in full, compiled.
+
+The calls assume, and mostly do not check:
+
+- the draw is taken at the solved collar (`collar_at` refuses another);
+- nothing moves the leaf between the solve and `outputs_at`;
+- `pars` and `supply` hold, in value, the leaf's seated traits (`passive_pars()`) and its seated soil state and root network;
+- the supply path is multi-layer.
+
+## The solve path, and the eleven kinds
+
+The solve runs at `double` and is never differentiated. It brackets the collar between the wet bound, where uptake from the soil is zero, and the dry bound, where the stem reaches its critical potential or the root reaches its own; then it root-finds the first-order condition `dprofit/dcollar = 0` inside the bracket, or reports that a bound binds.
+
+```
+  prepare_collar_solve()               kind := unsolved
+        |
+        +-- no interval, or no carbon to gain ---> hydraulic-shutdown, shade-death
+        +-- interval narrower than GSS_tol_abs --> determined
+        v
+  root-find on dprofit/dcollar = 0      plain double, off any tape
+        |
+        +--> interior              profit stationary in the collar
+        +--> boundary-soil         the wet bound binds
+        +--> boundary-crit         the stem's critical potential binds
+        +--> boundary-root-crit    the root's critical potential binds
+        +--> solver-refused        the stationary point is a minimum
+        +--> non-finite-gradient   no usable gradient at an endpoint
+        v
+  supply_draw_at -> collar_at -> outputs_at
+```
+
+What `collar_at` does at each kind:
+
+| kind | the collar is placed by | rows |
+|---|---|---|
+| `interior` | stationarity of profit in the collar | yes |
+| `boundary-soil` | zero flux at the wet bound | yes |
+| `shade-death` | the same wet bound | yes |
+| `boundary-crit` | the stem reaching its critical potential | yes |
+| `boundary-root-crit` | the root's critical potential | yes |
+| `hydraulic-shutdown` | nothing; the collar is held | uptake rows exactly zero, profit carries rows |
+| `unsolved`, `prescribed`, `determined`, `solver-refused`, `non-finite-gradient` | refused | none; `collar_at` throws |
+
+`determined` deserves a warning. When the feasible interval is narrower than `GSS_tol_abs`, the collar is held at its midpoint and only the stem potential is optimised; continuity between collar and stem is not re-imposed, so the point is not a solution of the full problem. At the package's default tolerance no interval on the reference grid collapses; a consumer that loosens `GSS_tol_abs` reaches it more often.
+
+## Why the implicit function theorem
+
+Putting a trait on the tape and running the root-find live gives a derivative back through every iteration: the sensitivity of where that particular sequence of iterations stopped. It depends on the starting guess, the tolerance and the iteration count, converges to the right answer only as the tolerance tightens, and its error belongs to the solver's settings rather than to the model.
+
+The implicit function theorem gives the model's derivative directly. With the point `p*` defined by a residual `F(p*, theta) = 0`,
+
+```
+    dp*/dtheta  =  -(dF/dp)^-1  dF/dtheta        at p*
+```
+
+Both partials are of the residual, which is a closed form, so neither needs anything the solver did. The kind decides which residual: stationarity of profit at an interior point, zero flux at the wet bound, stem continuity at the stem's critical potential. One statement covers all of them. For profit at the optimum,
+
+```
+    dPi*/du  =  dPi/du |_p  -  sum_j mu_j dc_j/du |_p
+```
+
+At an interior optimum every multiplier `mu_j` is zero and this is the envelope theorem: differentiate the objective holding the optimum fixed. At a bound the multiplier term is exactly the correction the envelope theorem leaves out, and `outputs_at` supplies it by letting profit see the collar move through the bound's own implicit function.
+
+## Why the kind is recorded, not inferred
+
+`dprofit_at_collar_psi` returns a literal `0.0` on its shutdown and reversed-gradient exits. A test of the obvious form, marginal profit near zero means an interior optimum, reads a shut leaf as stationary, and a curvature formed by differencing the same function agrees with it, so the two checks confirm each other and are both wrong. The kind is therefore written by the branch the solve exited and never inferred afterwards. `prepare_collar_solve` resets it to `unsolved` at the start of every solve, so a branch that forgets reports `unsolved` rather than the previous solve's kind.
+
+A consumer branches on `operating_point_kind()` and never on a returned value. A consumer that records a solve and replays it later puts the point back with `replay_operating_point(collar, kind)`, which hands over exactly the rows the solve did: a pinned solve places its collar at a polished bound and corrects its rows to that bound's root, and the replay re-takes both.
+
+## Inside the surface
+
+**The draw is one walk.** The soil layers are in parallel, coupled only through the collar potential, so the draw's slope in the collar is a sum of per-layer terms and falls out of the same loop that accumulates the draw. The collar is stored passive in the draw, because the draw is the supply at a point; where the point moves is the supplied row's business, and taking the collar live would record the search that placed it.
+
+**Second derivatives without a nested tape.** `kernel_slope_at` returns a kernel's slope as its value and the kernel's mixed second partials as its rows. It evaluates the kernel once at a tangent-over-tangent scalar, both levels at `double`, so nothing reaches a tape; `record_with_derivatives` then puts the result on the consumer's tape as one statement. An adjoint nested inside a tangent would cost many times the kernel's own statements, and odelia refuses that nesting at compile time.
+
+**Value from the table, rows from the curve.** Both vulnerability curves read their value from a pre-integrated table, because the solve ran on the table, and their trait rows from the closed form, because a table carries none. `closed_form_rows.hpp` states which query slope each uses. The two differ by about 1e-4 relative at the default 400 knots, which bounds how far a row can sit from a finite difference of the table.
+
+## Extending it
+
+**`for_each_active` is a silent-zero hazard.** odelia walks an aggregate's active members through its `for_each_active`, and does nothing for an aggregate that has none. `PhotoCapacity` and `SupplyDraw` declare it. A member added to either without being visited contributes no rows: its columns read exactly zero, every number stays finite, and nothing is raised. Visit every scalar member.
+
+**Another curve** is a branch in `profit_at` and `marginal_at`, which `static_assert` against curves without one.
+
+**A new fitted parameter** goes before `par_PPFD`, because `gradient::n_theta` is `par_PPFD`; a slot appended last falls outside every caller's `theta`.
+
+## What is tested
+
+- `test_supplied_rows`: each layer's supplied collar slope against a central difference of the uptake.
+- `test_transpose`: a forward tangent against the reverse sweep through the same rows, at 72 operating points. It cannot see a row that is wrong both ways.
+- `test_leaf`: finite rows at every answered kind on a grid; a replay hands over its solve's rows bit for bit; TF24_floor's collar and profit rows against a re-solve.
+
+Not yet tested: the supplied trait rows at the pinned kinds against a finite difference of the solve (that referee exists outside the repository); `boundary-crit` and `boundary-root-crit` driven through `collar_at` on a tape; `determined` at all.
+
+## Deliberately not built
+
+A fully analytic block, supplying every row with nothing recorded anywhere, is possible in principle. It needs eight closed forms that do not exist: four mixed second partials of the assimilation kernel and four of the cost. The supply side stays recorded either way, so the statements walked per leaf would fall by about half, not to the handful the kernels alone cost, and the transpose test that referees the current rows could not referee those, because a wrong closed form makes both routes wrong in the same way.

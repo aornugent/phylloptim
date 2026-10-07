@@ -189,7 +189,9 @@ The feasible interval runs from `ψ_soil`, where there is no tension gradient an
 | `boundary-crit` | `ψ_stem = ψ_crit` | still worth pulling harder, and the hydraulic limit is what stops it |
 | `hydraulic-shutdown` | no interval exists | the soil is drier than `ψ_crit`, so nothing is optimised |
 
-: The four kinds of operating point, and what each says about the leaf.
+: The four kinds of operating point the reference grid reaches, and what each says about the leaf.
+
+The solve records eleven kinds in all; the others are rarer or are refusals. `vignette("derivative-surface")` lists them with what each means for a derivative.
 
 `boundary-soil` is the stressed case, despite sitting at the wet end of the interval. That is why the two are named for the bound rather than for the moisture: `ψ_soil` is the least-tension end, so "wet" reads as the comfortable case, whereas in fact it describes what a leaf does when carbon cannot pay for water. The reference grid makes the direction plain: warming the leaf from 25 °C to 40 °C takes `boundary-soil` from 24 rows to 80, and `boundary-crit` from 18 rows to none.
 

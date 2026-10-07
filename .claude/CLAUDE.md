@@ -1,4 +1,4 @@
-# Developer guide — `leaf_cpp`
+# Developer guide — phylloptim
 
 A header-only C++ leaf gas-exchange model in which stomatal behaviour emerges from
 hydraulics. Extracted from the TF24 strategy in
@@ -21,12 +21,40 @@ Read alongside:
 
 Family context lives in [`plant-meta`](https://github.com/traitecoevo/plant-meta).
 
+## Start here
+
+| To | Read |
+|---|---|
+| find which header holds what | the map below, in dependency order |
+| change the solve | "One solver" and hazards 3, 8 and 11 |
+| change the derivative surface | the preamble of `leaf_model.hpp`, `vignettes/derivative-surface.Rmd`, hazard 17 |
+| change a trait or the parameter set | hazards 10, 12 and 13 |
+| move a golden number | "The golden file is the safety net" |
+| build and test | "Build and test" |
+
+**Map of the headers**, `inst/include/phylloptim/`, in dependency order:
+
+| header | holds |
+|---|---|
+| `util.hpp`, `constants.hpp` | R-free `stop()` and sentinels; physical constants |
+| `clamp_sites.hpp` | the `clamp_site` enum: every place the model substitutes a bound, counted |
+| `quadrature.hpp`, `uniroot.hpp`, `optimize.hpp` | adaptive Simpson; Boost root-finders; `maximise_over_closed_interval_foc`, the one solver |
+| `vulnerability.hpp` | the Weibull knot grid, the closed-form integral, `vulnerability_derivatives_at` |
+| `closed_form_rows.hpp` | a table's value with the closed form's trait rows, for both curves |
+| `roots.hpp` | `RootNetwork`, `root_network_from_carbon`, `SupplyAt`, `CollarConductance`, `MultiLayerRoots` (the one uptake walk) |
+| `single_potential.hpp` | `SinglePotential`, the other supply path |
+| `leaf_model.hpp` | the `par_*` enumeration and `leaf_pars`, `Leaf`, `CostCurve`, `OperatingPointKind`, the solve, and the derivative surface (`supply_draw_at`, `collar_at`, `outputs_at`) |
+| `closed_form.hpp` | `Leaf::optimise_closed`, out of line |
+| `gradient.hpp` | `n_theta`, the IFT composite and `batch`, the bit-for-bit twin of `R/gradient.R` |
+
+`inst/include/phylloptim.hpp` is the R-free umbrella; `phylloptim.h` and `RcppR6_*.hpp` are the R layer's and only `src/RcppR6.cpp` includes them.
+
 ## Layout
 
 ```
-inst/include/leaf.hpp          umbrella header — one include is the whole model.
+inst/include/phylloptim.hpp    umbrella header — one include is the whole model.
                                R-FREE, and that is a guarantee, not an accident
-inst/include/leaf.h            the R layer's umbrella: <phylloptim.hpp> plus the RcppR6
+inst/include/phylloptim.h      the R layer's umbrella: <phylloptim.hpp> plus the RcppR6
                                support headers, so it pulls in Rcpp. ONLY
                                src/RcppR6.cpp includes it. The .h/.hpp split is
                                forced by RcppR6, which hardwires both names
@@ -47,6 +75,8 @@ inst/include/phylloptim/
                                difference names its halves first because C++ does
                                not sequence `f(a) - f(b)` and R does
   vulnerability.hpp            the Weibull cumulative-integral builder, shared by both
+  closed_form_rows.hpp         a table read with closed-form trait rows put on the tape
+  clamp_sites.hpp              the clamp_site enum and its counter
   constants.hpp                physical constants as inline constexpr
   closed_form.hpp              the closed form, reachable as `set_model(.., .., "closed")`.
                                Defines Leaf::optimise_closed OUT OF LINE, which is
@@ -78,7 +108,15 @@ R/gradient.R                   set_traits() and leaf_gradient() -- trait
 R/gradient-batch.R             leaf_batch() and leaf_gradient_batch() -- the same
                                gradient over N observations in ONE crossing.
                                22x/observation
-tests/cpp/                     plain-C++ suite, no R, no framework
+tests/cpp/                     plain-C++ suite, no R, no framework. Five programs:
+                               test_leaf (unit), test_supplied_rows (each layer's
+                               collar slope against a difference), test_transpose
+                               (forward tangent against the reverse sweep; the one
+                               that links odelia's Tape.cpp), test_golden and
+                               test_primitives (the baselines)
+tests/cpp/probe_tape_regions.cpp
+                               what the boundary costs the tape, region by region.
+                               Not in `all`: it prices a design, it guards nothing
 tests/cpp/root_network.hpp     the suite's root-architecture fixture: the two
                                ex-Leaf-default beta_R_* constants, in ONE place
                                because the golden file's bit-exactness depends on them
@@ -118,7 +156,7 @@ tests/cpp/bench_gradient.cpp   timing harness for a TRAIT GRADIENT: the IFT
                                no R in the way
 tests/testthat/                the R layer's tie-back to the golden points
 tests/testthat/gradient_golden.tsv
-                               recorded trait gradients, five rows, hex floats.
+                               recorded trait gradients, twenty rows, hex floats.
                                The guard the C++-versus-R equality test cannot
                                be: a change applied to BOTH passes that one.
                                Regenerate with tools/gradient_golden.R, on
@@ -145,7 +183,7 @@ CMakeLists.txt                 the no-R build: C++ and Python consumers, and the
 ## Build and test
 
 ```sh
-make -C tests/cpp            # builds and runs all three suites
+make -C tests/cpp            # builds and runs the five programs
 make -C tests/cpp golden             # regenerate operating_points.tsv -- see below
 make -C tests/cpp psi-stem-golden    # regenerate psi_stem_optima.tsv -- same warning
 make -C tests/cpp primitives-golden  # regenerate primitives.tsv -- same warning
@@ -237,9 +275,9 @@ cmake -B build -DPHYLLOPTIM_ODELIA_INCLUDE_DIR=../odelia/inst/include
 cmake --build build && ctest --test-dir build
 ```
 
-Same two programs as `tests/cpp/Makefile`, through the route a C++ or Python
+The same five programs as `tests/cpp/Makefile`, through the route a C++ or Python
 consumer takes. It also covers what the Makefile cannot: that the install rules
-ship `*.hpp` and **exclude** `leaf.h` and `RcppR6_*.hpp`, and that
+ship `*.hpp` and **exclude** `phylloptim.h` and `RcppR6_*.hpp`, and that
 `find_package(phylloptim)` yields a usable `phylloptim::phylloptim`.
 
 ⚠️ **The golden file's bit-exactness depends on the optimisation level too, not
@@ -1053,7 +1091,7 @@ satisfies `-Werror=switch` and so removes the check they exist for.
 
    ⚠️ **This got harder to hold when #5 added the R layer, and the way it is held
    is worth stating exactly.** There is now Rcpp inside `inst/include/` — in
-   `leaf.h` and the three generated `RcppR6_*.hpp` files — so "no Rcpp under
+   `phylloptim.h` and the three generated `RcppR6_*.hpp` files — so "no Rcpp under
    `inst/include/`" is no longer the invariant. The invariant is **directional**:
    nothing reachable from `<phylloptim.hpp>` may include any of those four, and only
    `src/RcppR6.cpp` includes `<phylloptim.h>`.
@@ -1064,7 +1102,7 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    workflow: adding an `R CMD check` step to `cpp-tests.yml` would install R on
    those runners and quietly destroy the only test that can see this. The CMake
    install rules encode the same split from the other end — they ship `*.hpp` and
-   exclude `leaf.h` and `RcppR6_*.hpp`, so a C++ or Python consumer is never
+   exclude `phylloptim.h` and `RcppR6_*.hpp`, so a C++ or Python consumer is never
    handed a header they cannot compile.
 10. **Changing a trait is not one assignment, and the reason is invisible.** The
    traits are public plain doubles, so `l.vcmax_25 = x` compiles — and leaves three
@@ -1264,6 +1302,17 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    was never evaluated and the test passed. Print the count of rows that reached
    the assertion. λ's scale is set by the leaf — `marginal_cost_water()` runs
    9e4–3e5 at the defaults.
+17. **The derivative surface fails silently in three ways, and none is a compile
+   error.** (a) A scalar member of `PhotoCapacity` or `SupplyDraw` that their
+   `for_each_active` does not visit contributes no rows: its columns read exactly
+   zero and every number stays finite. (b) The surface assumes `pars` and `supply`
+   hold the SEATED traits and soil state in value, that `K` is the curve the solve
+   used, and that the leaf has not moved since the solve; none of that is checked.
+   (c) A recorded point must come back through `replay_operating_point`, which
+   re-takes the polished wet bound; re-evaluating at the collar any other way
+   drops the correction a `boundary-soil` row needs, and 258 of 643 non-negligible
+   rows then moved by more than 1e-4 (worst 25x, sign flips on root traits) before
+   the replay was fixed. `test_a_replay_hands_over_the_rows_its_solve_did` pins it.
 
 ## Validating against plant
 
@@ -1307,8 +1356,9 @@ plant build:
 
 ## Related work
 
-- **plant** — `feature/consume-leaf-package` consumes this package via a compatibility
-  shim aliasing `plant::Leaf`. Issue #9.
+- **plant** — consumes these headers directly (`plant::Leaf` is an alias of
+  `phylloptim::Leaf`); its TF24 strategies are the only consumer of the derivative
+  surface, and replay every recorded point during a reverse sweep.
 - **odelia** — supplies the Hermite interpolator, the supplied-derivative nodes
   (`implicit_node.hpp`) and the vendored XAD. The solve's own derivatives are forward
   mode and need no tape; the rows the leaf hands a consumer are recorded on that
