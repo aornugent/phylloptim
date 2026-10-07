@@ -172,7 +172,7 @@ inline, in a heredoc, and builds it against the *installed* package through
 `find_package`. It calls `set_physiology`, so **any signature change breaks it, and
 neither `make` nor `cmake` locally covers it.**
 
-⚠️ **It also fills a `theta[gradient::n_pars]` by hand, so a change to the PARAMETER
+⚠️ **It also fills a `theta[gradient::n_theta]` by hand, so a change to the PARAMETER
 SET breaks it too — and that break is silent rather than a compile error.** When the
 trait vector went 14 → 15 with four names replaced, its 16-entry list under-filled an
 18-element array *and* put `kmax` in a trait's slot; the consumer built, ran, and
@@ -1178,9 +1178,11 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    collar loses its freedom, `[root_zero_E, root_crit]` collapses, and the collar
    solve correctly reports `determined` rather than optimising.
 
-12. **`n_pars` is a compile-time constant, and a short aggregate initialiser is
+12. **`n_theta` is a compile-time constant, and a short aggregate initialiser is
    legal C++.** Several places fill `theta` with a literal list sized by
-   `gradient::n_pars`. An initialiser shorter than the array zero-fills the rest,
+   `gradient::n_theta` (19; `phylloptim::n_pars`, 20, is the kernels' pack with
+   `par_PPFD` and must not size `theta`). An initialiser shorter than the array
+   zero-fills the rest,
    so adding a parameter shifts `kmax` and `resistance` down a slot and drops
    `resistance` off the end **with no diagnostic at all**.
 
@@ -1190,7 +1192,7 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    indexed by a `Solver` enum that grew to eight, writing past the end.
 
    Both now derive their size from one named constant with a `static_assert`.
-   **Count the entries against `n_pars` whenever you touch either, and prefer a
+   **Count the entries against `n_theta` whenever you touch either, and prefer a
    named count to a literal** — `bench_gradient.cpp` carried a literal `13` over an
    11-element array through three trait-count changes, and it only ever crashed
    when the address layout happened to be unlucky.
@@ -1198,11 +1200,11 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    ⚠️ **Two of those initialisers are DELIBERATELY SHORT — they leave the
    model-owned prices zero-filled because the route they exercise reads neither —
    and that is exactly the case the zero-fill hides.** Both now carry
-   `static_assert(gradient::n_pars == N)` beside them, so the next appended
+   `static_assert(gradient::n_theta == N)` beside them, so the next appended
    parameter is a compile error rather than a shifted `kmax`. Three places assert
    that constant now: `tests/cpp/test_leaf.cpp`, `tests/cpp/bench_gradient.cpp`,
    and the consumer program inside `.github/workflows/cpp-tests.yml`. Grep for
-   `n_pars ==` and update all three together.
+   `n_theta ==` and update all three together.
 13. **The trait vector is bound POSITIONALLY in four places**: C++
    `gradient::apply()`, R's `.gradient_setter`, the batch route's `theta` matrix,
    and R's derived copy of the enumeration. Two of those fail loudly on a length
@@ -1307,8 +1309,10 @@ plant build:
 
 - **plant** — `feature/consume-leaf-package` consumes this package via a compatibility
   shim aliasing `plant::Leaf`. Issue #9.
-- **odelia** — supplies the spline interpolator and the vendored XAD. Only *forward*
-  mode is used, which needs no tape and so no linking.
+- **odelia** — supplies the Hermite interpolator, the supplied-derivative nodes
+  (`implicit_node.hpp`) and the vendored XAD. The solve's own derivatives are forward
+  mode and need no tape; the rows the leaf hands a consumer are recorded on that
+  consumer's reverse tape, and `test_transpose` links odelia's `Tape.cpp` for that.
 - **The companion manuscript** — `Falster-stomatal_analytical_analysis` in atelier,
   *"The marginal cost of water as a common currency for stomatal optimality models"*.
   **It is this package's first customer, not a downstream user**: its blockers are

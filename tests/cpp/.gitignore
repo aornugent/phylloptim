@@ -15,5 +15,4 @@ test_primitives
 bench_solve
 bench_gradient
 probe_tape_regions
-probe_preaccumulation
 *.dSYM/

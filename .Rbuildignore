@@ -57,7 +57,6 @@
 ^tests/cpp/bench_solve$
 ^tests/cpp/bench_gradient$
 ^tests/cpp/probe_tape_regions$
-^tests/cpp/probe_preaccumulation$
 ^tests/cpp/.*\.dSYM$
 
 # The two probes are measurements rather than checks -- neither is in `all` --

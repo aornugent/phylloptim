@@ -2,13 +2,14 @@
 
 ## `Remotes:` tracks odelia 0.7.0
 
-`LinkingTo: odelia (>= 0.7.0)`; `Remotes:` and the C++ workflow's odelia checkout pin `688142e`, the head of traitecoevo/odelia#59 (reverse mode), to be re-pinned to `v0.7.0` once that merges and is tagged. The rows below are taken on odelia 0.7.0's `implicit_node.hpp`, `tangent.hpp` and `value_with_slope.hpp`; `rebind()` is `rebind_from()` there and the trait probes are concepts, which this package's headers already use.
+`LinkingTo: odelia (>= 0.7.0)`; `Remotes:` and the C++ workflow's odelia checkout pin `688142e`, the head of traitecoevo/odelia#59 (reverse mode), to be re-pinned to `v0.7.0` once that merges and is tagged. The rows below are taken on odelia 0.7.0's `implicit_node.hpp`, `tangent.hpp` and `value_with_slope.hpp`.
 
 ## ⚠️ Breaking: the leaf supplies its own derivative rows, and three counts moved
 
-`Leaf` is templated on its scalar and supplies the derivative of its operating
-point from the implicit function theorem at the converged point, instead of
-being recorded and differentiated. What that changes for a caller:
+`Leaf`'s derivative surface is a set of member templates on the caller's scalar
+(`supply_draw_at`, `collar_at`, `outputs_at`), and supplies the derivative of
+its operating point from the implicit function theorem at the converged point,
+instead of being recorded and differentiated. What that changes for a caller:
 
 * **`vulnerability_curve_ncontrol` defaults to 400, was 100.** The
   pre-integrated vulnerability tables are built on four times the knots, and
@@ -22,9 +23,24 @@ being recorded and differentiated. What that changes for a caller:
   kernels read also holds `par_PPFD`, which is seated per observation from the
   drivers and is never fitted, so it has a slot and no name. Read `theta` out to
   `n_pars` and you run past its end.
-* **odelia `>= 0.6.0`** is required, for the reverse-mode surface and the
-  Hermite interpolant (`hermite_spline`, odelia 0.5.0) this leaf's supplied rows
-  are read through. The curves read the interpolant directly rather than
+* **odelia `>= 0.7.0`** is required: the supplied rows are built on its
+  `implicit_node.hpp`, `tangent.hpp` and `value_with_slope.hpp`, which 0.6.0
+  does not have, and read through its Hermite interpolant (`hermite_spline`,
+  odelia 0.5.0).
+* **The four golden files are regenerated** (macOS/arm64, odelia 0.7.0), for
+  the 400-knot default. Against the 0.9.1 baselines: `operating_points.tsv`
+  480 of 576 rows move, 108 beyond the cross-platform tolerance, all near-shut
+  rows at `psi_soil = 4, ppfd = 100`; `psi_stem_optima.tsv` 1539 of 5184;
+  `primitives.tsv` 129 of 544, with the arithmetic, vulnerability and
+  assimilation tiers bit-identical and the spline tier the lowest that moves
+  (88 of 110, at 3.5e-8); `gradient_golden.tsv` 15 of 20 rows, worst 1.6e-3
+  relative.
+* **Two double-path changes a caller can see.** `evaluate_root_collar_psi` and
+  `dprofit_droot_collar_psi` dispatch on the seated cost curve, where they had
+  been pinned to TF24's, so a CF77 or TF24_floor leaf evaluates its own curve
+  there. `ci_at_compensation_point()` is derived from the kernel rather than
+  carried as a flag, which decides which branch `dprofit_at_collar_psi` takes at
+  a zero-flux probe. The curves read the interpolant directly rather than
   through odelia's refusing front end, so each states its own bound where it
   applies it -- `root_vuln_at` clamps the argument, `root_vuln_integral_at`
   caps the value, `eval_stem_curve` raises.

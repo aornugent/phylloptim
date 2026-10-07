@@ -140,8 +140,8 @@ There is nothing to link against — one include is the whole library.
 #include <phylloptim.hpp>
 
 phylloptim::Leaf l;                   // default Eucalyptus saligna traits
-l.setup_transpiration(100);     // build the xylem vulnerability splines
-l.setup_root_vulnerability(100);
+l.setup_transpiration(phylloptim::Leaf::ncontrol_default);   // the xylem vulnerability tables, 400 knots
+l.setup_root_vulnerability(phylloptim::Leaf::ncontrol_default);
 
 std::vector<double> psi_soil{2.0};             // positive suction, MPa
 std::vector<double> soil_depth{1.0};           // m
@@ -530,7 +530,7 @@ Two costs worth knowing because they surprise people:
   or `root_c`, and 21.8 µs if you do**, because those four own the pre-integrated
   vulnerability splines and it rebuilds one. That is 8× a solve, in C++, where
   batching cannot help — worth knowing before writing a sweep over a vulnerability
-  curve. Most of it is the incomplete gamma function seeding 101 knots, not the
+  curve. Most of it is the incomplete gamma function seeding 401 knots, not the
   spline machinery. `leaf_gradient()` sidesteps it for `stem_P50`, because the
   curve is homogeneous of degree 1 in the scale that pair implies: see
   `fast_stem_curve` in `?leaf_gradient`.
@@ -540,7 +540,7 @@ Two costs worth knowing because they surprise people:
 Name it in `LinkingTo` to compile against the headers, the way `BH` is used:
 
 ```
-LinkingTo: BH, odelia (>= 0.2.0), phylloptim (>= 0.1.0)
+LinkingTo: BH, odelia (>= 0.7.0), phylloptim (>= 0.10.0)
 ```
 
 `LinkingTo` is **not** transitive in R, so you must name `BH` and `odelia`
@@ -554,7 +554,7 @@ Deliberately few. The two the *model* needs are header-only:
 
 | | why | how |
 |---|---|---|
-| **odelia** (>= 0.2.0) | cubic-spline interpolator for the pre-integrated vulnerability curves, and the vendored **XAD** automatic-differentiation library | `LinkingTo` |
+| **odelia** (>= 0.7.0) | cubic Hermite interpolator for the pre-integrated vulnerability curves, the supplied-derivative nodes the leaf's rows are handed over through, and the vendored **XAD** automatic-differentiation library | `LinkingTo` |
 | **BH** (Boost) | TOMS748 root finder, incomplete gamma for the closed-form vulnerability integral | `LinkingTo` |
 
 **Rcpp** and **R6** are needed by the R layer only. They are not in the model's
@@ -565,10 +565,11 @@ touch **Rcpp** or the R C API: `leaf/util.hpp` replaced plant's `util::stop`
 with a plain `std::runtime_error` and `NA_REAL` with a quiet NaN. odelia's
 solver core was the last R touchpoint in the include graph, via `ode_util.hpp`;
 that was removed upstream in traitecoevo/odelia#44, so the test suite now builds
-against the real headers with nothing standing in for R at all. **odelia 0.2.0 is
-the first release with that fix**, hence the version requirement: an older odelia
-would otherwise fail deep in the build with `RcppCommon.h: No such file or
-directory`, which does not point at the cause.
+against the real headers with nothing standing in for R at all. odelia 0.2.0 was the first release with that fix; an older odelia fails deep in
+the build with `RcppCommon.h: No such file or directory`, which does not point at
+the cause. **The floor is 0.7.0** because the leaf's supplied derivative rows are
+built on headers that first shipped there (`implicit_node.hpp`, `tangent.hpp`,
+`value_with_slope.hpp`).
 
 Both dependencies are already required by plant, so plant pays nothing new for
 depending on this package.
