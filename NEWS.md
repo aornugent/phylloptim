@@ -2,7 +2,7 @@
 
 ## `Remotes:` tracks odelia 0.7.0
 
-`LinkingTo: odelia (>= 0.7.0)`; `Remotes:` and the C++ workflow's odelia checkout pin `688142e`, the head of traitecoevo/odelia#59 (reverse mode), to be re-pinned to `v0.7.0` once that merges and is tagged. The rows below are taken on odelia 0.7.0's `implicit_node.hpp`, `tangent.hpp` and `value_with_slope.hpp`.
+`LinkingTo: odelia (>= 0.7.0)`; `Remotes:` and the C++ workflow's odelia checkout pin `fe58377`, the head of traitecoevo/odelia#59 (reverse mode, merged with 0.6.2), to be re-pinned to `v0.7.0` once that merges and is tagged. The rows below are taken on odelia 0.7.0's `implicit_node.hpp`, `tangent.hpp` and `value_with_slope.hpp`.
 
 ## A replayed boundary point hands over its solve's rows
 
@@ -76,6 +76,12 @@ instead of being recorded and differentiated. What that changes for a caller:
 `Tleaf` reporting entry, and "`n_pars` is unchanged at 19" under the
 `shadow_cost` entry, were true when written and are not now: the count is 20 and
 the one a caller wants is `n_theta`.
+
+# phylloptim 0.9.2
+
+## `Remotes:` tracks odelia 0.6.2
+
+`Remotes:` and the C++ workflow's odelia checkout move from `815a54f` (0.6.0) to `64ae092`, the merge of traitecoevo/odelia#69 (0.6.2). plant pins the same odelia as phylloptim and needs 0.6.2, whose solver no longer pays the square of the state length on every resize (traitecoevo/plant#656), which is why this release exists. No code changes. Between 0.6.0 and 0.6.2 odelia added a steady-state solver (0.6.1) and moved when RODAS allocates its buffers (0.6.2); neither changes any arithmetic, so the golden baselines are unchanged. The `LinkingTo: odelia (>= 0.2.0)` floor is unchanged.
 
 # phylloptim 0.9.1
 
