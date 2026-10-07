@@ -1,3 +1,9 @@
+# phylloptim 0.9.2
+
+## `Remotes:` tracks odelia 0.6.2
+
+`Remotes:` and the C++ workflow's odelia checkout move from `815a54f` (0.6.0) to `64ae092`, the merge of traitecoevo/odelia#69 (0.6.2). plant pins the same odelia as phylloptim and needs 0.6.2, whose solver no longer pays the square of the state length on every resize (traitecoevo/plant#656), which is why this release exists. No code changes. Between 0.6.0 and 0.6.2 odelia added a steady-state solver (0.6.1) and moved when RODAS allocates its buffers (0.6.2); neither changes any arithmetic, so the golden baselines are unchanged. The `LinkingTo: odelia (>= 0.2.0)` floor is unchanged.
+
 # phylloptim 0.9.1
 
 ## `Remotes:` tracks odelia 0.6.0
