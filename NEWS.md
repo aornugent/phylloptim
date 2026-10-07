@@ -1,24 +1,8 @@
-# phylloptim 0.9.0
+# phylloptim 0.10.0
 
-## Fix: the collar solve maximised the wrong objective for four cost curves
+## `Remotes:` tracks odelia 0.7.0
 
-On the collar route the solve chooses the root-collar potential, and `psi_stem` follows from it through the supply. Every cost is billed through `psi_stem`, and the first-order condition carries that channel. Four costs also read the collar itself, because they price the stem path between collar and leaf rather than the state of the leaf end. **CF77** and **TF24_floor** charge for the flow `E = kmax·(G(psi_stem) − G(psi_collar))`. **JS22** charges for the drop `psi_stem − psi_collar`. **CMax** integrates its price from `psi_collar` to `psi_stem`. That direct dependence was missing from the first-order condition, so for these four the collar solve converged, to `|dprofit| ~ 1e-15`, onto a point that was not the maximum of the `profit_` it reported.
-
-The other four price the leaf end alone: **TF24** by the stem conductivity lost at `psi_stem`, **SOX** and **JW26** by a reduction factor of `psi_stem`, **ProfitMax** by `k(psi_stem)` against a fixed soil conductance. They see the collar only through `psi_stem` and are unaffected. So are all eight stem routes, which hold the upstream end at `psi_soil`.
-
-The missing term is `dC/dpsi_upstream`, now a table beside `cost_deriv<K>()` (`cost_reads_upstream<K>()` and `cost_deriv_upstream<K>()`), and appended to the collar FOC so the curves that do not read upstream compile to the same code: `bench_solve` is byte-identical, and all three golden baselines and `gradient_golden.tsv` are bit-identical, because none of them solves an upstream-reading curve on the collar route. `test_collar_foc_matches_profit` is the first test that does.
-
-Measured over 24 driver rows per case (1 and 3 layers), every moved row's `profit_` rose, so the old point was strictly worse by the model's own objective:
-
-| curve | rows moved | worst collar shift, MPa | worst transpiration change |
-|---|---|---|---|
-| CMax | 24/24 | 0.346 | 34% |
-| JS22 | 24/24 | 0.269 | 19% |
-| TF24_floor, lambda_o = 1e4 | 24/24 | 0.057 | 5.9% |
-| TF24_floor, lambda_o = 1e3 | 24/24 | 0.0054 | 0.5% |
-| CF77, lambda = 1e4 | 0/24 (all pinned) | 0 | 0 |
-
-A trait gradient on these curves moves with the solve, since `leaf_gradient()` reaches the FOC through `dprofit_droot_collar_psi`.
+`LinkingTo: odelia (>= 0.7.0)`; `Remotes:` and the C++ workflow's odelia checkout pin `688142e`, the head of traitecoevo/odelia#59 (reverse mode), to be re-pinned to `v0.7.0` once that merges and is tagged. The rows below are taken on odelia 0.7.0's `implicit_node.hpp`, `tangent.hpp` and `value_with_slope.hpp`; `rebind()` is `rebind_from()` there and the trait probes are concepts, which this package's headers already use.
 
 ## ⚠️ Breaking: the leaf supplies its own derivative rows, and three counts moved
 
@@ -68,6 +52,36 @@ being recorded and differentiated. What that changes for a caller:
 `Tleaf` reporting entry, and "`n_pars` is unchanged at 19" under the
 `shadow_cost` entry, were true when written and are not now: the count is 20 and
 the one a caller wants is `n_theta`.
+
+# phylloptim 0.9.1
+
+## `Remotes:` tracks odelia 0.6.0
+
+`Remotes:` and the C++ workflow's odelia checkout move from v0.4.0 to `815a54f`, the merge of traitecoevo/odelia#63 (an R-side ODE stepper, which regnans steps the canonical equation with). plant pins the same odelia as phylloptim and must move to 0.6.0 for regnans, which is why this release exists. No code changes.
+
+The golden baselines move with the pin, as they did on the `release/0.8.x` line (0.8.2, #139): odelia 0.5.0 made the spline behind the soil and leaf lookups a local cubic Hermite, which reads the same natural cubic spline as before with values alone, so the goldens differ at rounding only — `operating_points.tsv`, `psi_stem_optima.tsv`, `primitives.tsv` and `gradient_golden.tsv` are the 0.8.x line's, re-verified bit-identical here against the 0.6.0 headers. `test-gradient.R`'s operating point is the 0.8.x line's as well. The `LinkingTo: odelia (>= 0.2.0)` floor is unchanged.
+
+# phylloptim 0.9.0
+
+## Fix: the collar solve maximised the wrong objective for four cost curves
+
+On the collar route the solve chooses the root-collar potential, and `psi_stem` follows from it through the supply. Every cost is billed through `psi_stem`, and the first-order condition carries that channel. Four costs also read the collar itself, because they price the stem path between collar and leaf rather than the state of the leaf end. **CF77** and **TF24_floor** charge for the flow `E = kmax·(G(psi_stem) − G(psi_collar))`. **JS22** charges for the drop `psi_stem − psi_collar`. **CMax** integrates its price from `psi_collar` to `psi_stem`. That direct dependence was missing from the first-order condition, so for these four the collar solve converged, to `|dprofit| ~ 1e-15`, onto a point that was not the maximum of the `profit_` it reported.
+
+The other four price the leaf end alone: **TF24** by the stem conductivity lost at `psi_stem`, **SOX** and **JW26** by a reduction factor of `psi_stem`, **ProfitMax** by `k(psi_stem)` against a fixed soil conductance. They see the collar only through `psi_stem` and are unaffected. So are all eight stem routes, which hold the upstream end at `psi_soil`.
+
+The missing term is `dC/dpsi_upstream`, now a table beside `cost_deriv<K>()` (`cost_reads_upstream<K>()` and `cost_deriv_upstream<K>()`), and appended to the collar FOC so the curves that do not read upstream compile to the same code: `bench_solve` is byte-identical, and all three golden baselines and `gradient_golden.tsv` are bit-identical, because none of them solves an upstream-reading curve on the collar route. `test_collar_foc_matches_profit` is the first test that does.
+
+Measured over 24 driver rows per case (1 and 3 layers), every moved row's `profit_` rose, so the old point was strictly worse by the model's own objective:
+
+| curve | rows moved | worst collar shift, MPa | worst transpiration change |
+|---|---|---|---|
+| CMax | 24/24 | 0.346 | 34% |
+| JS22 | 24/24 | 0.269 | 19% |
+| TF24_floor, lambda_o = 1e4 | 24/24 | 0.057 | 5.9% |
+| TF24_floor, lambda_o = 1e3 | 24/24 | 0.0054 | 0.5% |
+| CF77, lambda = 1e4 | 0/24 (all pinned) | 0 | 0 |
+
+A trait gradient on these curves moves with the solve, since `leaf_gradient()` reaches the FOC through `dprofit_droot_collar_psi`.
 
 ## ⚠️ Breaking: root layer thickness is per layer, and it was a 3.7× error
 
