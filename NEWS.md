@@ -2,7 +2,7 @@
 
 ## `Remotes:` tracks odelia 0.7.0
 
-`LinkingTo: odelia (>= 0.7.0)`; `Remotes:` and the C++ workflow's odelia checkout pin `fe58377`, the head of traitecoevo/odelia#59 (reverse mode, merged with 0.6.2), to be re-pinned to `v0.7.0` once that merges and is tagged. The rows below are taken on odelia 0.7.0's `implicit_node.hpp`, `tangent.hpp` and `value_with_slope.hpp`.
+`LinkingTo: odelia (>= 0.7.0)`; `Remotes:` and the C++ workflow's odelia checkout pin `6d32329`, the merge of traitecoevo/odelia#59 (reverse mode, 0.7.0). The rows below are taken on odelia 0.7.0's `implicit_node.hpp`, `tangent.hpp` and `value_with_slope.hpp`.
 
 ## A replayed boundary point hands over its solve's rows
 
