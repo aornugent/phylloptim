@@ -1,3 +1,9 @@
+# phylloptim 0.10.1
+
+## `Remotes:` tracks odelia 0.7.1
+
+`LinkingTo: odelia (>= 0.7.1)`; `Remotes:` and the C++ workflow's odelia checkout pin `e9a179e`, odelia's fix for a run that starts with no state (traitecoevo/plant's FF16 stand gradient needs it). Nothing in this package changes; the pin moves so that a consumer pinning both packages sees one odelia.
+
 # phylloptim 0.10.0
 
 ## `Remotes:` tracks odelia 0.7.0
