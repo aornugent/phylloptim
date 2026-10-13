@@ -1,3 +1,18 @@
+# phylloptim 0.9.3
+
+## A determined collar answers the derivative path
+
+Where the feasible interval collapses and feasibility sets the collar at its
+midpoint, `collar_at()` no longer refuses with "no operating point to place at
+one that is determined". The collar's rows are the mean of its two bounds' rows:
+the wet bound's, and the dry bound's from whichever limit closed it, the
+continuity root or the root's own critical potential. The stem there sits at its
+own optimum with the collar held, not at continuity with the draw, so
+`collar_coords_at()` places it at `psi_crit` with no response to the collar;
+placed by continuity, profit's row in `root_P50` read 0.053 where a difference
+of the solve gives -0.83. A stem optimum inside its interval is refused by name.
+Values are untouched: the golden grid is byte-identical.
+
 # phylloptim 0.9.2
 
 ## The root curve's derivative answers past its dry end

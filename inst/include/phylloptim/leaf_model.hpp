@@ -2455,8 +2455,8 @@ public:
     // has to lower it deliberately rather than wait for one.
     BoundaryRootCrit,
     // The feasible interval collapsed to a point (width <= GSS_tol_abs), so
-    // feasibility DETERMINED the collar potential and nothing was optimised.
-    // There is no free variable left to differentiate.
+    // feasibility DETERMINED the collar potential at its midpoint and nothing was
+    // optimised. The collar moves as the mean of the two bounds.
     Determined,
     // Shutdown on water: no collar potential both moves water and stays inside
     // the stem's and the root's critical potentials. The stem holds at psi_crit,
@@ -3521,8 +3521,8 @@ if(assim_max_ < 0){
       profit_ = profit_psi_stem_for<K>(opt_psi_stem_, opt_root_psi);
       (void)psi_stem_single;
       opt_root_psi_ = opt_root_psi;
-      // Feasibility DETERMINED this point; no maximisation happened, and there is
-      // no free variable left for a derivative to move.
+      // Feasibility DETERMINED the collar; nothing optimised it, but it still
+      // moves with the traits and the soil through its two bounds.
       operating_point_kind_ = OperatingPointKind::Determined;
 
       if (!std::isfinite(profit_)) {
@@ -5627,6 +5627,15 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
     util::stop("Leaf::collar_coords_at: no operating point to place at a "
                "hydraulic shutdown; outputs_at answers there instead");
   }
+  // ⚠️ A DETERMINED COLLAR LEAVES THE STEM AT ITS OWN OPTIMUM, NOT AT T1. Placed by
+  // T1 it keeps its value and takes the wrong rows: profit's row in root_P50 came
+  // out 0.053 where a difference of the solve gives -0.83. Only an optimum at
+  // psi_crit is placed here; one inside the stem's interval needs its curvature.
+  const bool determined = operating_point_kind_ == OperatingPointKind::Determined;
+  if (determined && sigma_star != psi_crit) {
+    util::stop("Leaf::collar_coords_at: the stem at a determined collar sits "
+               "inside its interval, and only psi_crit is placed there");
+  }
 
   // ⚠️ THE RESIDUALS SEE A HELD COLLAR, AND THE COLLAR'S CHANNEL IS ADDED BACK AS
   // ONE SUPPLIED SLOPE. That is the split RECORDED-DECISIONS states, and here it
@@ -5659,14 +5668,18 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // MUST BE IN THIS LIST -- one left out is a row that never arrives, which
   // reads as an exact zero in that column rather than as an error. `held` is
   // to_passive and carries none.
-  const S sigma_h = odelia::implicit_value<S>(
-      sigma_star, dT1_dsigma,
-      [&](const S& sg) -> S {
-        return pars[par_kmax] * (leaf.template stem_integral_at<S>(sg, pars) -
-                                 leaf.template stem_integral_at<S>(held, pars)) -
-               draw.flux.value;
-      },
-      pars, draw.flux.value);
+  const S sigma_h =
+      determined
+          ? psi_crit_at<S>(pars)
+          : odelia::implicit_value<S>(
+                sigma_star, dT1_dsigma,
+                [&](const S& sg) -> S {
+                  return pars[par_kmax] *
+                             (leaf.template stem_integral_at<S>(sg, pars) -
+                              leaf.template stem_integral_at<S>(held, pars)) -
+                         draw.flux.value;
+                },
+                pars, draw.flux.value);
 
   // The stem's flux at the placed sigma. gc is built from THIS, not from the
   // draw, because that is what the model's ci solve reads -- the two agree only
@@ -5748,7 +5761,8 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   const S recip = S(1.0) / f_sigma;
   const S dsigma_du =
       S(stem_curve_integral_inverse_deriv(u_at)) + (recip - S(to_passive(recip)));
-  const S V = dsigma_du * (draw.flux.slope / kmax + f_p);
+  // psi_crit does not move with the collar.
+  const S V = determined ? S(0.0) : dsigma_du * (draw.flux.slope / kmax + f_p);
 
   const S gc_const = S(gc_per_flux);
   const S inv = S(inv_atm);
@@ -6009,6 +6023,22 @@ inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
       // residual -- so it needs no theorem, only its own chain.
       collar = root_psi_crit_at<S>(pars);
       break;
+    case OperatingPointKind::Determined: {
+      // The midpoint of a collapsed interval, so it moves as the mean of its
+      // bounds. Recorded against them rather than summed, so the number stays
+      // the solve's: the root limit's own value is the bound, not the midpoint.
+      const S wet = bound_at<K, S>(true, opt_root_psi_, draw, pars);
+      const S dry = dry_bound_is_root_limit_
+                        ? root_psi_crit_at<S>(pars)
+                        : bound_at<K, S>(false, opt_root_psi_, draw, pars);
+      const odelia::input_and_derivative<S> rows[]{{wet, 0.5}, {dry, 0.5}};
+      const odelia::record_report report =
+          odelia::record_with_derivatives<S>(opt_root_psi_, rows, collar);
+      if (!report.whole) {
+        util::stop("Leaf::collar_at: determined collar: " + report.why);
+      }
+      break;
+    }
     case OperatingPointKind::HydraulicShutdown:
       // The stem holds at its critical potential and nothing defines the collar
       // at all, so it does not move.
