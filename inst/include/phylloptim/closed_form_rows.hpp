@@ -52,8 +52,14 @@ inline S closed_form_integral(double table_value, double table_slope, const S& p
   const double P50_0 = to_passive(P50);
   const double c_0 = to_passive(c);
   const double b = weibull_b_from_P50(P50_0, c_0);
+  const double end = vulnerability_psi_max(b, c_0);
+  // Past the dry end only the root table answers. Up to G(inf) it is the last
+  // knot's tangent, whose slope is f there, so the knot's own motion cancels and
+  // the rows are G's at the knot; beyond, it is G(inf), and its slope is zero.
   const VulnerabilityIntegralDerivatives d =
-      cumulative_vulnerability_integral_derivatives_at(at, b, c_0);
+      at <= end           ? cumulative_vulnerability_integral_derivatives_at(at, b, c_0)
+      : table_slope > 0.0 ? cumulative_vulnerability_integral_derivatives_at(end, b, c_0)
+                          : cumulative_vulnerability_integral_limit_derivatives(b, c_0);
   const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
   return S(table_value) + S(table_slope) * (psi - S(at)) +
          S(rows.dP50) * (P50 - S(P50_0)) + S(rows.dc) * (c - S(c_0));
@@ -69,6 +75,9 @@ inline S closed_form_curve(double table_value, const S& psi, const S& P50,
   const double P50_0 = to_passive(P50);
   const double c_0 = to_passive(c);
   const double b = weibull_b_from_P50(P50_0, c_0);
+  // Past the dry end every table holds its last knot's value, and f there is the
+  // conductivity floor whatever b and c are: the read has no row.
+  if (at > vulnerability_psi_max(b, c_0)) return S(table_value);
   const VulnerabilityDerivatives d = vulnerability_derivatives_at(at, b, c_0);
   const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
   return S(table_value) + S(d.dpsi) * (psi - S(at)) +

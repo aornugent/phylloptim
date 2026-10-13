@@ -1157,6 +1157,77 @@ void test_root_vulnerability_is_bounded_past_its_grid() {
        "a tenfold drier layer does not become a stronger pump");
 }
 
+// The rows past the dry end are the rows of what the table returns there: the
+// last knot's tangent up to G(inf), then G(inf) itself. A long drought puts soil
+// layers at 7-30 MPa, so the derivative path reads these as often as the forward.
+void test_root_rows_past_the_dry_end_match_the_table() {
+  printf("root rows past the dry end match the table's differences\n");
+  using AD = xad::fwd<double>::active_type;
+  phylloptim::RootNetwork n;
+  n.r_R_H_min = {1.0};
+  n.r_R_V_sum = {0.0};
+  n.c_r_V = {1.0};
+  n.c_r_H = {1.0};
+  n.r_R_V = {0.0};
+  auto draw = [&](double P50, double c, double collar, double psi_soil) {
+    phylloptim::MultiLayerRoots r;
+    r.root_P50 = P50;
+    r.root_c = c;
+    r.root_b = phylloptim::weibull_b_from_P50(P50, c);
+    r.setup_vulnerability(100);
+    r.set_soil_state(std::vector<double>{psi_soil}, std::vector<double>{1.0});
+    r.set_root_network(n);
+    r.begin_solve();
+    std::vector<double> consumption(1, 0.0);
+    double E_up = 0.0;
+    r.uptake_at(collar, std::vector<double>{psi_soil}, consumption, E_up);
+    return consumption[0];
+  };
+
+  // Soil in the tangent's span, soil past the cap, and the collar past the
+  // last knot as well.
+  const double P50 = 3.4, c = 2.680147;
+  for (auto [collar, psi_soil] : {std::pair{1.0, 7.1}, std::pair{1.0, 31.0},
+                                  std::pair{7.0, 31.0}}) {
+    phylloptim::MultiLayerRoots r;
+    r.setup_vulnerability(100);
+    r.set_soil_state(std::vector<double>{psi_soil}, std::vector<double>{1.0});
+    r.set_root_network(n);
+    r.begin_solve();
+    const double h = 1e-5;
+    const double want[3] = {
+        (draw(P50 + h, c, collar, psi_soil) - draw(P50 - h, c, collar, psi_soil)) / (2 * h),
+        (draw(P50, c + h, collar, psi_soil) - draw(P50, c - h, collar, psi_soil)) / (2 * h),
+        (draw(P50, c, collar, psi_soil + h) - draw(P50, c, collar, psi_soil - h)) / (2 * h)};
+    const char* names[3] = {"root_P50", "root_c", "psi_soil"};
+    for (int k = 0; k < 3; ++k) {
+      AD a_P50 = P50, a_c = c;
+      std::vector<AD> soil{AD(psi_soil)}, r_h{AD(1.0)}, r_v{AD(0.0)};
+      AD* seeded[3] = {&a_P50, &a_c, &soil[0]};
+      xad::derivative(*seeded[k]) = 1.0;
+      const phylloptim::SupplyAt<AD> supply{soil, r_h, r_v, a_P50, a_c};
+      std::vector<AD> consumption(1, AD(0.0));
+      AD E_up = 0.0;
+      std::string threw;
+      try {
+        r.uptake_at<AD>(AD(collar), supply, consumption, E_up);
+      } catch (const std::exception& e) {
+        threw = e.what();
+      }
+      const std::string at = std::string(" d/d") + names[k] + " at collar=" +
+                             std::to_string(collar) + " psi_soil=" +
+                             std::to_string(psi_soil);
+      ok(threw.empty(), "the derivative path answers" + at +
+                            (threw.empty() ? "" : ": " + threw));
+      if (!threw.empty()) continue;
+      near(xad::value(consumption[0]), draw(P50, c, collar, psi_soil), 1e-14,
+           "the value is the forward's" + at);
+      near(xad::derivative(consumption[0]), want[k], 1e-4 * std::abs(want[k]) + 1e-7,
+           "the row matches the table's central difference" + at);
+    }
+  }
+}
+
 // The convention is now checkable, so check that it is checked: a caller still
 // holding the pre-#25 signed vector must fail loudly, not run.
 void test_signed_potentials_are_rejected() {
@@ -6109,6 +6180,7 @@ int main() {
   test_outputs_agree_with_the_solve();
   test_soil_conductance_is_positive();
   test_root_vulnerability_is_bounded_past_its_grid();
+  test_root_rows_past_the_dry_end_match_the_table();
   test_root_psi_crit_clamp_binds();
   test_signed_potentials_are_rejected();
   test_lambda_equals_dA_dE_single_layer();
