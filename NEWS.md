@@ -1,3 +1,9 @@
+# phylloptim 0.10.4
+
+## The root curve's derivative answers past its dry end
+
+A soil layer drier than the root curve's last knot (6.89 MPa at the defaults) no longer refuses the derivative path with `stem_curve_domain`. The rows are those of what the table returns there: the last knot's tangent up to G(inf), whose trait rows are G's at the knot, and G(inf) beyond it, with `dG(inf)/db = Gamma(1 + 1/c)` and a digamma row in `c`. The conductivity read past the knot has no row, since the curve there is the 1% floor for every trait. Values are untouched: the golden grid is byte-identical.
+
 # phylloptim 0.10.3
 
 ## odelia is a floor, not a pin, at 0.8.0
