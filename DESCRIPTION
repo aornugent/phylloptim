@@ -1,6 +1,6 @@
 Package: phylloptim
 Title: Leaf Gas Exchange with Explicit Plant Hydraulics
-Version: 0.10.2
+Version: 0.10.3
 Authors@R: c(
     person("Isaac", "Towers", , "", "aut",
             comment = "Author of the leaf gas exchange and hydraulics model"),
@@ -34,7 +34,7 @@ Depends:
 Imports:
     R6,
     Rcpp,
-LinkingTo: Rcpp, BH, odelia (>= 0.7.3)
+LinkingTo: Rcpp, BH, odelia (>= 0.8.0)
 Suggests:
     dplyr,
     ggplot2,
@@ -44,8 +44,6 @@ Suggests:
     tibble,
     tidyr
 VignetteBuilder: knitr
-Remotes:
-    traitecoevo/odelia@88cbff7
 Config/testthat/edition: 3
 URL: https://github.com/traitecoevo/phylloptim
 BugReports: https://github.com/traitecoevo/phylloptim/issues

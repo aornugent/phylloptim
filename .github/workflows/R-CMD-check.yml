@@ -53,12 +53,21 @@ jobs:
       # tool whose output is committed, so nobody installing this package needs
       # it (PLAN item 6c). It is installed here, and only here, for the
       # regeneration check below.
+      # odelia is not on CRAN, and DESCRIPTION names only the oldest release
+      # this package builds against (LinkingTo), not where to fetch it: a
+      # `Remotes:` pin here would be inherited by every consumer and would have
+      # to match theirs. So the check fetches that oldest release itself.
+      # ⚠️ install-pandoc is set because, left unset on a runner without pandoc
+      # (macOS), the action decides by resolving DESCRIPTION alone, without
+      # extra-packages, and that cannot find odelia.
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           extra-packages: |
             any::rcmdcheck
             github::richfitz/RcppR6
+            github::traitecoevo/odelia@v0.8.0
           needs: check
+          install-pandoc: true
 
       # The generated glue is committed, so a check runs without RcppR6. But a
       # stale commit of it is invisible to every other check here -- the build

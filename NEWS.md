@@ -1,3 +1,9 @@
+# phylloptim 0.10.3
+
+## odelia is a floor, not a pin, at 0.8.0
+
+`DESCRIPTION` no longer names an odelia commit in `Remotes:`; `LinkingTo: odelia (>= 0.8.0)` states the oldest release this package builds against, and the R check and the C++ workflow both build against that release (tag `v0.8.0`). A consumer such as traitecoevo/plant pins odelia once, in its own `Remotes:`, and this package no longer has to move in step with every odelia it takes: a `Remotes:` pin here was inherited by every consumer, and pak refuses an install whose packages pin one sibling two ways. odelia 0.8.0 changes the ODE step-size default (traitecoevo/odelia#77), which this package does not use; of the headers it does use, only a spline read at an active position changes, and that changes an adjoint only to rounding. Nothing in the package's code changes.
+
 # phylloptim 0.10.2
 
 ## `Remotes:` tracks odelia 0.7.3

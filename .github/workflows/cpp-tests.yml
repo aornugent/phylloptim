@@ -55,10 +55,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: traitecoevo/odelia
-          # The same release DESCRIPTION's Remotes pins: an unpinned checkout
-          # builds against whatever odelia's default branch holds, so an odelia
-          # merge moves this package's bit-exact goldens with no change here.
-          ref: 88cbff72ba8a210d3c0085eb70b98313775c909b
+          # The release DESCRIPTION's LinkingTo floor names, as the R check
+          # installs: an unpinned checkout builds against whatever odelia's
+          # default branch holds, so an odelia merge would move this package's
+          # bit-exact goldens with no change here.
+          ref: v0.8.0
           path: odelia
           fetch-depth: 1
 
