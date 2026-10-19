@@ -5345,6 +5345,18 @@ void test_profitmax_finds_a_closed_optimum() {
 // the package routes through it, so a failure in the leaf tests below should be
 // attributable to the leaf rather than to the search.
 //
+// boost's bisect reports the iterations it used and never more than its budget,
+// so a bisection that ran out has used exactly the budget.
+void test_a_bisection_that_spends_its_budget_is_refused() {
+  printf("a bisection that spends its budget is refused\n");
+  const auto f = [](double x) { return x - 0.3; };
+  ok(throws_with([&] { phylloptim::util::uniroot(f, 0.0, 1.0, 1e-12, 3); },
+                 "exceeded max_iterations"),
+     "three halvings do not reach 1e-12, and the bisection says so");
+  near(phylloptim::util::uniroot(f, 0.0, 1.0, 1e-12, 100), 0.3, 1e-12,
+       "with budget to spare it finds the root");
+}
+
 // ⚠️ There used to be a second maximiser, `maximise_over_closed_interval`, which
 // was this one without the root-find and which these cases tested instead. It had
 // no caller left and is deleted; the cases moved here. Case 7 is what only this
@@ -6595,6 +6607,7 @@ int main() {
   test_single_layer_optimisers_clear_collar_state();
   test_transpiration_survives_negative_assim();
   test_profitmax_finds_a_closed_optimum();
+  test_a_bisection_that_spends_its_budget_is_refused();
   test_maximise_over_closed_interval_foc();
   test_single_layer_optimisers_reach_a_bound();
   test_product_link_is_the_product_rule();

@@ -10,6 +10,10 @@ Where the feasible interval collapses and the collar is held at its midpoint, `c
 
 Both bounds are now polished to collar precision before the midpoint is taken, as a pinned bound already is. Left at the bracket's 1e-4 tolerance, the continuity bound sat up to 5.6e-7 MPa from its root, and a difference of the solve along `root_P50` read 0.014 where the row, and a difference of the polished solve, give -1.6e-6. So a determined collar moves by up to 2.8e-7 MPa, and a stem conductance of 1e-30, refused before as `stem_curve_domain`, is now solved as a determined point. No other point moves: the golden grid has no determined point and is byte-identical.
 
+## `uniroot()` refuses a bisection that spends its budget
+
+`uniroot()` checked `it > max_iterations`, which cannot fire: boost's `bisect` reports the iterations it used and never exceeds its budget. It now checks `>=`, as `uniroot_smooth()` does. Its one caller, the Medlyn ci solve, needs a few tens of halvings to reach `ci_abs_tol` against a default budget of 1000, so no solve that finished before refuses now.
+
 # phylloptim 0.10.3
 
 ## odelia is a floor, not a pin, at 0.8.0
