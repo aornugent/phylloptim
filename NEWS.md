@@ -1,3 +1,19 @@
+# phylloptim 0.10.4
+
+## The root curve's derivative answers past its dry end
+
+A soil layer drier than the root curve's last knot (6.89 MPa at the defaults) no longer refuses the derivative path with `stem_curve_domain`. The rows are those of what the table returns there: the last knot's tangent up to G(inf), whose trait rows are G's at the knot, and G(inf) beyond it, with `dG(inf)/db = Gamma(1 + 1/c)` and a digamma row in `c`. The conductivity read past the knot has no row, since the curve there is the 1% floor for every trait. Values are untouched: the golden grid is byte-identical.
+
+## A determined collar answers the derivative path
+
+Where the feasible interval collapses and the collar is held at its midpoint, `collar_at()` no longer refuses with "no operating point to place at one that is determined". The collar's rows are the mean of its two bounds' rows: the wet bound's, and the dry bound's from whichever limit closed it, the continuity root or the root's own critical potential. The stem there sits at its own optimum with the collar held, not at continuity with the draw, so `collar_coords_at()` places it at `psi_crit` with no response to the collar; placed by continuity, profit's row in `root_P50` read 0.053 where a difference of the solve gives -0.83. A stem optimum inside its interval is refused by name.
+
+Both bounds are now polished to collar precision before the midpoint is taken, as a pinned bound already is. Left at the bracket's 1e-4 tolerance, the continuity bound sat up to 5.6e-7 MPa from its root, and a difference of the solve along `root_P50` read 0.014 where the row, and a difference of the polished solve, give -1.6e-6. So a determined collar moves by up to 2.8e-7 MPa, and a stem conductance of 1e-30, refused before as `stem_curve_domain`, is now solved as a determined point. No other point moves: the golden grid has no determined point and is byte-identical.
+
+## `uniroot()` refuses a bisection that spends its budget
+
+`uniroot()` checked `it > max_iterations`, which cannot fire: boost's `bisect` reports the iterations it used and never exceeds its budget. It now checks `>=`, as `uniroot_smooth()` does. Its one caller, the Medlyn ci solve, needs a few tens of halvings to reach `ci_abs_tol` against a default budget of 1000, so no solve that finished before refuses now.
+
 # phylloptim 0.10.3
 
 ## odelia is a floor, not a pin, at 0.8.0
