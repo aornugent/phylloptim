@@ -60,7 +60,7 @@ jobs:
           # default branch holds, so an odelia merge would move this package's
           # bit-exact goldens with no change here. The commit that 0.9.0 will
           # be tagged at, until it is.
-          ref: b3311cbeeed9bb9ed97befa00f13476b0400196f
+          ref: ea714235ae2e6b9f361b97d0798b24bacd439172
           path: odelia
           fetch-depth: 1
 

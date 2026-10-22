@@ -65,7 +65,7 @@ jobs:
           extra-packages: |
             any::rcmdcheck
             github::richfitz/RcppR6
-            github::aornugent/odelia@b3311cb
+            github::aornugent/odelia@ea71423
           needs: check
           install-pandoc: true
 
