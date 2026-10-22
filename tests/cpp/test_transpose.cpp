@@ -5,7 +5,7 @@
 // J is the map from the leaf's active inputs -- the parameter pack and the soil
 // state -- to the two things plant reads, profit and the per-layer draws, plus
 // the two coordinates they are assembled from. `J u` is one forward tangent
-// seeded with u; `J^T v` is one reverse sweep seeded with v.
+// along u; `J^T v` is one reverse sweep from v.
 //
 // Neither side is a reference for the other. They are the same operator read in
 // two directions, and only a consistent J satisfies both -- which is what makes
@@ -136,14 +136,14 @@ Inputs<S> inputs_of(const pl::Leaf& l) {
   return in;
 }
 
-// <v, J u>: one tangent, every input seeded at once.
+// <v, J u>: one tangent, every input given its direction at once.
 double forward_side(pl::Leaf l, const std::vector<double>& u,
                     const std::vector<double>& v, double curvature,
                     bool has_coords) {
   Inputs<T> in = inputs_of<T>(l);
   std::vector<T*> f = in.flat();
   for (std::size_t k = 0; k < f.size(); ++k) {
-    odelia::ode::seed_direction(*f[k], u[k]);
+    odelia::ode::set_direction(*f[k], u[k]);
   }
   const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), in.supply());
   const T collar =

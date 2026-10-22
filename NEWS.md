@@ -2,7 +2,7 @@
 
 ## odelia's reverse-mode names, at 0.9.0
 
-`LinkingTo: odelia (>= 0.9.0)`, the release that renames its reverse-mode API (traitecoevo/odelia#66). The leaf records onto an `odelia::ode::adjoint_scalar` (was `active_scalar`) and puts its supplied rows on the consumer's tape with `odelia::supply_derivatives` (was `record_with_derivatives`). A value and its slope in the collar potential is `odelia::with_slope<T>` (was `value_with_slope<T>`), named directly: `Leaf::pair<T>`, which only renamed it, is gone. A **minor** bump, because the floor moves and `Leaf::pair` is gone. No number moves.
+`LinkingTo: odelia (>= 0.9.0)`, the release that renames its reverse-mode API (traitecoevo/odelia#66). The leaf records onto an `odelia::ode::adjoint_scalar` (was `active_scalar`) and puts its supplied rows on the consumer's tape with `odelia::supply_derivatives` (was `record_with_derivatives`). A value and its slope in the collar potential is `odelia::with_slope<T>` (was `value_with_slope<T>`), named directly: `Leaf::pair<T>`, which only renamed it, is gone. A direction is set with `odelia::ode::set_direction` (was `seed_direction`), and "seed" in the derivative sense is gone from the comments: a trait carries a direction, and a sweep starts from an adjoint. A **minor** bump, because the floor moves and `Leaf::pair` is gone. No number moves.
 
 # phylloptim 0.10.3
 

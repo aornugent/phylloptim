@@ -44,7 +44,7 @@ After the ordinary solve at `double`, a consumer at scalar `S` makes three calls
 ```cpp
 l.find_root_collar_psi();                                   // the solve, at double
 
-phylloptim::leaf_pars<S> pars = /* the seated traits, at S, seeded as needed */;
+phylloptim::leaf_pars<S> pars = /* the seated traits, at S, with directions set as needed */;
 phylloptim::SupplyAt<S> supply{psi_soil, r_R_H_min, r_R_V_sum,
                                pars[phylloptim::par_root_P50],
                                pars[phylloptim::par_root_c]};

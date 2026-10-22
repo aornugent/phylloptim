@@ -3360,7 +3360,7 @@ void test_every_answered_point_hands_over_finite_rows() {
         phylloptim::leaf_pars<T> pars;
         const phylloptim::leaf_pars<double> seated = l.passive_pars();
         for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
-        odelia::ode::seed_direction(pars[phylloptim::par_vcmax_25], 1.0);
+        odelia::ode::set_direction(pars[phylloptim::par_vcmax_25], 1.0);
         std::vector<T> soil, r_h, r_v;
         for (int i = 0; i < l.supply_n_layers(); ++i) {
           soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
@@ -3486,7 +3486,7 @@ void test_tf24_floor_rows_at_a_price() {
       phylloptim::leaf_pars<T> pars;
       const phylloptim::leaf_pars<double> seated = l.passive_pars();
       for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
-      odelia::ode::seed_direction(pars[phylloptim::par_TF24_floor_lambda_o], 1.0);
+      odelia::ode::set_direction(pars[phylloptim::par_TF24_floor_lambda_o], 1.0);
       std::vector<T> soil, r_h, r_v;
       for (int i = 0; i < l.supply_n_layers(); ++i) {
         soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
@@ -3544,7 +3544,7 @@ double profit_row_at_current_point(phylloptim::Leaf &l, int par) {
   phylloptim::leaf_pars<T> pars;
   const phylloptim::leaf_pars<double> seated = l.passive_pars();
   for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
-  odelia::ode::seed_direction(pars[par], 1.0);
+  odelia::ode::set_direction(pars[par], 1.0);
   std::vector<T> soil, r_h, r_v;
   for (int i = 0; i < l.supply_n_layers(); ++i) {
     soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));

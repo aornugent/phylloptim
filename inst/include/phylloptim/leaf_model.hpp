@@ -162,13 +162,13 @@ inline constexpr int par_PPFD = 19;
 // THIS IS THE INPUT PACK, and it is deliberately not a struct of named fields.
 // A struct would be a fourth spelling of an order that set_traits, leaf_traits()
 // and par_names() already spell three times, and every field would have to be
-// listed again in a walk for seeding -- which is how a parameter gets added to
+// listed again in a walk that sets directions -- which is how a parameter gets added to
 // the model and silently omitted from its gradient. Indexed by `par_*` the
 // access reads the same (`pars[par_kmax]`, not `pars[15]`) and there is one list.
 //
 // ⚠️ IT CARRIES THE TRAITS, NOT THE QUANTITIES DERIVED FROM THEM. stem_b and
 // psi_crit are functions of (stem_P50, stem_c) and are derived where they are
-// used, so a seed in stem_P50 reaches them by the chain rule rather than by a
+// used, so a direction in stem_P50 reaches them by the chain rule rather than by a
 // caller remembering to move three numbers together. Passing the derived pair
 // instead is what lets a curve be stated twice and the two disagree.
 template <class S> using leaf_pars = std::array<S, n_pars>;
@@ -2158,7 +2158,7 @@ public:
 
 
   // The pack as this leaf currently stands. The double path passes this where the
-  // active path passes a seeded copy, so both reach the kernels the same way and
+  // active path passes a copy carrying directions, so both reach the kernels the same way and
   // there is one call convention rather than a member-reading twin.
   leaf_pars<double> passive_pars() const;
   double assim_minus_stom_cond_CO2(double x, double psi_stem, double psi_upstream);
@@ -2872,7 +2872,7 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
 
 // ⚠️ THE ROWS ARE IN (P50, c), NOT (b, c). stem_b is derived, so a row in it
 // describes a parameter this model does not have -- and set_traits re-derives b
-// from P50 on every call, so a seed in b reaches nothing at all. The chain is
+// from P50 on every call, so a direction in b reaches nothing at all. The chain is
 // exact: with L = ln 2 and b = P50 * L^(-1/c),
 //
 //     db/dP50 = b / P50            db/dc = b * ln(L) / c^2
@@ -5985,24 +5985,24 @@ inline S Leaf::kernel_slope_at(Kernel&& kernel, const char* what, const S& x,
   // reads -- on the path that places every operating point.
   if constexpr (std::is_same_v<S, double>) {
     inner xd(x);
-    odelia::ode::seed_direction(xd, 1.0);
+    odelia::ode::set_direction(xd, 1.0);
     return odelia::ode::derivative_along(kernel(xd, inner(args)...));
   } else {
     std::array<outer, n_dir> lift;
     std::size_t d = 0;
-    const auto seed = [&](const S& v) {
+    const auto set = [&](const S& v) {
       lift[d] = outer(to_passive(v));
       xad::value(xad::derivative(lift[d])[d]) = 1.0;
       ++d;
     };
-    seed(x);
-    (seed(args), ...);
-    odelia::ode::seed_direction(xad::value(lift[0]), 1.0);
+    set(x);
+    (set(args), ...);
+    odelia::ode::set_direction(xad::value(lift[0]), 1.0);
 
     const outer y = std::apply(kernel, lift);
     const double slope = odelia::ode::derivative_along(xad::value(y));
 
-    // Every argument gets a row, in the order the walk seeded them. A braced
+    // Every argument gets a row, in the order the walk set them. A braced
     // list is sequenced left to right, so the counter follows the walk; a stack
     // array rather than a vector because the rows cross as a span, which borrows
     // storage instead of owning it.
