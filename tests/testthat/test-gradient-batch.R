@@ -56,7 +56,7 @@ expect_batch_matches_r <- function(args, pars, method, label) {
     }
   }
   b <- do.call(leaf_batch, batch_args)
-  got <- one(leaf_gradient_batch(b, pars = pars, method = method))
+  got <- one_row(leaf_gradient_batch(b, pars = pars, method = method))
 
   if (is.character(ref)) {
     # R stops; the batch has to report the same refusal per row rather than
