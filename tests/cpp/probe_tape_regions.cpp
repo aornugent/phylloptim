@@ -39,7 +39,7 @@
 #include <vector>
 
 namespace pl = phylloptim;
-using A = odelia::ode::active_scalar<double>;
+using A = odelia::ode::adjoint_scalar<double>;
 using Tape = odelia::ode::adjoint_tape<double>;
 constexpr auto K = pl::Leaf::CostCurve::TF24;
 

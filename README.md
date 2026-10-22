@@ -571,7 +571,7 @@ against the real headers with nothing standing in for R at all. odelia 0.2.0 was
 the build with `RcppCommon.h: No such file or directory`, which does not point at
 the cause. **The floor is 0.7.0** because the leaf's supplied derivative rows are
 built on headers that first shipped there (`implicit_node.hpp`, `tangent.hpp`,
-`value_with_slope.hpp`).
+`with_slope.hpp`).
 
 Both dependencies are already required by plant, so plant pays nothing new for
 depending on this package.

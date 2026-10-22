@@ -54,12 +54,13 @@ jobs:
       - name: Check out odelia (header-only dependency)
         uses: actions/checkout@v4
         with:
-          repository: traitecoevo/odelia
+          repository: aornugent/odelia
           # The release DESCRIPTION's LinkingTo floor names, as the R check
           # installs: an unpinned checkout builds against whatever odelia's
           # default branch holds, so an odelia merge would move this package's
-          # bit-exact goldens with no change here.
-          ref: v0.8.0
+          # bit-exact goldens with no change here. The commit that 0.9.0 will
+          # be tagged at, until it is.
+          ref: 15748f7a456cc25d040fac231c245aa35751193c
           path: odelia
           fetch-depth: 1
 

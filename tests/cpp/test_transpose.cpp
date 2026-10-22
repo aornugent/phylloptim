@@ -56,7 +56,7 @@
 
 namespace pl = phylloptim;
 using T = odelia::ode::tangent_scalar<double>;
-using A = odelia::ode::active_scalar<double>;
+using A = odelia::ode::adjoint_scalar<double>;
 using Tape = odelia::ode::adjoint_tape<double>;
 
 namespace {

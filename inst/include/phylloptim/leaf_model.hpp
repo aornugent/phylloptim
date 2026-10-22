@@ -14,7 +14,7 @@
 #include <phylloptim/clamp_sites.hpp>
 
 #include <odelia/interpolator.hpp>
-#include <odelia/value_with_slope.hpp>
+#include <odelia/with_slope.hpp>
 #include <odelia/tangent.hpp>
 #include <odelia/implicit_node.hpp>
 
@@ -50,7 +50,7 @@
 // `out.profit` and each layer's `out.uptake[j]` then carry their derivatives in
 // `pars` and `supply`, supplied from the implicit function theorem at the
 // converged point; nothing the root-find did is recorded. S is double, a tangent
-// (odelia::ode::tangent_scalar) or an adjoint (odelia::ode::active_scalar).
+// (odelia::ode::tangent_scalar) or an adjoint (odelia::ode::adjoint_scalar).
 // Preconditions, none checked beyond the first:
 //
 //   - the draw is taken at the solved collar (collar_at refuses another);
@@ -1250,8 +1250,6 @@ public:
         break;
     }
   }
-  // A value and its response in the collar potential, travelling as one pair.
-  template <class T> using pair = odelia::value_with_slope<T>;
 
   // What the leaf hands over: the objective plant bills, and the water it drew
   // from each layer. At any scalar, because both re-enter plant's chain.
@@ -1273,7 +1271,7 @@ public:
   template <class S>
   struct SupplyDraw {
     double at = 0.0;
-    pair<S> flux;
+    odelia::with_slope<S> flux;
     std::vector<S> uptake;
     std::vector<double> duptake_dp;
 
@@ -1341,7 +1339,7 @@ public:
     // `NaN * step` in every layer's uptake, NaN in the value and in the row. That
     // reached plant, where one NaN row takes every trait column that shares the
     // adjoint accumulator -- and nothing named it, because the row plant hands to
-    // `record_with_derivatives` is the constant 1.0 and the sentinel is already
+    // `supply_derivatives` is the constant 1.0 and the sentinel is already
     // on the tape behind it.
     //
     // The rows go with the sentinel, which is right rather than a loss: the
@@ -1397,8 +1395,8 @@ public:
   // intercellular CO2 that goes with it.
   template <class T>
   struct CollarCoords {
-    pair<T> sigma;
-    pair<T> ci;
+    odelia::with_slope<T> sigma;
+    odelia::with_slope<T> ci;
   };
 
   enum class CostCurve {
@@ -6014,8 +6012,8 @@ inline S Leaf::kernel_slope_at(Kernel&& kernel, const char* what, const S& x,
     };
     const odelia::input_and_derivative<S> rows[n_dir]{row(x), row(args)...};
     S out;
-    const odelia::record_report report =
-        odelia::record_with_derivatives<S>(slope, rows, out);
+    const odelia::supply_report report =
+        odelia::supply_derivatives<S>(slope, rows, out);
     if (!report.whole) {
       util::stop(std::string("Leaf::kernel_slope_at: ") + what + ": " +
                  report.why);
@@ -6170,11 +6168,12 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // ⚠️ THE SLOPES COME BACK NOT-A-NUMBER, WHICH IS DELIBERATE. They are absent
   // here, and an absent derivative spelled 0.0 is the one failure this codebase
   // cannot see -- a channel that has gone missing with every number still
-  // finite. A caller that reads one gets NaN instead, which record_with_derivatives
+  // finite. A caller that reads one gets NaN instead, which supply_derivatives
   // refuses by name. Only marginal_at reads a slope, and it asks for the channel.
   if (!collar_moves) {
     const S absent(std::numeric_limits<double>::quiet_NaN());
-    return CollarCoords<S>{pair<S>{sigma_h, absent}, pair<S>{ci_h, absent}};
+    return CollarCoords<S>{odelia::with_slope<S>{sigma_h, absent},
+                           odelia::with_slope<S>{ci_h, absent}};
   }
 
   // The collar's own channel.
@@ -6232,8 +6231,8 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // The step is exactly zero in VALUE, so both coordinates are the residuals'
   // bit for bit and only the collar's channel is added.
   const S step = collar - held;
-  return CollarCoords<S>{pair<S>{sigma_h + V * step, V},
-                         pair<S>{ci_h + dci_dp * step, dci_dp}};
+  return CollarCoords<S>{odelia::with_slope<S>{sigma_h + V * step, V},
+                         odelia::with_slope<S>{ci_h + dci_dp * step, dci_dp}};
 }
 
 template <class S>
