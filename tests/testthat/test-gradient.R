@@ -258,61 +258,77 @@ test_that("a shut-down operating point reports no gradient and still differences
   # psi_soil = 6 is drier than psi_crit, so there is no optimisation to
   # differentiate: dprofit returns a sentinel zero rather than a derivative, and
   # H comes back zero with it. The composite has nothing to stand on and says so
-  # -- but the gradient itself is not all zero, because a shut-down leaf still
-  # respires, so the fallback still has work to do.
+  # -- but the gradient itself is not all zero, because the hydraulic cost of the
+  # held stem still moves with the curve's traits, so the fallback has work to do.
   #
-  # WHICH parameter carries it is the sharpest statement in the suite: `A = -R_d`
-  # exactly here, so `dA/dR_d_25` is -1 and `dA/dvcmax_25` is EXACTLY zero --
-  # vcmax_25 does not reach A at all at a shut-down point, so both perturbed solves
-  # return the same bits. The -1 is a central difference and lands within ~6e-11.
+  # A shut leaf moves no gas, so its net assimilation is exactly zero in light
+  # (gc (ca - ci) = A at gc = 0), the limit the transpiring branch reaches as
+  # E -> 0. Neither vcmax_25 nor R_d_25 reaches it: both perturbed solves return
+  # the same bits.
   g <- grid_gradient(6.0, pars = c("vcmax_25", "stem_P50", "R_d_25"))
   expect_identical(g$status, "no-gradient")
   expect_identical(g$method, "fd")
-  expect_equal(g$value[["A"]], -leaf_traits()$R_d_25)
-  expect_equal(g$gradient["R_d_25", "A"], -1, tolerance = 1e-8)
+  expect_identical(g$value[["A"]], 0)
+  expect_identical(g$gradient["R_d_25", "A"], 0)
   expect_identical(g$gradient["vcmax_25", "A"], 0)
 
   # ⚠️ `profit` NEEDS ITS OWN CLOSED FORM HERE, AND HAS ONE. This is the single
   # regime where `profit_` is written by a branch that leaves the other outputs
   # alone (hazard 8), so a recorded hex with nothing saying what it ought to be
-  # would pin a number rather than a fact. Two identities close it:
-  #
-  #   E = 0, so A = -R_d exactly and R_d(25 C) = R_d_25 -- and the hydraulic cost
-  #   does not depend on R_d_25 at all. So dprofit/dR_d_25 = dA/dR_d_25 = -1.
+  # would pin a number rather than a fact: profit is A - cost with A = 0, and
+  # the hydraulic cost does not depend on R_d_25 at all.
   l <- leaf_model()
   do.call(set_drivers, c(list(l), grid_drivers(6.0)))
   l$find_root_collar_psi()
   expect_identical(l$transpiration_, 0)
-  expect_identical(l$assim_colimited_, -l$R_d_)
+  expect_identical(l$assim_colimited_, 0)
   expect_identical(g$value[["profit"]],
                    l$assim_colimited_ - l$hydraulic_cost_)
-  expect_equal(g$gradient["R_d_25", "profit"], -1, tolerance = 1e-8)
-  expect_equal(g$gradient["R_d_25", "profit"], g$gradient["R_d_25", "A"],
-               tolerance = 1e-8)
+  expect_identical(g$gradient["R_d_25", "profit"], 0)
 
-  #   The shut-down collar is PINNED AT psi_crit, and psi_crit is the
-  #   5%-conductivity quantile of the stem curve -- so dcollar/dstem_P50 is
-  #   exactly (log2(1/0.05))^(1/stem_c), a constant at fixed stem_c.
+  # The shut stem holds where flow stopped: at the first critical potential the
+  # drying soil reached, the stem's psi_crit or the root's 5% limit. At this
+  # package's defaults the two curves are the same curve, so the two limits are
+  # the SAME number and the trait derivatives below are one-sided there. Each
+  # claim is therefore made on a leaf where one limit clearly binds first.
+  #
+  # Stem limit first (a root much harder to embolise): held at psi_crit, the
+  # 5%-conductivity quantile of the stem curve -- so dpsi_stem/dstem_P50 is exactly
+  # (log2(1/0.05))^(1/stem_c), a constant at fixed stem_c.
+  stem_first <- leaf_traits(root_P50 = 5.0)
+  gs <- grid_gradient(6.0, pars = c("stem_P50", "root_P50"), traits = stem_first)
   bound <- (log(1 / 0.05) / log(2))^(1 / leaf_traits()$stem_c)
-  expect_equal(g$gradient["stem_P50", "collar"], bound, tolerance = 1e-6)
-  expect_equal(g$gradient["stem_P50", "psi_stem"], bound, tolerance = 1e-6)
-  expect_equal(g$gradient["stem_P50", "A"], 0)
+  expect_equal(gs$gradient["stem_P50", "psi_stem"], bound, tolerance = 1e-6)
+  expect_identical(gs$gradient["root_P50", "psi_stem"], 0)
+  expect_identical(gs$gradient["stem_P50", "A"], 0)
 
   #   And PROFIT does not move either, which is a stronger claim than it looks and
-  #   is the reparameterisation's doing. The collar moves with the trait, but it
+  #   is the reparameterisation's doing. The stem moves with the trait, but it
   #   moves TO the same place on the curve: psi_crit is defined as the potential at
   #   5% remaining conductivity, so f(psi_crit) is exactly 0.05 whatever stem_P50
-  #   is, and the hydraulic cost of a shut-down leaf is therefore scale-free.
+  #   is, and the hydraulic cost of a leaf shut at that limit is scale-free.
   #   Asserted as bit-identical across three curves rather than as a gradient,
   #   because that is what it actually is.
-  costs <- vapply(c(3.0, 3.4, 4.0), function(P50) {
-    ll <- leaf_model(leaf_traits(stem_P50 = P50))
+  costs <- vapply(c(3.0, 3.2, 3.4), function(P50) {
+    ll <- leaf_model(leaf_traits(stem_P50 = P50, root_P50 = 5.0))
     do.call(set_drivers, c(list(ll), grid_drivers(6.0)))
     ll$find_root_collar_psi()
     ll$hydraulic_cost_
   }, numeric(1))
   expect_identical(costs[2:3], costs[c(1L, 1L)])
-  expect_equal(g$gradient["stem_P50", "profit"], 0, tolerance = 1e-6)
+  expect_equal(gs$gradient["stem_P50", "profit"], 0, tolerance = 1e-6)
+
+  # Root limit first (a stem harder to embolise, as in plant's TF24): held at the
+  # root's 5% limit, which moves with root_P50 by the same quantile ratio and not
+  # with stem_P50 at all. The cost there is the STEM curve's at a potential the
+  # stem curve does not define, so it is not scale-free: the cost falls, and
+  # profit rises, as the stem gets harder to embolise.
+  root_first <- leaf_traits(stem_P50 = 4.0)
+  gr <- grid_gradient(6.0, pars = c("stem_P50", "root_P50"), traits = root_first)
+  root_bound <- (log(1 / 0.05) / log(2))^(1 / leaf_traits()$root_c)
+  expect_equal(gr$gradient["root_P50", "psi_stem"], root_bound, tolerance = 1e-6)
+  expect_identical(gr$gradient["stem_P50", "psi_stem"], 0)
+  expect_gt(gr$gradient["stem_P50", "profit"], 0)
 
   # Forcing the composite here is an error rather than a wrong number: unlike a
   # pinned point, there is no curvature to divide by at all.

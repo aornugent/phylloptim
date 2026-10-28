@@ -527,10 +527,10 @@ void test_shutdown_writes_its_own_fluxes() {
   for (double s : l.soil_consumption_) {
     near(s, 0.0, 1e-300, "per-layer consumption is zero, not stale");
   }
-  // Respiring, not simply idle: profit_ is -R_d_ - hydraulic_cost, so the
-  // consistent assimilation is -R_d_. Zero would be inconsistent with profit_.
-  ok(l.assim_colimited_ < 0.0, "assimilation is negative (respiring)");
-  near(l.assim_colimited_, l.profit_ + l.hydraulic_cost_TF(l.psi_crit), 1e-12,
+  // Moving no gas: net assimilation is the no-flow value, zero in light, and
+  // profit_ is that less the hydraulic cost where the stem is held.
+  near(l.assim_colimited_, 0.0, 1e-300, "assimilation is the no-flow value (zero)");
+  near(l.assim_colimited_, l.profit_ + l.hydraulic_cost_TF(l.opt_psi_stem_), 1e-12,
        "assimilation is consistent with profit and the hydraulic cost");
   ok(std::isfinite(l.ci_), "ci is set to the compensation point, not left stale");
 
@@ -1636,9 +1636,67 @@ void test_root_psi_crit_clamp_binds() {
     near(l.opt_root_psi_, l.roots_.root_psi_crit, 1e-12,
          "past the window the collar sits at root_psi_crit");
     near(l.transpiration_, 0.0, 1e-300, "and the leaf is shut down, not optimising");
-    near(l.opt_psi_stem_, l.psi_crit, 1e-12, "with the stem held at psi_crit");
+    // Held where flow stopped: the root limit, which this soil reaches before
+    // the stem's psi_crit (test_collar_continuous_into_shutdown).
+    near(l.opt_psi_stem_, l.roots_.root_psi_crit, 1e-12,
+         "with the stem held at the root limit, where flow stopped");
     ok(l.opt_root_psi_ <= l.roots_.root_psi_crit,
        "the collar never passes root_psi_crit in any regime");
+  }
+}
+
+// As the soil dries through the end of the collar interval, the operating point
+// must move continuously into shutdown: the interval narrows, transpiration goes
+// to zero, and the shut leaf is that limit. Three things broke it, each a jump
+// in profit along a psi_soil sweep (scratch/collar/band_sweep.R in autoplant):
+//   * an interval narrower than GSS_tol_abs was `Determined`: collar pinned at its
+//     midpoint, stem optimised freely, so the leaf transpired more than its roots
+//     supplied -- 2.2x across 0.57 MPa of soil at plant's GSS_tol_abs of 0.1;
+//   * the shut leaf's assimilation was -R_d, where the transpiring branch tends to
+//     zero as E -> 0 (gc (ca - ci) = A with gc = 0 forces A = 0);
+//   * the shut leaf's stem sat at psi_crit, where flow stopped at the root limit.
+// Swept at both GSS_tol_abs a caller uses, since the first was a function of it.
+void test_collar_continuous_into_shutdown() {
+  printf("the collar solve is continuous through collapse into shutdown\n");
+  Drivers d;
+  for (double gss : {1e-3, 1e-1}) {
+    const auto solve = [&](double psi_soil) {
+      phylloptim::Leaf l;
+      l.psi_crit = 5.91988;   // drier than root_psi_crit = 5.870283, as in plant
+      l.GSS_tol_abs = gss;
+      l.setup_transpiration(100);
+      l.setup_root_vulnerability(100);
+      std::vector<double> ps{psi_soil}, depth{1.0}, root{1.0 / d.area_leaf};
+      l.set_physiology(fixture::root_network(root, depth), d.PPFD, ps, depth,
+                       d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
+                       d.atm_o2_kpa, d.atm_kpa);
+      l.find_root_collar_psi();
+      return l;
+    };
+    const std::string tag = " (GSS_tol_abs " + std::to_string(gss) + ")";
+    double worst_water = 0.0, worst_step = 0.0, last_open = NAN, first_shut = NAN;
+    double prev = NAN;
+    int n_open = 0, n_shut = 0;
+    for (int i = 0; i <= 8000; ++i) {
+      const double psi_soil = 5.10 + 1e-4 * i;   // to 5.90, past the shutdown
+      phylloptim::Leaf l = solve(psi_soil);
+      if (l.transpiration_ > 0.0) {
+        ++n_open;
+        worst_water = std::max(worst_water,
+                               std::abs(l.transpiration_ - l.E_up_) / l.E_up_);
+        last_open = l.profit_;
+      } else if (std::isnan(first_shut)) {
+        ++n_shut;
+        first_shut = l.profit_;
+      }
+      if (!std::isnan(prev)) worst_step = std::max(worst_step, std::abs(l.profit_ - prev));
+      prev = l.profit_;
+    }
+    ok(n_open > 0 && n_shut > 0, "the sweep reaches both regimes" + tag);
+    ok(worst_water < 1e-9, "a transpiring leaf transpires what its roots supply" + tag);
+    // A 1e-4 MPa step in psi_soil moves a smooth profit by ~2e-5 here.
+    ok(worst_step < 1e-3, "no jump in profit along the sweep" + tag);
+    near(first_shut, last_open, 1e-3, "shutdown is the E -> 0 limit" + tag);
   }
 }
 
@@ -1774,10 +1832,11 @@ void test_cowan_farquhar_reproduces_the_TF_optimum() {
 }
 
 // The cost is lambda*E and E is exactly zero when the two potentials coincide, so
-// the no-flow profit is exactly -R_d whatever lambda is. That makes this the one
-// degenerate branch in the file whose value can be predicted rather than recorded.
+// the no-flow profit is exactly the no-flow assimilation -- zero in light --
+// whatever lambda is. That makes this the one degenerate branch in the file whose
+// value can be predicted rather than recorded.
 void test_cowan_farquhar_closed_state() {
-  printf("Cowan-Farquhar: the closed-stomata profit is -R_d, for any lambda\n");
+  printf("Cowan-Farquhar: the closed-stomata profit is zero, for any lambda\n");
   Drivers d;
   phylloptim::Leaf l = make_leaf(d, {6.0}, {1.0}); // drier than psi_crit
   l.CF77_lambda_ = 800.0;
@@ -1785,7 +1844,7 @@ void test_cowan_farquhar_closed_state() {
   near(l.opt_psi_stem_, 6.0, 1e-12, "the stem is held at the soil potential");
   near(l.transpiration_, 0.0, 1e-300, "transpiration is exactly zero");
   near(l.hydraulic_cost_, 0.0, 1e-300, "so the cost is exactly zero");
-  near(l.profit_, -l.R_d_, 1e-12, "and profit is -R_d");
+  near(l.profit_, 0.0, 1e-300, "and profit is zero: no gas moves, so A = 0");
   // Every reported field describes that point rather than a search probe -- the
   // property the evaluate-at-the-closed-point convention exists to give.
   near(l.profit_, l.assim_colimited_ - l.hydraulic_cost_, 1e-12,
@@ -2382,13 +2441,13 @@ void test_shutdown_reports_one_temperature() {
     l.find_root_collar_psi();
     const std::string what = std::string(" (") + c.name + ")";
 
-    ok(l.assim_colimited_ == -l.R_d_,
-       "net assimilation is -R_d at zero transpiration" + what);
+    ok(l.assim_colimited_ == l.no_flow_assim(),
+       "net assimilation is the no-flow value at zero transpiration" + what);
     near(l.profit_, l.assim_colimited_ - l.hydraulic_cost_TF(l.opt_psi_stem_),
          1e-12, "profit == assimilation - hydraulic cost" + what);
     ok(std::isfinite(l.ci_), "ci is written, and finite" + what);
-    ok(l.ci_ == l.gamma_ * l.umol_per_mol_to_Pa_,
-       "ci sits at the compensation point of the reported temperature" + what);
+    ok(l.ci_ == l.ci_no_flow(),
+       "ci sits at the no-flow point of the reported temperature" + what);
     // #93's leaf-to-air deficit is on the same footing: reported, read by
     // g1_eff(), and derived from a temperature -- so it has to be THIS
     // temperature and not set_physiology's Tair baseline.
@@ -2480,18 +2539,13 @@ void test_zero_E_branch_derives_its_own_block() {
     ok(l.transpiration_ == 0.0, "the branch really transpires nothing");
     ok(l.Tleaf_ == l.leaf_temp_from_E(0.0),
        "and its temperature is the E = 0 one");
-    ok(l.ci_ == l.gamma_ * l.umol_per_mol_to_Pa_,
-       "ci sits at the compensation point");
-    // ⚠️ A TOLERANCE, DELIBERATELY, AND DO NOT TIGHTEN IT TO EXACT. Gross
-    // assimilation at ci = gamma* is analytically zero, so net is -R_d, but the
-    // co-limiting expression rounds -- 4.44e-16, one ULP. The exits outside the
-    // solve assign `-R_d_` directly and so are bit-exact; this branch goes through
-    // `assim_colimited`, and cannot be. The bit-exact statement that pins the
-    // TEMPERATURE is the next one.
-    near(l.assim_colimited_, -l.R_d_, 1e-14,
-         "net assimilation is -R_d at zero transpiration");
-    ok(l.assim_colimited_ == l.assim_colimited(l.ci_),
-       "and it is this block's value at this branch's ci, bit-for-bit");
+    ok(l.ci_ == l.ci_no_flow(), "ci sits at the no-flow point");
+    ok(l.assim_colimited_ == l.no_flow_assim(),
+       "net assimilation is the no-flow value at zero transpiration");
+    // ci is the root of net assimilation, to the root-find's 1e-10 in ci. The
+    // bit-exact statement that pins the TEMPERATURE is the next block.
+    near(l.assim_colimited(l.ci_), 0.0, 1e-8,
+         "and this block's assimilation at that ci is zero");
     ok(l.vpd_leaf_ == l.atm_vpd_ + (l.saturation_vapour_pressure(Tleaf) -
                                     l.saturation_vapour_pressure(Tair)),
        "and the deficit is the leaf-to-air one at that temperature");
@@ -2504,7 +2558,8 @@ void test_zero_E_branch_derives_its_own_block() {
     l.update_temperature_dependent_params(Tleaf);
     ok(l.R_d_ == rd, "R_d is the curve's value at the reported Tleaf");
     ok(l.gamma_ == gamma, "and so is the compensation point");
-    ok(ci == gamma * l.umol_per_mol_to_Pa_, "so ci follows it");
+    ok(ci == l.ci_no_flow(), "so ci follows it");
+    (void)gamma;
     l.update_temperature_dependent_params(Tair);
     ok(l.R_d_ != rd, "and it is NOT the Tair value -- the two really differ");
   }
@@ -2523,8 +2578,8 @@ void test_zero_E_branch_derives_its_own_block() {
     l.set_leaf_states_rates_from_psi_stem(1.0, 1.0);
     ok(l.assim_colimited_ == a0, "and the closure candidate is reproducible");
     l.update_temperature_dependent_params(l.leaf_temp_from_E(0.0));
-    near(a0, -l.R_d_, 1e-14,
-         "its carbon is -R_d at the temperature E = 0 implies");
+    near(a0, l.no_flow_assim(), 1e-300,
+         "its carbon is the no-flow value at the temperature E = 0 implies");
 
     // And |A|max EXCLUDES it: a positive normaliser cannot be a respiration rate.
     l.prepare_profitmax();
@@ -8492,6 +8547,7 @@ int main() {
   test_root_rows_past_the_dry_end_match_the_table();
   test_stem_rows_past_the_dry_end_are_the_closed_forms();
   test_root_psi_crit_clamp_binds();
+  test_collar_continuous_into_shutdown();
   test_signed_potentials_are_rejected();
   test_lambda_equals_dA_dE_single_layer();
   test_cowan_farquhar_equates_dA_dE_to_lambda();
