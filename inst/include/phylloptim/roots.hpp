@@ -963,9 +963,12 @@ public:
             }
             return root_vuln_integral_at(q);
           } else {
-            return closed_form_integral<T>(root_vuln_integral_at(q),
-                                     root_vuln_integral_deriv_at(q), arg,
-                                     at.root_P50, at.root_c);
+            const double table = root_vuln_integral_at(q);
+            if (table == root_vuln_integral_limit_) {
+              return closed_form_integral_limit<T>(table, at.root_P50, at.root_c);
+            }
+            return closed_form_integral<T>(table, root_vuln_integral_deriv_at(q),
+                                     arg, at.root_P50, at.root_c);
           }
         };
 

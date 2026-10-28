@@ -1226,6 +1226,59 @@ void test_root_vulnerability_is_bounded_past_its_grid() {
        "a tenfold drier layer does not become a stronger pump");
 }
 
+// Past the last knot the integral reads the end knot's extension and then the
+// cap, so a trait row there is a row of those, and a difference of the double
+// walk over a rebuilt curve has to agree with the tangent.
+void test_root_trait_rows_past_the_grid() {
+  printf("root trait rows past the last knot are the forward's\n");
+  using T = odelia::ode::tangent_scalar<double>;
+  const double P50 = 3.4, c = 2.680147;
+  auto roots_at = [](double P50, double c, double psi_soil) {
+    phylloptim::MultiLayerRoots r;
+    r.root_P50 = P50;
+    r.root_c = c;
+    r.root_b = phylloptim::weibull_b_from_P50(P50, c);
+    r.setup_vulnerability(100);
+    r.set_soil_state(std::vector<double>{psi_soil}, std::vector<double>{1.0});
+    phylloptim::RootNetwork n;
+    n.r_R_H_min = {1.0};
+    n.r_R_V_sum = {0.0};
+    n.c_r_V = {1.0};
+    n.c_r_H = {1.0};
+    n.r_R_V = {0.0};
+    r.set_root_network(n);
+    r.begin_solve();
+    return r;
+  };
+  auto E_at = [&](double P50, double c, double psi_soil) {
+    std::vector<double> use(1, 0.0);
+    double E = 0.0;
+    roots_at(P50, c, psi_soil).uptake(1.0, use, E);
+    return E;
+  };
+  // The last knot is at 6.89 and the cap binds from 7.31: 6.95 reads the
+  // extension and 8 the cap.
+  for (double psi_soil : {6.95, 8.0}) {
+    const phylloptim::MultiLayerRoots r = roots_at(P50, c, psi_soil);
+    for (bool in_P50 : {true, false}) {
+      T tP50(P50), tc(c);
+      odelia::ode::set_direction(in_P50 ? tP50 : tc, 1.0);
+      const std::vector<T> soil{T(psi_soil)}, r_h{T(1.0)}, r_v{T(0.0)};
+      std::vector<T> use(1, T(0.0));
+      T E(0.0);
+      r.uptake_at<T>(T(1.0), phylloptim::SupplyAt<T>{soil, r_h, r_v, tP50, tc},
+                     use, E);
+      const double h = 1e-6 * (in_P50 ? P50 : c);
+      const double fd =
+          in_P50 ? (E_at(P50 + h, c, psi_soil) - E_at(P50 - h, c, psi_soil)) / (2 * h)
+                 : (E_at(P50, c + h, psi_soil) - E_at(P50, c - h, psi_soil)) / (2 * h);
+      near(odelia::ode::derivative_along(E), fd, 1e-6,
+           std::string("dE/d") + (in_P50 ? "root_P50" : "root_c") +
+               " matches a difference at psi_soil=" + std::to_string(psi_soil));
+    }
+  }
+}
+
 // The convention is now checkable, so check that it is checked: a caller still
 // holding the pre-#25 signed vector must fail loudly, not run.
 void test_signed_potentials_are_rejected() {
@@ -6341,6 +6394,7 @@ int main() {
   test_outputs_agree_with_the_solve();
   test_soil_conductance_is_positive();
   test_root_vulnerability_is_bounded_past_its_grid();
+  test_root_trait_rows_past_the_grid();
   test_root_psi_crit_clamp_binds();
   test_signed_potentials_are_rejected();
   test_lambda_equals_dA_dE_single_layer();

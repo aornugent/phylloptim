@@ -5,6 +5,8 @@
 #include <phylloptim/vulnerability.hpp>
 #include <odelia/ode_util.hpp>
 
+#include <algorithm>
+
 namespace phylloptim {
 
 // Putting a closed-form row onto a table read.
@@ -54,11 +56,31 @@ inline S closed_form_integral(double table_value, double table_slope, const S& p
   const double P50_0 = to_passive(P50);
   const double c_0 = to_passive(c);
   const double b = weibull_b_from_P50(P50_0, c_0);
+  // Past the last knot a table extends linearly from it with slope f(psi_max),
+  // which is the conductivity floor at every b and c; so moving the knot moves
+  // nothing else, and the trait rows are the curve's at the knot.
   const VulnerabilityIntegralDerivatives d =
-      cumulative_vulnerability_integral_derivatives_at(at, b, c_0);
+      cumulative_vulnerability_integral_derivatives_at(
+          std::min(at, vulnerability_psi_max(b, c_0)), b, c_0);
   const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
   return S(table_value) + S(table_slope) * (psi - S(at)) +
          S(rows.dP50) * (P50 - S(P50_0)) + S(rows.dc) * (c - S(c_0));
+}
+
+// G read where a table answers with its ceiling G(inf): the value does not move
+// with psi, and the trait rows are the limit's.
+template <class S>
+inline S closed_form_integral_limit(double table_value, const S& P50,
+                                    const S& c) {
+  using odelia::util::to_passive;
+  const double P50_0 = to_passive(P50);
+  const double c_0 = to_passive(c);
+  const double b = weibull_b_from_P50(P50_0, c_0);
+  const VulnerabilityIntegralDerivatives d =
+      cumulative_vulnerability_integral_limit_derivatives(b, c_0);
+  const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
+  return S(table_value) + S(rows.dP50) * (P50 - S(P50_0)) +
+         S(rows.dc) * (c - S(c_0));
 }
 
 // f(psi): the surviving conductivity, the curve itself. No table-slope argument,
