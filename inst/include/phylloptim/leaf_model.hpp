@@ -880,8 +880,14 @@ public:
   // out of that block, so a re-seat with no re-solve leaves ci at the PREVIOUS
   // temperature's compensation point and this reads false. All four exits above
   // already write in that order.
+  //
+  // The closed leaf below light compensation is the other assigned ci: ci = ca
+  // with no conductance (see no_flow_assim), where the residual is A(ca) < 0,
+  // not zero. It is caught by the same test so that every path which drops the
+  // theorem at an assigned ci drops it there too.
   bool ci_at_compensation_point() const {
-    return ci_ == gamma_ * umol_per_mol_to_Pa_;
+    return ci_ == gamma_ * umol_per_mol_to_Pa_ ||
+           (stom_cond_CO2_ == 0.0 && ci_ == ca_);
   }
   // Net assimilation and ci of a leaf moving no gas, read off the temperature
   // block as it stands. With gc = 0 the supply == demand condition gc (ca - ci) =
@@ -893,16 +899,21 @@ public:
   // maximise_profit_over_collar). Respiration is still paid: the closed leaf
   // refixes it, and the whole plant's maintenance respiration is the consumer's.
   //
-  // Only where net assimilation at ci = ca is non-negative. Below that (shade) no
-  // ci up to ca nets zero, and the leaf keeps the gamma* state -- and with it the
-  // ci_at_compensation_point() branch the derivative paths take there.
+  // Below the light-compensation point no ci up to ca nets zero: even at ambient
+  // CO2 the light fixes less than R_d. The closed leaf then nets A(ci = ca), what
+  // it fixes from the air it can still exchange, so the no-flow value is
+  // min(0, A(ca)): zero at compensation, -R_d in the dark, and continuous across
+  // the light edge. It used to be -R_d at ci = gamma* there too, as if a leaf in
+  // dim light fixed nothing -- a jump of R_d at compensation
+  // (test_collar_continuous_through_light_compensation).
   double no_flow_assim() {
-    return assim_colimited(ca_) >= 0.0 ? 0.0 : -R_d_;
+    const double at_ca = assim_colimited(ca_);
+    return at_ca >= 0.0 ? 0.0 : at_ca;
   }
   double ci_no_flow() {
     const double lo = gamma_ * umol_per_mol_to_Pa_;
     if (!(assim_colimited(ca_) >= 0.0)) {
-      return lo;
+      return ca_;
     }
     return util::uniroot_smooth([&](double x) { return assim_colimited(x); },
                                 lo, ca_, 1e-10, static_cast<size_t>(ci_niter));
@@ -4289,13 +4300,12 @@ if(assim_max_ < 0){
     }
 
     profit_ = no_flow_profit<K>(opt_root_psi_);
-    // As on the shut-down exits: transpiration is zero here, so gross
-    // assimilation is zero and the reported net rate is -R_d_. Set it
-    // explicitly -- this branch does not go through profit_psi_stem_TF, so
+    // As on the shut-down exits: the leaf moves no gas, so the reported net rate
+    // is no_flow_assim(), here A(ci = ca) < 0. Set it explicitly -- this branch does not go through profit_psi_stem_TF, so
     // assim_colimited_ would otherwise keep whatever the last probe wrote,
     // and it is reported. Keeps profit_ == assim_colimited_ -
     // hydraulic_cost_TF() in every branch.
-    assim_colimited_ = -R_d_;
+    assim_colimited_ = no_flow_assim();
     // Shutdown on LIGHT, not on water: gross assimilation at ci = ca cannot
     // cover dark respiration. Tagged separately from the hydraulic exits
     // because the two respond to different drivers -- a rainfall sequence
@@ -4312,7 +4322,7 @@ if(assim_max_ < 0){
     // solve's internal CO2 beside a state that moves no gas, or the NA sentinel
     // on a cold object. The compensation point, matching `set_shutdown_state` and
     // both zero-transpiration branches of set_leaf_states_rates_from_psi_stem.
-    ci_ = gamma_ * umol_per_mol_to_Pa_;
+    ci_ = ci_no_flow();
     // And the emergent lambda, for the same reason and by the same argument as in
     // set_shutdown_state: no water moves here, so there is no marginal cost of
     // moving it, and leaving it unwritten hands a reused Leaf the previous row's
@@ -7552,7 +7562,11 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
                  ? root_psi_crit_at<S>(pars)
                  : psi_crit_at<S>(pars);
     }
-    const S assim = assim_colimited_ == 0.0 ? S(0.0) : -respiration_at<S>(pars);
+    // Below light compensation that value is A(ci = ca), which the traits and
+    // the light reach, so it goes on the tape through the same kernel.
+    const S assim = assim_colimited_ == 0.0
+                        ? S(0.0)
+                        : assim_colimited_kernel<S, S>(S(ca_), photo_capacity_at<S>(pars));
     // No water moves here, so the floor's linear-in-flux term is exactly zero
     // and the two curves agree at this kind by construction.
     out.profit = assim - hydraulic_cost_TF_kernel<S>(held, pars);
