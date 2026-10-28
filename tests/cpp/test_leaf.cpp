@@ -627,8 +627,12 @@ void test_negative_assim_exit_writes_its_own_rates() {
   ok(l.assim_max_ < 0.0, "the dim solve takes the assim_max_ < 0 exit");
   near(l.transpiration_, 0.0, 1e-300, "transpiration is zero, not stale");
   near(l.stom_cond_CO2_, 0.0, 1e-300, "conductance is zero, not stale");
-  near(l.assim_colimited_, -l.R_d_, 1e-12,
-       "net assimilation is -R_d, not the bright solve's");
+  // The closed leaf nets what the dim light still fixes at ambient CO2, which is
+  // negative here and above -R_d (test_collar_continuous_through_light_compensation).
+  near(l.assim_colimited_, l.assim_colimited(l.ca_), 1e-12,
+       "net assimilation is A(ci = ca), not the bright solve's");
+  ok(l.assim_colimited_ < 0.0 && l.assim_colimited_ > -l.R_d_,
+     "a loss, smaller than R_d");
   // The invariant the fix buys: profit_ == assim_colimited_ - hydraulic cost in
   // every branch. It held numerically to the last bit when measured.
   near(l.assim_colimited_ - l.hydraulic_cost_TF(l.opt_root_psi_), l.profit_,
@@ -1698,6 +1702,32 @@ void test_collar_continuous_into_shutdown() {
     ok(worst_step < 1e-3, "no jump in profit along the sweep" + tag);
     near(first_shut, last_open, 1e-3, "shutdown is the E -> 0 limit" + tag);
   }
+}
+
+// The same continuity across the light-compensation point. Just above it the
+// leaf barely opens and nets ~0; just below, the shade-death exit used to report
+// A = -R_d, a jump of R_d (1.44 at the fixture's 25 C). A closed leaf below
+// compensation nets what light still fixes at ambient CO2, A(ci = ca) -- zero
+// at compensation and -R_d in the dark -- so the light edge is continuous too.
+void test_collar_continuous_through_light_compensation() {
+  printf("the collar solve is continuous through the light-compensation point\n");
+  Drivers d;
+  double prev = NAN, worst_step = 0.0, dark = NAN;
+  int n_shade = 0, n_open = 0;
+  for (int i = 0; i <= 6000; ++i) {
+    Drivers di = d;
+    di.PPFD = 0.01 * i;   // to 60, past compensation
+    phylloptim::Leaf l = make_leaf(di, {1.0}, {1.0});
+    l.find_root_collar_psi();
+    if (l.transpiration_ > 0.0) ++n_open; else ++n_shade;
+    if (i == 0) dark = l.assim_colimited_ + l.R_d_;
+    if (!std::isnan(prev)) worst_step = std::max(worst_step, std::abs(l.profit_ - prev));
+    prev = l.profit_;
+  }
+  ok(n_open > 0 && n_shade > 0, "the sweep crosses the compensation point");
+  // A 0.01 step in PPFD moves a smooth profit by ~4e-4 here.
+  ok(worst_step < 1e-2, "no jump in profit across compensation");
+  near(dark, 0.0, 1e-12, "and in the dark the closed leaf nets -R_d");
 }
 
 void test_lambda_equals_dA_dE_single_layer() {
@@ -8548,6 +8578,7 @@ int main() {
   test_stem_rows_past_the_dry_end_are_the_closed_forms();
   test_root_psi_crit_clamp_binds();
   test_collar_continuous_into_shutdown();
+  test_collar_continuous_through_light_compensation();
   test_signed_potentials_are_rejected();
   test_lambda_equals_dA_dE_single_layer();
   test_cowan_farquhar_equates_dA_dE_to_lambda();
