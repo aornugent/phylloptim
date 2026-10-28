@@ -883,6 +883,30 @@ public:
   bool ci_at_compensation_point() const {
     return ci_ == gamma_ * umol_per_mol_to_Pa_;
   }
+  // Net assimilation and ci of a leaf moving no gas, read off the temperature
+  // block as it stands. With gc = 0 the supply == demand condition gc (ca - ci) =
+  // A says A = 0, at the ci where net assimilation is zero -- and that is where
+  // the transpiring branch goes as E -> 0, so the shut leaf is that limit rather
+  // than a jump from it. This used to be A = -R_d at ci = gamma*, which no
+  // transpiring point approaches: profit fell by R_d on reaching shutdown (and at
+  // the wet bound, the "#31" jump of exactly 1.44 noted in
+  // maximise_profit_over_collar). Respiration is still paid: the closed leaf
+  // refixes it, and the whole plant's maintenance respiration is the consumer's.
+  //
+  // Only where net assimilation at ci = ca is non-negative. Below that (shade) no
+  // ci up to ca nets zero, and the leaf keeps the gamma* state -- and with it the
+  // ci_at_compensation_point() branch the derivative paths take there.
+  double no_flow_assim() {
+    return assim_colimited(ca_) >= 0.0 ? 0.0 : -R_d_;
+  }
+  double ci_no_flow() {
+    const double lo = gamma_ * umol_per_mol_to_Pa_;
+    if (!(assim_colimited(ca_) >= 0.0)) {
+      return lo;
+    }
+    return util::uniroot_smooth([&](double x) { return assim_colimited(x); },
+                                lo, ca_, 1e-10, static_cast<size_t>(ci_niter));
+  }
   // Boundary-layer inputs for ra = C_ra*sqrt(d/U0) (doc 4.1). d is a per-strategy
   // trait (set from pars.d in prepare_strategy); wind_speed_ is the per-timestep
   // above-canopy driver (set from the environment before set_physiology). Both
@@ -4079,7 +4103,7 @@ inline double Leaf::find_psi_stem_from_psi_root(double psi_root, const std::vect
 //
 // Several early exits skip the optimisation when no meaningful choice is
 // possible. In each case the plant is effectively
-// shut down (operating at psi_crit, paying only respiration + hydraulic cost):
+// shut down (moving no water, paying the hydraulic cost where flow stopped):
 //   * wettest soil layer is already drier than psi_crit -> no transpiration;
 //   * even at psi_crit the soil cannot supply the demanded flux (E_column<0);
 //   * the continuity root would require the collar drier than psi_crit;
@@ -4089,14 +4113,22 @@ inline double Leaf::find_psi_stem_from_psi_root(double psi_root, const std::vect
 // flipped. A collapsed-interval branch handles the degenerate case (kind
 // `Determined`).
 //
-// Shut-down operating point shared by find_root_collar_psi's early-exits: the
-// stem is held at psi_crit (transpiration not possible), so the plant pays only
-// respiration (R_d_) plus the hydraulic cost at psi_crit. Only the recorded
-// root-collar potential differs between the calling cases.
+// Shut-down operating point shared by find_root_collar_psi's early-exits: no
+// water moves, the stem holds at the first critical potential reached, and the
+// leaf earns no_flow_assim() (zero in light) less the hydraulic cost there. Only
+// the recorded root-collar potential differs between the calling cases.
 template <Leaf::CostCurve K>
 inline void Leaf::set_shutdown_state(double root_collar) {
   opt_root_psi_ = root_collar;
-  opt_psi_stem_ = psi_crit;
+  // ⚠️ THE STEM HOLDS WHERE FLOW STOPPED: at the first critical potential a drying
+  // soil reaches, the root's 5% limit or the stem's psi_crit, whichever is wetter.
+  // That is the E -> 0 limit from the transpiring side whichever limit closes the
+  // interval, and it does not move as the soil dries on past it, since no flow
+  // reaches the stem to move it. Held at psi_crit regardless, the hydraulic cost
+  // jumped on shutting down wherever the root limit binds first -- as it does in
+  // plant (5.870283 against 5.91988), by 0.029 at the leaf of
+  // test_collar_continuous_into_shutdown.
+  opt_psi_stem_ = std::min(psi_crit, supply_psi_crit());
   // FIRST, because every number below is read off the temperature block: on the
   // PM path this exit's own leaf temperature is the E = 0 one, and the block
   // arrives holding the Tair baseline set_physiology derived. Forming profit
@@ -4119,7 +4151,7 @@ inline void Leaf::set_shutdown_state(double root_collar) {
     // solve re-derives the baseline instead of taking a hit on stale members.
     update_temperature_dependent_params(Tleaf_);
   }
-  profit_ = no_flow_profit<K>(psi_crit);
+  profit_ = no_flow_profit<K>(opt_psi_stem_);
   // Tagged here rather than at the four call sites, so a fifth reason to shut
   // down cannot arrive without a classification. All four are the same
   // ecological statement -- the soil is too dry for any collar potential that
@@ -4135,14 +4167,12 @@ inline void Leaf::set_shutdown_state(double root_collar) {
   // this was a live water-balance error on the dry margin. plant #578, #577.
   //
   // The values are the ones consistent with the profit already set above: the leaf
-  // is holding at psi_crit, so it moves no water at all, but it IS respiring --
-  // profit_ is -R_d_ - hydraulic_cost, so assimilation is -R_d_, not zero. ci sits
-  // at the CO2 compensation point, matching the two zero-transpiration branches in
-  // set_leaf_states_rates_from_psi_stem.
+  // moves no gas, so its net assimilation is no_flow_assim() at ci_no_flow(),
+  // matching the zero-transpiration branch of set_leaf_states_rates_from_psi_stem.
   transpiration_ = 0.0;
   stom_cond_CO2_ = 0.0;
-  assim_colimited_ = -R_d_;
-  ci_ = gamma_ * umol_per_mol_to_Pa_;
+  assim_colimited_ = no_flow_assim();
+  ci_ = ci_no_flow();
   E_up_ = 0.0;
   // `Tleaf_` is written at the top of this function, not here, because the
   // temperature block is derived from it and `R_d_`/`gamma_` above are read out
@@ -4348,8 +4378,20 @@ if(assim_max_ < 0){
     }
 
     // If no interval exists (single feasible root-collar value), use that
-    // point directly as the alternative solution instead of running GSS.
-    if (std::abs(bound_b - bound_a) <= GSS_tol_abs) {
+    // point directly as the alternative solution instead of running the solve.
+    //
+    // ⚠️ "NO INTERVAL" MEANS NARROWER THAN THE SOLVE RESOLVES, collar_root_tol,
+    // NOT GSS_tol_abs. This test read GSS_tol_abs from when golden section was the
+    // collar solver and could not search a bracket narrower than its tolerance.
+    // The root-find has no such floor, and the width matters: below it the branch
+    // pins the collar at the midpoint and frees the stem, so the leaf transpires
+    // more than the roots supply. In a drying soil the interval narrows to zero at
+    // the root limit, so a wide threshold turned the approach to shutdown into a
+    // band of that state -- 0.57 MPa of soil at plant's GSS_tol_abs of 0.1, with
+    // transpiration 2.2x the uptake and a +12% jump in profit on entering it
+    // (test_collar_continuous_into_shutdown). At collar_root_tol the regular solve
+    // carries the narrowing interval continuously into shutdown.
+    if (std::abs(bound_b - bound_a) <= collar_root_tol) {
       // The collar is the bounds' midpoint, so both are solved to collar
       // precision first, for the reason polish_bracket_bound gives. A polished
       // continuity root past the root's own limit hands the dry end to that limit.
@@ -4725,7 +4767,7 @@ inline void Leaf::find_root_collar_psi_for(){
 template <Leaf::CostCurve K>
 inline double Leaf::no_flow_profit(double psi_stem) {
   if constexpr (K == CostCurve::TF24) {
-    return -R_d_ - hydraulic_cost_TF(psi_stem);
+    return no_flow_assim() - hydraulic_cost_TF(psi_stem);
   } else {
     return profit_psi_stem_for<K>(psi_stem, psi_stem);
   }
@@ -6846,7 +6888,7 @@ inline void Leaf::set_leaf_states_rates_from_psi_stem(double psi_stem, double ps
       update_temperature_dependent_params(Tleaf_);
       set_leaf_vpd(Tleaf_);
     }
-    ci_ = gamma_*umol_per_mol_to_Pa_;
+    ci_ = ci_no_flow();
     transpiration_ = 0;
     stom_cond_CO2_ = 0;
     } else{
@@ -6880,7 +6922,9 @@ inline void Leaf::set_leaf_states_rates_from_psi_stem(double psi_stem, double ps
       stom_cond_CO2_ = atm_kpa_ * transpiration_ * kg_to_mol_h2o / vpd_leaf_ / H2O_CO2_stom_diff_ratio_;
       }
     }
-  assim_colimited_ = assim_colimited(ci_);
+  // Exactly the no-flow value where no gas moves, rather than A at a ci root-found
+  // to 1e-10: the shut-down state writes the same number, and the two must agree.
+  assim_colimited_ = psi_upstream >= psi_stem ? no_flow_assim() : assim_colimited(ci_);
 }
 
 
@@ -7496,14 +7540,22 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
 
   if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown ||
       operating_point_kind_ == OperatingPointKind::ShadeDeath) {
-    // No water moves, so no carbon is fixed: assimilation is minus the dark
-    // respiration, and the cost is the one at the potential being held.
-    const S held = operating_point_kind_ == OperatingPointKind::HydraulicShutdown
-                       ? psi_crit_at<S>(pars)
-                       : collar;
+    // No gas moves, so assimilation is the forward's no-flow value -- zero in
+    // light, minus the dark respiration in shade -- and the cost is the one at
+    // the potential being held. Both follow the branch the forward took: it
+    // wrote assim_colimited_ = no_flow_assim(), and held the stem at the wetter
+    // of the stem's and the supply's critical potentials.
+    S held = collar;
+    if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown) {
+      held = supply_kind_ == SupplyKind::MultiLayer &&
+                     roots_.root_psi_crit < psi_crit
+                 ? root_psi_crit_at<S>(pars)
+                 : psi_crit_at<S>(pars);
+    }
+    const S assim = assim_colimited_ == 0.0 ? S(0.0) : -respiration_at<S>(pars);
     // No water moves here, so the floor's linear-in-flux term is exactly zero
     // and the two curves agree at this kind by construction.
-    out.profit = -respiration_at<S>(pars) - hydraulic_cost_TF_kernel<S>(held, pars);
+    out.profit = assim - hydraulic_cost_TF_kernel<S>(held, pars);
   } else {
     out.profit = profit_at<K, S>(interior ? collar_held : collar, draw, pars,
                                  !interior);
