@@ -87,11 +87,11 @@ struct Traits {
 };
 
 const Traits kBase{{96.0, 2.680147, 3.4, 2.680147, 3.4, 1.5,
-                    157.44, 0.30, 0.7, 0.99, 7.5}};
+                    157.44, 0.30 / 0.85, 0.7, 0.99, 7.5}};
 
 const char *kNames[kNTraits] = {"vcmax_25",  "stem_c",     "stem_P50",
                           "root_c",    "root_P50",   "TF24_beta2",
-                          "jmax_25",   "a",          "curv_elec",
+                          "jmax_25",   "phi_J",      "curv_elec",
                           "curv_colim", "cost_scale"};
 
 static_assert(sizeof(kBase.v) / sizeof(kBase.v[0]) == kNTraits,
@@ -340,7 +340,7 @@ int main(int argc, char **argv) {
         // this array for what adding a trait did to it. Count against `n_theta`.
         kBase.v[10], 1.44,      /*JS22_gamma=*/1.0,
         /*CMax_a=*/0.6, /*CMax_b=*/0.0, kmax, 0.0};
-    static_assert(phylloptim::gradient::n_theta == 19,
+    static_assert(phylloptim::gradient::n_theta == 34,
                   "theta above is positional and deliberately short; recount it "
                   "against n_theta and update this assertion together");
 

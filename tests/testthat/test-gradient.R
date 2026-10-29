@@ -1053,10 +1053,12 @@ test_that("CF77_lambda_ is in the enumeration and refused by other models", {
   # EMERGENT -- derived from that curve's own parameters rather than set -- so the
   # slot exists once in the enumeration and is available for one model.
   expect_true("CF77_lambda_" %in% gradient_par_names())
-  # ⚠️ NO LONGER LAST. `TF24_floor_lambda_o` is the second model-owned price and was
-  # appended after it, which is exactly the "appending is safe" the enumeration is
-  # designed for -- so what is asserted is the pair and its order, not a position.
-  expect_identical(tail(gradient_par_names(), 2L),
+  # ⚠️ NOT A FIXED POSITION. `TF24_floor_lambda_o` was appended after it, and the
+  # thermal-damage layer's inputs after both, which is exactly the "appending is
+  # safe" the enumeration is designed for -- so what is asserted is the pair and its
+  # order, adjacent, not where they sit.
+  i <- match("CF77_lambda_", gradient_par_names())
+  expect_identical(gradient_par_names()[i + 0:1],
                    c("CF77_lambda_", "TF24_floor_lambda_o"))
 
   # ⚠️ REFUSED, not returned as a zero. A zero means "in this objective but

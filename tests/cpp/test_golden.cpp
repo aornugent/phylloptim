@@ -703,6 +703,9 @@ const double kSeriesResistance = 1.0e3;
 void configure_supply(phylloptim::Leaf &l, Topology t, double psi_soil,
                       double ppfd, double leaf_temp) {
   const int layers = topology_layers(t);
+  // Daylight: the NIR band carries as much energy as the PAR band. Read only on
+  // the energy-balance rows.
+  l.NIR_int_ = ppfd / phylloptim::umol_par_per_joule;
   if (t == Topology::Single) {
     l.set_supply_single(0.0);
     phylloptim::RootNetwork rn;

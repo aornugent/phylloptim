@@ -45,7 +45,7 @@ test_that("every trait can be read back from the object (#95)", {
   # leaf_traits() without a binding fails here instead of being noticed by the next
   # caller who needs it.
   traits <- leaf_traits(vcmax_25 = 111, stem_P50 = 3.1, TF24_beta2 = 1.7,
-                        root_P50 = 3.3, a = 0.28)
+                        root_P50 = 3.3, phi_J = 0.28 / 0.85)
   l <- leaf_model(traits)
   for (nm in names(traits)) {
     expect_true(nm %in% names(l), label = paste("Leaf binds", nm))
@@ -132,7 +132,7 @@ test_that("leaf_model() and the raw Leaf() constructor agree", {
   # one leaf_model() built at the shipped default -- so the two disagree for the
   # fixture's reason and this test reports a mapping error that is not there.
   raw <- Leaf(96, 2.680147, 3.4, 2.680147, 3.4,
-              1.5, 157.44, 0.30, 0.7, 0.99, 1e-3,
+              1.5, 157.44, 0.30 / 0.85, 0.7, 0.99, 1e-3,
               leaf_control()$vulnerability_curve_ncontrol, 1e-3, 1000, 7.5)
   raw$initialize_integrator(21, 1e-8)
   friendly <- leaf_model()
@@ -358,6 +358,7 @@ test_that("Tleaf is reported, and is not the leaf_temp driver on the PM path", {
   # With the energy balance on, driven by hand because the gate is a field.
   l <- leaf_model()
   l$use_energy_balance_ <- TRUE
+  l$NIR_int_ <- 900 / 4.57  # daylight
   set_drivers(l, psi_soil = 2.0, PPFD = 900, leaf_temp = 30)
   l$find_root_collar_psi()
   op <- operating_point(l)

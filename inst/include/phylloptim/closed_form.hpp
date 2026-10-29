@@ -739,9 +739,9 @@ inline void optimise_into(Leaf &l) {
 // `Leaf` -- see the declaration for why that is legal and what breaks if the
 // include order changes.
 //
-// ⚠️ THE THREE REFUSALS ARE CONFIGURATION CHECKS, SO THEY BELONG AT SOLVE TIME AND
-// NOT IN `set_model`. Every one of route, supply topology and energy balance is
-// settable after the model is seated, so a check at seating time would either fire
+// ⚠️ THE FOUR REFUSALS ARE CONFIGURATION CHECKS, SO THEY BELONG AT SOLVE TIME AND
+// NOT IN `set_model`. Every one of route, supply topology, energy balance and the
+// thermal-damage layer is settable after the model is seated, so a check at seating time would either fire
 // on a leaf that was about to become valid or miss a leaf that had just stopped
 // being.
 inline void Leaf::optimise_closed() {
@@ -767,6 +767,13 @@ inline void Leaf::optimise_closed() {
                "the deficit D is not known at the moment of inversion and the "
                "form is not closed. Use method \"exact\", or prescribe the leaf "
                "temperature by setting use_energy_balance_ to false.");
+  }
+  if (use_thermal_damage_) {
+    util::stop("the closed form is refused with use_thermal_damage_ on: it has "
+               "not been checked against the exact solve with the thermal-damage "
+               "layer's shifted capacities, functional fraction and costs in place, "
+               "and its validity guard was measured without them. Use method "
+               "\"exact\", or set use_thermal_damage_ to false.");
   }
   with_curve(cost_curve_, [&](auto tag) {
     closed_form::optimise_into<tag.value>(*this);

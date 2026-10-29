@@ -67,7 +67,7 @@ using phylloptim::n_traits;
 using phylloptim::par_vcmax_25;   using phylloptim::par_stem_c;
 using phylloptim::par_stem_P50;   using phylloptim::par_root_c;
 using phylloptim::par_root_P50;   using phylloptim::par_TF24_beta2;
-using phylloptim::par_jmax_25;    using phylloptim::par_a;
+using phylloptim::par_jmax_25;    using phylloptim::par_phi_J;
 using phylloptim::par_curv_fact_elec_trans;
 using phylloptim::par_curv_fact_colim;
 using phylloptim::par_TF24_cost_scale; using phylloptim::par_R_d_25;
@@ -75,6 +75,14 @@ using phylloptim::par_JS22_gamma; using phylloptim::par_CMax_a;
 using phylloptim::par_CMax_b;     using phylloptim::par_kmax;
 using phylloptim::par_resistance; using phylloptim::par_CF77_lambda;
 using phylloptim::par_TF24_floor_lambda_o;
+using phylloptim::par_A;          using phylloptim::par_I;
+using phylloptim::par_D;          using phylloptim::par_topt_offset;
+using phylloptim::par_dTopt_max;  using phylloptim::par_K_A;
+using phylloptim::par_k_i;        using phylloptim::par_k_i_baseline;
+using phylloptim::par_k_rec;      using phylloptim::par_m_rep;
+using phylloptim::par_t_rep_cut;  using phylloptim::par_c_acclim_maint;
+using phylloptim::par_c_repair_maint; using phylloptim::par_c_protect_maint;
+using phylloptim::par_c_repair_flux;
 using phylloptim::par_PPFD;
 
 // The parameter enumeration now lives in leaf_model.hpp, beside the set_traits
@@ -102,13 +110,16 @@ inline const std::vector<std::string>& par_names() {
   static const std::vector<std::string> names{
       "vcmax_25",  "stem_c",              "stem_P50",
       "root_c",    "root_P50",            "TF24_beta2",
-      "jmax_25",   "a",                   "curv_fact_elec_trans",
+      "jmax_25",   "phi_J",               "curv_fact_elec_trans",
       "curv_fact_colim", "TF24_cost_scale", "R_d_25",
       "JS22_gamma", "CMax_a", "CMax_b",
       "leaf_specific_conductance_max",
       "resistance",
       "CF77_lambda_",
-      "TF24_floor_lambda_o"};
+      "TF24_floor_lambda_o",
+      "A_", "I_", "D_", "topt_offset_", "dTopt_max_", "K_A_", "k_i_",
+      "k_i_baseline_", "k_rec_", "m_rep_", "t_rep_cut_", "c_acclim_maint_",
+      "c_repair_maint_", "c_protect_maint_", "c_repair_flux_"};
   return names;
 }
 
@@ -268,7 +279,7 @@ inline double rounded(double x) {
 
 // The step: relative to the parameter for values above 1, and plain `step`
 // below it. The floor is at 1, which is deliberate rather than an epsilon --
-// traits here span `a` = 0.3 to `jmax_25` = 157.44, and a strictly relative step
+// traits here span `phi_J` = 0.35 to `jmax_25` = 157.44, and a strictly relative step
 // would perturb the small ones so little that the difference is dominated by the
 // solve's ~1e-09 noise.
 //
@@ -471,7 +482,7 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
   l.set_traits(theta[par_vcmax_25], theta[par_stem_c], theta[par_stem_P50],
                theta[par_root_c], theta[par_root_P50],
                theta[par_TF24_beta2], theta[par_jmax_25],
-               theta[par_a], theta[par_curv_fact_elec_trans],
+               theta[par_phi_J], theta[par_curv_fact_elec_trans],
                theta[par_curv_fact_colim], theta[par_TF24_cost_scale],
                theta[par_R_d_25], theta[par_JS22_gamma],
                theta[par_CMax_a], theta[par_CMax_b]);
@@ -479,6 +490,26 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
   // nothing is derived from either, so a bare write leaves no stale state behind.
   l.CF77_lambda_ = theta[par_CF77_lambda];
   l.TF24_floor_lambda_o = theta[par_TF24_floor_lambda_o];
+  // The thermal-damage layer's inputs, ONLY with its gate on -- off, the slots
+  // hold whatever a caller zero-filled and are never read -- and BEFORE the
+  // drivers, because set_physiology is what seats the block that reads them.
+  if (l.use_thermal_damage_) {
+    l.A_ = theta[par_A];
+    l.I_ = theta[par_I];
+    l.D_ = theta[par_D];
+    l.topt_offset_ = theta[par_topt_offset];
+    l.dTopt_max_ = theta[par_dTopt_max];
+    l.K_A_ = theta[par_K_A];
+    l.k_i_ = theta[par_k_i];
+    l.k_i_baseline_ = theta[par_k_i_baseline];
+    l.k_rec_ = theta[par_k_rec];
+    l.m_rep_ = theta[par_m_rep];
+    l.t_rep_cut_ = theta[par_t_rep_cut];
+    l.c_acclim_maint_ = theta[par_c_acclim_maint];
+    l.c_repair_maint_ = theta[par_c_repair_maint];
+    l.c_protect_maint_ = theta[par_c_protect_maint];
+    l.c_repair_flux_ = theta[par_c_repair_flux];
+  }
   if (single) {
     // R's `series_resistance()`: a default-constructed network carrying one
     // series resistance in `r_R_V_sum`, which is that field's own meaning with
@@ -644,6 +675,13 @@ inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
   }
   apply(l, theta, d, single, -1, s.fast_stem_curve);
 }
+
+// THE THERMAL-DAMAGE LAYER IS CARRIED (Leaf::use_thermal_damage_). Both routes
+// difference the solve's own dprofit and outputs, which read the block the layer
+// writes, so they need nothing of it but its inputs in `theta` -- seated by
+// `apply()` above. The derivative SURFACE (collar_at, outputs_at) still refuses
+// it: those read capacities off the parameter pack, whose kernels do not apply
+// the layer.
 
 // --- one observation ---------------------------------------------------------
 //

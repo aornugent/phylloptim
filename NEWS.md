@@ -1,3 +1,48 @@
+# phylloptim 0.13.0
+
+## Light arrives intercepted and the leaf absorbs it
+
+The leaf's light input is now named for what it is, and absorption happens inside the leaf. Breaking: the quantum-yield trait is renamed and rebased, and the energy-balance path needs one new input.
+
+* `PPFD` (the `set_drivers()` / `leaf_solve()` driver, `set_physiology()`'s second argument, the `par_PPFD` slot) is the **intercepted** photon flux per unit leaf area: incident on the leaf, before its absorptance. Its value and units are unchanged; the documentation now says which stage of the light chain it is.
+* New leaf properties `alpha_PAR_` (0.85) and `alpha_NIR_` (0.20), the PAR and near-infrared absorptances. Settable fields, not fitted traits.
+* `a` -> `phi_J`, the quantum yield of electron transport per **absorbed** photon. Electron transport reads `phi_J * alpha_PAR_ * PPFD`. The default `0.30 / 0.85` restates the old incident-basis 0.30, so with the defaults J is unchanged to rounding. Migration:
+  * `leaf_traits(a = x)` -> `leaf_traits(phi_J = x / 0.85)`
+  * `Leaf(..., a = x, ...)` -> `Leaf(..., phi_J = x / 0.85, ...)`
+  * `l$set_traits(..., a, ...)` (8th argument) -> the same position, `phi_J = a / 0.85`
+  * `l$a` -> `l$phi_J`
+  * `leaf_gradient(pars = "a")` / gradient columns named `a` -> `"phi_J"`; the derivative is per unit `phi_J`, so `d/da = d/dphi_J / 0.85`
+  * A gas-exchange fit identifies only `phi_J * alpha_PAR_`: fix `alpha_PAR_` and the fitted `phi_J` is per absorbed photon.
+* **Energy-balance path:** net radiation is the absorbed shortwave of two intercepted bands, `Rn = alpha_PAR_ * PPFD / 4.57 + alpha_NIR_ * NIR_int_ - 40`, where it was `2 * PPFD / 4.57 - 40` (all shortwave absorbed). New per-call field `NIR_int_`, the intercepted near-infrared in W m^-2, set before `set_drivers()` like `wind_speed_`. **It has no default**, because the right one depends on the light source (about `PPFD / 4.57` in daylight, 0 under an LED), so `set_physiology()` refuses a non-finite `NIR_int_` with `use_energy_balance_` on. Off the energy-balance path it is never read. Migration: `l$use_energy_balance_ <- TRUE` -> also `l$NIR_int_ <- PPFD / 4.57` for daylight.
+* `constants.hpp`: `sw_abs_per_par` (2.0) is removed. It folded the PAR share of shortwave and an absorptance of 1 into one number.
+
+Golden files regenerated. Rows with the energy balance off move by reassociation only (operating points: 342 cells, worst 2.0e-10; psi_stem optima: 836 cells on 133 rows, worst 1.8e-10). Energy-balance rows move by the physics: with daylight NIR at the grid's PPFD of 1500, absorbed shortwave falls from 657 to 345 W m^-2 and the solved leaf temperature by a median 7.9 C (up to 14.2 C); 14 of 2592 rows change kind. The 17 `leaf_temp_from_E` primitives move for the same reason.
+
+# phylloptim 0.12.0
+
+## An optional thermal-damage layer on the leaf, off by default
+
+`Leaf$use_thermal_damage_` turns on a lasting thermal-damage model, ported from the layer plant carried in its own leaf (traitecoevo/plant#566). Three fractions of leaf area, named for what they do — functional F ⇌ impaired I → damaged D, with F = 1 − I − D — plus an acclimation state A, all driven by LEAF temperature:
+
+```
+dA/dt = acclim_alpha_ * softplus(T - acclim_T_; acclim_s_) - acclim_beta_ * A
+dI/dt = k_imp(T) * F - (k_rec_eff(T) + k_mat_) * I
+dD/dt = k_mat_ * I
+k_imp(T) = k_i_ * exp[(k_i_Ea_/R)(1/T_ref - 1/T)] * K/(1 + K),  K = exp[(impair_H_/R)(1/Tmid - 1/T)]
+```
+
+Rates are per day. The Vcmax and Jmax peaked-Arrhenius curves stay the instantaneous, fully reversible temperature response; impairment is rate-and-state and lasts until repaired, and the two share no parameter. The switch K/(1+K) has its own enthalpy `impair_H_` and midpoint `impair_Tmid_` (defaults 200 kJ mol⁻¹ and 200000/650 K, the Jmax curve's deactivation term), moved by acclimation through its own `dTimpair_max_`.
+
+- **On the solve.** The caller seats `A_`, `I_` and `D_` before each `set_drivers()`. Both capacities are scaled by F (floored at 1e-6), the Vcmax and Jmax optima move by `topt_offset_ + dTopt_max_ * A/(A + K_A_)` through the entropy term, and four maintenance costs, zero by default, are added to `R_d_`, which is otherwise not scaled. `k_imp_eff_`, `k_rec_eff_` and `functional_` are reported at the leaf's temperature; on the energy-balance path that is the operating point's.
+- **The dynamics, on the leaf.** `$damage_rates()` evaluates the right-hand side and `leaf_damage_trajectory()` integrates it over a leaf-temperature series (RK4, sub-stepped so the fastest rate × step < 0.1 and ≤ 0.25 K per step), so a leaf experiment can be fitted with this package alone. A caller integrating the states itself — plant's TF24t, which adds dilution of D by leaf turnover and growth — calls `$damage_rates()`.
+- **Gradients.** `leaf_gradient()` and `leaf_gradient_batch()` carry the layer: on a leaf with the gate on, its fifteen inputs that reach the solve (`A_`, `I_`, `D_`, `topt_offset_`, `dTopt_max_`, `K_A_`, `k_i_`, `k_i_baseline_`, `k_rec_`, `m_rep_`, `t_rep_cut_` and the four costs) are gradient parameters, appended to the enumeration (`n_theta` 19 → 34) and refused by name with the gate off. `leaf_damage_gradient()` gives the trajectory's exact forward-mode sensitivities to all sixteen dynamics parameters and the three initial states. The derivative surface (`collar_at`, `outputs_at`) and the closed form still refuse the layer.
+
+Off by default, and off it reads none of its inputs: every golden file is bit-identical, `k_imp_eff_` and `k_rec_eff_` are zero and `functional_` one.
+
+⚠️ **`n_theta` is 34 and `n_pars` 35.** A C++ caller filling `theta[gradient::n_theta]` by hand must recount: the layer's slots are read only with the gate on, but a short initialiser shifts nothing else only while it stays short.
+
+Respiration departs from the original layer on purpose: there `R_d` was `0.015 * Vcmax` after the damage discount, so a damaged leaf respired less; here `R_d` stays `R_d_25` on its Q10 (#86) and the layer only adds its costs.
+
 # phylloptim 0.10.3
 
 ## odelia is a floor, not a pin, at 0.8.0

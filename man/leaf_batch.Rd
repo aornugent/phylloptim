@@ -26,7 +26,10 @@ leaf_batch(
 \item{psi_soil}{soil water potential, MPa, \strong{positive magnitude}. Length
 sets the number of soil layers.}
 
-\item{PPFD}{photosynthetic photon flux density, umol m^-2 s^-1}
+\item{PPFD}{INTERCEPTED photosynthetic photon flux density per unit leaf area,
+umol m^-2 s^-1: the light incident on the leaf, before its absorptance
+(\code{alpha_PAR_}). On the energy-balance path the leaf also needs \verb{$NIR_int_},
+the intercepted near-infrared in W m^-2, set before this call.}
 
 \item{soil_depth}{cumulative depth to the bottom of each layer, m. Defaults
 to 1 m layers.}

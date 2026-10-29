@@ -88,7 +88,7 @@ set_traits <- function(x, traits) {
   # the ordering is written down once rather than at every call site.
   x$set_traits(traits$vcmax_25, traits$stem_c, traits$stem_P50,
                traits$root_c, traits$root_P50, traits$TF24_beta2,
-               traits$jmax_25, traits$a, traits$curv_fact_elec_trans,
+               traits$jmax_25, traits$phi_J, traits$curv_fact_elec_trans,
                traits$curv_fact_colim, traits$TF24_cost_scale, traits$R_d_25,
                traits$JS22_gamma, traits$CMax_a, traits$CMax_b)
   invisible(x)
@@ -404,7 +404,20 @@ set_traits <- function(x, traits) {
 ##'   [leaf_traits()] names, plus `"leaf_specific_conductance_max"`, on the
 ##'   single-potential path only `"resistance"`, on `model = "CF77"` only
 ##'   `"CF77_lambda_"`, and on `model = "TF24_floor"` only `"TF24_floor_lambda_o"`.
-##'   Defaults to all the route allows.
+##'   On a reused leaf `x` with `use_thermal_damage_` on, also the layer's inputs
+##'   that reach the solve: its states `"A_"`, `"I_"`, `"D_"`, the optimum shift
+##'   `"topt_offset_"`, `"dTopt_max_"`, `"K_A_"`, and every quantity a maintenance
+##'   cost multiplies (`"k_i_"`, `"k_i_baseline_"`, `"k_rec_"`, `"m_rep_"`,
+##'   `"t_rep_cut_"`, `"c_acclim_maint_"`, `"c_repair_maint_"`,
+##'   `"c_protect_maint_"`, `"c_repair_flux_"`). The layer's dynamics parameters
+##'   move no solved output and are refused; their gradient is
+##'   [leaf_damage_gradient()]'s. Defaults to all the route allows.
+##'
+##'   ⚠️ At 25 C the peaked Arrhenius is normalised to its reference, so
+##'   `topt_offset_` and `dTopt_max_` have an exactly zero effect there -- a true
+##'   zero, not a missing row.
+##'   `max(0, k_i_baseline_ - k_i_)` has a kink at equality (the default), where
+##'   the two columns report the difference's average slope.
 ##'
 ##'   `dY/dvcmax_25` is a PARTIAL at fixed respiration: `R_d_25` is its own trait,
 ##'   so a fit that wants respiration to follow Vcmax moves both and adds the two
@@ -566,6 +579,9 @@ leaf_gradient <- function(psi_soil,
       leaf_supply_multilayer()
     }
   }
+  # The thermal-damage layer's inputs are parameters ONLY on a leaf with its gate
+  # on, which only a reused leaf can have: one built here has it off.
+  damage <- !is.null(x) && isTRUE(x$use_thermal_damage_)
 
   # Resolve the single path's default resistance HERE rather than letting
   # set_drivers() do it, because `resistance` is one of the parameters being
@@ -594,17 +610,19 @@ leaf_gradient <- function(psi_soil,
                            CF77_lambda = if (is.null(x)) NA_real_ else
                              x$CF77_lambda_,
                            TF24_floor_lambda_o = if (is.null(x)) NA_real_ else
-                             x$TF24_floor_lambda_o)
+                             x$TF24_floor_lambda_o,
+                           damage = if (damage) .gradient_damage_values(x))
   if (is.null(pars)) {
     # ⚠️ WHAT IS AVAILABLE, not every slot in `theta`. The enumeration now carries
     # a parameter that belongs to one model, so "all of them" and "all of the ones
     # this route can differentiate" have stopped being the same set -- and taking
     # the former made the default refuse itself.
-    pars <- .gradient_available_pars(identical(supply$kind, "single"), model)
+    pars <- .gradient_available_pars(identical(supply$kind, "single"), model,
+                                     damage)
   }
   # Shared with leaf_gradient_batch(), so the two entry points cannot disagree
   # about which parameters exist or explain a rejection differently.
-  .gradient_check_pars(pars, identical(supply$kind, "single"), model)
+  .gradient_check_pars(pars, identical(supply$kind, "single"), model, damage)
   # ⚠️ HERE, NOT WHERE IT IS USED. `dpsi_dtheta` is only READ inside the
   # composite, which a clamped or shut-down operating point never reaches -- so
   # validating it there made a wrong-length vector an error at some psi and
@@ -621,7 +639,7 @@ leaf_gradient <- function(psi_soil,
   # a call in a per-observation fit. Construction is the single largest term on
   # this surface.
   l <- if (is.null(x)) leaf_model(traits, control, supply) else x
-  reset <- .gradient_setter(l, traits, drivers, supply, fast_stem_curve)
+  reset <- .gradient_setter(l, traits, drivers, supply, fast_stem_curve, damage)
 
   if (is.null(x)) {
     do.call(set_drivers, c(list(l), drivers))
@@ -1107,7 +1125,30 @@ leaf_gradient <- function(psi_soil,
 # subset, and the batch's column fills. It used to be spelled as "everything but
 # the last two", which was correct only while there were exactly two.
 .gradient_non_traits <- c("leaf_specific_conductance_max", "resistance",
-                          "CF77_lambda_", "TF24_floor_lambda_o")
+                          "CF77_lambda_", "TF24_floor_lambda_o",
+                          # .gradient_damage_pars, spelled out because this file
+                          # is collated before the definition below is needed
+                          "A_", "I_", "D_", "topt_offset_", "dTopt_max_", "K_A_",
+                          "k_i_", "k_i_baseline_", "k_rec_", "m_rep_",
+                          "t_rep_cut_", "c_acclim_maint_", "c_repair_maint_",
+                          "c_protect_maint_", "c_repair_flux_")
+
+# The thermal-damage layer's inputs that reach the solve, in enumeration order: its
+# three states, the acclimated shift of the Vcmax/Jmax optima, and every quantity a
+# maintenance cost multiplies. Leaf FIELDS, read off and written back by name.
+# Available only on a leaf with `use_thermal_damage_` on, and refused by name
+# elsewhere. The layer's DYNAMICS parameters (the impairment switch, the impairment
+# rate's Arrhenius, `k_mat_`, the acclimation kinetics) move no solved output and
+# are deliberately absent: their gradient is leaf_damage_gradient()'s.
+.gradient_damage_pars <- c("A_", "I_", "D_", "topt_offset_", "dTopt_max_", "K_A_",
+                           "k_i_", "k_i_baseline_", "k_rec_", "m_rep_",
+                           "t_rep_cut_", "c_acclim_maint_", "c_repair_maint_",
+                           "c_protect_maint_", "c_repair_flux_")
+
+# Their current values, off a leaf, in that order.
+.gradient_damage_values <- function(l) {
+  vapply(.gradient_damage_pars, function(nm) l[[nm]], numeric(1))
+}
 
 # What `pars` may name, and the message when it names something else. One
 # definition, used by `leaf_gradient()` and by `leaf_gradient_batch()`: the
@@ -1145,9 +1186,10 @@ leaf_gradient <- function(psi_soil,
   unname(.gradient_owned_pars[names(.gradient_owned_pars) != model])
 }
 
-.gradient_available_pars <- function(single, model = "collar") {
+.gradient_available_pars <- function(single, model = "collar", damage = FALSE) {
   nms <- .gradient_par_names()
   if (!single) nms <- setdiff(nms, "resistance")
+  if (!damage) nms <- setdiff(nms, .gradient_damage_pars)
   excluded <- .gradient_model_pars(model)
   if (is.null(excluded)) {
     stop("no gradient route for model \"", model, "\". Available: ",
@@ -1156,9 +1198,16 @@ leaf_gradient <- function(psi_soil,
   setdiff(nms, excluded)
 }
 
-.gradient_check_pars <- function(pars, single, model = "collar") {
-  unknown <- setdiff(pars, .gradient_available_pars(single, model))
+.gradient_check_pars <- function(pars, single, model = "collar", damage = FALSE) {
+  unknown <- setdiff(pars, .gradient_available_pars(single, model, damage))
   if (length(unknown)) {
+    off <- intersect(unknown, .gradient_damage_pars)
+    if (length(off) && !damage) {
+      stop("`pars` names `", off[[1L]], "`, an input of the thermal-damage layer, ",
+           "which is off on this leaf. Set use_thermal_damage_ to TRUE on the leaf ",
+           "you pass (`x`, or the batch's leaf) to differentiate it.",
+           call. = FALSE)
+    }
     why <- if (!single && "resistance" %in% unknown) {
       paste(" `resistance` is a parameter of the single-potential path only;",
             "on the multi-layer path the soil-to-collar resistances are derived",
@@ -1211,7 +1260,8 @@ leaf_gradient <- function(psi_soil,
 # applies it, which is .gradient_setter's job.
 .gradient_theta <- function(traits, kmax, supply, root_network,
                             CF77_lambda = NA_real_,
-                            TF24_floor_lambda_o = NA_real_) {
+                            TF24_floor_lambda_o = NA_real_,
+                            damage = NULL) {
   theta <- c(unlist(traits), leaf_specific_conductance_max = kmax)
   if (identical(supply$kind, "single")) {
     theta <- c(theta, resistance = root_network$r_R_V_sum[[1]])
@@ -1220,7 +1270,15 @@ leaf_gradient <- function(psi_soil,
   # unconditionally, so each must hold a number the solve will actually use -- and
   # on every other route that number is never read, exactly as `resistance` is not
   # read on the multi-layer path.
-  c(theta, CF77_lambda_ = CF77_lambda, TF24_floor_lambda_o = TF24_floor_lambda_o)
+  theta <- c(theta, CF77_lambda_ = CF77_lambda,
+             TF24_floor_lambda_o = TF24_floor_lambda_o)
+  # The thermal-damage inputs, read off the leaf when its gate is on and NA
+  # otherwise -- in which case neither side reads them.
+  if (is.null(damage)) {
+    damage <- stats::setNames(rep(NA_real_, length(.gradient_damage_pars)),
+                              .gradient_damage_pars)
+  }
+  c(theta, damage)
 }
 
 
@@ -1242,7 +1300,7 @@ leaf_gradient <- function(psi_soil,
                     "leaf_temp", "atm_o2_kpa", "atm_kpa")
 
 .gradient_setter <- function(l, traits, drivers, supply,
-                             fast_stem_curve = TRUE) {
+                             fast_stem_curve = TRUE, damage = FALSE) {
   trait_names <- names(traits)
   single <- identical(supply$kind, "single")
   # ⚠️ RESOLVE THE DRIVERS ONCE. This closure runs once per perturbation -- eleven
@@ -1312,6 +1370,14 @@ leaf_gradient <- function(psi_soil,
     # rather than the instance.
     tv <- theta[trait_names]
     do.call(apply_traits, unname(as.list(tv)))
+    # The thermal-damage inputs, ONLY with its gate on, and BEFORE the drivers:
+    # set_physiology is what seats the block that reads them. A field write per
+    # input costs a `.Call` each, which is why the gate-off path skips the loop.
+    if (damage) {
+      for (nm in .gradient_damage_pars) {
+        l[[nm]] <- theta[[nm]]
+      }
+    }
     # `resistance` is a driver, so it goes in with the others rather than through
     # $set_supply_single() -- which keeps this to ONE object-resetting call.
     net <- if (single) {
@@ -1345,7 +1411,7 @@ leaf_gradient <- function(psi_soil,
 
 # The step: relative to the parameter for values above 1, and plain `step` below
 # it. Not a relative step with an epsilon floor -- the floor is at 1, which is
-# deliberate. Traits here span `a` = 0.3 to `jmax_25` = 157.44, and a strictly
+# deliberate. Traits here span `phi_J` = 0.35 to `jmax_25` = 157.44, and a strictly
 # relative step would perturb the small ones so little that the difference is
 # dominated by the solve's ~1e-09 noise. It also means a trait sitting at zero is
 # still perturbed rather than not differentiated at all.

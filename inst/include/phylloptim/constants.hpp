@@ -106,10 +106,12 @@ inline constexpr double gravity_head = 9.8e-3; // MPa / m
 inline constexpr double latent_heat_vap = 2.45e6;
 // volumetric heat capacity of air, J m^-3 K^-1
 inline constexpr double vol_heat_cap_air = 1200.0;
-// PAR energy conversion: ~4.57 umol photons per J of PAR (shortwave)
+// PAR energy conversion for SUNLIGHT: ~4.57 umol photons per J of PAR. The ratio
+// is a property of the source spectrum (a red/blue LED is ~5-5.5), so it is only
+// correct for a leaf in daylight. It is read on the energy-balance path alone, to
+// turn the intercepted photon flux back into the PAR band's energy; photosynthesis
+// reads the photon flux directly and never touches it.
 inline constexpr double umol_par_per_joule = 4.57;
-// shortwave absorbed ~= 2 * absorbed PAR (PAR ~= 50% of shortwave; doc 3.3)
-inline constexpr double sw_abs_per_par = 2.0;
 // fixed net longwave (cooling) offset, W m^-2 (clear-sky approximation; doc 3.3).
 // A faithful treatment makes outgoing longwave depend on Tleaf (would make Rn
 // implicit in Tleaf); staged for a sensitivity gate and tracked in #581.
