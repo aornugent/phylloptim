@@ -268,8 +268,11 @@ so `f` is the fraction of maximum conductivity remaining, `k` the conductance an
 | **Eller** [@eller2020] | `SOX` | $-\log g_{\rm SOX}(\psi)$ | $-g'/g$ | log carbon |
 | **Jones et al.** [@jones2026] | `JW26` | $-\log g_{\rm JW}(\psi)$ | $1/(\psi_{\rm crit}-\psi)$ | log carbon |
 | **TF24 with a price floor** | `TF24_floor` | $\gamma\,(1-f)^{\beta}+\lambda_o E$ | $\gamma\beta(1-f)^{\beta-1}\lvert f'\rvert+\lambda_o k_{\max}f$ | carbon |
+| **Prentice et al.** [@prentice2014] | `LeastCost` | $\log\big(E+\beta_{\rm LC}\,V_{c\max}\big)$ | $\dfrac{k_{\max}f}{E+\beta_{\rm LC}V_{c\max}}$ | log carbon |
 
-The last two rows are in that table because of a *benefit link*, and it is worth being explicit about how they got there. Neither subtracts a cost. Both maximise the product `A · g(ψ)`, and they differ only in `g`:
+In the last row `E` and `V_cmax` are both in mol m⁻² s⁻¹, which is what makes `β_LC` (`LeastCost_beta`, the paper's `β = c_V/c_E`, 146) dimensionless.
+
+The `SOX`, `JW26` and `LeastCost` rows are in that table because of a *benefit link*, and it is worth being explicit about how they got there. None of the three subtracts a cost. The first two maximise the product `A · g(ψ)`, and they differ only in `g`:
 
 $$g_{\rm SOX}(\psi)=\frac{f(\psi)-0.05}{1-0.05},
 \qquad g_{\rm JW}(\psi)=1-\frac{\psi}{\psi_{\rm crit}}$$
@@ -301,6 +304,8 @@ So a product objective is a difference objective with a transformed benefit. The
 - **It can never be boundary-crit.** `g(psi_crit)` is exactly zero, so `C` diverges there. Water becomes infinitely expensive before the bound is reached, and no parameter of the model's own is involved in arranging that.
 
 **The link states the cost; it is not how the optimum is found.** At full closure `A = −R_d < 0`, so `log A` does not exist, and that endpoint has to be a candidate. The optimiser therefore maximises the product directly, which is exact because `log` is monotone, while the *derivative* uses the log form.
+
+`LeastCost` reaches the same link from the other side. @prentice2014 minimise the cost of acquiring a unit of carbon, $(c_E E + c_V V_{c\max})/A$, which is a *ratio*; minimising it is maximising $\log A-\log\big(E+\beta_{\rm LC}V_{c\max}\big)$, so its log-cost is $+\log W$ where a product's is $-\log g$, and the sign lands in the marginal cost rather than in the link. Two things follow. Its penalty is the only one in the table that weighs something other than water — photosynthetic capacity, against transpiration — so a light sweep on this curve measures acclimation rather than the price of water. And its λ does **not** vanish at the wet end: as `E → 0` the denominator tends to the capacity term and λ to a finite value set by it, where a product curve's `g` carries λ to zero. Its first-order condition is the paper's own, $(c_i-\Gamma^*)/(c_a-c_i)=\xi/\sqrt{D}$ with $\xi=\sqrt{\beta_{\rm LC}(K_m+\Gamma^*)/1.6}$, and the C++ suite checks the solved $c_i/c_a$ against it to 1e-11 on the Rubisco-limited branch. The widely quoted $\chi=\xi/(\xi+\sqrt{D})$ is that condition with $\Gamma^*$ dropped from the numerator, and understates $\chi$ by 4–8% over `D` = 1–4 kPa; the suite predicts that gap rather than tolerating it.
 
 The code names are the prefix on every parameter belonging to that model: `TF24_cost_scale`, `CF77_lambda_`, `JS22_gamma`. A parameter therefore says which curve reads it, and returns an exactly zero gradient on all the others.
 
@@ -337,7 +342,7 @@ That is still enough to matter. A marginal cost starting at zero, against a marg
 
 ### The benefit link, and the proof it costs nothing
 
-Two of those eight rows do not subtract a cost. This section shows exactly how they belong in one table with the six that do, and that nothing is lost in getting them there.
+Three of those nine rows do not subtract a cost: two are products and one is a ratio. This section shows exactly how they belong in one table with the six that do, and that nothing is lost in getting them there.
 
 Write the objective as
 
@@ -348,7 +353,7 @@ with `h` a *benefit link*, meaning a transform applied to assimilation before th
 | link | `h(A)` | `h'(A)` | curves |
 |---|---|---|---|
 | identity | $A$ | $1$ | `TF24`, `CF77`, `JS22`, `CMax`, `TF24_floor` |
-| log | $\log A$ | $1/A$ | `SOX`, `JW26` |
+| log | $\log A$ | $1/A$ | `SOX`, `JW26`, `LeastCost` |
 | scaled | $A/\lvert A\rvert_{\max}$ | $1/\lvert A\rvert_{\max}$ | `ProfitMax` |
 
 For a product objective, take the cost to be the **logarithm** of the reduction factor,
@@ -625,7 +630,7 @@ There are four axes, chosen independently. A published model is a point in this 
 
 | axis | options | what it changes |
 |---|---|---|
-| **cost curve** | `TF24`, `CF77`, `ProfitMax`, `JS22`, `CMax`, `SOX`, `JW26`, `TF24_floor` | `C(ψ)` and its units, and for the two product curves whether the objective is a difference at all |
+| **cost curve** | `TF24`, `CF77`, `ProfitMax`, `JS22`, `CMax`, `SOX`, `JW26`, `TF24_floor`, `LeastCost` | `C(ψ)` and its units, and for the two product curves and the ratio whether the objective is a difference at all |
 | **supply topology** | single soil potential, or multi-layer root network | the decision variable, and the feasible bracket |
 | **leaf temperature** | prescribed, or energy balance | whether `Tleaf` responds to `E`, and so whether the temperature responses are active at all |
 | **thermal cost** | off, or on | adds a temperature penalty and scales `Jmax`, the only axis that moves both sides |
@@ -644,6 +649,7 @@ The published models map onto that space as follows.
 | @eller2020 | `SOX` | the product objective. Takes no parameter of its own. |
 | @jones2026 | `JW26` | the same product form as `SOX`, with a linear `g`. Takes no parameter of its own; see below. |
 | @sicangco2026 | `ProfitMax` | ProfitMax with the thermal-cost gate on. |
+| @prentice2014 | `LeastCost` | the cost per unit carbon, `(c_E E + c_V V_cmax)/A`, as `log A − log(E + β V_cmax)` under the log link. One parameter, the dimensionless unit-cost ratio `β = c_V/c_E` (`LeastCost_beta`, 146 in the paper), with no default; zero is refused as well as unset, because at zero the objective is water-use efficiency and the optimum is the wet bound. The only cost here that weighs capacity. |
 | — | `TF24_floor` | the canonical two-term split, `Θ̃(ψ) + λ_o E`, with `Θ̃` taken to be TF24's own cost. Not a paper's model: the form is Wolf et al.'s case 8, endorsed in a sentence by Buckley (2017) and fitted once in Anderegg et al. (2018)'s supplement, but never argued for. Here so the claim can be tested rather than argued — and attached to TF24 so that the test is about *our* cost. |
 
 : The published models, and the axes they occupy.
@@ -708,7 +714,7 @@ $$g_c=\frac{P\,E\,M_{\rm H_2O}}{1.6\;D_{\rm leaf}}$$
 
 where 1.6 is the ratio of diffusivities of water vapour and CO₂, `P` is atmospheric pressure, and `D_leaf` is the leaf-to-air vapour pressure deficit. Fixing `E` fixes `g_c`, which is the first link of the coordinate chain above.
 
-`$stom_cond_CO2_` is a **total** leaf-to-air conductance rather than a stomatal one. There is no separate boundary-layer term: the relation above is the whole path from leaf interior to bulk air in one conductance, paired with a leaf-to-bulk-air deficit. That is internally consistent, and it is the right quantity for the `c_i` solve below. A measured `g_s`, however, has a boundary layer removed from it, so the two are not the same number and should not be compared directly.
+`$stom_cond_CO2_` is a **total** leaf-to-air conductance rather than a stomatal one. There is no separate boundary-layer term: the relation above is the whole path from leaf interior to bulk air in one conductance, paired with a leaf-to-bulk-air deficit. That is internally consistent, and it is the right quantity for the `c_i` solve below. A measured `g_s`, however, has a boundary layer removed from it, so the two are not the same number and should not be compared directly. Compare it with `$gs_stomatal_H2O` instead, which takes the boundary layer's conductance to vapour, `$gb_H2O`, out of `$gs_H2O` in series. With the energy balance off there is no boundary layer, so `$gb_H2O` is `Inf` and the two are identical.
 
 ### 4. Closing the loop: supply equals demand
 
@@ -742,9 +748,9 @@ This integral is what makes the optimisation non-trivial. Because `f` falls, `E`
 
 A transpiring leaf is cooler than the air. Linearised, the leaf temperature is
 
-$$T_{\rm leaf}=T_{\rm air}+\frac{(R_n-\lambda_v E)\,r_a}{\rho c_p}$$
+$$T_{\rm leaf}=T_{\rm air}+\frac{R_{n,\rm iso}-\lambda_v E}{\rho c_p/r_a+g_R},\qquad g_R=4\varepsilon_l\sigma T_{\rm air}^3$$
 
-clamped to a physical range. So `dT/dE = −λ_v r_a/(\rho c_p)` inside the range and exactly zero where the clamp binds, which is a real kink that every derivative has to respect. Warming the leaf also raises its own vapour pressure, so the deficit driving diffusion is not the atmospheric one:
+clamped to a physical range. $R_{n,\rm iso}$ is the isothermal net radiation, absorbed shortwave less $(1-\varepsilon_a)\sigma T_{\rm air}^4$ with a Brutsaert sky emissivity $\varepsilon_a$ that rises with air temperature and humidity and is capped at 1. The leaf's own emission, which goes as $T_{\rm leaf}^4$, is linearised about $T_{\rm air}$ into the radiative conductance $g_R$, which is what keeps the balance explicit: $T_{\rm leaf}$ is affine in `E`, so `dT/dE = −λ_v/(\rho c_p/r_a + g_R)` inside the range and exactly zero where the clamp binds, which is a real kink that every derivative has to respect. Warming the leaf also raises its own vapour pressure, so the deficit driving diffusion is not the atmospheric one:
 
 $$D_{\rm leaf}=\max\!\big(D_{\rm air}+e_s(T_{\rm leaf})-e_s(T_{\rm air}),\;D_{\min}\big)$$
 
@@ -774,7 +780,7 @@ Every model simplifies. The assumptions that matter most when interpreting outpu
 - **The leaf is intensive.** Every input is per unit leaf area, or is a dimensionless driver. Nothing here scales with plant size; whole-plant allometry is computed by the caller and passed in already reduced.
 - **The hydraulic path is one Weibull curve.** There is no separate leaf, petiole or root-collar vulnerability, no refilling, and no capacitance. Tension is in steady state at every operating point.
 - **Cost is instantaneous.** None of the cost curves carries a memory of past tension, so a curve fitted across a drydown is being asked to represent a history it cannot see.
-- **Which cost curve is right is not settled by this package.** The eight are alternative hypotheses about what a leaf is spending, and they are implemented so that they can be compared, not because one has been shown to be correct.
+- **Which cost curve is right is not settled by this package.** The nine are alternative hypotheses about what a leaf is spending, and they are implemented so that they can be compared, not because one has been shown to be correct.
 - **A gradient describes one operating point.** It is exact there, and says nothing about behaviour where the optimum crosses between the interior of the feasible range and one of its bounds. That crossing is a genuine kink.
 
 ## Glossary

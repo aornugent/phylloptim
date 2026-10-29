@@ -1,3 +1,271 @@
+# phylloptim 0.15.3
+
+## The root curve's derivative answers past its dry end
+
+A soil layer drier than the root curve's last knot (6.89 MPa at the defaults) no longer refuses the derivative path with `stem_curve_domain`. The rows are those of what the table returns there: the last knot's tangent up to G(inf), whose trait rows are G's at the knot, and G(inf) beyond it, with `dG(inf)/db = Gamma(1 + 1/c)` and a digamma row in `c`. The conductivity read past the knot has no row, since the curve there is the 1% floor for every trait. The stem table instead reads the closed form past its last knot (0.14.1), so its rows there are the closed form's; `closed_form_integral()` and `closed_form_curve()` now take a `PastLastKnot` argument naming which tail the table has, and each call site states it. Values are untouched: the golden grid is byte-identical.
+
+## A determined collar answers the derivative path
+
+Where the feasible interval collapses and the collar is held at its midpoint, `collar_at()` no longer refuses with "no operating point to place at one that is determined". The collar's rows are the mean of its two bounds' rows: the wet bound's, and the dry bound's from whichever limit closed it, the continuity root or the root's own critical potential. The stem there sits at its own optimum with the collar held, not at continuity with the draw, so `collar_coords_at()` places it at `psi_crit` with no response to the collar; placed by continuity, profit's row in `root_P50` read 0.053 where a difference of the solve gives -0.83. A stem optimum inside its interval is refused by name. Each bound's row is taken at that bound's own root, not at the midpoint where the draw was taken, up to 5e-4 MPa away: the draw is carried to the root along its slope, and the residual's slope is the supply's at the root. Taken at the midpoint, the collar's row along `psi_soil` read 0.50004 where its bounds give 0.5 exactly; now every collar row matches a difference of the solve to 2e-8.
+
+Both bounds are now polished to collar precision before the midpoint is taken, as a pinned bound already is. Left at the bracket's 1e-4 tolerance, the continuity bound sat up to 5.6e-7 MPa from its root, and a difference of the solve along `root_P50` read 0.014 where the row, and a difference of the polished solve, give -1.6e-6. So a determined collar moves by up to 2.8e-7 MPa, and a stem conductance of 1e-30, refused before as `stem_curve_domain`, is now solved as a determined point. No other point moves: the golden grid has no determined point and is byte-identical.
+
+## `uniroot()` refuses a bisection that spends its budget
+
+`uniroot()` checked `it > max_iterations`, which cannot fire: boost's `bisect` reports the iterations it used and never exceeds its budget. It now checks `>=`, as `uniroot_smooth()` does. Its one caller, the Medlyn ci solve, needs a few tens of halvings to reach `ci_abs_tol` against a default budget of 1000, so no solve that finished before refuses now.
+
+# phylloptim 0.15.2
+
+## LeastCost's cost moves with leaf temperature in its first-order condition (#167 follow-up)
+
+⚠️ **LeastCost results move with the energy balance on; with it off they are bit-identical**, and so is every other curve. LeastCost's capacity term reads `vcmax_` at the leaf temperature, so with the gate on its cost `log W` moves with `psi` through `Tleaf(E(psi))`. Until 0.15.1 the stem routes refused a non-identity link's derivative with the gate on, which hid this. 0.15.1 lifted that refusal and gave the benefit its `h'(A)`, but left out this cost slope, so LeastCost root-found the wrong first-order condition on both routes. Its derivative was 1 to 4% off a finite difference of its own objective, at every step size.
+
+`dprofit_energy_balance_term` now subtracts `beta*umol_to_mol*dVcmax/dT*dT/dpsi / W`, beside ProfitMax's thermal slope. It is cost-side, so it takes no `h'`. The derivative now matches a difference to 4e-6, the same floor as SOX. `lambda_LeastCost()` carries the same slope in `dTheta/dE`, through the new `vcmax_temp_deriv()`, as `lambda_ProfitMax()` carries its thermal term. At an interior optimum it equals `dA/dE` along the stream to 4e-6.
+
+**What moves.** The psi_stem golden file changes on LeastCost's 192 energy-balance rows, in `lambda_emergent` only, with no sign change. Its optima there do not move, because at `beta = 146` every one is pinned at a bound, which is also why no golden file saw the wrong derivative. On the collar route LeastCost pins at most drivers too; at `beta = 2` with three soil layers at 25 °C the old collar sat 0.02 MPa from a dense scan's argmax and now lands on it.
+
+## The stomatal conductance, separated from the boundary layer (#122)
+
+On the energy-balance path `gs_H2O` (and `stom_cond_CO2_`) is the TOTAL leaf-to-air conductance, `E*P/D_leaf`. The transpiration crosses the leaf boundary layer as well as the stoma, so comparing it with a measured stomatal conductance compares different quantities. Two read-only accessors separate them. `gb_H2O` is the boundary layer's conductance to vapour, `1.075 * P/(R*Tair) / ra_`, which is plantecophys's convention for a hypostomatous leaf. `gs_stomatal_H2O` is the stoma's own, `1/(1/gs_H2O - 1/gb_H2O)`.
+
+Off the energy balance there is no boundary layer: `gb_H2O` is `Inf` and `gs_stomatal_H2O` is `gs_H2O` bit for bit. On it, over 216 transpiring driver rows, the total conductance reaches 27% of the boundary layer's at 0.5 m/s wind and 13% at the default 2 m/s. At that worst row the stomatal conductance is 37% above the reported total.
+
+⚠️ **`gs_stomatal_H2O` refuses where `gs_H2O >= gb_H2O`.** Then the transpiration is more than the boundary layer can carry at that deficit, and no finite stomatal conductance exists. Hydraulics set the transpiration, so nothing in the solve prevents it. The refusal sits in the accessor rather than in the solve so that it cannot abort a run; no row of the grid above reaches it.
+
+Nothing in the solve reads either accessor, so every result is unchanged and every golden file is bit-identical. The diffusivity ratio is still the stomatal 1.67 along the whole path, which #122's third part changes separately.
+
+# phylloptim 0.15.1
+
+## SOX, JW26 and ProfitMax have an exact first-order condition with the energy balance on (#124)
+
+⚠️ **Results move on the energy-balance path for these three curves; with the gate off they are bit-identical**, and so is every identity-link curve on either path. With the energy balance on, `dA/dpsi` also runs through `Tleaf(E(psi))`. That term was written for the identity link only. On the stem routes a non-identity link refused it, so those three curves fell back to a bracket-width search. On the collar route nothing refused it: the term was added without the link's `h'(A)`, so the collar solve root-found the wrong first-order condition.
+
+The term now takes the same single `h'(A)` as the rest of `dA/dpsi`. There is no `h''` in a first derivative. ProfitMax's thermal cost `TC(Tleaf)`, the one cost that reads leaf temperature, now moves with `psi` as well. It is cost-side, so it takes no `h'`. The same slope serves `lambda_ProfitMax()`, through the new `thermal_cost_temp_deriv()`. The compensation-point branch carries both. `dprofit_dpsi_stem` no longer throws, and `dprofit_energy_balance_term` is now a template on the curve.
+
+**What moves.** On the collar route, at PPFD 1500 and Tair 25 to 35 °C, the old collar sat 0.1 to 0.16 MPa from a dense scan's argmax for SOX and JW26, and 0.5 MPa or more for ProfitMax. It now lands on the scan argmax. No golden file covers that route for these curves. On the stem routes the optimum moves by at most 5.4e-6 relative, the old search's bracket-width resolution. The psi_stem golden file changes on 92 energy-balance rows of these three curves and nowhere else, with no change of status or kind. Profit moves by at most 1.5e-10 relative, which is the objective's own noise floor from the inner `ci` solve. Argmax second differences in air temperature fall by up to 150 times.
+
+**Cost.** Gate off, the collar and stem solves are unchanged, interleaved ×3.
+
+## The closed form's own solvers refuse the energy balance (#116)
+
+**No numbers move**: all three golden files are bit-identical. #131 already made
+every deficit in `closed_form.hpp` read `vpd_leaf_` and made `Leaf::optimise_closed`
+refuse `use_energy_balance_`. What was still open was the header's own entry points
+-- `closed_form::solve`, `solve_exact_beta2`, `solve_CF77`, `solve_TF24_floor` -- which
+a bench, a test or a consumer can call directly, and which with the gate on returned a
+number rather than a refusal.
+
+That number is wrong, and **`within_guard` does not see it**. Measured against a
+4000-point argmax of the exact TF24 objective with the gate forced through, single
+layer, PPFD 900, D_air 1 kPa:
+
+| Tair | A exact | A closed form | error | `within_guard` |
+|---|---|---|---|---|
+| 25 | 16.37 | 18.76 | **+15%** | pass |
+| 30 | 11.86 | 16.37 | **+38%** | pass |
+| 35 | 4.19 | 10.28 | **+146%** | pass |
+| 40 | −3.76 | 2.94 | **+178%** | pass |
+
+Off the gate the same comparison is 0–4%. The guard tests the solution against three
+bounds and reads no driver, so a deficit out by the 3–4x `vpd_leaf_`/`atm_vpd_` ratio
+leaves ci/ca plausible. The refusal is therefore a stop in the solvers rather than a
+case in the guard, and it is ONE function, `require_prescribed_temperature`, which
+`optimise_closed` now calls as well -- so the production route and a direct call
+cannot drift on what they refuse. The header records the two repairs considered in
+#116 (a Picard pass over `D`; linearising `esat(Tleaf)`) and why neither is taken.
+
+`test_closed_form_is_prescribed_temperature_only` pins all four refusals, that
+`vpd_leaf_ == atm_vpd_` bit-for-bit off the gate, and the guard's scope: tripling
+the deficit after a solve does not change its verdict.
+
+# phylloptim 0.15.0
+
+## A new cost curve, `LeastCost`: cost per unit carbon (Prentice et al. 2014)
+
+The ninth member, and the one whose objective is not a difference. Least-cost
+minimises the cost of acquiring a unit of carbon,
+
+```
+C_P = (c_E*E + c_V*Vcmax) / A
+```
+
+which is a **ratio**. Minimising a ratio is maximising its reciprocal, and a
+logarithm separates the two factors, so it joins the family through the benefit
+link rather than through a new kind of objective:
+
+```
+max  log A - log(c_E*E + c_V*Vcmax)      h = log,  Theta = log(c_E*E + c_V*Vcmax)
+lambda = c_E*A / (c_E*E + c_V*Vcmax)
+```
+
+`h = log` is the link `SOX` and `JW26` already use. ⚠️ **It reaches that arm by a
+different route, and the sign lands elsewhere.** Those two are products `A*g`,
+whose log-cost is `-log g`; this is a ratio, whose log-cost is `+log W`. The link
+table reports `h' = 1/A` for all three; `cost_deriv` is where they differ.
+
+⚠️ **The only penalty here that carries something other than water.** Every other
+cost in this package is a function of potential alone. This one weighs
+photosynthetic capacity against transpiration, which is why its first-order
+condition reproduces Prentice et al.'s `chi` and why a light sweep on it measures
+acclimation rather than the price of water.
+
+```r
+leaf_solve(psi_soil = 0.1, PPFD = 3000, atm_vpd = 2, ca = 40, leaf_temp = 25,
+           supply = leaf_supply_singlelayer(),
+           model = "LeastCost", LeastCost_beta = 146)   # dimensionless
+```
+
+`LeastCost_beta` is `c_V/c_E`, the published unit-cost ratio. **One field is
+enough and that is not a simplification:** scaling both unit costs by `k`
+multiplies `C_P` by `k`, which moves neither the argmax nor `lambda`. ⚠️ It is
+**dimensionless**, so both fluxes are weighed in `mol m^-2 s^-1` — a beta derived
+against this package's kg H2O and umol CO2 would be out by `5.6e7`.
+
+⚠️ **Unset is refused, and so is zero** — stricter than `TF24_floor`, which
+accepts an explicit zero because zero is `TF24` there. Zero here is not a limiting
+case: it deletes the capacity term, leaving `A/E`, which rises without bound as
+transpiration falls, so the optimiser returns the wet bound for every driver set.
+
+**Checked against the published analytical solution**, which no other curve here
+has. Prentice et al.'s first-order condition is
+
+```
+(ci - Gamma*) / (ca - ci) = xi / sqrt(D),    xi = sqrt(beta*(Km + Gamma*)/1.6)
+```
+
+and the solved `chi` reproduces it to **1e-11** across `D` = 1, 2 and 4 kPa, on a
+leaf driven onto the Rubisco-limited branch with `R_d` zeroed. Doubling beta
+scales `(ci - Gamma*)/(ca - ci)` by `sqrt(2)` to eight figures. At this package's
+own co-limited defaults the agreement is within 1.3%.
+
+⚠️ **Two reasons the widely-quoted `chi = xi/(xi + sqrt(D))` does not match to
+that precision, and neither is a defect.** That form is the condition above with
+`Gamma*` dropped from the numerator, so it understates `chi` by
+`(Gamma*/ca)/(1 + xi/sqrt(D))` — 4% at 1 kPa, 8% at 4 kPa, growing with deficit.
+And the `1.6` in `xi` is the H2O:CO2 stomatal diffusion ratio, where this package
+uses **1.67**; testing against 1.6 while the solver diffuses at 1.67 leaves a 0.6%
+error. The test suite asserts the size of the first gap rather than tolerating it.
+
+**No closed form.** `method = "closed"` is refused, for the reason `SOX` and
+`JW26` are: the log link puts `A` into lambda, and `lambda -> xi -> ci -> A`
+closes into a fixed point rather than an inversion. Prentice et al. do publish one,
+but they obtain it by solving in `ci` directly, where that `A` cancels.
+
+**The collar route solves the right first-order condition on it.** The cost reads
+the upstream potential through `E`, so `cost_reads_upstream<LeastCost>()` is true
+and `cost_deriv_upstream` carries `-k_max f(psi_up) / W` (in mol); without that row
+the collar solve converges on a point that is not the maximum, with every number
+plausible (#141). `test_collar_foc_matches_profit` includes the curve, 24 points.
+
+**What a consumer sees.** `LeastCost_beta` is a new `Leaf` field and a new slot in
+the parameter enumeration, `par_LeastCost_beta` = 19, placed after
+`TF24_floor_lambda_o` so the three model-owned slots stay contiguous; the fifteen
+thermal-damage slots and `par_PPFD` move up one, `gradient::n_theta` is **35** and
+`phylloptim::n_pars` **36**. Nothing that reads the pack by name moves; a `theta`
+written out by hand must gain the entry. `leaf_solve()`, `leaf_batch()` and
+`leaf_gradient()` take `LeastCost_beta`; every other model refuses it by name, and
+`leaf_gradient()` differentiates it on `model = "LeastCost"` (the R setter writes it
+back per perturbation, as C++'s `gradient::apply()` does).
+
+⚠️ **With the energy balance on, `W` moves with leaf temperature through `vcmax_`
+and no derivative here carries that term.** On the stem routes every log-link
+derivative is already refused with the gate on and the solver scans instead, so the
+optimum is unaffected; the collar route's first-order condition omits it. The same
+class of omission the other log-link curves carry there; stated rather than fixed.
+
+# phylloptim 0.14.1
+
+## A soil drier than the stem curve's P99 is a closed leaf, not an error
+
+The stem vulnerability curve's knot grid stops at P99 (6.89 MPa at the default curve), and every read past it threw `stem_curve_domain`. On the single-potential stem routes (`leaf_supply_singlelayer()`), that made a soil drier than P99 unsolvable, although the answer there is a shut leaf, and P95 to P99 already gave it. Past the grid the stem curve now reads its closed form, `G(psi) = (b/c) gamma_lower(1/c, (psi/b)^c)`, with slope `exp(-(psi/b)^c)`, and inverts it there; the knots are seeded from the same expression, so value and slope are continuous at P99. `cumulative_vulnerability_integral_derivatives_at` likewise answers past the grid: its series holds out to `(psi/b)^c = 40`, and beyond that it returns the limit `(b/c) Gamma(1/c)` and the limit's derivatives. A negative potential, a flow below the table, and a flow at or past the curve's total `G(inf)` still raise `stem_curve_domain`. The collar route was not affected. No in-grid number moves: the operating-point, psi_stem and primitives golden files and the gradient golden file are bit-identical (#157).
+
+# phylloptim 0.14.0
+
+## Net longwave depends on air temperature and humidity (#97, #28)
+
+⚠️ **Results move on the energy-balance path; with the gate off they are bit-identical**, which is how plant runs its leaf. The net longwave was a constant, `longwave_net_offset = -40` W m⁻². With an atmospheric emissivity it runs from −144 W m⁻² at Tair 20 °C to 0 at 45 °C (at `atm_vpd` 2 kPa), so the constant was out by up to 104 W m⁻² and wrong in opposite directions at the two ends, crossing over near Tair 37 °C. It is replaced by an isothermal net radiation plus a radiative conductance:
+
+```
+ea     = esat(Tair) - atm_vpd                              in PASCALS
+ema    = min(0.642 * (ea/Tair_K)^(1/7), 1)                 Brutsaert
+Rn_iso = absorbed shortwave - (1 - ema) * sigma * Tair_K^4
+         (absorbed shortwave = alpha_PAR_ * PPFD / 4.57 + alpha_NIR_ * NIR_int_, as in 0.13.0)
+g_rad  = 4 * eps_leaf * sigma * Tair_K^3
+Tleaf  = Tair + (Rn_iso - lambda*E) / (vol_heat_cap_air/ra + g_rad)
+```
+
+**The balance is still explicit.** Linearising the leaf's own `Tleaf^4` emission about `Tair` puts it in the denominator, so `Tleaf` stays affine in `E` and `dTleaf/dE = -lambda / (g_sensible + g_radiative)` is still a constant. No inner iteration was added, the first-order conditions and their implicit-function derivatives are structurally unchanged, and `leaf_temp_from_E()` is still the one place the expression is evaluated.
+
+**What moves.** `g_rad` is 13–18% of the total conductance at the default leaf size and wind, so it pulls the leaf toward air temperature, while the longwave term cools a cool leaf much harder than −40 did and a hot one less. Solved with `find_root_collar_psi()` at PPFD 900 with daylight NIR, ψ_soil 0.5, D_air 2, on the 0.13.0 shortwave:
+
+| Tair | net longwave | Tleaf | profit | kind |
+|---|---|---|---|---|
+| 20 | −40 → −144.4 | 23.06 → 20.24 | 5.786 → 7.229 | interior |
+| 25 | −40 → −98.5 | 28.10 → 26.31 | 4.920 → 6.026 | interior |
+| 30 | −40 → −69.7 | 33.21 → 32.05 | 3.575 → 4.349 | interior |
+| 35 | −40 → −44.5 | 38.45 → 37.82 | 1.591 → 1.958 | interior |
+| 40 | −40 → −19.8 | 44.28 → 44.10 | −3.574 → −3.559 | solver-refused |
+| 45 | −40 → 0 (clamped) | 49.40 → 49.59 | −3.815 → −3.818 | shade-death |
+
+Below Tair ~40 the leaf is 0.6–2.8 K cooler at the solved point (3.0 K at zero transpiration at Tair 20) and profit is 22–25% higher. Above ~42 the two effects oppose and the longwave wins: at 45 the sky term is 40 W m⁻² warmer than the constant was, `g_rad` pulls back only part of that, and the leaf is 0.2 K warmer. No row changes kind.
+
+⚠️ **`ea` is in Pascals.** The same relation is more often quoted as `1.24*(ea/T)^(1/7)` with `ea` in hPa, and the two agree because `0.642*100^(1/7) = 1.2395`. Using 0.642 with kPa gives ~0.31 where the answer is ~0.82: finite, plausible, and it triples the longwave loss. `test_longwave_and_radiative_conductance` asserts the Pa form against the hPa one.
+
+⚠️ **The emissivity is clamped at 1, and above the clamp `Rn_` no longer responds to air temperature or humidity.** Brutsaert's fit passes unity once `ea` exceeds ~22.25 Pa K⁻¹ × Tair_K: above Tair 38.9 °C in saturated air, 43.9 °C at a 2 kPa deficit and 48.0 °C at 4 kPa. Unclamped, the isothermal longwave would turn positive (+100 W m⁻² by Tair 60 at 2 kPa), a sky heating the leaf. Clamped, the term is exactly 0, which is the correct limit, but a heatwave sweep past the clamp sees only `g_rad`'s temperature dependence. An emissivity valid at those temperatures is not part of this release.
+
+⚠️ **`ra_` is now strictly aerodynamic, and `Rn_` is the isothermal net radiation.** A caller that overwrites `ra_` after `set_drivers()` with a combined convective-plus-radiative resistance (Jones et al.'s `r_HR`, or `1/(Gbh + Grad)`) must also set `l$g_rad_ <- 0`, or the radiative conductance is counted twice: `Tleaf - Tair` and `dTleaf/dE` come out 5–7% small and nothing can detect it. Before this release a combined resistance was the right way to add radiative coupling. `g_rad_ = 0` recovers the single-resistance balance, and a test asserts it. `g_rad_` is a new R-bound field; `longwave_net_offset` is deleted.
+
+**Against Sicangco et al. (2026).** The expression reproduces theirs to 1.4e-14 over Tair 20–60 at two deficits. The range #97 quotes for theirs, −98 to −133 W m⁻², is what it gives at a fixed `ea` of 1.0 kPa (−98.41 at Tair 20, −132.05 at 40), not at a fixed `atm_vpd`: phylloptim's driver is the deficit, and at a fixed deficit `ea = esat(Tair) - atm_vpd` climbs steeply with Tair, so such a sweep is drier than `ea = 1` kPa at the cool end and far more humid at the hot end.
+
+**Cost.** With the gate on a collar solve is unchanged (interleaved ×3). With it off, `set_physiology` gains one `pow` and one `exp`, about 0.026 µs, under 1% of a `set_physiology` plus collar solve, with an identical checksum.
+
+**Golden files.** `operating_points.tsv` and `gradient_golden.tsv` are bit-identical (gate off). `primitives.tsv`: 34 of 544 values move, all `leaf_temp_from_E` and `dleaf_temp_dE` in the arithmetic tier; every other tier is exactly 0. `psi_stem_optima.tsv`: 1708 of 5184 rows move, every one with the energy balance on; all 2592 gate-off rows are byte-identical, and no row changes status or kind.
+
+# phylloptim 0.13.0
+
+## Light arrives intercepted and the leaf absorbs it
+
+The leaf's light input is now named for what it is, and absorption happens inside the leaf. Breaking: the quantum-yield trait is renamed and rebased, and the energy-balance path needs one new input.
+
+* `PPFD` (the `set_drivers()` / `leaf_solve()` driver, `set_physiology()`'s second argument, the `par_PPFD` slot) is the **intercepted** photon flux per unit leaf area: incident on the leaf, before its absorptance. Its value and units are unchanged; the documentation now says which stage of the light chain it is.
+* New leaf properties `alpha_PAR_` (0.85) and `alpha_NIR_` (0.20), the PAR and near-infrared absorptances. Settable fields, not fitted traits.
+* `a` -> `phi_J`, the quantum yield of electron transport per **absorbed** photon. Electron transport reads `phi_J * alpha_PAR_ * PPFD`. The default `0.30 / 0.85` restates the old incident-basis 0.30, so with the defaults J is unchanged to rounding. Migration:
+  * `leaf_traits(a = x)` -> `leaf_traits(phi_J = x / 0.85)`
+  * `Leaf(..., a = x, ...)` -> `Leaf(..., phi_J = x / 0.85, ...)`
+  * `l$set_traits(..., a, ...)` (8th argument) -> the same position, `phi_J = a / 0.85`
+  * `l$a` -> `l$phi_J`
+  * `leaf_gradient(pars = "a")` / gradient columns named `a` -> `"phi_J"`; the derivative is per unit `phi_J`, so `d/da = d/dphi_J / 0.85`
+  * A gas-exchange fit identifies only `phi_J * alpha_PAR_`: fix `alpha_PAR_` and the fitted `phi_J` is per absorbed photon.
+* **Energy-balance path:** net radiation is the absorbed shortwave of two intercepted bands, `Rn = alpha_PAR_ * PPFD / 4.57 + alpha_NIR_ * NIR_int_ - 40`, where it was `2 * PPFD / 4.57 - 40` (all shortwave absorbed). New per-call field `NIR_int_`, the intercepted near-infrared in W m^-2, set before `set_drivers()` like `wind_speed_`. **It has no default**, because the right one depends on the light source (about `PPFD / 4.57` in daylight, 0 under an LED), so `set_physiology()` refuses a non-finite `NIR_int_` with `use_energy_balance_` on. Off the energy-balance path it is never read. Migration: `l$use_energy_balance_ <- TRUE` -> also `l$NIR_int_ <- PPFD / 4.57` for daylight.
+* `constants.hpp`: `sw_abs_per_par` (2.0) is removed. It folded the PAR share of shortwave and an absorptance of 1 into one number.
+
+Golden files regenerated. Rows with the energy balance off move by reassociation only (operating points: 342 cells, worst 2.0e-10; psi_stem optima: 836 cells on 133 rows, worst 1.8e-10). Energy-balance rows move by the physics: with daylight NIR at the grid's PPFD of 1500, absorbed shortwave falls from 657 to 345 W m^-2 and the solved leaf temperature by a median 7.9 C (up to 14.2 C); 14 of 2592 rows change kind. The 17 `leaf_temp_from_E` primitives move for the same reason.
+
+# phylloptim 0.12.0
+
+## An optional thermal-damage layer on the leaf, off by default
+
+`Leaf$use_thermal_damage_` turns on a lasting thermal-damage model, ported from the layer plant carried in its own leaf (traitecoevo/plant#566). Three fractions of leaf area, named for what they do — functional F ⇌ impaired I → damaged D, with F = 1 − I − D — plus an acclimation state A, all driven by LEAF temperature:
+
+```
+dA/dt = acclim_alpha_ * softplus(T - acclim_T_; acclim_s_) - acclim_beta_ * A
+dI/dt = k_imp(T) * F - (k_rec_eff(T) + k_mat_) * I
+dD/dt = k_mat_ * I
+k_imp(T) = k_i_ * exp[(k_i_Ea_/R)(1/T_ref - 1/T)] * K/(1 + K),  K = exp[(impair_H_/R)(1/Tmid - 1/T)]
+```
+
+Rates are per day. The Vcmax and Jmax peaked-Arrhenius curves stay the instantaneous, fully reversible temperature response; impairment is rate-and-state and lasts until repaired, and the two share no parameter. The switch K/(1+K) has its own enthalpy `impair_H_` and midpoint `impair_Tmid_` (defaults 200 kJ mol⁻¹ and 200000/650 K, the Jmax curve's deactivation term), moved by acclimation through its own `dTimpair_max_`.
+
+- **On the solve.** The caller seats `A_`, `I_` and `D_` before each `set_drivers()`. Both capacities are scaled by F (floored at 1e-6), the Vcmax and Jmax optima move by `topt_offset_ + dTopt_max_ * A/(A + K_A_)` through the entropy term, and four maintenance costs, zero by default, are added to `R_d_`, which is otherwise not scaled. `k_imp_eff_`, `k_rec_eff_` and `functional_` are reported at the leaf's temperature; on the energy-balance path that is the operating point's.
+- **The dynamics, on the leaf.** `$damage_rates()` evaluates the right-hand side and `leaf_damage_trajectory()` integrates it over a leaf-temperature series (RK4, sub-stepped so the fastest rate × step < 0.1 and ≤ 0.25 K per step), so a leaf experiment can be fitted with this package alone. A caller integrating the states itself — plant's TF24t, which adds dilution of D by leaf turnover and growth — calls `$damage_rates()`.
+- **Gradients.** `leaf_gradient()` and `leaf_gradient_batch()` carry the layer: on a leaf with the gate on, its fifteen inputs that reach the solve (`A_`, `I_`, `D_`, `topt_offset_`, `dTopt_max_`, `K_A_`, `k_i_`, `k_i_baseline_`, `k_rec_`, `m_rep_`, `t_rep_cut_` and the four costs) are gradient parameters, appended to the enumeration (`n_theta` 19 → 34) and refused by name with the gate off. `leaf_damage_gradient()` gives the trajectory's exact forward-mode sensitivities to all sixteen dynamics parameters and the three initial states. The derivative surface (`collar_at`, `outputs_at`) and the closed form still refuse the layer.
+
+Off by default, and off it reads none of its inputs: every golden file is bit-identical, `k_imp_eff_` and `k_rec_eff_` are zero and `functional_` one.
+
+⚠️ **`n_theta` is 34 and `n_pars` 35.** A C++ caller filling `theta[gradient::n_theta]` by hand must recount: the layer's slots are read only with the gate on, but a short initialiser shifts nothing else only while it stays short.
+
+Respiration departs from the original layer on purpose: there `R_d` was `0.015 * Vcmax` after the damage discount, so a damaged leaf respired less; here `R_d` stays `R_d_25` on its Q10 (#86) and the layer only adds its costs.
+
 # phylloptim 0.10.3
 
 ## odelia is a floor, not a pin, at 0.8.0

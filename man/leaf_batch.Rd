@@ -19,14 +19,18 @@ leaf_batch(
   control = leaf_control(),
   supply = leaf_supply_multilayer(),
   CF77_lambda = NA_real_,
-  TF24_floor_lambda_o = NA_real_
+  TF24_floor_lambda_o = NA_real_,
+  LeastCost_beta = NA_real_
 )
 }
 \arguments{
 \item{psi_soil}{soil water potential, MPa, \strong{positive magnitude}. Length
 sets the number of soil layers.}
 
-\item{PPFD}{photosynthetic photon flux density, umol m^-2 s^-1}
+\item{PPFD}{INTERCEPTED photosynthetic photon flux density per unit leaf area,
+umol m^-2 s^-1: the light incident on the leaf, before its absorptance
+(\code{alpha_PAR_}). On the energy-balance path the leaf also needs \verb{$NIR_int_},
+the intercepted near-infrared in W m^-2, set before this call.}
 
 \item{soil_depth}{cumulative depth to the bottom of each layer, m. Defaults
 to 1 m layers.}
@@ -70,7 +74,15 @@ umol C (kg H2O)^-1, one per observation. Only \code{model = "CF77"} reads it;
 \item{TF24_floor_lambda_o}{the \code{TF24_floor} curve's price of water as transpiration
 goes to zero, same units, one per observation. Only \code{model = "TF24_floor"}
 reads it; \code{NA_real_} (the default) leaves it unset. That curve refuses to
-solve without one, deliberately: at zero it is \code{JS22}.}
+solve without one, deliberately: at zero it is \code{TF24}.}
+
+\item{LeastCost_beta}{least-cost theory's unit-cost ratio (Prentice et al.
+2014's beta): the cost of maintaining carboxylation capacity relative to the
+cost of transpiration, dimensionless, one per observation. Only
+\code{model = "LeastCost"} reads it; \code{NA_real_} (the default) leaves it unset.
+That curve refuses to solve without one, and refuses zero as well, since at
+zero the capacity term vanishes and what is left is water-use efficiency,
+which rises without bound as transpiration falls. The published value is 146.}
 }
 \value{
 A \code{leaf_batch} object.

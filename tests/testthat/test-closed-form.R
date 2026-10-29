@@ -348,6 +348,7 @@ test_that("everything the closed form cannot do is refused, with the reason", {
   # is a statement about the FORM, not about its accuracy.
   eb <- cf_leaf()
   eb$use_energy_balance_ <- TRUE
+  eb$NIR_int_ <- 1500 / 4.57  # daylight
   set_drivers(eb, psi_soil = 0.5, PPFD = 1500, atm_vpd = 1.0,
               root_network = series_resistance(1500))
   eb$set_model("TF24", "stem", "closed")

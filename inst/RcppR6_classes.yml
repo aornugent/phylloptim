@@ -123,7 +123,7 @@ Leaf:
       @param root_P50 ROOT potential at 50% loss of hydraulic conductivity (MPa, positive magnitude)
       @param TF24_beta2 exponent for the effect of hydraulic risk (unitless)
       @param jmax_25 maximum rate of electron transport at 25 C (umol m^-2 s^-1)
-      @param a quantum yield of photosynthetic electron transport (mol mol^-1)
+      @param phi_J quantum yield of electron transport per ABSORBED photon (mol mol^-1); J reads phi_J * alpha_PAR_ * PPFD. Was `a` (incident basis) before 0.13.0: phi_J = a / alpha_PAR_.
       @param curv_fact_elec_trans curvature factor for the light response curve (unitless)
       @param curv_fact_colim curvature factor for the colimited photosynthesis equation
       @param GSS_tol_abs absolute tolerance for the collar route's golden-section
@@ -145,7 +145,7 @@ Leaf:
       - root_P50: double
       - TF24_beta2: double
       - jmax_25: double
-      - a: double
+      - phi_J: double
       - curv_fact_elec_trans: double
       - curv_fact_colim: double
       - GSS_tol_abs: double
@@ -190,10 +190,10 @@ Leaf:
     root_b: {type: double, access: field, readonly: true, name_cpp: "roots_.root_b"}
     root_psi_crit: {type: double, access: field, readonly: true, name_cpp: "roots_.root_psi_crit"}
     TF24_beta2: {type: double, access: field, readonly: true}
-    # `a` reads badly as a field name and stays `a` anyway: it is what `set_traits()`
-    # and `leaf_traits()` call the quantum yield, and a read whose name differs from
-    # the write's cannot be round-tripped by a caller iterating over trait names.
-    a: {type: double, access: field, readonly: true}
+    # Quantum yield of electron transport per ABSORBED photon. Named as in
+    # `set_traits()` and `leaf_traits()`: a read whose name differs from the
+    # write's cannot be round-tripped by a caller iterating over trait names.
+    phi_J: {type: double, access: field, readonly: true}
     curv_fact_elec_trans: {type: double, access: field, readonly: true}
     curv_fact_colim: {type: double, access: field, readonly: true}
     TF24_cost_scale: {type: double, access: field, readonly: true}
@@ -229,6 +229,18 @@ Leaf:
     # `leaf_solve()` and `leaf_batch()` take it as an argument; on a bare `Leaf`,
     # assign the field.
     TF24_floor_lambda_o: {type: double, access: field}
+    # Least-cost's unit-cost ratio, @Prentice-2014's beta: the cost of maintaining
+    # carboxylation capacity relative to the cost of transpiration.
+    #
+    # ⚠️ NO DEFAULT, FOR A DIFFERENT REASON FROM THE ONE ABOVE. `TF24_floor` has a
+    # curve it collapses into at zero, so a missing value there would be a silent
+    # substitution; `LeastCost` has none, so a missing value is a NaN objective
+    # whose argmax is a property of the bracket and looks entirely plausible.
+    #
+    # ⚠️ DIMENSIONLESS, so both fluxes it weighs are converted to mol m^-2 s^-1
+    # first. A beta derived against this package's kg H2O and umol CO2 would be out
+    # by 5.6e7. The published value is 146.
+    LeastCost_beta: {type: double, access: field}
     # --- soil-moisture inputs for the Medlyn beta factor ----------------------
     # ⚠️ SET THESE, NOT the trailing-underscore ones. `theta_`, `theta_fc_` and
     # `theta_w_` below are WORKING COPIES: set_physiology overwrites all three from
@@ -371,6 +383,54 @@ Leaf:
     use_thermal_cost_: {type: bool, access: field}
     T50_: {type: double, access: field}
     Tcrit_: {type: double, access: field}
+    # --- ATLS thermal damage and acclimation, default OFF (plant#566) ---------
+    # A lasting damage model on three fractions of leaf area, functional F <=>
+    # impaired I -> damaged D (F = 1 - I - D), plus an acclimation state A. The
+    # states are inputs (A_, I_, D_) seated before each set_drivers(); with the gate
+    # on, the Vcmax and Jmax optima shift by topt_offset_ + dTopt_max_ * A/(A + K_A_),
+    # both capacities are scaled by F (floored at 1e-6), and four maintenance costs
+    # are added to R_d_. The dynamics are $damage_rates() and $damage_trajectory();
+    # see leaf_damage_trajectory(). The impairment rate is k_i_ (at k_i_Tref_,
+    # sensitivity k_i_Ea_) times a switch K/(1+K) with its OWN impair_H_ and
+    # impair_Tmid_ (moved by topt_offset_ + dTimpair_max_ * A/(A + K_A_)),
+    # independent of the Vcmax and Jmax curves. Every rate is per DAY and every
+    # temperature the LEAF's. leaf_gradient(), leaf_gradient_batch() and the closed
+    # form refuse a leaf with the gate on. See `use_thermal_damage_` in
+    # leaf_model.hpp.
+    use_thermal_damage_: {type: bool, access: field}
+    topt_offset_: {type: double, access: field}
+    impair_H_: {type: double, access: field}
+    impair_Tmid_: {type: double, access: field}
+    k_i_: {type: double, access: field}
+    k_i_Ea_: {type: double, access: field}
+    k_i_Tref_: {type: double, access: field}
+    k_i_baseline_: {type: double, access: field}
+    k_rec_: {type: double, access: field}
+    m_rep_: {type: double, access: field}
+    t_rep_cut_: {type: double, access: field}
+    k_mat_: {type: double, access: field}
+    acclim_alpha_: {type: double, access: field}
+    acclim_beta_: {type: double, access: field}
+    acclim_T_: {type: double, access: field}
+    acclim_s_: {type: double, access: field}
+    dTopt_max_: {type: double, access: field}
+    dTimpair_max_: {type: double, access: field}
+    K_A_: {type: double, access: field}
+    A_: {type: double, access: field}
+    I_: {type: double, access: field}
+    D_: {type: double, access: field}
+    c_acclim_maint_: {type: double, access: field}
+    c_repair_maint_: {type: double, access: field}
+    c_protect_maint_: {type: double, access: field}
+    c_repair_flux_: {type: double, access: field}
+    # OUTPUTS, written by every set_drivers() and by the solve at the leaf
+    # temperature it reports: the impairment and repair rates there (day^-1), zero
+    # with the gate off, and the functional fraction F that scaled the capacities,
+    # one with the gate off. Read-only, so a write cannot outlive the next solve
+    # unnoticed.
+    k_imp_eff_: {type: double, access: field, readonly: true}
+    k_rec_eff_: {type: double, access: field, readonly: true}
+    functional_: {type: double, access: field, readonly: true}
     # Points used to scan the supply stream for |A|max. Sicangco use 500-600.
     # Cells the single-layer optimisers scan before refining, so a maximum at
     # full closure or past a second hump is reachable. 64 matches a 2001-point
@@ -378,8 +438,20 @@ Leaf:
     boundary_scan_n_: {type: int, access: field}
     d_: {type: double, access: field}
     wind_speed_: {type: double, access: field}
+    # Leaf absorptances and the intercepted near-infrared (energy balance only).
+    alpha_PAR_: {type: double, access: field}
+    alpha_NIR_: {type: double, access: field}
+    NIR_int_: {type: double, access: field}
+    # The energy balance's radiation budget. set_drivers() re-seats all four, so
+    # a caller supplying its own budget assigns them AFTER every set_drivers().
+    # Rn_ is the ISOTHERMAL net radiation (W m^-2); g_rad_ the linearised
+    # longwave conductance (W m^-2 K^-1); ra_ the AERODYNAMIC resistance only
+    # (s m^-1). ⚠️ Injecting a combined convective-plus-radiative resistance
+    # into ra_ (Jones et al.'s r_HR, or 1/(Gbh + Grad)) double-counts the
+    # radiative path unless you also set `l$g_rad_ <- 0`.
     Tair_: {type: double, access: field}
     Rn_: {type: double, access: field}
+    g_rad_: {type: double, access: field}
     ra_: {type: double, access: field}
 
     # --- Medlyn stomatal-conductance model (plant develop #450) --------------
@@ -448,6 +520,13 @@ Leaf:
     # literature record gs to water; the model solves for gs to CO2. An accessor, not
     # stored state (hazard 5).
     gs_H2O: {type: double, access: member, name_cpp: stom_cond_H2O}
+    # On the energy-balance path gs_H2O is the TOTAL leaf-to-air conductance; these
+    # two separate it (#122). gb_H2O is the boundary layer's conductance to vapour,
+    # Inf off that path. gs_stomatal_H2O is the stoma's own, 1/(1/gs_H2O - 1/gb_H2O),
+    # equal to gs_H2O off the path, and an error where gs_H2O >= gb_H2O. Accessors,
+    # not stored state (hazard 5), and read-only.
+    gb_H2O: {type: double, access: member, name_cpp: boundary_layer_cond_H2O}
+    gs_stomatal_H2O: {type: double, access: member, name_cpp: stom_cond_stomatal_H2O}
 
     # The H2O:CO2 stomatal diffusion ratio (#50). 1.67 here; Medlyn et al. (2011) and
     # the g1 literature use 1.6, and `g1_eff` exists to be compared against those.
@@ -515,7 +594,7 @@ Leaf:
       args: [stem_P50: double]
     set_traits:
       return_type: void
-      args: [vcmax_25: double, stem_c: double, stem_P50: double, root_c: double, root_P50: double, TF24_beta2: double, jmax_25: double, a: double, curv_fact_elec_trans: double, curv_fact_colim: double, TF24_cost_scale: double, R_d_25: double, JS22_gamma: double, CMax_a: double, CMax_b: double]
+      args: [vcmax_25: double, stem_c: double, stem_P50: double, root_c: double, root_P50: double, TF24_beta2: double, jmax_25: double, phi_J: double, curv_fact_elec_trans: double, curv_fact_colim: double, TF24_cost_scale: double, R_d_25: double, JS22_gamma: double, CMax_a: double, CMax_b: double]
 
     # --- transpiration and conductance ---------------------------------------
     proportion_of_conductivity:
@@ -837,6 +916,34 @@ Leaf:
     profitmax_curve:
       return_type: "std::vector<double>"
       args: [n: int]
+
+    # --- the ATLS thermal-damage layer's dynamics ------------------------------
+    # {dA/dt, dI/dt, dD/dt} per day at a leaf temperature and a state, and the
+    # states integrated over a leaf-temperature series (column-major A, I, D).
+    # Neither reads the gate, the members A_/I_/D_ or the drivers.
+    damage_rates:
+      return_type: "std::vector<double>"
+      args: [leaf_temp: double, A: double, I: double, D: double]
+    damage_trajectory:
+      return_type: "std::vector<double>"
+      args: [times: "const std::vector<double>&", leaf_temp: "const std::vector<double>&", A0: double, I0: double, D0: double]
+    # Exact forward-mode sensitivities of that trajectory: time fastest, then state
+    # (A, I, D), then input; `which` is 0-based into damage_par_names().
+    damage_trajectory_gradient:
+      return_type: "std::vector<double>"
+      args: [times: "const std::vector<double>&", leaf_temp: "const std::vector<double>&", A0: double, I0: double, D0: double, which: "const std::vector<int>&"]
+    damage_par_names:
+      return_type: "std::vector<std::string>"
+
+    # --- the ATLS thermal-damage layer's two smooth switches -----------------
+    # Argument-clamped so they stay finite. Static in C++; bound so a caller's
+    # acclimation forcing can use the functions the leaf does.
+    logistic_:
+      return_type: double
+      args: [x: double]
+    softplus_:
+      return_type: double
+      args: [x: double, s: double]
 
     # --- Medlyn stomatal-conductance model (plant develop #450) --------------
     medlyn_model_gs:
