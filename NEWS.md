@@ -1,5 +1,15 @@
 # phylloptim 0.15.1
 
+## SOX, JW26 and ProfitMax have an exact first-order condition with the energy balance on (#124)
+
+⚠️ **Results move on the energy-balance path for these three curves; with the gate off they are bit-identical**, and so is every identity-link curve on either path. With the energy balance on, `dA/dpsi` also runs through `Tleaf(E(psi))`. That term was written for the identity link only. On the stem routes a non-identity link refused it, so those three curves fell back to a bracket-width search. On the collar route nothing refused it: the term was added without the link's `h'(A)`, so the collar solve root-found the wrong first-order condition.
+
+The term now takes the same single `h'(A)` as the rest of `dA/dpsi`. There is no `h''` in a first derivative. ProfitMax's thermal cost `TC(Tleaf)`, the one cost that reads leaf temperature, now moves with `psi` as well. It is cost-side, so it takes no `h'`. The same slope serves `lambda_ProfitMax()`, through the new `thermal_cost_temp_deriv()`. The compensation-point branch carries both. `dprofit_dpsi_stem` no longer throws, and `dprofit_energy_balance_term` is now a template on the curve.
+
+**What moves.** On the collar route, at PPFD 1500 and Tair 25 to 35 °C, the old collar sat 0.1 to 0.16 MPa from a dense scan's argmax for SOX and JW26, and 0.5 MPa or more for ProfitMax. It now lands on the scan argmax. No golden file covers that route for these curves. On the stem routes the optimum moves by at most 5.4e-6 relative, the old search's bracket-width resolution. The psi_stem golden file changes on 92 energy-balance rows of these three curves and nowhere else, with no change of status or kind. Profit moves by at most 1.5e-10 relative, which is the objective's own noise floor from the inner `ci` solve. Argmax second differences in air temperature fall by up to 150 times.
+
+**Cost.** Gate off, the collar and stem solves are unchanged, interleaved ×3.
+
 ## The closed form's own solvers refuse the energy balance (#116)
 
 **No numbers move**: all three golden files are bit-identical. #131 already made

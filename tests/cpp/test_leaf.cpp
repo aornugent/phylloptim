@@ -1931,11 +1931,13 @@ void test_g1_eff() {
 // anything set_physiology decides.
 phylloptim::Leaf make_pm_leaf(const Drivers &d, std::vector<double> psi_soil,
                         std::vector<double> soil_depth, bool gate,
-                        double wind_speed = 2.0, double leaf_dim = 0.05) {
+                        double wind_speed = 2.0, double leaf_dim = 0.05,
+                        bool thermal_cost = false) {
   phylloptim::Leaf l;
   l.setup_transpiration(100);
   l.setup_root_vulnerability(100);
   l.use_energy_balance_ = gate;
+  l.use_thermal_cost_ = thermal_cost;
   l.wind_speed_ = wind_speed;
   l.d_ = leaf_dim;
   // Daylight: the NIR band carries as much energy as the PAR band.
@@ -5043,6 +5045,417 @@ void test_profitmax_thermal_cost() {
 }
 
 // ===========================================================================
+// The benefit link with the energy balance on (#124)
+// ---------------------------------------------------------------------------
+// With the gate on, dA/dpsi has a second path, through Tleaf(E(psi)), and a
+// non-identity link takes the same single h'(A) on it; ProfitMax's thermal
+// cost, the one cost that reads Tleaf, moves with psi the same way and takes
+// none. Four checks, each on all three linked curves with the gate on:
+//
+//   1. dprofit_dpsi_stem against a swept-step difference of each curve's own
+//      objective -- log of the product for the two log links, the normalised
+//      profit for ProfitMax;
+//   2. the same derivative as h'(A) times the identity link's dA/dpsi minus
+//      dC/dpsi, with dA/dpsi read off a zero-cost curve: the vignette's
+//      link-identity chunk with the gate on, so the h' factor is checked against
+//      something other than itself;
+//   3. the solved stem optimum is a ROOT of dJ/dpsi, which a bracket-width
+//      search does not give;
+//   4. the collar route's first-order condition against a difference of the
+//      profit it reports, both gate states. A temperature term added without
+//      its h' converges there to a point that is not the maximum, with every
+//      reported number plausible, so only this comparison sees it.
+
+// Thresholds that put the thermal cost on its steep flank at 25 C air. At the
+// class defaults (Sicangco's heatwave pair, T50 50.4) the cost is ~1e-5 wherever
+// assimilation is positive under these drivers -- every hotter row sits at the
+// compensation point -- so the term would be compiled and never exercised.
+const double kLiveT50 = 32.0, kLiveTcrit = 28.0;
+
+// A single-potential leaf with the energy balance and the wind model configured
+// before set_physiology, as make_pm_leaf does for the layered supply. With `tc`
+// the thermal cost is on at the live thresholds above.
+phylloptim::Leaf make_linked_eb_leaf(const Drivers &d, double psi_soil, bool tc) {
+  phylloptim::Leaf l;
+  l.setup_transpiration(100);
+  l.setup_root_vulnerability(100);
+  l.use_energy_balance_ = true;
+  l.use_thermal_cost_ = tc;
+  if (tc) {
+    l.T50_ = kLiveT50;
+    l.Tcrit_ = kLiveTcrit;
+  }
+  l.wind_speed_ = 2.0;
+  l.d_ = 0.05;
+  l.set_supply_single(0.0);
+  l.NIR_int_ = d.PPFD / phylloptim::umol_par_per_joule;
+  phylloptim::RootNetwork rn;
+  rn.r_R_V_sum = std::vector<double>{1.0e3};
+  rn.r_R_H_min = std::vector<double>{0.0};
+  rn.r_R_V = std::vector<double>{1.0e3};
+  rn.c_r_V = std::vector<double>{0.0};
+  rn.c_r_H = std::vector<double>{0.0};
+  l.set_physiology(rn, d.PPFD, {psi_soil}, {1.0}, d.K_s * d.theta / d.h,
+                   d.atm_vpd, d.ca, d.leaf_temp, d.atm_o2_kpa, d.atm_kpa);
+  return l;
+}
+
+// The objective whose derivative dprofit_dpsi_stem<K> IS: the log of the product
+// for the two log links, the reported profit for everything else. NaN where the
+// log form does not exist, which the callers skip.
+template <phylloptim::Leaf::CostCurve K>
+double linked_objective(phylloptim::Leaf &l, double psi_stem, double psi_soil) {
+  const double v = l.template profit_psi_stem_for<K>(psi_stem, psi_soil);
+  if constexpr (phylloptim::Leaf::benefit_link<K>() ==
+                phylloptim::Leaf::BenefitLink::Log) {
+    return v > 0.0 ? std::log(v) : std::numeric_limits<double>::quiet_NaN();
+  } else {
+    return v;
+  }
+}
+
+// Seeds ProfitMax's normalisers, which its derivative reads through h'; a no-op
+// on every other curve. False where the curve has no objective to differentiate.
+template <phylloptim::Leaf::CostCurve K>
+bool seed_linked_curve(phylloptim::Leaf &l) {
+  if constexpr (K == phylloptim::Leaf::CostCurve::ProfitMax) {
+    l.template optimise_psi_stem_single<K>();
+    return l.profitmax_A_max() > 0.0 && l.profitmax_k_span_ > 0.0;
+  } else {
+    return true;
+  }
+}
+
+template <phylloptim::Leaf::CostCurve K>
+int check_linked_eb_derivative_fd(const Drivers &d, bool tc, double psi_soil,
+                                  double &worst, int &thermal_rows,
+                                  int &compensation_rows, bool print_v) {
+  const std::string name =
+      phylloptim::Leaf::curve_name(static_cast<int>(K)) + (tc ? "+TC" : "") +
+      " at Tair " + std::to_string(static_cast<int>(d.leaf_temp));
+  phylloptim::Leaf l = make_linked_eb_leaf(d, psi_soil, tc);
+  if (!seed_linked_curve<K>(l)) {
+    return 0;
+  }
+  int rows = 0;
+  // The error is read against the derivative's own scale across the bracket,
+  // not against its value at the point: near the optimum dJ/dpsi passes through
+  // zero, and a relative error there grows without the absolute one moving.
+  const double fracs[] = {0.15, 0.35, 0.55, 0.75};
+  double scale = 0.0;
+  for (double frac : fracs) {
+    bool f = false;
+    const double v = l.template dprofit_dpsi_stem<K>(
+        psi_soil + frac * (l.psi_crit - psi_soil), psi_soil, &f);
+    if (std::isfinite(v)) {
+      scale = std::max(scale, std::abs(v));
+    }
+  }
+  for (double frac : fracs) {
+    const double psi = psi_soil + frac * (l.psi_crit - psi_soil);
+    bool feasible = false;
+    const double an = l.template dprofit_dpsi_stem<K>(psi, psi_soil, &feasible);
+    // An infeasible row is the compensation-point branch, where the derivative
+    // is still a number (ProfitMax's scaled link) or the 0.0 sentinel (a log
+    // link has none at A < 0). Only the number is comparable.
+    if (!std::isfinite(an) || (!feasible && an == 0.0)) {
+      continue;
+    }
+    if (!feasible) {
+      ++compensation_rows;
+    }
+    // ⚠️ THE STEP IS SWEPT, NOT PICKED (hazard 15). The differenced objective
+    // runs through the ci root-find AND the leaf-temperature balance, so its
+    // noise floor is not the gate-off test's, and only the floor of the V is a
+    // derivative. The V is printed for one configuration so the floor is read
+    // rather than assumed.
+    double best = std::numeric_limits<double>::infinity();
+    std::string v;
+    for (double h : {1e-5, 1e-4, 1e-3, 1e-2}) {
+      const double fd = (linked_objective<K>(l, psi + h, psi_soil) -
+                         linked_objective<K>(l, psi - h, psi_soil)) /
+                        (2.0 * h);
+      if (!std::isfinite(fd)) {
+        continue;
+      }
+      const double err = std::abs(an - fd) / scale;
+      best = std::min(best, err);
+      char buf[48];
+      snprintf(buf, sizeof buf, "  %.0e: %.1e", h, err);
+      v += buf;
+    }
+    if (!std::isfinite(best)) {
+      continue;
+    }
+    if (print_v) {
+      printf("    %s, frac %.2f, error/scale by step:%s\n", name.c_str(), frac,
+             v.c_str());
+    }
+    ok(best < 2e-4, name + " dprofit at frac=" + std::to_string(frac) +
+                        " matches a difference at the floor of its V");
+    worst = std::max(worst, best);
+    // Tleaf_ is written by every objective evaluation, so this reads the last
+    // point differenced; a live thermal cost there means the term was exercised.
+    if (tc && l.thermal_cost_at(l.Tleaf_) > 1e-2) {
+      ++thermal_rows;
+    }
+    ++rows;
+  }
+  return rows;
+}
+
+void test_linked_dprofit_with_energy_balance_matches_a_finite_difference() {
+  printf("linked curves, energy balance on: dprofit/dpsi_stem against a "
+         "swept-step difference of the objective\n");
+  using CC = phylloptim::Leaf::CostCurve;
+  double worst = 0.0;
+  int rows = 0, thermal_rows = 0, compensation_rows = 0;
+  // 25 and 30 C air give interior rows; at 45 C every row under these drivers
+  // is at the compensation point, which is the other branch the link reaches.
+  for (double tair : {25.0, 30.0, 45.0}) {
+    Drivers d;
+    d.PPFD = 1500.0;
+    d.leaf_temp = tair;
+    for (bool tc : {false, true}) {
+      const bool print_v = (tair == 25.0 && tc);
+      rows += check_linked_eb_derivative_fd<CC::SOX>(
+          d, tc, 1.0, worst, thermal_rows, compensation_rows, print_v);
+      rows += check_linked_eb_derivative_fd<CC::JW26>(
+          d, tc, 1.0, worst, thermal_rows, compensation_rows, false);
+      rows += check_linked_eb_derivative_fd<CC::ProfitMax>(
+          d, tc, 1.0, worst, thermal_rows, compensation_rows, print_v);
+    }
+  }
+  printf("    %d rows (%d on the compensation branch) | worst error/scale at "
+         "the floor %.3e | %d rows with a live thermal cost\n",
+         rows, compensation_rows, worst, thermal_rows);
+  ok(rows - compensation_rows >= 36, "enough interior rows were compared");
+  ok(compensation_rows >= 4,
+     "the compensation-point branch was compared too (hazard 16)");
+  ok(thermal_rows >= 12,
+     "the thermal-cost term was exercised, not only compiled (hazard 16)");
+}
+
+void test_linked_dprofit_with_energy_balance_is_the_identity_link_scaled() {
+  printf("linked curves, energy balance on: dJ/dpsi is h'(A) dA/dpsi - dC/dpsi, "
+         "dA/dpsi from a zero-cost curve\n");
+  using CC = phylloptim::Leaf::CostCurve;
+  const double psi_soil = 1.0;
+  int rows = 0;
+  double worst = 0.0;
+  for (double tair : {25.0, 30.0}) {
+    Drivers d;
+    d.PPFD = 1500.0;
+    d.leaf_temp = tair;
+    for (bool tc : {false, true}) {
+      phylloptim::Leaf l = make_linked_eb_leaf(d, psi_soil, tc);
+      if (!seed_linked_curve<CC::ProfitMax>(l)) {
+        continue;
+      }
+      // A zero unit cost: dC/dpsi is exactly 0, so JS22's derivative IS dA/dpsi,
+      // the temperature path included -- the vignette's link-identity device.
+      l.JS22_gamma = 0.0;
+      for (double frac : {0.15, 0.45, 0.75}) {
+        const double psi = psi_soil + frac * (l.psi_crit - psi_soil);
+        bool fa = false;
+        const double dA = l.dprofit_dpsi_stem<CC::JS22>(psi, psi_soil, &fa);
+        if (!fa) {
+          continue;
+        }
+        // Seat the operating point the derivative was taken at: A, E and Tleaf.
+        l.profit_psi_stem_for<CC::JS22>(psi, psi_soil);
+        const double A = l.assim_colimited_;
+        if (!(A > 0.0)) {
+          continue;
+        }
+        // The thermal cost's own slope along psi, for ProfitMax's cost side.
+        double dT_dE = 0.0;
+        l.leaf_temp_from_E(l.transpiration_, &dT_dE);
+        const double dTC_dpsi = l.thermal_cost_temp_deriv(l.Tleaf_) * dT_dE *
+                                l.leaf_specific_conductance_max_ *
+                                l.stem_curve_integral_deriv(psi);
+        auto check = [&](auto tag, double h_prime, double dC, const char *nm) {
+          constexpr CC K = decltype(tag)::value;
+          bool f = false;
+          const double lhs = l.template dprofit_dpsi_stem<K>(psi, psi_soil, &f);
+          if (!f) {
+            return;
+          }
+          const double rhs = h_prime * dA - dC;
+          // Against the scale of the two terms rather than their sum, which
+          // cancels at the optimum; the points are away from it regardless.
+          const double scale = std::max(std::abs(h_prime * dA), std::abs(dC));
+          const double err = std::abs(lhs - rhs) / scale;
+          worst = std::max(worst, err);
+          ok(err <= 1e-10, std::string(nm) + (tc ? "+TC" : "") + " at Tair " +
+                               std::to_string(static_cast<int>(tair)) +
+                               " frac " + std::to_string(frac) +
+                               ": dJ/dpsi is h'(A) dA/dpsi - dC/dpsi");
+          ++rows;
+        };
+        check(std::integral_constant<CC, CC::SOX>{}, 1.0 / A,
+              l.cost_deriv<CC::SOX>(psi, psi_soil), "SOX");
+        check(std::integral_constant<CC, CC::JW26>{}, 1.0 / A,
+              l.cost_deriv<CC::JW26>(psi, psi_soil), "JW26");
+        check(std::integral_constant<CC, CC::ProfitMax>{},
+              1.0 / l.profitmax_A_max(),
+              l.cost_deriv<CC::ProfitMax>(psi, psi_soil) + dTC_dpsi,
+              "ProfitMax");
+      }
+    }
+  }
+  printf("    %d rows | worst relative error %.3e\n", rows, worst);
+  ok(rows >= 30, "enough rows reached the identity (hazard 16)");
+}
+
+void test_linked_optimum_with_energy_balance_is_stationary() {
+  printf("linked curves, energy balance on: the solved stem optimum is a root of "
+         "dJ/dpsi\n");
+  using CC = phylloptim::Leaf::CostCurve;
+  int rows = 0, pinned = 0;
+  double worst = 0.0;
+  auto one = [&](auto tag, const Drivers &d, double psi_soil, bool tc) {
+    constexpr CC K = decltype(tag)::value;
+    phylloptim::Leaf l = make_linked_eb_leaf(d, psi_soil, tc);
+    l.template optimise_psi_stem_single<K>();
+    if constexpr (K == CC::ProfitMax) {
+      if (!(l.profitmax_A_max() > 0.0)) {
+        return;
+      }
+    }
+    const double psi = l.opt_psi_stem_;
+    if (psi <= psi_soil + 1e-6 || psi >= l.psi_crit - 1e-6) {
+      ++pinned;  // a constrained optimum: the gradient is honestly non-zero
+      return;
+    }
+    bool f = false;
+    const double at = l.template dprofit_dpsi_stem<K>(psi, psi_soil, &f);
+    if (!f) {
+      return;
+    }
+    // Scaled by the derivative's own magnitude across the bracket, so the bound
+    // means "small compared with what this function returns here".
+    const double width = l.psi_crit - psi_soil;
+    const double scale = std::max(
+        std::abs(l.template dprofit_dpsi_stem<K>(psi_soil + 0.1 * width,
+                                                 psi_soil, &f)),
+        std::abs(l.template dprofit_dpsi_stem<K>(psi_soil + 0.9 * width,
+                                                 psi_soil, &f)));
+    const double resid = std::abs(at) / scale;
+    worst = std::max(worst, resid);
+    ok(resid < 1e-9, phylloptim::Leaf::curve_name(static_cast<int>(K)) +
+                         (tc ? "+TC" : "") + " at Tair " +
+                         std::to_string(static_cast<int>(d.leaf_temp)) +
+                         " psi_soil " + std::to_string(psi_soil) +
+                         ": |dJ/dpsi| at the optimum is at the solver floor");
+    ++rows;
+  };
+  for (double tair : {25.0, 30.0}) {
+    Drivers d;
+    d.PPFD = 1500.0;
+    d.leaf_temp = tair;
+    for (double psi_soil : {0.5, 1.0, 2.0}) {
+      for (bool tc : {false, true}) {
+        one(std::integral_constant<CC, CC::SOX>{}, d, psi_soil, tc);
+        one(std::integral_constant<CC, CC::JW26>{}, d, psi_soil, tc);
+        one(std::integral_constant<CC, CC::ProfitMax>{}, d, psi_soil, tc);
+      }
+    }
+  }
+  printf("    %d interior rows (%d pinned) | worst |dJ/dpsi| relative to its "
+         "scale %.3e\n",
+         rows, pinned, worst);
+  ok(rows >= 12, "enough interior optima were checked (hazard 16)");
+}
+
+// The collar route for the linked curves, both gate states. Against a difference
+// of the profit the solve REPORTS: the product for the log links, so the
+// derivative -- which is of the log -- is compared with a difference of log P.
+template <phylloptim::Leaf::CostCurve K>
+int check_collar_foc_matches_profit_linked(const Drivers &d, bool eb, bool tc,
+                                           double &worst) {
+  const struct {
+    std::vector<double> psi;
+    std::vector<double> depth;
+  } soils[] = {{{1.0}, {1.0}}, {{1.0, 2.0, 3.0}, {0.5, 1.0, 1.5}}};
+  constexpr bool log_link = phylloptim::Leaf::benefit_link<K>() ==
+                            phylloptim::Leaf::BenefitLink::Log;
+  int compared = 0;
+  for (const auto &s : soils) {
+    phylloptim::Leaf l = make_pm_leaf(d, s.psi, s.depth, eb, 2.0, 0.05, tc);
+    if (tc) {
+      l.T50_ = kLiveT50;
+      l.Tcrit_ = kLiveTcrit;
+    }
+    l.set_model(K, true);
+    l.optimise();
+    if constexpr (K == phylloptim::Leaf::CostCurve::ProfitMax) {
+      if (!(l.profitmax_A_max() > 0.0)) {
+        continue;
+      }
+    }
+    const double p0 = l.opt_root_psi_;
+    if (!std::isfinite(p0)) {
+      continue;
+    }
+    for (double target : {p0 - 0.05, p0 - 0.1}) {
+      const double eps = 1e-5;
+      bool f = false;
+      const double analytic =
+          l.template dprofit_droot_collar_psi_for<K>(target, &f);
+      if (!f || !std::isfinite(analytic)) {
+        continue;
+      }
+      double up = l.template evaluate_root_collar_psi_for<K>(target + eps);
+      double dn = l.template evaluate_root_collar_psi_for<K>(target - eps);
+      if (!std::isfinite(up) || !std::isfinite(dn)) {
+        continue;
+      }
+      if constexpr (log_link) {
+        if (!(up > 0.0 && dn > 0.0)) {
+          continue;
+        }
+        up = std::log(up);
+        dn = std::log(dn);
+      }
+      const double fd = (up - dn) / (2 * eps);
+      const double err = std::abs(analytic - fd) / std::max(1.0, std::abs(fd));
+      worst = std::max(worst, err);
+      near(analytic, fd, 1e-4,
+           phylloptim::Leaf::curve_name(static_cast<int>(K)) +
+               (tc ? "+TC" : "") + " eb=" + std::to_string(int(eb)) +
+               " at collar " + std::to_string(target) + ", " +
+               std::to_string(s.psi.size()) + " layer(s)");
+      ++compared;
+    }
+  }
+  return compared;
+}
+
+void test_collar_foc_matches_profit_linked_curves() {
+  printf("collar dprofit is the derivative of the reported profit, linked curves, "
+         "both gate states\n");
+  using CC = phylloptim::Leaf::CostCurve;
+  Drivers d;
+  d.PPFD = 1500.0;
+  d.leaf_temp = 25.0;
+  int compared = 0;
+  double worst_off = 0.0, worst_on = 0.0;
+  for (bool eb : {false, true}) {
+    double &worst = eb ? worst_on : worst_off;
+    for (bool tc : {false, true}) {
+      compared += check_collar_foc_matches_profit_linked<CC::SOX>(d, eb, tc, worst);
+      compared += check_collar_foc_matches_profit_linked<CC::JW26>(d, eb, tc, worst);
+      compared +=
+          check_collar_foc_matches_profit_linked<CC::ProfitMax>(d, eb, tc, worst);
+    }
+  }
+  printf("    %d points compared | worst |error| gate off %.3e, gate on %.3e\n",
+         compared, worst_off, worst_on);
+  ok(compared >= 36, "enough points were compared on each route (hazard 16)");
+}
+
+// ===========================================================================
 // The closed form as a SELECTABLE METHOD -- the third axis of set_model()
 // ---------------------------------------------------------------------------
 // Three things this has to get right, and none of them is about accuracy (which
@@ -7335,11 +7748,21 @@ void test_thermal_damage_fd_helpers_restore_the_block() {
   ok(thermal_block(l) == before, "respiration_temp_deriv restores all eleven");
   ok(std::isfinite(dRd), "respiration_temp_deriv is finite");
 
-  const double term = l.dprofit_energy_balance_term(
+  using CC = phylloptim::Leaf::CostCurve;
+  const double term = l.dprofit_energy_balance_term<CC::TF24>(
       l.ci_, l.stom_cond_CO2_, 1.0, 1e-5, 1.0, 0.1, 0.1, 0.1, 1.0, -1e3,
       l.Tleaf_ + 2.0);
   ok(std::isfinite(term), "dprofit_energy_balance_term is finite");
   ok(thermal_block(l) == before, "dprofit_energy_balance_term restores all eleven");
+  // The linked arm evaluates A after the restore, so it must leave the same
+  // eleven in place too.
+  const double linked = l.dprofit_energy_balance_term<CC::ProfitMax>(
+      l.ci_, l.stom_cond_CO2_, 1.0, 1e-5, 1.0, 0.1, 0.1, 0.1, 1.0, -1e3,
+      l.Tleaf_ + 2.0);
+  ok(std::isfinite(linked) || std::isnan(linked),
+     "the linked dprofit_energy_balance_term evaluates");
+  ok(thermal_block(l) == before,
+     "and the linked arm restores all eleven as well");
 
   // The repair-flux cost reads k_rec_eff(T), so it reaches dR_d/dT: the
   // derivative moves with that coefficient, at a temperature where repair is
@@ -7577,6 +8000,10 @@ int main() {
   test_profitmax_is_a_constant_lambda_objective();
   test_profitmax_normalisation();
   test_profitmax_thermal_cost();
+  test_linked_dprofit_with_energy_balance_matches_a_finite_difference();
+  test_linked_dprofit_with_energy_balance_is_the_identity_link_scaled();
+  test_linked_optimum_with_energy_balance_is_stationary();
+  test_collar_foc_matches_profit_linked_curves();
   test_closed_form_is_a_selectable_method();
   test_closed_form_is_prescribed_temperature_only();
   test_single_layer_optimisers_clear_collar_state();

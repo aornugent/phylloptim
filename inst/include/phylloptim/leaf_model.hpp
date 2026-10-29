@@ -1885,6 +1885,12 @@ public:
   //                                                   log(c_E E + c_V V))
   //     Scaled    h(A) = A/|A|max     h' = 1/|A|max   ProfitMax
   //
+  // With the energy balance on, dA/dpsi also runs through Tleaf(E(psi)). That
+  // path is part of dA/dpsi and takes the same single h': there is no h'' in a
+  // first derivative, because h'(A) is never itself differentiated. The one
+  // cost that reads Tleaf, ProfitMax's thermal term, is cost-side and takes
+  // none. Both live in `dprofit_energy_balance_term`.
+  //
   // ⚠️ THE LINK IS NOT ONLY ON THE BENEFIT, AND READING IT THAT WAY IS THE NATURAL
   // MISTAKE. For the two product curves the COST is stored in log form as well --
   // `C = -log g` -- so `h(A) - C` is `log(A*g)`, the transform of the whole
@@ -2220,9 +2226,12 @@ public:
   // gradient evaluation, silently -- the same failure mode `photo_temp_key()`
   // guards for the cache. dprofit_energy_balance_term restores the same eleven.
   double respiration_temp_deriv(double leaf_temp);
-  // The energy-balance correction to the above, zero when the gate is off. Kept
-  // out of line so that adding it cannot change FMA contraction in the inlined
-  // gate-off path; the derivation and the two sign checks are at the definition.
+  // The energy-balance contribution to dJ/dpsi, zero when the gate is off: the
+  // benefit's motion through Tleaf(E(psi)) under the curve's link, plus, for
+  // ProfitMax, the thermal cost's. Kept out of line so that adding it cannot
+  // change FMA contraction in the inlined gate-off path; the derivation and the
+  // two sign checks are at the definition.
+  template <CostCurve K>
   double dprofit_energy_balance_term(double ci, double gc, double g_ci,
                                      double inv_atm, double gc_const,
                                      double A_prime, double dgc_dpsistem,
@@ -2953,6 +2962,9 @@ public:
   // The instantaneous thermal cost at a leaf temperature, in [0,1]. Zero when the
   // gate is off, so callers need not branch.
   double thermal_cost_at(double leaf_temp) const;
+  // Its slope in leaf temperature, r*TC*(1 - TC) with r = 2/(T50 - Tcrit): the
+  // sigmoid's own derivative. Zero when the gate is off, like thermal_cost_at.
+  double thermal_cost_temp_deriv(double leaf_temp) const;
 
   // --- the ATLS thermal-damage layer's pieces (see use_thermal_damage_) --------
   // Every exponential argument is clamped to [-30, 30], and every shifted optimum
@@ -4317,12 +4329,6 @@ if(assim_max_ < 0){
             return profit_psi_stem_for<K>(psi_stem, opt_root_psi);
           },
           [&](double psi_stem, bool* ok) -> double {
-            if constexpr (benefit_link<K>() != BenefitLink::Identity) {
-              if (use_energy_balance_) {
-                if (ok != nullptr) *ok = false;
-                return 0.0;
-              }
-            }
             return dprofit_dpsi_stem<K>(psi_stem, opt_root_psi, ok);
           },
           opt_root_psi, psi_crit, basin_scan_cells(), collar_root_tol,
@@ -4990,7 +4996,18 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
           leaf_specific_conductance_max_ *
           (stem_curve_integral_deriv(psi_stem) * dpsistem_dpsi -
            stem_curve_integral_deriv(psi));
-      dprofit += -Rd_T * dT_dE * dE_dpsi;
+      if constexpr (benefit_link<K>() == BenefitLink::Identity) {
+        dprofit += -Rd_T * dT_dE * dE_dpsi;
+      } else {
+        // The same term under the link, A being exactly -R_d here, and
+        // ProfitMax's thermal cost beside it -- see dprofit_energy_balance_term.
+        // A log link has no derivative at a negative A; the NaN it returns
+        // reaches the sentinel below.
+        dprofit += benefit_link_deriv<K>(-R_d_) * (-Rd_T * dT_dE * dE_dpsi);
+        if constexpr (K == CostCurve::ProfitMax) {
+          dprofit -= thermal_cost_temp_deriv(Tleaf_here) * dT_dE * dE_dpsi;
+        }
+      }
     }
     return std::isfinite(dprofit) ? dprofit : 0.0;
   }
@@ -5059,9 +5076,9 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   if (!use_energy_balance_) {
     return base;
   }
-  return base + dprofit_energy_balance_term(ci, gc, g_ci, inv_atm, gc_const,
-                                            A_prime, dgc_dpsistem, dgc_dpsi,
-                                            dpsistem_dpsi, dT_dE, Tleaf_here);
+  return base + dprofit_energy_balance_term<K>(ci, gc, g_ci, inv_atm, gc_const,
+                                               A_prime, dgc_dpsistem, dgc_dpsi,
+                                               dpsistem_dpsi, dT_dE, Tleaf_here);
 }
 
 
@@ -5145,9 +5162,11 @@ inline double Leaf::cost_deriv(double psi_stem, double psi_upstream) {
               stem_curve_integral_deriv(psi_stem) /
               leastcost_flux(psi_stem, psi_upstream);
   } else if constexpr (K == CostCurve::ProfitMax) {
-    // C = [k(psi_s) - k(psi)]/k_span, so dC/dpsi = kmax*|f'|/k_span. The thermal
-    // term is constant in psi with the energy balance off, and the guard below
-    // refuses the case where it is not.
+    // C = [k(psi_s) - k(psi)]/k_span, so dC/dpsi = kmax*|f'|/k_span: the
+    // hydraulic half alone. The thermal half TC(Tleaf) is constant in psi with
+    // the energy balance off. With it on, Tleaf moves with E(psi) and the slope
+    // needs dT/dE*dE/dpsi, which the benefit's own temperature path needs too,
+    // so it is taken in dprofit_energy_balance_term beside that path, not here.
     const double f = proportion_of_conductivity(psi_stem);
     const double abs_fprime =
         f * (stem_c / stem_b) * pow(psi_stem / stem_b, stem_c - 1.0);
@@ -5279,7 +5298,16 @@ inline double Leaf::dprofit_dpsi_stem(double psi_stem, double psi_upstream,
       // collar version's two-term dE/dpsi collapses to this one.
       const double dE_dpsi =
           leaf_specific_conductance_max_ * stem_curve_integral_deriv(psi_stem);
-      dprofit += -Rd_T * dT_dE * dE_dpsi;
+      if constexpr (benefit_link<K>() == BenefitLink::Identity) {
+        dprofit += -Rd_T * dT_dE * dE_dpsi;
+      } else {
+        // As on the collar route: the link on the respiration term, and
+        // ProfitMax's thermal cost beside it.
+        dprofit += benefit_link_deriv<K>(-R_d_) * (-Rd_T * dT_dE * dE_dpsi);
+        if constexpr (K == CostCurve::ProfitMax) {
+          dprofit -= thermal_cost_temp_deriv(Tleaf_here) * dT_dE * dE_dpsi;
+        }
+      }
     }
     return std::isfinite(dprofit) ? dprofit : 0.0;
   }
@@ -5316,23 +5344,16 @@ inline double Leaf::dprofit_dpsi_stem(double psi_stem, double psi_upstream,
   if (!use_energy_balance_) {
     return base;
   }
-  if constexpr (benefit_link<K>() != BenefitLink::Identity) {
-    // ⚠️ REFUSED RATHER THAN APPROXIMATED. The energy-balance term below is a
-    // further contribution to dA/dpsi through Tleaf(E), so under a non-identity
-    // link it needs the same `h'` factor -- and it also carries cost-side pieces
-    // (ProfitMax's thermal term moves with Tleaf) that are not separated in it.
-    // Returning it unscaled would be plausible and wrong.
-    util::stop("dprofit/dpsi_stem with a non-identity benefit link and the "
-               "energy balance ON is not implemented: the temperature term needs "
-               "the same h'(A) factor and, for ProfitMax, its thermal cost term "
-               "separated out. Solve with the optimiser, or run with the energy "
-               "balance off.");
-  }
   // dgc_dpsi = 0 and dpsistem_dpsi = 1: the term derives dE/dpsi from those two,
   // and with the upstream potential fixed that reduces to kmax * f(psi_stem).
-  return base + dprofit_energy_balance_term(ci, gc, g_ci, inv_atm, gc_const,
-                                            A_prime, dgc_dpsistem, 0.0, 1.0,
-                                            dT_dE, Tleaf_here);
+  // The term applies the curve's link itself, so a non-identity curve's
+  // temperature path takes the same h'(A) as its explicit path above, and
+  // ProfitMax's thermal cost takes its own slope. An unscaled term added here
+  // would be plausible and wrong, which is why the term is templated on K
+  // rather than scaled by its callers.
+  return base + dprofit_energy_balance_term<K>(ci, gc, g_ci, inv_atm, gc_const,
+                                               A_prime, dgc_dpsistem, 0.0, 1.0,
+                                               dT_dE, Tleaf_here);
 }
 
 // Evaluate at a prescribed psi_stem rather than optimising one. See the
@@ -5458,6 +5479,7 @@ inline double Leaf::respiration_temp_deriv(double leaf_temp) {
   return (Rd_up - Rd_dn) / (2.0 * h);
 }
 
+template <Leaf::CostCurve K>
 inline double Leaf::dprofit_energy_balance_term(
     double ci, double gc, double g_ci, double inv_atm, double gc_const,
     double A_prime, double dgc_dpsistem, double dgc_dpsi, double dpsistem_dpsi,
@@ -5526,8 +5548,39 @@ inline double Leaf::dprofit_energy_balance_term(
           ? -gc * saturation_vapour_pressure_slope(Tleaf) / vpd_leaf_
           : 0.0;
 
-  return tau *
-         (A_T * gc * inv_atm + A_prime * dgc_dT * (ca_ - ci) * inv_atm) / g_ci;
+  // What the bracket holds is dA/dTleaf TOTAL, the implicit-function theorem
+  // applied to the supply==demand residual with Tleaf moving: the direct A_T and
+  // the deficit's dgc/dT combine into exactly this quotient, and tau turns it
+  // into dA/dpsi along the temperature path. It is purely benefit-side -- no
+  // cost reads Tleaf except ProfitMax's thermal one, taken below.
+  //
+  // ⚠️ THE IDENTITY ARM IS TEXTUALLY WHAT THIS RETURN ALWAYS WAS, so the five
+  // additive curves keep their arithmetic operation for operation.
+  if constexpr (benefit_link<K>() == BenefitLink::Identity) {
+    return tau *
+           (A_T * gc * inv_atm + A_prime * dgc_dT * (ca_ - ci) * inv_atm) / g_ci;
+  } else {
+    // Under a link, J = h(A(psi)) - C(psi) with A(psi) the TOTAL dependence,
+    // temperature path included, so this path takes the same single h'(A) the
+    // call site put on the explicit dci/dpsi path. There is no h'' in a first
+    // derivative: h'(A) is never itself differentiated (#124).
+    const double dA_dpsi_T =
+        tau * (A_T * gc * inv_atm + A_prime * dgc_dT * (ca_ - ci) * inv_atm) /
+        g_ci;
+    // A at the operating point. The block was restored by assignment above, so
+    // this is the value the call site's own `base` used.
+    const double A = assim_colimited_kernel(ci);
+    double term = benefit_link_deriv<K>(A) * dA_dpsi_T;
+    if constexpr (K == CostCurve::ProfitMax) {
+      // The thermal cost TC(Tleaf) is the one cost in the package that reads
+      // the leaf temperature, so with the gate on it moves with psi through E:
+      // dTC/dpsi = TC'(Tleaf) * dT/dE * dE/dpsi. COST-SIDE, so it takes no h'
+      // factor -- the link sits on the benefit alone -- and its slope is the
+      // one lambda_ProfitMax reports.
+      term -= thermal_cost_temp_deriv(Tleaf) * tau;
+    }
+    return term;
+  }
 }
 
 template <typename T>
@@ -6832,10 +6885,9 @@ inline double Leaf::lambda_ProfitMax(double psi_stem) {
     const double E = transpiration(psi_stem, supply_psi_soil_scalar());
     double dT_dE = 0.0;
     const double Tleaf = leaf_temp_from_E(E, &dT_dE);
-    const double span = T50_ - Tcrit_;
-    const double TC = thermal_cost_at(Tleaf);
-    // Sigmoid derivative: dTC/dT = r*TC*(1-TC), r = 2/(T50 - Tcrit).
-    thermal = (2.0 / span) * TC * (1.0 - TC) * dT_dE;
+    // The same slope dprofit_energy_balance_term subtracts from dJ/dpsi, so the
+    // reported lambda and the first-order condition cannot disagree about it.
+    thermal = thermal_cost_temp_deriv(Tleaf) * dT_dE;
   }
   return profitmax_A_max_ *
          (abs_fprime / (f * profitmax_k_span_) + thermal);
@@ -7580,6 +7632,15 @@ inline double Leaf::thermal_cost_at(double leaf_temp) const {
                util::format_double(Tcrit_));
   }
   return 1.0 / (1.0 + std::exp(-(2.0 / span) * (leaf_temp - T50_)));
+}
+
+inline double Leaf::thermal_cost_temp_deriv(double leaf_temp) const {
+  if (!use_thermal_cost_) {
+    return 0.0;
+  }
+  const double span = T50_ - Tcrit_;
+  const double TC = thermal_cost_at(leaf_temp);
+  return (2.0 / span) * TC * (1.0 - TC);
 }
 
 // Profit functions
@@ -8579,29 +8640,19 @@ inline void Leaf::optimise_psi_stem_single() {
   const auto objective = [&](double psi_stem) {
     return profit_psi_stem_for<K>(psi_stem, psi_soil);
   };
-  // ⚠️ WHETHER A DERIVATIVE EXISTS IS DECIDED HERE, NOT BY CATCHING A THROW. Under
-  // a non-identity benefit link with the energy balance on, dJ/dpsi is REFUSED
-  // rather than approximated (the temperature term needs the same h'(A) factor).
-  // The OBJECTIVE is still perfectly well defined there, so that configuration
-  // keeps the bracket-width refinement instead of losing the solve to an
-  // exception -- letting the refusal fire from inside the optimiser turned 3236 of
-  // 4608 golden rows into throws.
   // ONE solver, and NO caller-side branch on whether a derivative exists: the
-  // derivative closure reports that itself through `ok`, and the solver's own
-  // fallback handles it. A non-identity link with the energy balance on refuses
-  // dJ/dpsi (the temperature term needs the same h'(A) factor), and that refusal is
-  // reported rather than thrown, because the OBJECTIVE is perfectly well defined
-  // there. `basin_scan_cells()` already returns a scan whenever the gate is on,
-  // which is exactly when the fallback needs one.
+  // derivative closure reports that itself, through `ok` at a shut-down or
+  // compensation-point exit and as a non-finite value where a log link meets a
+  // non-positive A, and the solver's own fallback handles it. Every curve has
+  // dJ/dpsi on both gate states, so nothing here decides by curve. ⚠️ A
+  // derivative that does not exist must be REPORTED that way, never thrown: the
+  // objective is well defined wherever the derivative is not, and a throw from
+  // inside the optimiser loses the whole solve. `basin_scan_cells()` returns a
+  // scan whenever the gate is on, which is where the objective can carry two
+  // basins.
   opt_psi_stem_ = util::maximise_over_closed_interval_foc(
       objective,
       [&](double psi_stem, bool* ok) -> double {
-        if constexpr (benefit_link<K>() != BenefitLink::Identity) {
-          if (use_energy_balance_) {
-            if (ok != nullptr) *ok = false;
-            return 0.0;
-          }
-        }
         return dprofit_dpsi_stem<K>(psi_stem, psi_soil, ok);
       },
       psi_soil, psi_crit, basin_scan_cells(), collar_root_tol,
