@@ -1887,9 +1887,10 @@ public:
   //
   // With the energy balance on, dA/dpsi also runs through Tleaf(E(psi)). That
   // path is part of dA/dpsi and takes the same single h': there is no h'' in a
-  // first derivative, because h'(A) is never itself differentiated. The one
-  // cost that reads Tleaf, ProfitMax's thermal term, is cost-side and takes
-  // none. Both live in `dprofit_energy_balance_term`.
+  // first derivative, because h'(A) is never itself differentiated. Two costs
+  // read Tleaf, ProfitMax's thermal term and LeastCost's capacity term through
+  // `vcmax_`. Both are cost-side and take none. All three slopes live in
+  // `dprofit_energy_balance_term`.
   //
   // ⚠️ THE LINK IS NOT ONLY ON THE BENEFIT, AND READING IT THAT WAY IS THE NATURAL
   // MISTAKE. For the two product curves the COST is stored in log form as well --
@@ -2226,9 +2227,15 @@ public:
   // gradient evaluation, silently -- the same failure mode `photo_temp_key()`
   // guards for the cache. dprofit_energy_balance_term restores the same eleven.
   double respiration_temp_deriv(double leaf_temp);
+  // dVcmax/dTleaf, the same way and with the same save-and-restore. LeastCost's
+  // capacity cost reads `vcmax_`, so `lambda_LeastCost` needs this slope with the
+  // energy balance on. dprofit_energy_balance_term reads the same two
+  // evaluations inline, beside A_T.
+  double vcmax_temp_deriv(double leaf_temp);
   // The energy-balance contribution to dJ/dpsi, zero when the gate is off: the
-  // benefit's motion through Tleaf(E(psi)) under the curve's link, plus, for
-  // ProfitMax, the thermal cost's. Kept out of line so that adding it cannot
+  // benefit's motion through Tleaf(E(psi)) under the curve's link, plus the
+  // cost's for the two curves whose cost reads Tleaf (ProfitMax's thermal cost,
+  // LeastCost's Vcmax). Kept out of line so that adding it cannot
   // change FMA contraction in the inlined gate-off path; the derivation and the
   // two sign checks are at the definition.
   template <CostCurve K>
@@ -2760,6 +2767,9 @@ public:
   // axis as every other `lambda_*` here:
   //
   //     lambda = h'(A)^-1 * dTheta/dE = A * kg_to_mol_h2o / W
+  //
+  // at a fixed leaf temperature. With the energy balance on, Vcmax moves with E
+  // through Tleaf and dTheta/dE gains `beta*umol_to_mol*dVcmax/dT*dT/dE / W`.
   //
   // which is eq. S1.4 of the theory manuscript, `lambda = c_E*A/(c_E*E +
   // c_V*Vcmax)`, with `c_E` cancelled and the kg-to-mol factor supplied.
@@ -5174,7 +5184,10 @@ inline double Leaf::cost_deriv(double psi_stem, double psi_upstream) {
     // Under the log link the cost is `+log W`, where `W = E_mol + beta*Vcmax_mol`
     // is the weighted resource use of `leastcost_flux`. So dC/dpsi is `W'/W`, and
     // `W' = kg_to_mol_h2o * kmax * f(psi)` -- the capacity term is constant in
-    // psi_stem, so it survives only in the denominator.
+    // psi_stem at a fixed leaf temperature, so it survives only in the
+    // denominator. With the energy balance on, Vcmax moves with Tleaf, and that
+    // slope is taken in `dprofit_energy_balance_term` beside the benefit's own
+    // temperature path, not here.
     //
     // ⚠️ THE SIGN IS THE OPPOSITE OF SOX's AND JW26's, and that is the one place a
     // ratio differs from a product. Theirs is `-g'/g` with `g` falling; this is
@@ -5501,6 +5514,21 @@ inline double Leaf::respiration_temp_deriv(double leaf_temp) {
   return (Rd_up - Rd_dn) / (2.0 * h);
 }
 
+inline double Leaf::vcmax_temp_deriv(double leaf_temp) {
+  const double h = 1e-3;
+  const double vc0 = vcmax_, jm0 = jmax_, ga0 = gamma_, ko0 = ko_,
+               kc0 = kc_, rd0 = R_d_, km0 = km_, J0 = electron_transport_;
+  const double kimp0 = k_imp_eff_, krec0 = k_rec_eff_, func0 = functional_;
+  update_temperature_dependent_params(leaf_temp + h);
+  const double vc_up = vcmax_;
+  update_temperature_dependent_params(leaf_temp - h);
+  const double vc_dn = vcmax_;
+  vcmax_ = vc0; jmax_ = jm0; gamma_ = ga0; ko_ = ko0; kc_ = kc0;
+  R_d_ = rd0; km_ = km0; electron_transport_ = J0;
+  k_imp_eff_ = kimp0; k_rec_eff_ = krec0; functional_ = func0;
+  return (vc_up - vc_dn) / (2.0 * h);
+}
+
 template <Leaf::CostCurve K>
 inline double Leaf::dprofit_energy_balance_term(
     double ci, double gc, double g_ci, double inv_atm, double gc_const,
@@ -5543,8 +5571,10 @@ inline double Leaf::dprofit_energy_balance_term(
 
   update_temperature_dependent_params(T0 + h);
   const double A_up = assim_colimited(ci);
+  const double vcmax_up = vcmax_;
   update_temperature_dependent_params(T0 - h);
   const double A_dn = assim_colimited(ci);
+  const double vcmax_dn = vcmax_;
 
   // Restore by assignment rather than by a third update call: exact, and cheaper
   // than re-running the Arrhenius block.
@@ -5573,12 +5603,15 @@ inline double Leaf::dprofit_energy_balance_term(
   // What the bracket holds is dA/dTleaf TOTAL, the implicit-function theorem
   // applied to the supply==demand residual with Tleaf moving: the direct A_T and
   // the deficit's dgc/dT combine into exactly this quotient, and tau turns it
-  // into dA/dpsi along the temperature path. It is purely benefit-side -- no
-  // cost reads Tleaf except ProfitMax's thermal one, taken below.
+  // into dA/dpsi along the temperature path. It is purely benefit-side. Two
+  // costs read Tleaf, and both are taken below: ProfitMax's thermal cost, and
+  // LeastCost's capacity term, through `vcmax_`. No identity-link cost does.
   //
   // ⚠️ THE IDENTITY ARM IS TEXTUALLY WHAT THIS RETURN ALWAYS WAS, so the five
   // additive curves keep their arithmetic operation for operation.
   if constexpr (benefit_link<K>() == BenefitLink::Identity) {
+    (void)vcmax_up;
+    (void)vcmax_dn;
     return tau *
            (A_T * gc * inv_atm + A_prime * dgc_dT * (ca_ - ci) * inv_atm) / g_ci;
   } else {
@@ -5594,12 +5627,26 @@ inline double Leaf::dprofit_energy_balance_term(
     const double A = assim_colimited_kernel(ci);
     double term = benefit_link_deriv<K>(A) * dA_dpsi_T;
     if constexpr (K == CostCurve::ProfitMax) {
-      // The thermal cost TC(Tleaf) is the one cost in the package that reads
-      // the leaf temperature, so with the gate on it moves with psi through E:
-      // dTC/dpsi = TC'(Tleaf) * dT/dE * dE/dpsi. COST-SIDE, so it takes no h'
-      // factor -- the link sits on the benefit alone -- and its slope is the
-      // one lambda_ProfitMax reports.
+      // The thermal cost TC(Tleaf) reads the leaf temperature, so with the gate
+      // on it moves with psi through E: dTC/dpsi = TC'(Tleaf) * dT/dE * dE/dpsi.
+      // COST-SIDE, so it takes no h' factor -- the link sits on the benefit
+      // alone -- and its slope is the one lambda_ProfitMax reports.
       term -= thermal_cost_temp_deriv(Tleaf) * tau;
+    } else if constexpr (K == CostCurve::LeastCost) {
+      // C = log W with W = E_mol + beta*Vcmax_mol (`leastcost_flux`), and
+      // `vcmax_` is the value at Tleaf, so with the gate on the capacity term
+      // moves with psi: d(log W)/dpsi gains beta*umol_to_mol*dVcmax/dT*tau/W.
+      // `cost_deriv` holds only the E half, at fixed temperature. Cost-side, so
+      // no h'. dVcmax/dT comes from the same two temperature-block evaluations
+      // as A_T. W is rebuilt from gc, since gc = gc_const*E; the block is
+      // restored, so `vcmax_` is the operating point's.
+      const double dVcmax_dT = (vcmax_up - vcmax_dn) / (2.0 * h);
+      const double W = gc / gc_const * kg_to_mol_h2o +
+                       LeastCost_beta * vcmax_ * umol_to_mol;
+      term -= LeastCost_beta * umol_to_mol * dVcmax_dT * tau / W;
+    } else {
+      (void)vcmax_up;
+      (void)vcmax_dn;
     }
     return term;
   }
@@ -7966,10 +8013,10 @@ inline double Leaf::profit_psi_stem_JW26(double psi_stem,
 // re-derived per candidate potential by `set_leaf_states_rates_from_psi_stem`, and
 // this function is called from `cost_deriv` (which does not call it) as well as
 // from the profit (which does). At a fixed leaf temperature the two agree because
-// `vcmax_` does not move; with the energy balance ON they can differ by one
-// candidate, which is the same exposure `lambda_SOX` has and is why the derivative
-// is refused under a non-identity link with the energy balance on (see
-// `optimise_psi_stem_single`).
+// `vcmax_` does not move. With the energy balance ON, both derivatives read it at
+// the leaf temperature they solved for, and `dprofit_energy_balance_term` adds
+// the capacity term's own motion with that temperature, which `cost_deriv` leaves
+// out.
 inline double Leaf::leastcost_flux(double psi_stem, double psi_upstream) {
   return transpiration(psi_stem, psi_upstream) * kg_to_mol_h2o +
          LeastCost_beta * vcmax_ * umol_to_mol;
@@ -7993,8 +8040,22 @@ inline double Leaf::profit_psi_stem_LeastCost(double psi_stem,
 // the potential the leaf was last evaluated at -- which is how the optimisers call
 // it, immediately after writing `profit_`.
 inline double Leaf::lambda_LeastCost(double psi_stem, double psi_upstream) {
-  return assim_colimited_ * kg_to_mol_h2o /
-         leastcost_flux(psi_stem, psi_upstream);
+  if (!use_energy_balance_) {
+    return assim_colimited_ * kg_to_mol_h2o /
+           leastcost_flux(psi_stem, psi_upstream);
+  }
+  // With the energy balance on, W's capacity term moves with E through Tleaf,
+  // so dTheta/dE gains beta*Vcmax_mol'(T)*dT/dE -- the slope the first-order
+  // condition takes in dprofit_energy_balance_term, as lambda_ProfitMax carries
+  // its thermal term. Zero on the leaf-temperature clamp, where dT/dE is.
+  double dT_dE = 0.0;
+  const double Tleaf =
+      leaf_temp_from_E(transpiration(psi_stem, psi_upstream), &dT_dE);
+  double dW_dE = kg_to_mol_h2o;
+  if (dT_dE != 0.0) {
+    dW_dE += LeastCost_beta * umol_to_mol * vcmax_temp_deriv(Tleaf) * dT_dE;
+  }
+  return assim_colimited_ * dW_dE / leastcost_flux(psi_stem, psi_upstream);
 }
 
 

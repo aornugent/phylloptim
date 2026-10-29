@@ -5145,17 +5145,19 @@ void test_profitmax_thermal_cost() {
 // The benefit link with the energy balance on (#124)
 // ---------------------------------------------------------------------------
 // With the gate on, dA/dpsi has a second path, through Tleaf(E(psi)), and a
-// non-identity link takes the same single h'(A) on it; ProfitMax's thermal
-// cost, the one cost that reads Tleaf, moves with psi the same way and takes
-// none. Four checks, each on all three linked curves with the gate on:
+// non-identity link takes the same single h'(A) on it. The two costs that read
+// Tleaf, ProfitMax's thermal cost and LeastCost's Vcmax, move with psi the same
+// way and take none. Four checks, on the linked curves with the gate on:
 //
 //   1. dprofit_dpsi_stem against a swept-step difference of each curve's own
-//      objective -- log of the product for the two log links, the normalised
-//      profit for ProfitMax;
+//      objective -- the log of the product or ratio for the three log links,
+//      the normalised profit for ProfitMax;
 //   2. the same derivative as h'(A) times the identity link's dA/dpsi minus
 //      dC/dpsi, with dA/dpsi read off a zero-cost curve: the vignette's
 //      link-identity chunk with the gate on, so the h' factor is checked against
-//      something other than itself;
+//      something other than itself. SOX, JW26 and ProfitMax only: LeastCost's
+//      temperature-dependent cost has no independent slope to compare with, so
+//      check 1 is its guard;
 //   3. the solved stem optimum is a ROOT of dJ/dpsi, which a bracket-width
 //      search does not give;
 //   4. the collar route's first-order condition against a difference of the
@@ -5184,6 +5186,7 @@ phylloptim::Leaf make_linked_eb_leaf(const Drivers &d, double psi_soil, bool tc)
   }
   l.wind_speed_ = 2.0;
   l.d_ = 0.05;
+  l.LeastCost_beta = 146.0;
   l.set_supply_single(0.0);
   l.NIR_int_ = d.PPFD / phylloptim::umol_par_per_joule;
   phylloptim::RootNetwork rn;
@@ -5321,6 +5324,8 @@ void test_linked_dprofit_with_energy_balance_matches_a_finite_difference() {
           d, tc, 1.0, worst, thermal_rows, compensation_rows, false);
       rows += check_linked_eb_derivative_fd<CC::ProfitMax>(
           d, tc, 1.0, worst, thermal_rows, compensation_rows, print_v);
+      rows += check_linked_eb_derivative_fd<CC::LeastCost>(
+          d, tc, 1.0, worst, thermal_rows, compensation_rows, print_v);
     }
   }
   printf("    %d rows (%d on the compensation branch) | worst error/scale at "
@@ -5398,6 +5403,17 @@ void test_linked_dprofit_with_energy_balance_is_the_identity_link_scaled() {
               1.0 / l.profitmax_A_max(),
               l.cost_deriv<CC::ProfitMax>(psi, psi_soil) + dTC_dpsi,
               "ProfitMax");
+        // LeastCost's capacity term moves with Tleaf through Vcmax:
+        // d(log W)/dpsi gains beta*Vcmax_mol'(T)*dT/dpsi / W, its slope taken
+        // by vcmax_temp_deriv rather than by the term under test.
+        const double dVcmax_dpsi = l.vcmax_temp_deriv(l.Tleaf_) * dT_dE *
+                                   l.leaf_specific_conductance_max_ *
+                                   l.stem_curve_integral_deriv(psi);
+        check(std::integral_constant<CC, CC::LeastCost>{}, 1.0 / A,
+              l.cost_deriv<CC::LeastCost>(psi, psi_soil) +
+                  l.LeastCost_beta * phylloptim::umol_to_mol * dVcmax_dpsi /
+                      l.leastcost_flux(psi, psi_soil),
+              "LeastCost");
       }
     }
   }
@@ -5414,6 +5430,11 @@ void test_linked_optimum_with_energy_balance_is_stationary() {
   auto one = [&](auto tag, const Drivers &d, double psi_soil, bool tc) {
     constexpr CC K = decltype(tag)::value;
     phylloptim::Leaf l = make_linked_eb_leaf(d, psi_soil, tc);
+    if constexpr (K == CC::LeastCost) {
+      // At 146 every row here pins at psi_crit, so the root is never asked
+      // for; at 2 every row is interior.
+      l.LeastCost_beta = 2.0;
+    }
     l.template optimise_psi_stem_single<K>();
     if constexpr (K == CC::ProfitMax) {
       if (!(l.profitmax_A_max() > 0.0)) {
@@ -5456,6 +5477,7 @@ void test_linked_optimum_with_energy_balance_is_stationary() {
         one(std::integral_constant<CC, CC::SOX>{}, d, psi_soil, tc);
         one(std::integral_constant<CC, CC::JW26>{}, d, psi_soil, tc);
         one(std::integral_constant<CC, CC::ProfitMax>{}, d, psi_soil, tc);
+        one(std::integral_constant<CC, CC::LeastCost>{}, d, psi_soil, tc);
       }
     }
   }
@@ -5480,6 +5502,7 @@ int check_collar_foc_matches_profit_linked(const Drivers &d, bool eb, bool tc,
   int compared = 0;
   for (const auto &s : soils) {
     phylloptim::Leaf l = make_pm_leaf(d, s.psi, s.depth, eb, 2.0, 0.05, tc);
+    l.LeastCost_beta = 146.0;
     if (tc) {
       l.T50_ = kLiveT50;
       l.Tcrit_ = kLiveTcrit;
@@ -5545,6 +5568,8 @@ void test_collar_foc_matches_profit_linked_curves() {
       compared += check_collar_foc_matches_profit_linked<CC::JW26>(d, eb, tc, worst);
       compared +=
           check_collar_foc_matches_profit_linked<CC::ProfitMax>(d, eb, tc, worst);
+      compared +=
+          check_collar_foc_matches_profit_linked<CC::LeastCost>(d, eb, tc, worst);
     }
   }
   printf("    %d points compared | worst |error| gate off %.3e, gate on %.3e\n",
@@ -7262,6 +7287,37 @@ void test_leastcost_lambda_is_dA_dE() {
          l.lambda_emergent_, fd, (l.lambda_emergent_ - fd) / fd);
   ok(std::fabs(l.lambda_emergent_ - fd) / std::fabs(fd) < 1e-4,
      "the reported price equals dA/dE by finite difference");
+
+  // With the energy balance on, the capacity term moves with E through Tleaf,
+  // and at an interior optimum the reported price is still dA/dE along the
+  // stream. Beta 2 puts these optima in the interior (146 pins them).
+  for (double tair : {25.0, 30.0}) {
+    Drivers de;
+    de.PPFD = 1500.0;
+    de.leaf_temp = tair;
+    phylloptim::Leaf m = make_linked_eb_leaf(de, 1.0, false);
+    m.LeastCost_beta = 2.0;
+    m.set_model(phylloptim::Leaf::CostCurve::LeastCost, false);
+    m.optimise();
+    const double p = m.opt_psi_stem_;
+    ok(p > 1.0 + 1e-6 && p < m.psi_crit - 1e-6,
+       "the energy-balance optimum is interior (hazard 16)");
+    const double lam = m.lambda_emergent_;
+    auto Am = [&](double q) {
+      m.set_leaf_states_rates_from_psi_stem(q, 1.0);
+      return m.assim_colimited_;
+    };
+    const double h = 1e-5;
+    const double dAm = (Am(p + h) - Am(p - h)) / (2.0 * h);
+    const double dEm =
+        (m.transpiration(p + h, 1.0) - m.transpiration(p - h, 1.0)) / (2.0 * h);
+    const double fde = dAm / dEm;
+    printf("    energy balance on, Tair %.0f: lambda = %.6g, dA/dE = %.6g, "
+           "rel = %+.3e\n",
+           tair, lam, fde, (lam - fde) / fde);
+    ok(std::fabs(lam - fde) / std::fabs(fde) < 1e-4,
+       "with the energy balance on, the reported price equals dA/dE");
+  }
 }
 
 
@@ -7853,11 +7909,10 @@ void test_thermal_damage_fd_helpers_restore_the_block() {
   ok(thermal_block(l) == before, "dprofit_energy_balance_term restores all eleven");
   // The linked arm evaluates A after the restore, so it must leave the same
   // eleven in place too.
-  const double linked = l.dprofit_energy_balance_term<CC::ProfitMax>(
+  const double linked = l.dprofit_energy_balance_term<CC::SOX>(
       l.ci_, l.stom_cond_CO2_, 1.0, 1e-5, 1.0, 0.1, 0.1, 0.1, 1.0, -1e3,
       l.Tleaf_ + 2.0);
-  ok(std::isfinite(linked) || std::isnan(linked),
-     "the linked dprofit_energy_balance_term evaluates");
+  ok(std::isfinite(linked), "the linked dprofit_energy_balance_term is finite");
   ok(thermal_block(l) == before,
      "and the linked arm restores all eleven as well");
 
