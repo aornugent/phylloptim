@@ -2859,6 +2859,28 @@ public:
   double stom_cond_H2O() const {
     return stom_cond_CO2_ * H2O_CO2_stom_diff_ratio_;
   }
+  // ⚠️ ON THE ENERGY-BALANCE PATH stom_cond_H2O() IS THE TOTAL LEAF-TO-AIR
+  // CONDUCTANCE, not a stomatal one. It is E*P/D_leaf, and E crosses the leaf
+  // boundary layer as well as the stoma, so comparing it with a measured gs
+  // compares different quantities. The two accessors below separate them (#122).
+  //
+  // Boundary-layer conductance to WATER VAPOUR, mol H2O m^-2 s^-1: the molar form
+  // of the heat resistance ra_ the energy balance reads, at air temperature,
+  // scaled by bl_vapour_heat_ratio. +Inf off the energy-balance path, where the
+  // leaf is at air temperature and coupled to it perfectly, and where ra_ is a
+  // fallback nothing validates.
+  double boundary_layer_cond_H2O() const;
+  // Stomatal conductance to water vapour with the boundary layer taken out in
+  // series, 1/g_s = 1/g_total - 1/g_b, mol H2O m^-2 s^-1. Exactly
+  // stom_cond_H2O() off the energy-balance path.
+  //
+  // ⚠️ REFUSES where g_total >= g_b. Then E is more than the boundary layer can
+  // carry at this deficit whatever the stoma does, and no finite g_s exists.
+  // Hydraulics set E here, so nothing in the solve prevents it; the refusal sits
+  // in this accessor rather than in the solve so that it cannot abort a plant
+  // run, and test_boundary_layer_bounds_the_total_conductance measures how far
+  // a realistic driver grid stays from it.
+  double stom_cond_stomatal_H2O() const;
 
   // Read-only on purpose: a settable one would be a way to disagree with the
   // operating point it is derived from.
@@ -7799,6 +7821,38 @@ inline double Leaf::hydraulic_cost_TF24_floor(double psi_stem,
   return hydraulic_cost_;
 }
 
+
+inline double Leaf::boundary_layer_cond_H2O() const {
+  if (!use_energy_balance_) {
+    return std::numeric_limits<double>::infinity();
+  }
+  // Molar density of air at air temperature, mol m^-3, as plantecophys's CMOLAR.
+  const double air_molar_density =
+      atm_kpa_ * kPa_to_Pa / (gas_constant * (Tair_ + C_to_K));
+  return bl_vapour_heat_ratio * air_molar_density / ra_;
+}
+
+inline double Leaf::stom_cond_stomatal_H2O() const {
+  const double g_total = stom_cond_H2O();
+  if (!use_energy_balance_) {
+    return g_total;
+  }
+  // A shut leaf has no conductance on either side of the series, and a
+  // non-finite one has nothing to subtract from.
+  if (!(g_total > 0.0) || !std::isfinite(g_total)) {
+    return g_total;
+  }
+  const double g_b = boundary_layer_cond_H2O();
+  if (!(g_total < g_b)) {
+    util::stop("no stomatal conductance exists at this operating point: the total "
+               "leaf-to-air conductance " + util::to_string(g_total) +
+               " mol m^-2 s^-1 is not below the boundary layer's own " +
+               util::to_string(g_b) + ", so the transpiration is more than the "
+               "boundary layer can carry at this deficit (ra_ = " +
+               util::to_string(ra_) + " s m^-1). Check wind_speed_ and d_.");
+  }
+  return 1.0 / (1.0 / g_total - 1.0 / g_b);
+}
 
 // See the declaration for why zero on the other curves is a statement about the
 // curve and not about the cost.

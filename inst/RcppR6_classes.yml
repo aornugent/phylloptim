@@ -520,6 +520,13 @@ Leaf:
     # literature record gs to water; the model solves for gs to CO2. An accessor, not
     # stored state (hazard 5).
     gs_H2O: {type: double, access: member, name_cpp: stom_cond_H2O}
+    # On the energy-balance path gs_H2O is the TOTAL leaf-to-air conductance; these
+    # two separate it (#122). gb_H2O is the boundary layer's conductance to vapour,
+    # Inf off that path. gs_stomatal_H2O is the stoma's own, 1/(1/gs_H2O - 1/gb_H2O),
+    # equal to gs_H2O off the path, and an error where gs_H2O >= gb_H2O. Accessors,
+    # not stored state (hazard 5), and read-only.
+    gb_H2O: {type: double, access: member, name_cpp: boundary_layer_cond_H2O}
+    gs_stomatal_H2O: {type: double, access: member, name_cpp: stom_cond_stomatal_H2O}
 
     # The H2O:CO2 stomatal diffusion ratio (#50). 1.67 here; Medlyn et al. (2011) and
     # the g1 literature use 1.6, and `g1_eff` exists to be compared against those.

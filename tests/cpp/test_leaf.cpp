@@ -2764,6 +2764,103 @@ void test_energy_balance_stomatal_decoupling() {
      "the leaf-to-air deficit outgrows the flux, so gs falls where E rises");
 }
 
+// The reported conductance is a TOTAL leaf-to-air one on the energy-balance path,
+// and #122's two accessors separate the stoma from the boundary layer in series.
+// Off the path there is no boundary layer, so the stomatal conductance must be the
+// reported one bit for bit; on it, the two pieces must recombine into the total.
+void test_stomatal_conductance_excludes_the_boundary_layer() {
+  printf("stomatal conductance with the boundary layer taken out in series (#122)\n");
+  Drivers d;
+  d.PPFD = 1500.0;
+  d.leaf_temp = 30.0;
+
+  phylloptim::Leaf off = make_pm_leaf(d, {2.0}, {1.0}, false);
+  off.find_root_collar_psi();
+  ok(off.stom_cond_stomatal_H2O() == off.stom_cond_H2O(),
+     "gate off: the stomatal conductance IS the reported one, bit for bit");
+  ok(std::isinf(off.boundary_layer_cond_H2O()),
+     "gate off: the boundary layer is not modelled, so its conductance is Inf");
+
+  // Low wind, low deficit, low light and wet soil, so the boundary layer is a
+  // quarter of the resistance and the series correction is far from negligible.
+  // The worst row of the grid below.
+  Drivers wet = d;
+  wet.atm_vpd = 0.5;
+  wet.PPFD = 500.0;
+  wet.leaf_temp = 20.0;
+  phylloptim::Leaf on = make_pm_leaf(wet, {0.5}, {1.0}, true, 0.5);
+  on.find_root_collar_psi();
+  const double g = on.stom_cond_H2O();
+  const double gb = on.boundary_layer_cond_H2O();
+  const double gs = on.stom_cond_stomatal_H2O();
+  ok(g / gb > 0.1, "gate on: the boundary layer is a material share (hazard 16)");
+  // The boundary layer from its definition: the heat resistance ra_ in molar
+  // form at air temperature, scaled to vapour.
+  const double rho_mol = on.atm_kpa_ * phylloptim::kPa_to_Pa /
+                         (phylloptim::gas_constant *
+                          (on.Tair_ + phylloptim::C_to_K));
+  near(gb, phylloptim::bl_vapour_heat_ratio * rho_mol / on.ra_, 1e-15,
+       "g_b is 1.075 * P/(R*Tair) / ra_");
+  near(1.0 / gs + 1.0 / gb, 1.0 / g, 1e-14,
+       "the stoma and the boundary layer recombine in series to the total");
+  ok(gs > g, "the stomatal conductance exceeds the total, as a series part must");
+  printf("    g_total %.4f, g_b %.4f, g_s %.4f mol m^-2 s^-1 (g_total/g_b %.3f)\n",
+         g, gb, gs, g / gb);
+
+  // A boundary layer too thin to carry the solved E: no finite g_s exists, and
+  // the accessor says why rather than returning a negative or infinite number.
+  phylloptim::Leaf thin = on;
+  thin.ra_ = 1e3 * on.ra_;
+  ok(throws_with([&] { thin.stom_cond_stomatal_H2O(); },
+                 "no stomatal conductance exists"),
+     "a total conductance at or above g_b is refused, with the reason");
+
+  // Shut: no conductance on either side of the series.
+  phylloptim::Leaf shut = make_pm_leaf(d, {6.5}, {1.0}, true);
+  shut.find_root_collar_psi();
+  ok(shut.stom_cond_H2O() == 0.0 && shut.stom_cond_stomatal_H2O() == 0.0,
+     "a shut leaf reports zero stomatal conductance, not a refusal");
+}
+
+// How far a realistic driver grid stays from g_total = g_b, which is where the
+// accessor above refuses. Hydraulics set E, so nothing in the solve keeps E below
+// what the boundary layer can carry; this measures the margin instead.
+void test_boundary_layer_bounds_the_total_conductance() {
+  printf("MEASUREMENT: g_total / g_b over a driver grid, energy balance on\n");
+  double worst = 0.0, worst_at_default_wind = 0.0;
+  int rows = 0;
+  for (double wind : {0.5, 2.0, 5.0})
+    for (double tair : {20.0, 30.0, 40.0})
+      for (double vpd : {0.5, 1.0, 2.0, 4.0})
+        for (double ppfd : {500.0, 1500.0})
+          for (double psi_soil : {0.5, 1.0, 3.0}) {
+            Drivers d;
+            d.PPFD = ppfd;
+            d.leaf_temp = tair;
+            d.atm_vpd = vpd;
+            phylloptim::Leaf l = make_pm_leaf(d, {psi_soil}, {1.0}, true, wind);
+            l.find_root_collar_psi();
+            const double g = l.stom_cond_H2O();
+            if (!(g > 0.0)) {
+              continue;
+            }
+            const double share = g / l.boundary_layer_cond_H2O();
+            worst = std::max(worst, share);
+            if (wind == 2.0) {
+              worst_at_default_wind = std::max(worst_at_default_wind, share);
+            }
+            ok(std::isfinite(l.stom_cond_stomatal_H2O()),
+               "a finite stomatal conductance at wind " + std::to_string(wind) +
+                   " Tair " + std::to_string(tair) + " vpd " +
+                   std::to_string(vpd));
+            ++rows;
+          }
+  printf("    %d transpiring rows | worst g_total/g_b %.3f (at wind 2 m/s: %.3f)\n",
+         rows, worst, worst_at_default_wind);
+  ok(rows >= 150, "enough transpiring rows were measured (hazard 16)");
+  ok(worst < 1.0, "the total conductance stays below the boundary layer's");
+}
+
 // The closed-form fast path (leaf/closed_form.hpp). Two things matter: that it is
 // actually fast, and that its error is characterised honestly rather than asserted
 // to be small.
@@ -7966,6 +8063,8 @@ int main() {
   test_energy_balance_collar_solve_is_measured();
   test_energy_balance_gate_off_is_inert();
   test_energy_balance_stomatal_decoupling();
+  test_stomatal_conductance_excludes_the_boundary_layer();
+  test_boundary_layer_bounds_the_total_conductance();
   test_closed_form();
   test_single_potential();
   test_leaf_on_single_potential();

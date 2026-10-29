@@ -1,3 +1,15 @@
+# phylloptim 0.15.2
+
+## The stomatal conductance, separated from the boundary layer (#122)
+
+On the energy-balance path `gs_H2O` (and `stom_cond_CO2_`) is the TOTAL leaf-to-air conductance, `E*P/D_leaf`. The transpiration crosses the leaf boundary layer as well as the stoma, so comparing it with a measured stomatal conductance compares different quantities. Two read-only accessors separate them. `gb_H2O` is the boundary layer's conductance to vapour, `1.075 * P/(R*Tair) / ra_`, which is plantecophys's convention for a hypostomatous leaf. `gs_stomatal_H2O` is the stoma's own, `1/(1/gs_H2O - 1/gb_H2O)`.
+
+Off the energy balance there is no boundary layer: `gb_H2O` is `Inf` and `gs_stomatal_H2O` is `gs_H2O` bit for bit. On it, over 216 transpiring driver rows, the total conductance reaches 27% of the boundary layer's at 0.5 m/s wind and 13% at the default 2 m/s. At that worst row the stomatal conductance is 37% above the reported total.
+
+⚠️ **`gs_stomatal_H2O` refuses where `gs_H2O >= gb_H2O`.** Then the transpiration is more than the boundary layer can carry at that deficit, and no finite stomatal conductance exists. Hydraulics set the transpiration, so nothing in the solve prevents it. The refusal sits in the accessor rather than in the solve so that it cannot abort a run; no row of the grid above reaches it.
+
+Nothing in the solve reads either accessor, so every result is unchanged and every golden file is bit-identical. The diffusivity ratio is still the stomatal 1.67 along the whole path, which #122's third part changes separately.
+
 # phylloptim 0.15.1
 
 ## SOX, JW26 and ProfitMax have an exact first-order condition with the energy balance on (#124)

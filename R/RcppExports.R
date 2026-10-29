@@ -1381,6 +1381,14 @@ Leaf__gs_H2O__get <- function(obj_) {
     .Call('_phylloptim_Leaf__gs_H2O__get', PACKAGE = 'phylloptim', obj_)
 }
 
+Leaf__gb_H2O__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__gb_H2O__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__gs_stomatal_H2O__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__gs_stomatal_H2O__get', PACKAGE = 'phylloptim', obj_)
+}
+
 Leaf__H2O_CO2_stom_diff_ratio___get <- function(obj_) {
     .Call('_phylloptim_Leaf__H2O_CO2_stom_diff_ratio___get', PACKAGE = 'phylloptim', obj_)
 }

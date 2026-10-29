@@ -85,6 +85,13 @@ inline constexpr double C_to_K = 273.15;
 //H20:CO2 stomatal diffusion ratio
 inline constexpr double H2O_CO2_stom_diff_ratio = 1.67;
 
+// Boundary-layer conductance to water vapour over that to heat, for a
+// hypostomatous leaf: the factor plantecophys applies to its two-sided heat
+// conductance (`Gbw = 1.075 * Gbh` in LeafEnergyBalance, at StomatalRatio 1).
+// Read only by the reported boundary-layer and stomatal conductances (#122);
+// nothing in the solve reads it.
+inline constexpr double bl_vapour_heat_ratio = 1.075;
+
 // rho_w * g, as a head in MPa per metre of depth.
 //
 // ⚠️ 9.8e-3 is 6.8e-04 below `1000 * 9.80665 / 1e6`, above this package's 1e-04

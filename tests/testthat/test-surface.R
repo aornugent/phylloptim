@@ -94,6 +94,32 @@ test_that("conductance is reported to water as well as to CO2 (#56)", {
   expect_error(l$gs_H2O <- 1, "read-only")
 })
 
+test_that("the stomatal conductance separates the boundary layer (#122)", {
+  # Off the energy balance there is no boundary layer: the stomatal conductance
+  # is the reported one, bit for bit.
+  l <- leaf_model()
+  set_drivers(l, psi_soil = 2.0, PPFD = 900)
+  l$find_root_collar_psi()
+  expect_identical(l$gs_stomatal_H2O, l$gs_H2O)
+  expect_identical(l$gb_H2O, Inf)
+
+  # On it, gs_H2O is the total leaf-to-air conductance, and the stoma and the
+  # boundary layer recombine to it in series. Low wind and deficit make the
+  # boundary layer a material share.
+  l <- leaf_model()
+  l$use_energy_balance_ <- TRUE
+  l$wind_speed_ <- 0.5
+  l$NIR_int_ <- 500 / 4.57  # daylight
+  set_drivers(l, psi_soil = 0.5, PPFD = 500, leaf_temp = 20, atm_vpd = 0.5)
+  l$find_root_collar_psi()
+  expect_gt(l$gs_H2O / l$gb_H2O, 0.1)
+  expect_equal(1 / l$gs_stomatal_H2O + 1 / l$gb_H2O, 1 / l$gs_H2O,
+               tolerance = 1e-14)
+  expect_gt(l$gs_stomatal_H2O, l$gs_H2O)
+  expect_error(l$gs_stomatal_H2O <- 1, "read-only")
+  expect_error(l$gb_H2O <- 1, "read-only")
+})
+
 test_that("the H2O:CO2 diffusion ratio is settable, and 1.67 changes nothing (#50)", {
   expect_identical(leaf_model()$H2O_CO2_stom_diff_ratio_, 1.67)
 

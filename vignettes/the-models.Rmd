@@ -714,7 +714,7 @@ $$g_c=\frac{P\,E\,M_{\rm H_2O}}{1.6\;D_{\rm leaf}}$$
 
 where 1.6 is the ratio of diffusivities of water vapour and CO₂, `P` is atmospheric pressure, and `D_leaf` is the leaf-to-air vapour pressure deficit. Fixing `E` fixes `g_c`, which is the first link of the coordinate chain above.
 
-`$stom_cond_CO2_` is a **total** leaf-to-air conductance rather than a stomatal one. There is no separate boundary-layer term: the relation above is the whole path from leaf interior to bulk air in one conductance, paired with a leaf-to-bulk-air deficit. That is internally consistent, and it is the right quantity for the `c_i` solve below. A measured `g_s`, however, has a boundary layer removed from it, so the two are not the same number and should not be compared directly.
+`$stom_cond_CO2_` is a **total** leaf-to-air conductance rather than a stomatal one. There is no separate boundary-layer term: the relation above is the whole path from leaf interior to bulk air in one conductance, paired with a leaf-to-bulk-air deficit. That is internally consistent, and it is the right quantity for the `c_i` solve below. A measured `g_s`, however, has a boundary layer removed from it, so the two are not the same number and should not be compared directly. Compare it with `$gs_stomatal_H2O` instead, which takes the boundary layer's conductance to vapour, `$gb_H2O`, out of `$gs_H2O` in series. With the energy balance off there is no boundary layer, so `$gb_H2O` is `Inf` and the two are identical.
 
 ### 4. Closing the loop: supply equals demand
 

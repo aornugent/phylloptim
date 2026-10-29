@@ -1534,6 +1534,16 @@ double Leaf__gs_H2O__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
 }
 
 // [[Rcpp::export]]
+double Leaf__gb_H2O__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->boundary_layer_cond_H2O();
+}
+
+// [[Rcpp::export]]
+double Leaf__gs_stomatal_H2O__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->stom_cond_stomatal_H2O();
+}
+
+// [[Rcpp::export]]
 double Leaf__H2O_CO2_stom_diff_ratio___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
   return obj_->H2O_CO2_stom_diff_ratio_;
 }
