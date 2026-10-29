@@ -45,7 +45,7 @@ test_that("every trait can be read back from the object (#95)", {
   # leaf_traits() without a binding fails here instead of being noticed by the next
   # caller who needs it.
   traits <- leaf_traits(vcmax_25 = 111, stem_P50 = 3.1, TF24_beta2 = 1.7,
-                        root_P50 = 3.3, a = 0.28)
+                        root_P50 = 3.3, phi_J = 0.28 / 0.85)
   l <- leaf_model(traits)
   for (nm in names(traits)) {
     expect_true(nm %in% names(l), label = paste("Leaf binds", nm))
@@ -94,6 +94,32 @@ test_that("conductance is reported to water as well as to CO2 (#56)", {
   expect_error(l$gs_H2O <- 1, "read-only")
 })
 
+test_that("the stomatal conductance separates the boundary layer (#122)", {
+  # Off the energy balance there is no boundary layer: the stomatal conductance
+  # is the reported one, bit for bit.
+  l <- leaf_model()
+  set_drivers(l, psi_soil = 2.0, PPFD = 900)
+  l$find_root_collar_psi()
+  expect_identical(l$gs_stomatal_H2O, l$gs_H2O)
+  expect_identical(l$gb_H2O, Inf)
+
+  # On it, gs_H2O is the total leaf-to-air conductance, and the stoma and the
+  # boundary layer recombine to it in series. Low wind and deficit make the
+  # boundary layer a material share.
+  l <- leaf_model()
+  l$use_energy_balance_ <- TRUE
+  l$wind_speed_ <- 0.5
+  l$NIR_int_ <- 500 / 4.57  # daylight
+  set_drivers(l, psi_soil = 0.5, PPFD = 500, leaf_temp = 20, atm_vpd = 0.5)
+  l$find_root_collar_psi()
+  expect_gt(l$gs_H2O / l$gb_H2O, 0.1)
+  expect_equal(1 / l$gs_stomatal_H2O + 1 / l$gb_H2O, 1 / l$gs_H2O,
+               tolerance = 1e-14)
+  expect_gt(l$gs_stomatal_H2O, l$gs_H2O)
+  expect_error(l$gs_stomatal_H2O <- 1, "read-only")
+  expect_error(l$gb_H2O <- 1, "read-only")
+})
+
 test_that("the H2O:CO2 diffusion ratio is settable, and 1.67 changes nothing (#50)", {
   expect_identical(leaf_model()$H2O_CO2_stom_diff_ratio_, 1.67)
 
@@ -132,7 +158,7 @@ test_that("leaf_model() and the raw Leaf() constructor agree", {
   # one leaf_model() built at the shipped default -- so the two disagree for the
   # fixture's reason and this test reports a mapping error that is not there.
   raw <- Leaf(96, 2.680147, 3.4, 2.680147, 3.4,
-              1.5, 157.44, 0.30, 0.7, 0.99, 1e-3,
+              1.5, 157.44, 0.30 / 0.85, 0.7, 0.99, 1e-3,
               leaf_control()$vulnerability_curve_ncontrol, 1e-3, 1000, 7.5)
   raw$initialize_integrator(21, 1e-8)
   friendly <- leaf_model()
@@ -358,6 +384,7 @@ test_that("Tleaf is reported, and is not the leaf_temp driver on the PM path", {
   # With the energy balance on, driven by hand because the gate is a field.
   l <- leaf_model()
   l$use_energy_balance_ <- TRUE
+  l$NIR_int_ <- 900 / 4.57  # daylight
   set_drivers(l, psi_soil = 2.0, PPFD = 900, leaf_temp = 30)
   l$find_root_collar_psi()
   op <- operating_point(l)

@@ -889,7 +889,8 @@ public:
     auto curve = [&](const T& x) -> T {
       const double q = to_passive(x);
       if constexpr (std::is_same_v<T, double>) { return root_vuln_at(q); }
-      else { return closed_form_curve<T>(root_vuln_at(q), x, at.root_P50, at.root_c); }
+      else { return closed_form_curve<T>(root_vuln_at(q), x, at.root_P50, at.root_c,
+                                         PastLastKnot::HoldsLastKnot); }
     };
 
     const double G_at_T_collar =
@@ -965,7 +966,8 @@ public:
           } else {
             return closed_form_integral<T>(root_vuln_integral_at(q),
                                      root_vuln_integral_deriv_at(q), arg,
-                                     at.root_P50, at.root_c);
+                                     at.root_P50, at.root_c,
+                                     PastLastKnot::HoldsLastKnot);
           }
         };
 
@@ -1007,7 +1009,8 @@ public:
             if constexpr (std::is_same_v<T, double>) {
               fr_at = table;
             } else {
-              fr_at = closed_form_curve<T>(table, T_collar, at.root_P50, at.root_c);
+              fr_at = closed_form_curve<T>(table, T_collar, at.root_P50, at.root_c,
+                                           PastLastKnot::HoldsLastKnot);
             }
           }
           const T dinteg_dT = T(sign_var) * fr_at;

@@ -43,7 +43,7 @@
   root_P50 = 3.4,
   TF24_beta2 = 1.5,
   jmax_25 = 157.44,
-  a = 0.30,
+  phi_J = 0.30 / 0.85,
   curv_fact_elec_trans = 0.7,
   curv_fact_colim = 0.99,
   TF24_cost_scale = 7.5,
@@ -100,7 +100,12 @@
 ##'   magnitude), with `root_b` and `root_psi_crit` derived from it.
 ##' @param TF24_beta2 exponent for the effect of hydraulic risk (unitless)
 ##' @param jmax_25 maximum electron transport rate at 25 C (umol m^-2 s^-1)
-##' @param a quantum yield of photosynthetic electron transport (mol mol^-1)
+##' @param phi_J quantum yield of electron transport per ABSORBED photon
+##'   (mol mol^-1). The leaf absorbs `alpha_PAR_` (0.85 by default) of the
+##'   intercepted `PPFD`, so the default 0.30 / 0.85 is the old incident-basis
+##'   yield of 0.30 restated. A gas-exchange fit identifies only
+##'   `phi_J * alpha_PAR_`; fix `alpha_PAR_` to make the fitted value per absorbed
+##'   photon. Was `a` (incident basis) before 0.13.0: `phi_J = a / 0.85`.
 ##' @param curv_fact_elec_trans curvature of the light response curve (unitless)
 ##' @param curv_fact_colim curvature of the colimited photosynthesis equation
 ##' @param TF24_cost_scale cost parameter for the TF24 profit model
@@ -157,7 +162,7 @@ leaf_traits <- function(vcmax_25 = 96,
                         root_P50 = 3.4,
                         TF24_beta2 = 1.5,
                         jmax_25 = 157.44,
-                        a = 0.30,
+                        phi_J = 0.30 / 0.85,
                         curv_fact_elec_trans = 0.7,
                         curv_fact_colim = 0.99,
                         TF24_cost_scale = 7.5,
@@ -167,7 +172,7 @@ leaf_traits <- function(vcmax_25 = 96,
                         CMax_b = 0.0) {
   out <- list(vcmax_25 = vcmax_25, stem_c = stem_c, stem_P50 = stem_P50,
               root_c = root_c, root_P50 = root_P50, TF24_beta2 = TF24_beta2,
-              jmax_25 = jmax_25, a = a,
+              jmax_25 = jmax_25, phi_J = phi_J,
               curv_fact_elec_trans = curv_fact_elec_trans,
               curv_fact_colim = curv_fact_colim,
               TF24_cost_scale = TF24_cost_scale,
@@ -446,7 +451,7 @@ leaf_model <- function(traits = leaf_traits(), control = leaf_control(),
     root_P50 = traits$root_P50,
     TF24_beta2 = traits$TF24_beta2,
     jmax_25 = traits$jmax_25,
-    a = traits$a,
+    phi_J = traits$phi_J,
     curv_fact_elec_trans = traits$curv_fact_elec_trans,
     curv_fact_colim = traits$curv_fact_colim,
     GSS_tol_abs = control$GSS_tol_abs,
@@ -600,7 +605,10 @@ leaf_model <- function(traits = leaf_traits(), control = leaf_control(),
 ##' @param x a `Leaf`, from [leaf_model()]
 ##' @param psi_soil soil water potential, MPa, **positive magnitude**. Length
 ##'   sets the number of soil layers.
-##' @param PPFD photosynthetic photon flux density, umol m^-2 s^-1
+##' @param PPFD INTERCEPTED photosynthetic photon flux density per unit leaf area,
+##'   umol m^-2 s^-1: the light incident on the leaf, before its absorptance
+##'   (`alpha_PAR_`). On the energy-balance path the leaf also needs `$NIR_int_`,
+##'   the intercepted near-infrared in W m^-2, set before this call.
 ##' @param soil_depth cumulative depth to the bottom of each layer, m. Defaults
 ##'   to 1 m layers.
 ##' @param root_network the soil-to-collar hydraulic resistances, a
@@ -978,6 +986,12 @@ operating_point <- function(x) {
 ##'   `CF77` reads `CF77_lambda` and `TF24_floor` reads `TF24_floor_lambda_o`,
 ##'   both below. Neither has a default, and each curve refuses to solve without
 ##'   its own.
+##' @param LeastCost_beta the `LeastCost` curve's unit-cost ratio (Prentice et
+##'   al. 2014's beta): the cost of maintaining carboxylation capacity relative to
+##'   the cost of transpiration, dimensionless. Only `model = "LeastCost"` reads
+##'   it. That curve refuses to solve without one, and refuses zero as well, since
+##'   at zero the capacity term vanishes and what is left is water-use efficiency,
+##'   which rises without bound as transpiration falls. The published value is 146.
 ##' @param CF77_lambda,TF24_floor_lambda_o the prescribed marginal value of water
 ##'   for the two curves that take one, in umol C (kg H2O)^-1. `NA_real_` (the
 ##'   default) leaves the field unset, which every other model wants.
@@ -1030,9 +1044,11 @@ leaf_solve <- function(psi_soil,
                        reuse = TRUE,
                        model = "collar",
                        CF77_lambda = NA_real_,
-                       TF24_floor_lambda_o = NA_real_) {
+                       TF24_floor_lambda_o = NA_real_,
+                       LeastCost_beta = NA_real_) {
   .check_model(model, supply)
-  prices <- .check_prices(model, CF77_lambda, TF24_floor_lambda_o)
+  prices <- .check_prices(model, CF77_lambda, TF24_floor_lambda_o,
+                          LeastCost_beta)
   layered <- .as_layer_list(psi_soil, "psi_soil")
   scalars <- list(PPFD = PPFD, atm_vpd = atm_vpd, ca = ca,
                   leaf_temp = leaf_temp, atm_o2_kpa = atm_o2_kpa,
@@ -1189,11 +1205,19 @@ leaf_solve <- function(psi_soil,
 # their lambda had no effect. Passing none is fine: the curve's own check is what
 # reports the omission, and it reports it with the units and the reason.
 .solve_price_fields <- c(CF77 = "CF77_lambda_",
-                         TF24_floor = "TF24_floor_lambda_o")
+                         TF24_floor = "TF24_floor_lambda_o",
+                         LeastCost = "LeastCost_beta")
 
-.check_prices <- function(model, CF77_lambda, TF24_floor_lambda_o) {
+# ⚠️ THE THIRD ENTRY IS NOT A PRICE, and the message below branches on it
+# rather than calling it one. `CF77_lambda_` and `TF24_floor_lambda_o` are
+# marginal values of water; `LeastCost_beta` is a dimensionless ratio of two unit
+# costs, and least-cost's price of water is emergent FROM it. What the three share
+# is the only thing this table is for: a field one curve reads and no other has.
+.check_prices <- function(model, CF77_lambda, TF24_floor_lambda_o,
+                          LeastCost_beta = NA_real_) {
   given <- c(CF77_lambda_ = CF77_lambda,
-             TF24_floor_lambda_o = TF24_floor_lambda_o)
+             TF24_floor_lambda_o = TF24_floor_lambda_o,
+             LeastCost_beta = LeastCost_beta)
   # ⚠️ NOT `[[model]]`, which raises "subscript out of bounds" on every unpriced
   # model rather than reporting no price. "" is a name no field has.
   mine <- if (model %in% names(.solve_price_fields)) {
@@ -1204,8 +1228,14 @@ leaf_solve <- function(psi_soil,
   wrong <- names(given)[!is.na(given) & names(given) != mine]
   if (length(wrong)) {
     owner <- names(.solve_price_fields)[match(wrong[[1]], .solve_price_fields)]
-    stop("`", sub("_$", "", wrong[[1]]), "` is the ", owner,
-         " curve's prescribed price of water, and model = \"", model,
+    what <- if (wrong[[1]] == "LeastCost_beta") {
+      paste("the LeastCost curve's unit-cost ratio, the cost of maintaining",
+            "carboxylation capacity relative to that of transpiration")
+    } else {
+      paste("the", owner, "curve's prescribed price of water")
+    }
+    stop("`", sub("_$", "", wrong[[1]]), "` is ", what,
+         ", and model = \"", model,
          "\" does not read it: on every other curve the price is emergent, ",
          "derived from that curve's own parameters rather than set. Pass ",
          "model = \"", owner, "\", or drop the argument.", call. = FALSE)

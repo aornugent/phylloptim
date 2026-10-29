@@ -95,10 +95,11 @@ What `collar_at` does at each kind:
 | `shade-death` | the same wet bound | yes |
 | `boundary-crit` | the stem reaching its critical potential | yes |
 | `boundary-root-crit` | the root's critical potential | yes |
+| `determined` | the midpoint of the two bounds | the mean of the bounds' rows; the stem holds at its critical potential |
 | `hydraulic-shutdown` | nothing; the collar is held | uptake rows exactly zero, profit carries rows |
-| `unsolved`, `prescribed`, `determined`, `solver-refused`, `non-finite-gradient` | refused | none; `collar_at` throws |
+| `unsolved`, `prescribed`, `solver-refused`, `non-finite-gradient` | refused | none; `collar_at` throws |
 
-`determined` deserves a warning. When the feasible interval is narrower than `GSS_tol_abs`, the collar is held at its midpoint and only the stem potential is optimised; continuity between collar and stem is not re-imposed, so the point is not a solution of the full problem. At the package's default tolerance no interval on the reference grid collapses; a consumer that loosens `GSS_tol_abs` reaches it more often.
+`determined` deserves a warning. When the feasible interval is narrower than `GSS_tol_abs`, the collar is held at its midpoint and only the stem potential is optimised; continuity between collar and stem is not re-imposed, so the point is not a solution of the full problem. Both bounds are solved to collar precision first, so the midpoint moves with them. The stem's optimum there is placed only where it is the critical potential; one inside its interval is refused by name. At the package's default tolerance no interval on the reference grid collapses; a consumer that loosens `GSS_tol_abs` reaches it more often, and a dry stage of a long drought reaches it at plant's tolerances.
 
 ## Why the implicit function theorem
 
@@ -144,9 +145,9 @@ A consumer branches on `operating_point_kind()` and never on a returned value. A
 
 - `test_supplied_rows`: each layer's supplied collar slope against a central difference of the uptake.
 - `test_transpose`: a forward tangent against the reverse sweep through the same rows, at 72 operating points. It cannot see a row that is wrong both ways.
-- `test_leaf`: finite rows at every answered kind on a grid; a replay hands over its solve's rows bit for bit; TF24_floor's collar and profit rows against a re-solve.
+- `test_leaf`: finite rows at every answered kind on a grid; a replay hands over its solve's rows bit for bit; TF24_floor's collar and profit rows against a re-solve; `determined`'s collar, profit and uptake rows against a difference of the solve at both dry bounds; the root curve's rows past its dry end against the table.
 
-Not yet tested: the supplied trait rows at the pinned kinds against a finite difference of the solve (that referee exists outside the repository); `boundary-crit` and `boundary-root-crit` driven through `collar_at` on a tape; `determined` at all.
+Not yet tested: the supplied trait rows at the pinned kinds against a finite difference of the solve (that referee exists outside the repository); `boundary-crit` and `boundary-root-crit` driven through `collar_at` on a tape.
 
 ## Deliberately not built
 

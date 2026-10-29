@@ -261,7 +261,8 @@ void kernels() {
   mark(); keep(l.hydraulic_cost_TF_kernel<A>(sigma, io.in)); say("hydraulic_cost_TF_kernel(sigma, pars)");
   mark(); keep(pl::closed_form_curve<A>(l.stem_curve_integral_deriv(l.opt_psi_stem_),
                                         sigma, io.in[pl::par_stem_P50],
-                                        io.in[pl::par_stem_c]));
+                                        io.in[pl::par_stem_c],
+                                        pl::PastLastKnot::ReadsClosedForm));
                                                              say("closed_form_curve(table, psi, P50, c)");
   mark(); keep(l.assim_slope_at<A>(ci, cap));                say("assim_slope_at(ci, capacity)  <- SUPPLIED");
   mark(); keep(l.cost_slope_at<A>(sigma, io.in));            say("cost_slope_at(sigma, pars)    <- SUPPLIED");

@@ -245,7 +245,7 @@ tm <- function(f) {
   t0 <- Sys.time(); f(); 1000 * as.numeric(difftime(Sys.time(), t0, units = "secs"))
 }
 
-CAND <- c("vcmax_25", "jmax_25", "TF24_cost_scale", "TF24_beta2", "a",
+CAND <- c("vcmax_25", "jmax_25", "TF24_cost_scale", "TF24_beta2", "phi_J",
           "curv_fact_elec_trans", "curv_fact_colim",
           "stem_P50", "stem_c", "root_P50", "root_c")
 

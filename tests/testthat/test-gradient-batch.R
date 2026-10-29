@@ -82,11 +82,18 @@ test_that("the parameter enumeration is the same order in R and in C++", {
   # is safe and reordering would differentiate the wrong parameter and report
   # plausible numbers for it. Compared rather than trusted, in both directions.
   r_side <- c(names(leaf_traits()), "leaf_specific_conductance_max",
-              "resistance", "CF77_lambda_", "TF24_floor_lambda_o")
+              "resistance", "CF77_lambda_", "TF24_floor_lambda_o",
+              "LeastCost_beta",
+              "A_", "I_", "D_", "topt_offset_", "dTopt_max_", "K_A_", "k_i_",
+              "k_i_baseline_", "k_rec_", "m_rep_", "t_rep_cut_",
+              "c_acclim_maint_", "c_repair_maint_", "c_protect_maint_",
+              "c_repair_flux_")
   expect_identical(gradient_par_names(), r_side)
   # And the count, which is what a positional trait call would silently break:
-  # fifteen traits then the four that are not traits.
-  expect_length(gradient_par_names(), 19L)
+  # fifteen traits, the five that are not traits (two drivers, three model-owned
+  # slots), then the fifteen inputs of the thermal-damage layer that reach the
+  # solve.
+  expect_length(gradient_par_names(), 35L)
   expect_identical(gradient_par_names()[1:15], names(leaf_traits()))
 })
 
@@ -453,7 +460,7 @@ test_that("`pars` order does not change any gradient (#72)", {
   # homogeneity identity and would get the same shortcut, and a stem_b-shaped
   # test would silently stop covering the case it was written for.
   b <- leaf_batch(psi_soil = 1.5, PPFD = 900)
-  pars <- c("vcmax_25", "stem_c", "a", "stem_P50", "TF24_cost_scale", "root_P50")
+  pars <- c("vcmax_25", "stem_c", "phi_J", "stem_P50", "TF24_cost_scale", "root_P50")
 
   for (method in c("auto", "fd")) {
     for (fast in c(TRUE, FALSE)) {
@@ -680,20 +687,28 @@ test_that("the batch reproduces leaf_gradient() on every model, bit-for-bit", {
   own <- c(collar = "TF24_cost_scale", TF24 = "TF24_cost_scale",
            CF77 = "CF77_lambda_", JS22 = "JS22_gamma", CMax = "CMax_a",
            SOX = "vcmax_25", JW26 = "vcmax_25", ProfitMax = "vcmax_25",
-           TF24_floor = "TF24_floor_lambda_o")
+           TF24_floor = "TF24_floor_lambda_o",
+           # ⚠️ ITS OWN SLOT, NOT A TRAIT, and that is the point of the row: C++'s
+           # `gradient::apply()` writes `LeastCost_beta` from theta, so R's
+           # `.gradient_setter` must too, or the R column is exactly zero while
+           # the batch's is not -- a disagreement this bit-for-bit check sees and
+           # a finiteness check would not.
+           LeastCost = "LeastCost_beta")
   for (m in names(own)) {
     p <- own[[m]]
-    # Both prices supplied on every row: a batch column a model does not read is
-    # never touched, so this is one call rather than a branch on the model, and it
-    # is what covers the second model-owned slot reaching the right member.
+    # All three model-owned slots supplied on every row: a batch column a model
+    # does not read is never touched, so this is one call rather than a branch on
+    # the model, and it is what covers each slot reaching the right member.
     b <- leaf_batch(psi_soil = psv, PPFD = 1500, root_network = net,
                     supply = leaf_supply_singlelayer(), traits = tr,
-                    CF77_lambda = 1.5e5, TF24_floor_lambda_o = 1.5e5)
+                    CF77_lambda = 1.5e5, TF24_floor_lambda_o = 1.5e5,
+                    LeastCost_beta = 146)
     gb <- leaf_gradient_batch(b, pars = p, model = m)
     one <- vapply(psv, function(ps) {
       l <- leaf_model(tr, leaf_control(), leaf_supply_singlelayer())
       l$CF77_lambda_ <- 1.5e5
       l$TF24_floor_lambda_o <- 1.5e5
+      l$LeastCost_beta <- 146
       leaf_gradient(psi_soil = ps, PPFD = 1500, root_network = net, x = l,
                     traits = tr, pars = p, model = m)$gradient[1, "A"]
     }, numeric(1))

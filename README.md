@@ -23,18 +23,19 @@ so it can be tested, profiled, extended and embedded on its own.
 | You want to | Read |
 |---|---|
 | solve a leaf from R, or fit traits | [Use from R](#use-from-r), then `vignette("phylloptim")` and `vignette("fitting")` |
-| compare the eight stomatal models | `vignette("the-models")` |
+| compare the nine stomatal models | `vignette("the-models")` |
 | embed the leaf in C++ or Python | [Use from C++](#use-from-c), then `vignette("cpp-interface")` |
 | differentiate a model that contains the leaf | [Derivatives of the operating point](#derivatives-of-the-operating-point), then `vignette("derivative-surface")` |
 | change the code | `.claude/CLAUDE.md`, the developer guide: build, tests, the map of the headers, and the invariants |
 
 ## Why a separate package
-**A home for several stomatal models, not just ours.** The package solves **eight**
+**A home for several stomatal models, not just ours.** The package solves **nine**
 optimality models through one optimiser, at identical drivers, behind one gradient
 entry point: our hydraulic gain-risk formulation (`TF24`), Sperry-style profit
 maximisation (`ProfitMax`), Cowan-Farquhar (`CF77`), Joshi & Stocker's quadratic
 cost (`JS22`), Wolf-Anderegg-Pacala carbon maximisation (`CMax`), the two
-product objectives `SOX` and `JW26`, and `TF24_floor`. The Medlyn
+product objectives `SOX` and `JW26`, Prentice et al.'s least-cost ratio
+(`LeastCost`), and `TF24_floor`. The Medlyn
 et al. (2011) empirical model is here too, bypassing the hydraulic solve.
 `vignette("the-models")` sets them side by side and derives each one.
 
@@ -67,7 +68,7 @@ swapping cost functions. Every one of these models maximises
     h(A(psi)) - C(psi)
 
 so a model is fully specified by a **cost curve** `C` and a **benefit link** `h`,
-and one derivative serves all eight:
+and one derivative serves all nine:
 
     d/dpsi [h(A) - C] = h'(A) * dA/dpsi - dC/dpsi
 
@@ -82,7 +83,7 @@ commits to a single hydraulically explicit scheme or to none.
 **One solver, so the comparison is not just fair but cheap.** Every model reaches its
 operating point through the same call: evaluate both interval endpoints, optionally
 scan for the basin, then root-find `dJ/dψ = 0` inside the winning cell. Nothing here
-is per-model except a row in two dispatch tables. That is what keeps an eight-model
+is per-model except a row in two dispatch tables. That is what keeps a nine-model
 package as fast as a one-model one — the stem entry points run at **2.9 µs** and
 ProfitMax at **5.6 µs**, against 9.3 and 58.2 before the solvers were merged, because
 a basin scan is now used only where multi-modality is measured rather than everywhere
@@ -397,7 +398,7 @@ g <- leaf_gradient(psi_soil = 2.0, PPFD = 900,
 g$gradient   # rows: parameters.  columns: A, gc, psi_stem, collar, profit
 g$method     # "ift" or "fd" -- see below
 
-# any of the eight models, same call -- and `leaf_solve()` takes `model` too
+# any of the nine models, same call -- and `leaf_solve()` takes `model` too
 leaf_gradient(psi_soil = 2.0, PPFD = 900, model = "JS22",
               supply = leaf_supply_singlelayer(), pars = c("vcmax_25", "JS22_gamma"))
 ```
