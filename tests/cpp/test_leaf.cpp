@@ -239,26 +239,130 @@ void test_vulnerability_integral_derivatives() {
   ok(at_zero.db == 0.0, "dG/db is exactly zero at psi = 0");
   ok(at_zero.dc == 0.0, "dG/dc is exactly zero at psi = 0");
 
-  // Past the last knot the series would overflow rather than mislead, so the
-  // bound is asserted instead of branched around.
-  bool threw = false;
-  try {
-    cumulative_vulnerability_integral_derivatives_at(3.0, 1.0, 2.0);
-  } catch (const std::runtime_error &) {
-    threw = true;
+  // Past the last knot: (3.0, 1.0, 2.0) is x = 9, past the knot grid's
+  // x_max = log(100) and inside the series' reach, and agrees with the closed
+  // form and a central difference like any other point.
+  {
+    const double psi = 3.0, b = 1.0, c = 2.0, h = 1e-5;
+    const auto d = cumulative_vulnerability_integral_derivatives_at(psi, b, c);
+    near(d.value, cumulative_vulnerability_integral_at(psi, b, c), 1e-14,
+         "past the knot grid, the series still matches the closed form");
+    near(d.db,
+         (cumulative_vulnerability_integral_at(psi, b * (1 + h), c) -
+          cumulative_vulnerability_integral_at(psi, b * (1 - h), c)) / (2 * h * b),
+         1e-7, "and dG/db matches a central difference");
+    near(d.dc,
+         (cumulative_vulnerability_integral_at(psi, b, c * (1 + h)) -
+          cumulative_vulnerability_integral_at(psi, b, c * (1 - h))) / (2 * h * c),
+         1e-7, "and dG/dc matches a central difference");
   }
-  ok(threw, "an argument past the curve's domain throws");
-  double just_inside = 0.0;
-  try {
-    just_inside =
-        cumulative_vulnerability_integral_derivatives_at(
-            phylloptim::vulnerability_psi_max(3.898245, 2.680147), 3.898245,
-            2.680147)
-            .value;
-  } catch (const std::runtime_error &) {
-    just_inside = -1.0;
+  // Past vulnerability_x_series_max the limit's derivatives take over. They must
+  // agree with the series either side of the hand-over, and with a central
+  // difference of the closed form far past it.
+  {
+    const double b = 3.898245, c = 2.680147;
+    const double x_hand = phylloptim::vulnerability_x_series_max;
+    const double below = b * std::pow(x_hand * (1 - 1e-9), 1.0 / c);
+    const double above = b * std::pow(x_hand * (1 + 1e-9), 1.0 / c);
+    const auto s0 = cumulative_vulnerability_integral_derivatives_at(below, b, c);
+    const auto s1 = cumulative_vulnerability_integral_derivatives_at(above, b, c);
+    // The true gap is gamma_upper(1/c, 40) * b/c, ~1e-18 relative; what is left
+    // is the series' rounding against boost's tgamma, a few ulp and libm-
+    // dependent (1.28e-15 on Linux), so the series' own 1e-14 bound applies.
+    near((s1.value - s0.value) / s0.value, 0.0, 1e-14,
+         "G is continuous where the series hands over to the limit");
+    near((s1.db - s0.db) / s0.db, 0.0, 1e-13, "and so is dG/db");
+    near((s1.dc - s0.dc) / s0.dc, 0.0, 1e-13, "and so is dG/dc");
+    for (double psi : {50.0, 1000.0}) {
+      const double h = 1e-5;
+      const auto d = cumulative_vulnerability_integral_derivatives_at(psi, b, c);
+      const std::string at = " at psi=" + std::to_string(psi);
+      ok(d.value == phylloptim::cumulative_vulnerability_integral_limit(b, c),
+         "far past the grid G is its limit" + at);
+      near(d.db,
+           (cumulative_vulnerability_integral_at(psi, b * (1 + h), c) -
+            cumulative_vulnerability_integral_at(psi, b * (1 - h), c)) / (2 * h * b),
+           1e-7, "the limit's dG/db matches a central difference" + at);
+      near(d.dc,
+           (cumulative_vulnerability_integral_at(psi, b, c * (1 + h)) -
+            cumulative_vulnerability_integral_at(psi, b, c * (1 - h))) / (2 * h * c),
+           1e-7, "the limit's dG/dc matches a central difference" + at);
+    }
   }
+  const double just_inside =
+      cumulative_vulnerability_integral_derivatives_at(
+          phylloptim::vulnerability_psi_max(3.898245, 2.680147), 3.898245,
+          2.680147)
+          .value;
   ok(just_inside > 0.0, "the last knot itself is inside the bound");
+}
+
+// A soil drier than the stem curve's last knot (P99) is a closed leaf on the
+// single-potential stem routes, and the accessors read the closed form past the
+// knot grid to give that answer (#157). These are the properties that make the
+// read safe.
+void test_stem_curve_past_its_grid() {
+  printf("stem curve past its knot grid (#157)\n");
+  Drivers d;
+  phylloptim::Leaf l = make_leaf(d, {2.0}, {1.0});
+  const double b = l.stem_b, c = l.stem_c;
+  const double p99 = phylloptim::vulnerability_psi_max(b, c);
+  const double G_inf = phylloptim::cumulative_vulnerability_integral_limit(b, c);
+
+  // Continuous at the join, in value and in slope: the knots were seeded from
+  // the closed form and given the curve as their slopes.
+  const double eps = 1e-9;
+  const double G_at = l.stem_curve_integral(p99);
+  const double G_past = l.stem_curve_integral(p99 * (1 + eps));
+  near(G_at, phylloptim::cumulative_vulnerability_integral_at(p99, b, c), 1e-15,
+       "at P99 the table equals the closed form");
+  near((G_past - G_at) / (p99 * eps), l.stem_curve_integral_deriv(p99), 1e-6,
+       "G is continuous across P99");
+  // The slope moves by d ln f / d ln psi = -c x over the step, about 1.2e-8 here,
+  // so the join is checked against the curve rather than against no change.
+  near(l.stem_curve_integral_deriv(p99), std::exp(-std::pow(p99 / b, c)), 1e-15,
+       "at P99 the table's slope is the curve");
+  near(l.stem_curve_integral_deriv(p99 * (1 + eps)),
+       std::exp(-std::pow(p99 * (1 + eps) / b, c)), 1e-15,
+       "and just past it the slope is the curve too");
+
+  // Past the grid: the closed form, increasing, bounded by its limit.
+  double prev = G_at;
+  for (double psi : {6.95, 7.0, 10.0, 50.0, 1000.0}) {
+    const std::string at = " at psi=" + std::to_string(psi);
+    const double G = l.stem_curve_integral(psi);
+    ok(G == phylloptim::cumulative_vulnerability_integral_at(psi, b, c),
+       "past the grid G is the closed form" + at);
+    ok(G >= prev && G <= G_inf, "increasing and below G(inf)" + at);
+    near(l.stem_curve_integral_deriv(psi), std::exp(-std::pow(psi / b, c)), 1e-15,
+         "and its slope is the curve" + at);
+    prev = G;
+  }
+
+  // The inverse past the table, round trip, where the curve is not yet flat.
+  for (double psi : {6.95, 7.5, 8.5}) {
+    const double w = l.stem_curve_integral(psi);
+    near(l.stem_curve_integral_inverse(w) / psi, 1.0, 1e-10,
+         "G^-1(G(psi)) = psi past the table, at psi=" + std::to_string(psi));
+  }
+  // Past G(inf) no potential carries the flow: still infeasible, still the code.
+  bool infeasible = false;
+  try {
+    l.stem_curve_integral_inverse(G_inf * (1 + 1e-6));
+  } catch (const phylloptim::util::infeasible_error &e) {
+    infeasible =
+        std::string(e.what()).rfind(phylloptim::util::infeasible_token("stem_curve_domain"), 0) == 0;
+  }
+  ok(infeasible, "past G(inf) the inverse is stem_curve_domain");
+
+  // The single-potential path end to end: a closed stem at a soil drier than P99
+  // moves no water, and a demanded flux of zero puts the stem at the soil.
+  for (double psi_soil : {6.95, 10.0, 1000.0}) {
+    const std::string at = " at psi_soil=" + std::to_string(psi_soil);
+    ok(l.transpiration(psi_soil, psi_soil) == 0.0, "no flux with the stem at the soil" + at);
+    near(l.transpiration_to_psi_stem(0.0, psi_soil) / psi_soil, 1.0, 1e-9,
+         "zero flux inverts to the soil's own potential" + at);
+  }
 }
 
 void test_spline_matches_direct_integration() {
@@ -4617,12 +4721,15 @@ void test_out_of_domain_names_the_spline() {
   Drivers d;
   phylloptim::Leaf l = make_leaf(d, {2.0}, {1.0});
 
-  // Forward direction, past the far end of the vulnerability curve.
-  const std::string fwd = message_of([&] { l.transpiration(50.0, 0.0); });
+  // Forward direction, below the near end of the vulnerability curve. Past the
+  // FAR end reads the closed form, which test_stem_curve_past_its_grid covers.
+  const std::string fwd = message_of([&] { l.transpiration(-1.0, 0.0); });
   ok(mentions(fwd, "transpiration_from_psi"), "forward lookup names its spline");
-  ok(mentions(fwd, "psi = 50"), "forward lookup reports the point");
-  ok(mentions(fwd, "beyond the upper end"), "forward lookup reports which end");
+  ok(mentions(fwd, "psi = -1"), "forward lookup reports the point");
+  ok(mentions(fwd, "beyond the lower end"), "forward lookup reports which end");
   ok(mentions(fwd, "Leaf::transpiration"), "forward lookup names the caller");
+  ok(message_of([&] { l.transpiration(50.0, 0.0); }).empty(),
+     "and past the far end the forward lookup answers");
 
   // Inverse direction, below the lower end -- the plant#576 signature. A
   // sufficiently negative flux puts E/K_max below the domain, which is the
@@ -4660,18 +4767,27 @@ void test_out_of_domain_names_the_spline() {
 // there.
 void test_out_of_domain_under_rescale() {
   Drivers d;
+  // At the LOWER end: past the upper end reads the closed form.
   phylloptim::Leaf wide = make_leaf(d, {2.0}, {1.0});
-  const std::string before = message_of([&] { wide.transpiration(50.0, 0.0); });
+  const std::string before = message_of([&] { wide.transpiration(-1.0, 0.0); });
 
   phylloptim::Leaf rescaled = make_leaf(d, {2.0}, {1.0});
   rescaled.perturb_stem_P50(rescaled.stem_P50 * 2.0);
   const std::string after =
-      message_of([&] { rescaled.transpiration(50.0, 0.0); });
+      message_of([&] { rescaled.transpiration(-1.0, 0.0); });
 
   ok(!before.empty() && !after.empty(), "both report a domain failure");
   ok(before != after, "the rescaled domain is reported, not the spline's own");
   ok(mentions(after, "rescaled by"),
      "the rescale is named so the two domains are not confused");
+
+  // And past the upper end the rescaled leaf reads the closed form at ITS curve,
+  // not the spline's: the homogeneity identity holds for the closed form too.
+  const double psi = 50.0;
+  ok(rescaled.stem_curve_integral(psi) ==
+         phylloptim::cumulative_vulnerability_integral_at(psi, rescaled.stem_b,
+                                                          rescaled.stem_c),
+     "past the rescaled table G is the closed form at the perturbed curve");
 }
 
 // ===========================================================================
@@ -7101,6 +7217,7 @@ int main() {
   test_gas_constant_and_arrhenius_reference_point();
   test_knot_grid_reaches_its_intended_domain();
   test_psi_crit_lies_inside_the_stem_curve_domain();
+  test_stem_curve_past_its_grid();
   test_bad_input_throws();
   test_infeasible_is_a_distinct_failure();
   test_out_of_domain_names_the_spline();

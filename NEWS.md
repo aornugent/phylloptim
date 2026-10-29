@@ -1,3 +1,9 @@
+# phylloptim 0.14.1
+
+## A soil drier than the stem curve's P99 is a closed leaf, not an error
+
+The stem vulnerability curve's knot grid stops at P99 (6.89 MPa at the default curve), and every read past it threw `stem_curve_domain`. On the single-potential stem routes (`leaf_supply_singlelayer()`), that made a soil drier than P99 unsolvable, although the answer there is a shut leaf, and P95 to P99 already gave it. Past the grid the stem curve now reads its closed form, `G(psi) = (b/c) gamma_lower(1/c, (psi/b)^c)`, with slope `exp(-(psi/b)^c)`, and inverts it there; the knots are seeded from the same expression, so value and slope are continuous at P99. `cumulative_vulnerability_integral_derivatives_at` likewise answers past the grid: its series holds out to `(psi/b)^c = 40`, and beyond that it returns the limit `(b/c) Gamma(1/c)` and the limit's derivatives. A negative potential, a flow below the table, and a flow at or past the curve's total `G(inf)` still raise `stem_curve_domain`. The collar route was not affected. No in-grid number moves: the operating-point, psi_stem and primitives golden files and the gradient golden file are bit-identical (#157).
+
 # phylloptim 0.14.0
 
 ## Net longwave depends on air temperature and humidity (#97, #28)

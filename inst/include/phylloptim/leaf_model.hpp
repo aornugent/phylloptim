@@ -1538,9 +1538,20 @@ public:
   // "u = 7.5 beyond the upper end" is ambiguous in exactly the way that matters.
   // Nor can it name the caller -- the same spline is read from four places, and
   // localising plant#576 came down to which.
+  //
+  // Past the UPPER end it answers rather than throws: the table is a cache of
+  // G(psi) = (b/c) gamma_lower(1/c, (psi/b)^c), which is defined at every
+  // potential, so a soil drier than P99 reads the closed form at the curve's
+  // (b, c). The knots are seeded from that same closed form, so the value is
+  // continuous at the join. Only the lower end, a negative potential, throws.
   static double eval_stem_curve(const odelia::interpolator::hermite_spline<double>& spline,
-                                double u, double scale, const char* spline_name,
+                                double u, double scale, double b, double c,
+                                const char* spline_name,
                                 const char* arg_name, const char* caller);
+  // G^-1 past the table's upper end, on the closed form: the inverse of the
+  // branch eval_stem_curve takes there. Infeasible only where no potential
+  // gives `w`, i.e. at or past G(inf).
+  double invert_stem_curve_past_grid(double w, const char* caller) const;
 
   // Move stem_b WITHOUT rebuilding the stem vulnerability spline, by the
   // homogeneity identity above. stem_c is not accepted: it has no such identity.
@@ -5894,7 +5905,7 @@ inline void Leaf::setup_transpiration(double resolution) {
     const char* caller);
 
 inline double Leaf::eval_stem_curve(const odelia::interpolator::hermite_spline<double>& spline,
-                                    double u, double scale,
+                                    double u, double scale, double b, double c,
                                     const char* spline_name,
                                     const char* arg_name, const char* caller) {
   // scale == 1.0 is the production path (no stem_b rescale), and it must not pay
@@ -5905,9 +5916,14 @@ inline double Leaf::eval_stem_curve(const odelia::interpolator::hermite_spline<d
   // ⚠️ THIS CHECK IS THE ONLY ONE -- DO NOT DROP IT AS A DUPLICATE OF ONE INSIDE
   // odelia. eval extends linearly past the end knot and raises nothing, so
   // without this a stem potential off the table is answered with a straight line
-  // rather than refused.
+  // rather than with the closed form (above) or refused (below).
+  //
+  // The upper-end branch sits inside the out-of-range test, so the in-range
+  // path pays nothing for it. At the curve's (b, c) the closed form is already
+  // in psi, so no rescale applies to it.
   if (scale == 1.0) {
     if (u < spline.min() || u > spline.max()) {
+      if (u > spline.max()) return cumulative_vulnerability_integral_at(u, b, c);
       stem_curve_out_of_domain(spline.min(), spline.max(), u, u, scale,
                                spline_name, arg_name, caller);
     }
@@ -5915,6 +5931,7 @@ inline double Leaf::eval_stem_curve(const odelia::interpolator::hermite_spline<d
   }
   const double v = u / scale;
   if (v < spline.min() || v > spline.max()) {
+    if (v > spline.max()) return cumulative_vulnerability_integral_at(u, b, c);
     stem_curve_out_of_domain(spline.min(), spline.max(), u, v, scale,
                              spline_name, arg_name, caller);
   }
@@ -5951,17 +5968,28 @@ inline double Leaf::stem_curve_integral(double psi, const char* caller) const {
   // out of the division anyway; the branch is kept because stem_b_spline_ is 0.0
   // before the first setup_transpiration and 0/0 is not 1.
   const double s = (stem_b == stem_b_spline_) ? 1.0 : stem_b / stem_b_spline_;
-  return eval_stem_curve(transpiration_from_psi, psi, s,
+  return eval_stem_curve(transpiration_from_psi, psi, s, stem_b, stem_c,
                          "transpiration_from_psi (the cumulative xylem "
                          "conductivity integral G, psi in +MPa)",
                          "psi", caller);
 }
 
 inline double Leaf::stem_curve_integral_deriv(double psi) const {
+  // Past the table's upper end, G' is the curve itself -- the same
+  // exp(-(psi/b)^c) the knot slopes were given, so the slope is continuous at
+  // the join. The spline's own slope past its last knot is its extension, not
+  // the curve.
   if (stem_b == stem_b_spline_) {
+    if (psi > transpiration_from_psi.max()) {
+      return proportion_of_conductivity_kernel(psi);
+    }
     return transpiration_from_psi.slope(psi);
   }
-  return transpiration_from_psi.slope(psi / (stem_b / stem_b_spline_));
+  const double v = psi / (stem_b / stem_b_spline_);
+  if (v > transpiration_from_psi.max()) {
+    return proportion_of_conductivity_kernel(psi);
+  }
+  return transpiration_from_psi.slope(v);
 }
 
 // G^-1 on the table G is read from. G is the integral of a positive
@@ -6061,7 +6089,12 @@ inline double Leaf::invert_stem_curve(double w, bool converge) const {
 inline double Leaf::stem_curve_integral_inverse(double w, const char* caller, bool converge) const {
   const double s = (stem_b == stem_b_spline_) ? 1.0 : stem_b / stem_b_spline_;
   const double v = (s == 1.0) ? w : w / s;
-  if (v < stem_curve_at_psi_.front() || v > stem_curve_at_psi_.back()) {
+  if (v > stem_curve_at_psi_.back()) {
+    // Past the table, the inverse of the closed form eval_stem_curve reads
+    // there. Infeasible only at or past G(inf).
+    return invert_stem_curve_past_grid(w, caller);
+  }
+  if (v < stem_curve_at_psi_.front()) {
     stem_curve_out_of_domain(stem_curve_at_psi_.front(),
                              stem_curve_at_psi_.back(), w, v, s,
                              "the cumulative xylem conductivity integral G, "
@@ -6069,6 +6102,54 @@ inline double Leaf::stem_curve_integral_inverse(double w, const char* caller, bo
                              "E/K_max", caller);
   }
   return (s == 1.0) ? invert_stem_curve(v, converge) : s * invert_stem_curve(v, converge);
+}
+
+inline double Leaf::invert_stem_curve_past_grid(double w, const char* caller) const {
+  // G is strictly increasing and bounded by G(inf) = (b/c) Gamma(1/c), so a
+  // potential gives w exactly when w < G(inf). At or past it no stem potential
+  // carries the flow, which is the infeasibility the lower end reports too.
+  const double G_inf = cumulative_vulnerability_integral_limit(stem_b, stem_c);
+  const double lo_0 = vulnerability_psi_max(stem_b, stem_c);
+  if (!(w < G_inf)) {
+    stem_curve_out_of_domain(0.0, G_inf, w, w, 1.0,
+                             "the cumulative xylem conductivity integral G, "
+                             "INVERTED (G^-1, argument in E/K_max), whose upper "
+                             "end is its limit G(inf)",
+                             "E/K_max", caller);
+  }
+  // Bracket: G at P99 is below w (that is why we are here), and doubling from
+  // there reaches a potential above it, since G -> G(inf) > w. The bound on the
+  // doublings is a guard: each one squares exp(-(psi/b)^c) at least, so w within
+  // rounding of G(inf) is the only way to exhaust it.
+  double lo = lo_0, hi = 2.0 * lo_0;
+  int doublings = 0;
+  while (cumulative_vulnerability_integral_at(hi, stem_b, stem_c) < w) {
+    lo = hi;
+    hi *= 2.0;
+    if (++doublings > 60) {
+      stem_curve_out_of_domain(0.0, G_inf, w, w, 1.0,
+                               "the cumulative xylem conductivity integral G, "
+                               "INVERTED (G^-1, argument in E/K_max): w is "
+                               "within rounding of its limit G(inf)",
+                               "E/K_max", caller);
+    }
+  }
+  // Newton on the closed form, bisecting whenever a step leaves the bracket or
+  // the slope has underflowed. Off the hot path: reached only past P99.
+  double psi = 0.5 * (lo + hi);
+  for (int i = 0; i < 200; ++i) {
+    const double f = cumulative_vulnerability_integral_at(psi, stem_b, stem_c) - w;
+    if (f == 0.0) return psi;
+    if (f > 0.0) hi = psi; else lo = psi;
+    const double slope = proportion_of_conductivity_kernel(psi);
+    double next = slope > 0.0 ? psi - f / slope : 0.5 * (lo + hi);
+    if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
+    if (std::abs(next - psi) <= 4.0 * std::numeric_limits<double>::epsilon() * psi) {
+      return next;
+    }
+    psi = next;
+  }
+  return psi;
 }
 
 inline double Leaf::stem_curve_integral_inverse_deriv(double w) const {
@@ -6150,6 +6231,18 @@ inline double Leaf::transpiration_to_psi_stem(double transpiration_, double psi_
   // eval(psi_upstream), and that this was consistent because the two were called
   // with opposite-sign arguments. Under one representation they are not, and the
   // negation is deleted (#25).
+
+  // Past the knot grid G flattens to its limit, and far enough out it is G(inf)
+  // to rounding, so every potential there maps to one value and G^-1 cannot say
+  // which. A zero flux has the stem AT the upstream potential, which is the
+  // answer the inverse would give if it could; any positive flux there needs
+  // more than G(inf) and is infeasible. Restricted to past the grid so that no
+  // in-grid point changes, and taken before the forward read, which it makes
+  // redundant.
+  if (transpiration_ == 0.0 &&
+      psi_upstream > vulnerability_psi_max(stem_b, stem_c)) {
+    return psi_upstream;
+  }
 
   double E_psi_stem = transpiration_/leaf_specific_conductance_max_ +
     stem_curve_integral(psi_upstream, "Leaf::transpiration_to_psi_stem, at psi_upstream");

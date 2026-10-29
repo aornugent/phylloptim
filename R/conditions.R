@@ -86,8 +86,9 @@ leaf_infeasible_codes <- function() {
       paste("the nested ci root-find failed, and not in the way that means",
             "shut-down (which is an answer, not an error)"),
     stem_curve_domain =
-      paste("a vulnerability spline was asked for a potential outside the domain",
-            "its traits give it"),
+      paste("a vulnerability curve was asked for a negative or non-finite",
+            "potential, or the stem curve for a flow no stem potential can carry",
+            "(below its table, or at or past the curve's total)"),
     uptake =
       paste("the soil-to-root-collar flux is non-finite, or a layer's",
             "vulnerability weighting is unusable, at this candidate collar"),
