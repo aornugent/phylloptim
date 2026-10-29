@@ -39,6 +39,13 @@ namespace phylloptim {
 // row that nothing reports, which is exactly the class of defect this file exists
 // to make unwritable.
 
+// What a table reads past its last knot, which decides the rows there, so every
+// call names its table's. The stem table reads the closed form itself (#157), so
+// its rows are the closed form's wherever it is read. The root table holds its
+// last knot (#77): the integral runs along that knot's tangent up to G(inf) and
+// stays at G(inf) beyond, and the conductivity stays at the floor.
+enum class PastLastKnot { ReadsClosedForm, HoldsLastKnot };
+
 // G(psi): the cumulative vulnerability integral.
 //
 // ⚠️ THE QUERY SLOPE IS THE CALLER'S, AND IT MUST BE THE TABLE'S -- this is the
@@ -48,18 +55,19 @@ namespace phylloptim {
 // size. Both are finite and plausible and they differ by the fit error.
 template <class S>
 inline S closed_form_integral(double table_value, double table_slope, const S& psi,
-                        const S& P50, const S& c) {
+                        const S& P50, const S& c, PastLastKnot tail) {
   using odelia::util::to_passive;
   const double at = to_passive(psi);
   const double P50_0 = to_passive(P50);
   const double c_0 = to_passive(c);
   const double b = weibull_b_from_P50(P50_0, c_0);
   const double end = vulnerability_psi_max(b, c_0);
-  // Past the dry end only the root table answers. Up to G(inf) it is the last
-  // knot's tangent, whose slope is f there, so the knot's own motion cancels and
-  // the rows are G's at the knot; beyond, it is G(inf), and its slope is zero.
+  // Past the root table's dry end, up to G(inf), the read is the last knot's
+  // tangent, whose slope is f there, so the knot's own motion cancels and the
+  // rows are G's at the knot; beyond, it is G(inf), and its slope is zero.
+  const bool held = tail == PastLastKnot::HoldsLastKnot && at > end;
   const VulnerabilityIntegralDerivatives d =
-      at <= end           ? cumulative_vulnerability_integral_derivatives_at(at, b, c_0)
+      !held               ? cumulative_vulnerability_integral_derivatives_at(at, b, c_0)
       : table_slope > 0.0 ? cumulative_vulnerability_integral_derivatives_at(end, b, c_0)
                           : cumulative_vulnerability_integral_limit_derivatives(b, c_0);
   const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
@@ -71,15 +79,17 @@ inline S closed_form_integral(double table_value, double table_slope, const S& p
 // because nothing else in the assembly forms df/dpsi to disagree with.
 template <class S>
 inline S closed_form_curve(double table_value, const S& psi, const S& P50,
-                     const S& c) {
+                     const S& c, PastLastKnot tail) {
   using odelia::util::to_passive;
   const double at = to_passive(psi);
   const double P50_0 = to_passive(P50);
   const double c_0 = to_passive(c);
   const double b = weibull_b_from_P50(P50_0, c_0);
-  // Past the dry end every table holds its last knot's value, and f there is the
-  // conductivity floor whatever b and c are: the read has no row.
-  if (at > vulnerability_psi_max(b, c_0)) return S(table_value);
+  // Past the root table's dry end the read is its last knot's value, and f there
+  // is the conductivity floor whatever b and c are: the read has no row.
+  if (tail == PastLastKnot::HoldsLastKnot && at > vulnerability_psi_max(b, c_0)) {
+    return S(table_value);
+  }
   const VulnerabilityDerivatives d = vulnerability_derivatives_at(at, b, c_0);
   const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
   return S(table_value) + S(d.dpsi) * (psi - S(at)) +

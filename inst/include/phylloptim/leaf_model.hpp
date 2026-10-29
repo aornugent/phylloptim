@@ -2638,9 +2638,16 @@ public:
   // so it is an ordinary expression the chain differentiates itself and there is
   // no theorem to apply: a point the root's limit pins is tagged
   // `BoundaryRootCrit`, and collar_at places it at root_psi_crit_at.
+  //
+  // `root` is where the bound's residual vanishes, for a draw taken somewhere
+  // else: a determined collar's midpoint, up to GSS_tol_abs / 2 from either
+  // bound. The draw is carried to the root along its own slope and the residual's
+  // slope is the supply's at the root, so the row is the bound's own. NaN keeps
+  // the pinned-point behaviour, where the draw sits at or a step inside the bound.
   template <CostCurve K, class S>
   S bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
-             const leaf_pars<S>& pars) const;
+             const leaf_pars<S>& pars,
+             double root = std::numeric_limits<double>::quiet_NaN()) const;
 
   // The ROOT curve's critical potential, derived from its trait pair exactly as
   // the stem's is.
@@ -3291,6 +3298,9 @@ private:
   // the residual back to the root, so the row is the root's derivative rather
   // than one proportional to the step.
   double wet_bound_root_ = std::numeric_limits<double>::quiet_NaN();
+  // The continuity root a determined collar's dry end was solved to, or NaN. Read
+  // with wet_bound_root_ by collar_at, which places that collar from both bounds.
+  double dry_bound_root_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 // Human-readable tag. The switch has no default, so a missing name is a -Wswitch
@@ -3521,7 +3531,7 @@ inline S Leaf::stem_integral_at(const S& psi, const leaf_pars<S>& pars) const {
   return closed_form_integral<S>(
       stem_curve_integral(at, "Leaf::stem_integral_at"),
       stem_curve_integral_deriv(at), psi, pars[par_stem_P50],
-      pars[par_stem_c]);
+      pars[par_stem_c], PastLastKnot::ReadsClosedForm);
 }
 
 inline leaf_pars<double> Leaf::passive_pars() const {
@@ -4157,6 +4167,7 @@ inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b){
   // point (hazard 8). Every exit below, and both callers, write it again.
   operating_point_kind_ = OperatingPointKind::Unsolved;
   wet_bound_root_ = std::numeric_limits<double>::quiet_NaN();
+  dry_bound_root_ = std::numeric_limits<double>::quiet_NaN();
 
   // Hand the supply path the start of a solve: it builds its per-solve caches and
   // reports back the wettest rooted layer -- the SMALLEST suction, and the lower
@@ -4335,6 +4346,9 @@ if(assim_max_ < 0){
                        supply_psi_crit());
         dry_bound_is_root_limit_ = !(dry < supply_psi_crit());
       }
+      // collar_at differentiates each bound at its own root, not at the midpoint.
+      wet_bound_root_ = wet;
+      dry_bound_root_ = dry;
       const double opt_root_psi = 0.5 * (wet + dry);
       const double psi_stem_single = find_psi_stem_from_psi_root(opt_root_psi, supply_psi_soil());
 
@@ -7331,10 +7345,12 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // carries none.
   const S& kmax = pars[par_kmax];
   const S f_p = closed_form_curve<S>(stem_curve_integral_deriv(to_passive(collar)),
-                               held, pars[par_stem_P50], pars[par_stem_c]);
+                               held, pars[par_stem_P50], pars[par_stem_c],
+                               PastLastKnot::ReadsClosedForm);
   const S f_sigma = closed_form_curve<S>(stem_curve_integral_deriv(sigma_star),
                                    sigma_h, pars[par_stem_P50],
-                                   pars[par_stem_c]);
+                                   pars[par_stem_c],
+                                   PastLastKnot::ReadsClosedForm);
 
   // dsigma/dcollar: THE INVERSE SPLINE'S OWN SLOPE times the transport's, which
   // is how upstream's dprofit_at_collar_psi forms it and what actually placed
@@ -7498,7 +7514,7 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
               pars[par_TF24_floor_lambda_o] * pars[par_kmax] *
                   closed_form_curve<S>(stem_curve_integral_deriv(opt_psi_stem_),
                                  at.sigma.value, pars[par_stem_P50],
-                                 pars[par_stem_c]);
+                                 pars[par_stem_c], PastLastKnot::ReadsClosedForm);
   }
 
   S M = A_prime * at.ci.slope - C_prime * at.sigma.slope;
@@ -7509,7 +7525,8 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
     // collar, so the term's own dM/dcollar reaches the implicit row.
     M = M + pars[par_TF24_floor_lambda_o] * pars[par_kmax] *
                 closed_form_curve<S>(stem_curve_integral_deriv(to_passive(collar)),
-                                     collar, pars[par_stem_P50], pars[par_stem_c]);
+                                     collar, pars[par_stem_P50], pars[par_stem_c],
+                                     PastLastKnot::ReadsClosedForm);
   }
   return M;
 }
@@ -7523,7 +7540,7 @@ inline S Leaf::root_psi_crit_at(const leaf_pars<S>& pars) const {
 
 template <Leaf::CostCurve K, class S>
 inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
-                        const leaf_pars<S>& pars) const {
+                        const leaf_pars<S>& pars, double root) const {
   using odelia::util::to_passive;
   check_draw(bound_x, draw);
   const Leaf& leaf = *this;
@@ -7534,6 +7551,35 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
   // point -- supply_draw_at has already differenced it, so there is no sentinel
   // to test for here and no second definition of the fallback.
   const double dflux_dx = to_passive(draw.flux.slope);
+
+  if (std::isfinite(root) && root != bound_x) {
+    // ⚠️ BOTH HALVES OF THE QUOTIENT ARE MOVED TO THE ROOT. Carrying only the
+    // residual, as the pinned wet bound does a step away, leaves the residual's
+    // slope at the draw, an error proportional to the distance: a determined
+    // collar's row along psi_soil read 0.50004 where its two bounds give 0.5
+    // exactly. The flux is carried along its active slope, which is second order;
+    // the slope at the root is passive, from the held supply, as at any bound.
+    const S flux_at_root = draw.flux.value + (root - bound_x) * draw.flux.slope;
+    const double slope_at_root =
+        supply_draw_at<double>(root, roots_.held_supply()).flux.slope;
+    if (wet) {
+      return odelia::implicit_value<S>(
+          root, slope_at_root, [&](const S&) -> S { return flux_at_root; },
+          flux_at_root);
+    }
+    return odelia::implicit_value<S>(
+        root,
+        -to_passive(pars[par_kmax]) * stem_curve_integral_deriv(root) -
+            slope_at_root,
+        [&](const S& x) -> S {
+          return pars[par_kmax] *
+                     (leaf.template stem_integral_at<S>(psi_crit_at<S>(pars),
+                                                        pars) -
+                      leaf.template stem_integral_at<S>(x, pars)) -
+                 flux_at_root;
+        },
+        pars, flux_at_root);
+  }
 
   if (wet) {
     // The residual IS the draw: uptake vanishes at this collar. implicit_value
@@ -7642,10 +7688,11 @@ inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
       // The midpoint of a collapsed interval, so it moves as the mean of its
       // bounds. Recorded against them rather than summed, so the number stays
       // the solve's: the root limit's own value is the bound, not the midpoint.
-      const S wet = bound_at<K, S>(true, opt_root_psi_, draw, pars);
+      const S wet = bound_at<K, S>(true, opt_root_psi_, draw, pars, wet_bound_root_);
       const S dry = dry_bound_is_root_limit_
                         ? root_psi_crit_at<S>(pars)
-                        : bound_at<K, S>(false, opt_root_psi_, draw, pars);
+                        : bound_at<K, S>(false, opt_root_psi_, draw, pars,
+                                         dry_bound_root_);
       const odelia::input_and_derivative<S> rows[]{{wet, 0.5}, {dry, 0.5}};
       const odelia::record_report report =
           odelia::record_with_derivatives<S>(opt_root_psi_, rows, collar);

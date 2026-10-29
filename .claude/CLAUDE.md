@@ -858,6 +858,13 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    `psi_crit`. Only the single-potential stem routes, where the stem's upstream
    end is pinned at `psi_soil`, read `G(psi_soil)`.
 
+   ⚠️ **So the two tables differ past their grids, and the rows follow the
+   table.** The root table holds its last knot (#77), so `closed_form_rows.hpp`
+   gives it the knot's rows there; the stem table reads the closed form, so it
+   gets the closed form's rows. Both functions there take a `PastLastKnot`
+   argument with no default, and every call site names its table's. Passing the
+   wrong one gives finite rows that are wrong only past the grid.
+
    ⚠️ **The domain edge itself was unstable until #92.** The knot grid accumulated
    `psi += step`, so it produced `resolution` *or* `resolution - 1` knots depending
    on `b` and `c` — the realised bound was not `vulnerability_psi_max` and was not

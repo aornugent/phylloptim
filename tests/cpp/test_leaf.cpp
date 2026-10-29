@@ -1412,6 +1412,52 @@ void test_root_rows_past_the_dry_end_match_the_table() {
   }
 }
 
+// The stem table reads the closed form past its last knot (#157), so its rows
+// there are the closed form's, not the root table's held-knot rows. Both curves
+// share closed_form_rows.hpp, so this is the half the root test above cannot see.
+void test_stem_rows_past_the_dry_end_are_the_closed_forms() {
+  printf("stem rows past the dry end are the closed form's\n");
+  using AD = xad::fwd<double>::active_type;
+  using phylloptim::PastLastKnot;
+  const double P50 = 3.4287, c = 2.680147;
+  const auto G = [](double psi, double P50_, double c_) {
+    return phylloptim::cumulative_vulnerability_integral_at(
+        psi, phylloptim::weibull_b_from_P50(P50_, c_), c_);
+  };
+  const auto f = [](double psi, double P50_, double c_) {
+    return std::exp(-std::pow(psi / phylloptim::weibull_b_from_P50(P50_, c_), c_));
+  };
+  const double end = phylloptim::vulnerability_psi_max(
+      phylloptim::weibull_b_from_P50(P50, c), c);
+  for (double psi : {end * 1.05, end * 1.3}) {
+    const double h = 1e-6;
+    const double want_G[2] = {(G(psi, P50 + h, c) - G(psi, P50 - h, c)) / (2 * h),
+                              (G(psi, P50, c + h) - G(psi, P50, c - h)) / (2 * h)};
+    const double want_f[2] = {(f(psi, P50 + h, c) - f(psi, P50 - h, c)) / (2 * h),
+                              (f(psi, P50, c + h) - f(psi, P50, c - h)) / (2 * h)};
+    for (int k = 0; k < 2; ++k) {
+      AD a_P50 = P50, a_c = c;
+      xad::derivative(k == 0 ? a_P50 : a_c) = 1.0;
+      const std::string at = std::string(" d/d") + (k == 0 ? "stem_P50" : "stem_c") +
+                             " at psi=" + std::to_string(psi);
+      const AD g = phylloptim::closed_form_integral<AD>(
+          G(psi, P50, c), f(psi, P50, c), AD(psi), a_P50, a_c,
+          PastLastKnot::ReadsClosedForm);
+      near(xad::derivative(g), want_G[k], 1e-6 * std::abs(want_G[k]) + 1e-9,
+           "G's row is the closed form's" + at);
+      const AD fc = phylloptim::closed_form_curve<AD>(
+          f(psi, P50, c), AD(psi), a_P50, a_c, PastLastKnot::ReadsClosedForm);
+      near(xad::derivative(fc), want_f[k], 1e-6 * std::abs(want_f[k]) + 1e-12,
+           "f's row is the closed form's" + at);
+      ok(want_f[k] != 0.0 &&
+             xad::derivative(phylloptim::closed_form_curve<AD>(
+                 f(psi, P50, c), AD(psi), a_P50, a_c, PastLastKnot::HoldsLastKnot)) ==
+                 0.0,
+         "a held knot has no row there, so the tail decides" + at);
+    }
+  }
+}
+
 // The convention is now checkable, so check that it is checked: a caller still
 // holding the pre-#25 signed vector must fail loudly, not run.
 void test_signed_potentials_are_rejected() {
@@ -4130,10 +4176,11 @@ void test_a_determined_collar_moves_with_its_bounds() {
       const double profit_fd = fd([](const phylloptim::Leaf &x) { return x.profit_; });
       const double uptake_fd =
           fd([](const phylloptim::Leaf &x) { return x.soil_consumption_[0]; });
-      // The wet bound's row is the theorem's at the midpoint rather than at the
-      // bound, up to GSS_tol_abs / 2 = 5e-4 MPa away; measured, it costs < 1e-4.
-      near(collar_row, collar_fd, 5e-4, "the collar's row matches the solve's" + along);
-      near(profit_row, profit_fd, 5e-4, "profit's row matches the solve's" + along);
+      // Each bound is differentiated at its own root, up to GSS_tol_abs / 2 from
+      // the draw. Taken at the draw instead, the collar's row along psi_soil read
+      // 0.50004 where the bounds give 0.5; measured now, the worst is 2e-8.
+      near(collar_row, collar_fd, 1e-6, "the collar's row matches the solve's" + along);
+      near(profit_row, profit_fd, 1e-5, "profit's row matches the solve's" + along);
       // Against the uptake itself where its row is too small to compare.
       const double uptake = l.soil_consumption_[0];
       ok(std::abs(uptake_row - uptake_fd) <=
@@ -8301,6 +8348,7 @@ int main() {
   test_soil_conductance_is_positive();
   test_root_vulnerability_is_bounded_past_its_grid();
   test_root_rows_past_the_dry_end_match_the_table();
+  test_stem_rows_past_the_dry_end_are_the_closed_forms();
   test_root_psi_crit_clamp_binds();
   test_signed_potentials_are_rejected();
   test_lambda_equals_dA_dE_single_layer();
