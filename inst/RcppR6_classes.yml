@@ -430,8 +430,16 @@ Leaf:
     alpha_PAR_: {type: double, access: field}
     alpha_NIR_: {type: double, access: field}
     NIR_int_: {type: double, access: field}
+    # The energy balance's radiation budget. set_drivers() re-seats all four, so
+    # a caller supplying its own budget assigns them AFTER every set_drivers().
+    # Rn_ is the ISOTHERMAL net radiation (W m^-2); g_rad_ the linearised
+    # longwave conductance (W m^-2 K^-1); ra_ the AERODYNAMIC resistance only
+    # (s m^-1). ⚠️ Injecting a combined convective-plus-radiative resistance
+    # into ra_ (Jones et al.'s r_HR, or 1/(Gbh + Grad)) double-counts the
+    # radiative path unless you also set `l$g_rad_ <- 0`.
     Tair_: {type: double, access: field}
     Rn_: {type: double, access: field}
+    g_rad_: {type: double, access: field}
     ra_: {type: double, access: field}
 
     # --- Medlyn stomatal-conductance model (plant develop #450) --------------

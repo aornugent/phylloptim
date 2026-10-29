@@ -742,9 +742,9 @@ This integral is what makes the optimisation non-trivial. Because `f` falls, `E`
 
 A transpiring leaf is cooler than the air. Linearised, the leaf temperature is
 
-$$T_{\rm leaf}=T_{\rm air}+\frac{(R_n-\lambda_v E)\,r_a}{\rho c_p}$$
+$$T_{\rm leaf}=T_{\rm air}+\frac{R_{n,\rm iso}-\lambda_v E}{\rho c_p/r_a+g_R},\qquad g_R=4\varepsilon_l\sigma T_{\rm air}^3$$
 
-clamped to a physical range. So `dT/dE = −λ_v r_a/(\rho c_p)` inside the range and exactly zero where the clamp binds, which is a real kink that every derivative has to respect. Warming the leaf also raises its own vapour pressure, so the deficit driving diffusion is not the atmospheric one:
+clamped to a physical range. $R_{n,\rm iso}$ is the isothermal net radiation, absorbed shortwave less $(1-\varepsilon_a)\sigma T_{\rm air}^4$ with a Brutsaert sky emissivity $\varepsilon_a$ that rises with air temperature and humidity and is capped at 1. The leaf's own emission, which goes as $T_{\rm leaf}^4$, is linearised about $T_{\rm air}$ into the radiative conductance $g_R$, which is what keeps the balance explicit: $T_{\rm leaf}$ is affine in `E`, so `dT/dE = −λ_v/(\rho c_p/r_a + g_R)` inside the range and exactly zero where the clamp binds, which is a real kink that every derivative has to respect. Warming the leaf also raises its own vapour pressure, so the deficit driving diffusion is not the atmospheric one:
 
 $$D_{\rm leaf}=\max\!\big(D_{\rm air}+e_s(T_{\rm leaf})-e_s(T_{\rm air}),\;D_{\min}\big)$$
 

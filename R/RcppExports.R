@@ -1257,6 +1257,14 @@ Leaf__Rn___set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__Rn___set', PACKAGE = 'phylloptim', obj_, value))
 }
 
+Leaf__g_rad___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__g_rad___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__g_rad___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__g_rad___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
 Leaf__ra___get <- function(obj_) {
     .Call('_phylloptim_Leaf__ra___get', PACKAGE = 'phylloptim', obj_)
 }

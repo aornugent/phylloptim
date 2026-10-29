@@ -1,3 +1,45 @@
+# phylloptim 0.14.0
+
+## Net longwave depends on air temperature and humidity (#97, #28)
+
+⚠️ **Results move on the energy-balance path; with the gate off they are bit-identical**, which is how plant runs its leaf. The net longwave was a constant, `longwave_net_offset = -40` W m⁻². With an atmospheric emissivity it runs from −144 W m⁻² at Tair 20 °C to 0 at 45 °C (at `atm_vpd` 2 kPa), so the constant was out by up to 104 W m⁻² and wrong in opposite directions at the two ends, crossing over near Tair 37 °C. It is replaced by an isothermal net radiation plus a radiative conductance:
+
+```
+ea     = esat(Tair) - atm_vpd                              in PASCALS
+ema    = min(0.642 * (ea/Tair_K)^(1/7), 1)                 Brutsaert
+Rn_iso = absorbed shortwave - (1 - ema) * sigma * Tair_K^4
+         (absorbed shortwave = alpha_PAR_ * PPFD / 4.57 + alpha_NIR_ * NIR_int_, as in 0.13.0)
+g_rad  = 4 * eps_leaf * sigma * Tair_K^3
+Tleaf  = Tair + (Rn_iso - lambda*E) / (vol_heat_cap_air/ra + g_rad)
+```
+
+**The balance is still explicit.** Linearising the leaf's own `Tleaf^4` emission about `Tair` puts it in the denominator, so `Tleaf` stays affine in `E` and `dTleaf/dE = -lambda / (g_sensible + g_radiative)` is still a constant. No inner iteration was added, the first-order conditions and their implicit-function derivatives are structurally unchanged, and `leaf_temp_from_E()` is still the one place the expression is evaluated.
+
+**What moves.** `g_rad` is 13–18% of the total conductance at the default leaf size and wind, so it pulls the leaf toward air temperature, while the longwave term cools a cool leaf much harder than −40 did and a hot one less. Solved with `find_root_collar_psi()` at PPFD 900 with daylight NIR, ψ_soil 0.5, D_air 2, on the 0.13.0 shortwave:
+
+| Tair | net longwave | Tleaf | profit | kind |
+|---|---|---|---|---|
+| 20 | −40 → −144.4 | 23.06 → 20.24 | 5.786 → 7.229 | interior |
+| 25 | −40 → −98.5 | 28.10 → 26.31 | 4.920 → 6.026 | interior |
+| 30 | −40 → −69.7 | 33.21 → 32.05 | 3.575 → 4.349 | interior |
+| 35 | −40 → −44.5 | 38.45 → 37.82 | 1.591 → 1.958 | interior |
+| 40 | −40 → −19.8 | 44.28 → 44.10 | −3.574 → −3.559 | solver-refused |
+| 45 | −40 → 0 (clamped) | 49.40 → 49.59 | −3.815 → −3.818 | shade-death |
+
+Below Tair ~40 the leaf is 0.6–2.8 K cooler at the solved point (3.0 K at zero transpiration at Tair 20) and profit is 22–25% higher. Above ~42 the two effects oppose and the longwave wins: at 45 the sky term is 40 W m⁻² warmer than the constant was, `g_rad` pulls back only part of that, and the leaf is 0.2 K warmer. No row changes kind.
+
+⚠️ **`ea` is in Pascals.** The same relation is more often quoted as `1.24*(ea/T)^(1/7)` with `ea` in hPa, and the two agree because `0.642*100^(1/7) = 1.2395`. Using 0.642 with kPa gives ~0.31 where the answer is ~0.82: finite, plausible, and it triples the longwave loss. `test_longwave_and_radiative_conductance` asserts the Pa form against the hPa one.
+
+⚠️ **The emissivity is clamped at 1, and above the clamp `Rn_` no longer responds to air temperature or humidity.** Brutsaert's fit passes unity once `ea` exceeds ~22.25 Pa K⁻¹ × Tair_K: above Tair 38.9 °C in saturated air, 43.9 °C at a 2 kPa deficit and 48.0 °C at 4 kPa. Unclamped, the isothermal longwave would turn positive (+100 W m⁻² by Tair 60 at 2 kPa), a sky heating the leaf. Clamped, the term is exactly 0, which is the correct limit, but a heatwave sweep past the clamp sees only `g_rad`'s temperature dependence. An emissivity valid at those temperatures is not part of this release.
+
+⚠️ **`ra_` is now strictly aerodynamic, and `Rn_` is the isothermal net radiation.** A caller that overwrites `ra_` after `set_drivers()` with a combined convective-plus-radiative resistance (Jones et al.'s `r_HR`, or `1/(Gbh + Grad)`) must also set `l$g_rad_ <- 0`, or the radiative conductance is counted twice: `Tleaf - Tair` and `dTleaf/dE` come out 5–7% small and nothing can detect it. Before this release a combined resistance was the right way to add radiative coupling. `g_rad_ = 0` recovers the single-resistance balance, and a test asserts it. `g_rad_` is a new R-bound field; `longwave_net_offset` is deleted.
+
+**Against Sicangco et al. (2026).** The expression reproduces theirs to 1.4e-14 over Tair 20–60 at two deficits. The range #97 quotes for theirs, −98 to −133 W m⁻², is what it gives at a fixed `ea` of 1.0 kPa (−98.41 at Tair 20, −132.05 at 40), not at a fixed `atm_vpd`: phylloptim's driver is the deficit, and at a fixed deficit `ea = esat(Tair) - atm_vpd` climbs steeply with Tair, so such a sweep is drier than `ea = 1` kPa at the cool end and far more humid at the hot end.
+
+**Cost.** With the gate on a collar solve is unchanged (interleaved ×3). With it off, `set_physiology` gains one `pow` and one `exp`, about 0.026 µs, under 1% of a `set_physiology` plus collar solve, with an identical checksum.
+
+**Golden files.** `operating_points.tsv` and `gradient_golden.tsv` are bit-identical (gate off). `primitives.tsv`: 34 of 544 values move, all `leaf_temp_from_E` and `dleaf_temp_dE` in the arithmetic tier; every other tier is exactly 0. `psi_stem_optima.tsv`: 1708 of 5184 rows move, every one with the energy balance on; all 2592 gate-off rows are byte-identical, and no row changes status or kind.
+
 # phylloptim 0.13.0
 
 ## Light arrives intercepted and the leaf absorbs it

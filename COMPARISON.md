@@ -65,7 +65,8 @@ conductance, and — its distinguishing strength — **A-Ci curve fitting**.
   `abs(Tleaf-Tair)`, radiation conductance in parallel, Brutsaert atmospheric
   emissivity, series stomatal-plus-boundary-layer water path with a
   hypo/amphistomatous switch. `leaf`'s energy balance is a single explicit pass
-  with forced convection only and a fixed longwave offset, and defaults off.
+  with forced convection only, the same Brutsaert emissivity and linearised
+  radiation conductance, and defaults off.
 - **C4** (`AciC4`, forward only) and a tidy library of VPD/RH/dewpoint
   conversions.
 

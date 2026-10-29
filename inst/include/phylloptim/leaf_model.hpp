@@ -770,9 +770,29 @@ public:
   // Penman-Monteith leaf energy balance state (#523), only meaningful on the
   // use_energy_balance_ path. Set once per set_physiology; Tleaf itself is a
   // per-operating-point quantity computed in set_leaf_states_rates_from_psi_stem.
+  //
+  // ⚠️ Tair_, Rn_, g_rad_ and ra_ are all RE-SEATED by every set_physiology, so a
+  // caller supplying its own radiation budget overrides them after each call.
   double Tair_;  // air temperature, deg C (reinterprets the leaf_temp driver)
-  double Rn_;    // net radiation at the leaf, W m^-2
-  double ra_;    // aerodynamic (boundary-layer) resistance, s m^-1
+  // ISOTHERMAL net radiation, W m^-2: absorbed shortwave minus the net longwave a
+  // leaf AT AIR TEMPERATURE would exchange. The leaf's own departure from Tair is
+  // carried by g_rad_ below rather than by this term, which is what keeps the
+  // balance explicit -- see the longwave block in constants.hpp.
+  double Rn_;
+  // Radiative conductance, W m^-2 K^-1: 4*eps_leaf*sigma*Tair_K^3, the linearised
+  // sensitivity of the leaf's longwave emission to its own temperature. Adds to
+  // the sensible-heat conductance vol_heat_cap_air/ra_ in the balance, so a
+  // radiatively coupled leaf sits CLOSER to air temperature than ra_ alone
+  // implies: 13-18% of the total at the default leaf size and wind.
+  double g_rad_;
+  // AERODYNAMIC (boundary-layer) resistance to sensible heat, s m^-1. Convective
+  // ONLY: the radiative path is g_rad_, added beside it in leaf_temp_from_E.
+  // ⚠️ A caller injecting a COMBINED convective-plus-radiative resistance here
+  // (Jones et al.'s r_HR, or 1/(Gbh + Grad)) must also set g_rad_ = 0, or the
+  // radiative conductance is counted twice and every Tleaf - Tair and dTleaf/dE
+  // comes out 5-7% small with nothing to flag it. g_rad_ = 0 recovers the
+  // single-resistance balance Tair + (Rn_ - lambda*E)*ra_/vol_heat_cap_air.
+  double ra_;
   // Gate for the PM leaf energy balance. Default OFF: today's path runs
   // (prescribed leaf_temp, single-shot cached Arrhenius). R-settable (#523 full
   // cut) so TF24 (via pars.use_energy_balance) and the leaf-level demo can
@@ -2227,7 +2247,9 @@ public:
   // taken at fixed ci and assim_colimited() reads no VPD at all. The VPD route
   // into the derivative is carried separately, by dgc_dT.
   void set_leaf_vpd(double leaf_temp);
-  // Explicit leaf energy balance: Tleaf = Tair + (Rn - lambda*E) * ra / (rho*cp).
+  // Explicit leaf energy balance:
+  // Tleaf = Tair + (Rn - lambda*E) / (rho*cp/ra + g_rad), with Rn the ISOTHERMAL
+  // net radiation and g_rad the linearised longwave (constants.hpp).
   // E is the hydraulically-pinned transpiration (kg H2O m^-2 s^-1); no PM
   // inversion and no A->E feedback, so this is a single algebraic forward pass.
   // `dT_dE`, when non-null, receives dTleaf/dE at the same point. It is an
@@ -3410,7 +3432,8 @@ inline void Leaf::setup_clean_leaf() {
   photo_temp_= util::na_value; // deg C -- no block seated yet
   Tleaf_= util::na_value; // deg C -- an output, so NA until a solve writes it
   Tair_= util::na_value; // deg C
-  Rn_= util::na_value; // W m^-2
+  Rn_= util::na_value; // W m^-2 (isothermal)
+  g_rad_= util::na_value; // W m^-2 K^-1
   ra_= util::na_value; // s m^-1
   PPFD_= util::na_value; //umol m^-2 s^-1
   atm_vpd_= util::na_value; //kPa
@@ -3518,11 +3541,10 @@ inline void Leaf::set_physiology(const RootNetwork& root_network, double PPFD, c
    transpiration_cached_ = false;
    ca_ = ca;
    // Penman-Monteith leaf energy-balance inputs (#523). Reinterpret the incoming
-   // leaf_temp driver as air temperature. Net radiation is the ABSORBED
-   // shortwave -- each intercepted band times its own absorptance, the PAR band
-   // converted from photons to W m^-2 at the daylight ratio -- plus a fixed
-   // clear-sky longwave cooling offset (doc 3.3). Only read on the
-   // use_energy_balance_ path.
+   // leaf_temp driver as air temperature. The isothermal net radiation is the
+   // ABSORBED shortwave -- each intercepted band times its own absorptance, the
+   // PAR band converted from photons to W m^-2 at the daylight ratio -- less the
+   // sky's longwave (#97). Only read on the use_energy_balance_ path.
    if (use_energy_balance_ && !std::isfinite(NIR_int_)) {
      util::stop("set_physiology: non-finite NIR_int_ on the energy-balance path. "
                 "Set the intercepted near-infrared (W m^-2) before set_physiology: "
@@ -3530,8 +3552,37 @@ inline void Leaf::set_physiology(const RootNetwork& root_network, double PPFD, c
                 "NIR_int_=" + util::to_string(NIR_int_));
    }
    Tair_ = leaf_temp_;
-   Rn_ = alpha_PAR_ * PPFD_ / umol_par_per_joule + alpha_NIR_ * NIR_int_ +
-         longwave_net_offset;
+   {
+     // Isothermal net radiation and the radiative conductance (#97). Both depend
+     // only on the DRIVERS, so both are seated once here rather than per candidate
+     // potential -- Tleaf enters the balance linearly through g_rad_ and not
+     // through either of these.
+     const double Tair_K = Tair_ + C_to_K;
+     // Actual vapour pressure, IN PASCALS as the emissivity coefficient requires
+     // (constants.hpp). atm_vpd_ and esat are both kPa, hence the 1000.
+     const double ea_Pa =
+         std::max(1000.0 * (saturation_vapour_pressure(Tair_) - atm_vpd_),
+                  vapour_pressure_min);
+     // ⚠️ CLAMPED AT 1, A PHYSICAL BOUND AND NOT PADDING. Brutsaert's fit
+     // extrapolates past unity once ea > 22.25 Pa/K * Tair_K (about 7 kPa): above
+     // Tair 38.9 C in saturated air, 43.9 C at a 2 kPa deficit, 48.0 C at 4 kPa.
+     // Unclamped, the isothermal longwave turns POSITIVE there (+100 W m^-2 by
+     // Tair 60 at 2 kPa): a sky brighter than a blackbody heating the leaf, the
+     // right order of magnitude with the wrong sign. At ema == 1 the term is
+     // exactly 0, the correct limit for a sky radiating as a blackbody at Tair.
+     // ⚠️ ABOVE THE CLAMP Rn_ NO LONGER RESPONDS TO Tair OR HUMIDITY (only g_rad_
+     // does), which matters for a heatwave sweep. Replacing the clamp needs an
+     // emissivity parameterisation valid there, not a wider fit.
+     const double ema = std::min(
+         atmos_emissivity_coef *
+             std::pow(ea_Pa / Tair_K, atmos_emissivity_exponent),
+         1.0);
+     const double sw_abs =
+         alpha_PAR_ * PPFD_ / umol_par_per_joule + alpha_NIR_ * NIR_int_;
+     Rn_ = sw_abs - (1.0 - ema) * stefan_boltzmann * Tair_K * Tair_K * Tair_K *
+                        Tair_K;
+     g_rad_ = 4.0 * leaf_emissivity * stefan_boltzmann * Tair_K * Tair_K * Tair_K;
+   }
    // Aerodynamic resistance from leaf boundary-layer theory: ra = C_ra*sqrt(d/U)
    // (doc 4.1), with the per-strategy leaf dimension d_ and the above-canopy wind
    // wind_speed_. On the PM path a non-finite wind_speed_/d_ is a broken driver /
@@ -5689,11 +5740,22 @@ inline void Leaf::set_leaf_vpd(double leaf_temp) {
   vpd_leaf_ = std::max(d, vpd_leaf_min);
 }
 
-// Explicit leaf energy balance (#523): Tleaf = Tair + (Rn - lambda*E)*ra/(rho*cp).
+// Explicit leaf energy balance (#523, #97):
+// Tleaf = Tair + (Rn - lambda*E) / (rho*cp/ra + g_rad).
 // E is the hydraulically-pinned transpiration (kg H2O m^-2 s^-1), so lambda*E is
-// the latent heat flux (W m^-2) and (Rn - lambda*E) the sensible heat flux H.
+// the latent heat flux (W m^-2) and (Rn - lambda*E) is what sensible heat and the
+// leaf's own extra longwave emission carry away between them.
+//
+// ⚠️ THE ONE PLACE Tleaf AND dTleaf/dE ARE COMPUTED. Every energy-balance route
+// (the collar and stem first-order conditions, the thermal cost, the reported
+// Tleaf_) calls this; a second copy of the expression is how a radiative term
+// gets dropped from a derivative while the value keeps it.
 inline double Leaf::leaf_temp_from_E(double E, double* dT_dE) const {
-  const double Tleaf = Tair_ + (Rn_ - latent_heat_vap * E) * ra_ / vol_heat_cap_air;
+  // Sensible heat plus the linearised longwave, in one conductance. Written as a
+  // division by the SUM rather than a multiplication by ra_/vol_heat_cap_air so
+  // the radiative term cannot be dropped by editing one factor.
+  const double g_total = vol_heat_cap_air / ra_ + g_rad_;
+  const double Tleaf = Tair_ + (Rn_ - latent_heat_vap * E) / g_total;
   // Clamp to a physical range so an extreme (non-equilibrium) E cannot drive the
   // Arrhenius block non-finite; see leaf_temp_min/max in the header.
   const double clamped = std::min(std::max(Tleaf, leaf_temp_min), leaf_temp_max);
@@ -5705,7 +5767,7 @@ inline double Leaf::leaf_temp_from_E(double E, double* dT_dE) const {
     // E at all. The two branches share the one comparison above deliberately --
     // see the note on the declaration.
     *dT_dE = (clamped == Tleaf)
-                 ? -latent_heat_vap * ra_ / vol_heat_cap_air
+                 ? -latent_heat_vap / g_total
                  : 0.0;
   }
   return clamped;

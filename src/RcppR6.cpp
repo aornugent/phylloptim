@@ -1388,6 +1388,15 @@ void Leaf__Rn___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double va
 }
 
 // [[Rcpp::export]]
+double Leaf__g_rad___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->g_rad_;
+}
+// [[Rcpp::export]]
+void Leaf__g_rad___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value) {
+  obj_->g_rad_ = value;
+}
+
+// [[Rcpp::export]]
 double Leaf__ra___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
   return obj_->ra_;
 }
