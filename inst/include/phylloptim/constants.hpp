@@ -85,6 +85,13 @@ inline constexpr double C_to_K = 273.15;
 //H20:CO2 stomatal diffusion ratio
 inline constexpr double H2O_CO2_stom_diff_ratio = 1.67;
 
+// Boundary-layer conductance to water vapour over that to heat, for a
+// hypostomatous leaf: the factor plantecophys applies to its two-sided heat
+// conductance (`Gbw = 1.075 * Gbh` in LeafEnergyBalance, at StomatalRatio 1).
+// Read only by the reported boundary-layer and stomatal conductances (#122);
+// nothing in the solve reads it.
+inline constexpr double bl_vapour_heat_ratio = 1.075;
+
 // rho_w * g, as a head in MPa per metre of depth.
 //
 // ⚠️ 9.8e-3 is 6.8e-04 below `1000 * 9.80665 / 1e6`, above this package's 1e-04
@@ -106,14 +113,49 @@ inline constexpr double gravity_head = 9.8e-3; // MPa / m
 inline constexpr double latent_heat_vap = 2.45e6;
 // volumetric heat capacity of air, J m^-3 K^-1
 inline constexpr double vol_heat_cap_air = 1200.0;
-// PAR energy conversion: ~4.57 umol photons per J of PAR (shortwave)
+// PAR energy conversion for SUNLIGHT: ~4.57 umol photons per J of PAR. The ratio
+// is a property of the source spectrum (a red/blue LED is ~5-5.5), so it is only
+// correct for a leaf in daylight. It is read on the energy-balance path alone, to
+// turn the intercepted photon flux back into the PAR band's energy; photosynthesis
+// reads the photon flux directly and never touches it.
 inline constexpr double umol_par_per_joule = 4.57;
-// shortwave absorbed ~= 2 * absorbed PAR (PAR ~= 50% of shortwave; doc 3.3)
-inline constexpr double sw_abs_per_par = 2.0;
-// fixed net longwave (cooling) offset, W m^-2 (clear-sky approximation; doc 3.3).
-// A faithful treatment makes outgoing longwave depend on Tleaf (would make Rn
-// implicit in Tleaf); staged for a sensitivity gate and tracked in #581.
-inline constexpr double longwave_net_offset = -40.0;
+// --- Longwave radiation (#97, #28) -------------------------------------------
+//
+// The net longwave is an ISOTHERMAL net radiation (as if the leaf sat at air
+// temperature) plus a RADIATIVE CONDUCTANCE for the leaf's own departure from it.
+// The absorbed shortwave is each intercepted band times the leaf's own
+// absorptance (alpha_PAR_, alpha_NIR_ in leaf_model.hpp):
+//
+//   Rn_iso = absorbed shortwave - (1 - ema)*sigma*Tair_K^4
+//   g_rad  = 4*eps_leaf*sigma*Tair_K^3
+//   Tleaf  = Tair + (Rn_iso - lambda*E) / (vol_heat_cap_air/ra + g_rad)
+//
+// ⚠️ THE LINEARISATION IS WHAT KEEPS THE BALANCE EXPLICIT. A leaf emits
+// eps*sigma*Tleaf_K^4, which in Rn would make Rn a function of the temperature
+// being solved for: an inner iteration, and no constant dTleaf/dE for the collar
+// solve's implicit-function theorem. Linearised about Tair (Monteith & Unsworth;
+// the step plantecophys takes) it becomes g_rad in the DENOMINATOR, so Tleaf stays
+// affine in E. Do not move any Tleaf dependence into Rn_. The error is of order
+// (Tleaf - Tair)/Tair_K, about 1% at 20 K.
+inline constexpr double stefan_boltzmann = 5.670374419e-8;  // W m^-2 K^-4
+// Longwave emissivity of a leaf. Thermal-infrared leaf emissivities are measured
+// at 0.94-0.99; 0.97 is the usual working value.
+inline constexpr double leaf_emissivity = 0.97;
+// Clear-sky atmospheric emissivity, Brutsaert (1975) as Campbell & Norman write
+// it: ema = 0.642*(ea/Tair_K)^(1/7), clamped at 1 (see set_physiology).
+//
+// ⚠️ ea MUST BE IN PASCALS. The same relation is more often quoted as
+// `1.24*(ea/T)^(1/7)` with ea in hPa; the two agree because 0.642*100^(1/7) =
+// 1.2395. Feeding kPa to 0.642 gives ~0.31 where the answer is ~0.82: finite,
+// plausible, and it triples the longwave loss. Change the unit and the
+// coefficient together, or not at all.
+inline constexpr double atmos_emissivity_coef = 0.642;
+inline constexpr double atmos_emissivity_exponent = 1.0 / 7.0;
+// Floor on the actual vapour pressure used above, Pa. `ea = esat(Tair) - D_air`
+// goes non-positive for a deficit larger than saturation, which is not a physical
+// atmosphere but is reachable from a driver sweep; the emissivity would then be
+// NaN through pow() of a negative base.
+inline constexpr double vapour_pressure_min = 1.0;
 // fixed aerodynamic resistance fallback, s m^-1 (doc 6/7.4; used when the wind
 // model is unavailable, e.g. a bare Leaf with no wind/d set)
 inline constexpr double aerodynamic_resistance_fixed = 50.0;

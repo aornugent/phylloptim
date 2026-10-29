@@ -133,6 +133,7 @@ phylloptim::Leaf fixture_leaf() {
   // the multi-layer supply path is a separate question and would confound this
   // one, which is about the leaf-side functions.
   std::vector<double> ps{2.0}, depth{1.0}, root{1.0 / kAreaLeaf};
+  l.NIR_int_ = 900.0 / phylloptim::umol_par_per_joule;  // daylight
   l.set_physiology(fixture::root_network(root, depth), /*PPFD*/ 900.0, ps, depth,
                    kKs * kTheta / kH, /*vpd*/ 2.0, kCa, kTleaf, kO2, kPatm);
   return l;

@@ -41,6 +41,10 @@
 # nothing it reports depends on the vulnerability curve -- except psi_stem, which
 # IS psi_crit and moves with it. That split is why the row is here.
 #
+# Then for phi_J (0.13.0), which moved 8 of the first row's values by a few ULP
+# (rebasing the quantum yield onto absorbed light reassociates J) and none of the
+# other three rows.
+#
 # Before that, #92 (the indexed knot grid) moved 27, the psi_stem_to_ci tolerance
 # 18, and the collar root-find 27.
 
@@ -63,15 +67,15 @@ golden_rows <- list(
   list(
     inputs = list(psi_soil = 0.5, ppfd = 1500, vpd = 0.5, layers = 1L),
     expected = list(
-      psi_stem      = "0x1.709bdd8e0f124p+1",
-      opt_root_psi  = "0x1.066f205f53abfp+1",
+      psi_stem      = "0x1.709bdd8e0f11dp+1",
+      opt_root_psi  = "0x1.066f205f53abcp+1",
       ci            = "0x1.9f4d835015446p+4",
-      assim         = "0x1.215ca9d767531p+4",
-      transpiration = "0x1.450032bbf9f89p-16",
-      gc            = "0x1.0b2ace46dec4fp-3",
-      profit        = "0x1.07970cd1529cfp+4",
-      e_up          = "0x1.450032bbf9f88p-16",
-      uptake        = "0x1.19e24250556edp-10"
+      assim         = "0x1.215ca9d767532p+4",
+      transpiration = "0x1.450032bbf9f83p-16",
+      gc            = "0x1.0b2ace46dec49p-3",
+      profit        = "0x1.07970cd1529d1p+4",
+      e_up          = "0x1.450032bbf9f84p-16",
+      uptake        = "0x1.19e24250556e9p-10"
     )
   ),
   list(

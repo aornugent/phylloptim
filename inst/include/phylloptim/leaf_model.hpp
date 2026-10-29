@@ -60,7 +60,9 @@
 //   - K is the curve the solve used, TF24 or TF24_floor;
 //   - the supply path is multi-layer;
 //   - `curvature` is marginal_collar_slope<K>() at an Interior point, and is
-//     not read at any other kind.
+//     not read at any other kind;
+//   - the thermal-damage layer is off: collar_at and outputs_at refuse
+//     use_thermal_damage_, because the kernels they read do not apply it.
 //
 // operating_point_kind() says which condition placed the point. Branch on it,
 // never on a returned value. What collar_at does at each:
@@ -86,18 +88,20 @@ namespace phylloptim {
 
 // --- the parameter enumeration, which R indexes into --------------------------
 //
-// The fifteen traits in `Leaf::set_traits`' argument order, then five slots that
+// The fifteen traits in `Leaf::set_traits`' argument order, then the slots that
 // are not traits: `kmax` (the conductance driver), `resistance` (the
-// single-potential path's series resistance), the two model-owned prices
-// (`CF77_lambda`, `TF24_floor_lambda_o`), and `PPFD`. The first nineteen are what
-// a calibration fits, `gradient::n_theta`; `PPFD` is seated per observation from
-// the drivers and is never fitted, and `n_pars` (20) counts it.
+// single-potential path's series resistance), the three model-owned slots
+// (`CF77_lambda`, `TF24_floor_lambda_o`, `LeastCost_beta`), the fifteen inputs of
+// the thermal-damage layer that reach the solve, and `PPFD`. Everything before
+// `PPFD` is what a calibration fits, `gradient::n_theta` (35); `PPFD` is seated
+// per observation from the drivers and is never fitted, and `n_pars` (36) counts
+// it.
 //
 // ⚠️ R INDEXES THESE POSITIONS, so a reordering silently differentiates the wrong
 // parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
 // them with R's, so the two cannot drift apart without a failure.
 inline constexpr int n_traits = 15;
-inline constexpr int n_pars = 20;
+inline constexpr int n_pars = 36;
 
 // Every index by name, so nothing below indexes `theta` with a bare integer.
 // The first `n_traits` are `set_traits`' arguments in its order, which is also
@@ -109,7 +113,7 @@ inline constexpr int par_root_c = 3;
 inline constexpr int par_root_P50 = 4;
 inline constexpr int par_TF24_beta2 = 5;
 inline constexpr int par_jmax_25 = 6;
-inline constexpr int par_a = 7;
+inline constexpr int par_phi_J = 7;
 inline constexpr int par_curv_fact_elec_trans = 8;
 inline constexpr int par_curv_fact_colim = 9;
 inline constexpr int par_TF24_cost_scale = 10;
@@ -146,16 +150,67 @@ inline constexpr int par_CF77_lambda = 17;
 // safe way to talk about this class. R's `.gradient_model_pars()` is the single
 // table that says which model owns which slot; there is no second copy here.
 inline constexpr int par_TF24_floor_lambda_o = 18;
-// The light the leaf is standing in. A DRIVER rather than a trait, on the same
-// footing as `kmax`: the consumer seats it per cohort and it carries that
-// consumer's rows.
+// Least-cost's unit-cost ratio (Prentice et al. 2014's beta), the THIRD
+// model-owned slot. Same treatment as the two prices above:
+// `.gradient_model_pars()` offers it for `LeastCost` alone and refuses it
+// elsewhere, naming the model. Inserted here rather than appended after the
+// thermal-damage block so the three slots one curve each owns stay contiguous,
+// which costs the fifteen slots below a renumbering -- safe, because every
+// consumer reads them by name (plant's `tf24_strategy.h` included).
+//
+// ⚠️ IT IS NOT A PRICE, unlike the other two model-owned slots, and the message
+// R raises for it says so. `CF77_lambda_` and `TF24_floor_lambda_o` are marginal
+// values of water in umol C (kg H2O)^-1; this is a DIMENSIONLESS ratio of two unit
+// costs, and least-cost's price of water is emergent from it rather than equal to
+// it. What the three share is the reason they live here: a parameter of one curve
+// that every other curve has no slot for.
+//
+// ⚠️ `gradient::step_for`'s RULE IS RIGHT FOR IT BY LUCK RATHER THAN BY DESIGN.
+// Its published value is 146, so the `max(|value|, 1)` floor never binds and it
+// takes a relative step. A caller sweeping beta below 1 would get the absolute
+// step instead, which at beta = 0.5 is a 2x perturbation -- the same trap
+// `leaf_specific_conductance_max` is exempted from, and not exempted here because
+// no such use exists yet.
+inline constexpr int par_LeastCost_beta = 19;
+// The thermal-damage layer's inputs that REACH THE SOLVE (use_thermal_damage_):
+// its three states, the acclimated shift of the Vcmax/Jmax optima, and every
+// quantity a maintenance cost multiplies. Model-owned in the same sense as the
+// three slots above -- available only on a leaf with the gate on, and refused by
+// name elsewhere -- and seated BEFORE the drivers, because set_physiology is what
+// reads them.
+//
+// ⚠️ THE LAYER'S DYNAMICS PARAMETERS ARE NOT HERE, AND MUST NOT BE ADDED. The
+// impairment switch (impair_H_, impair_Tmid_, dTimpair_max_), the impairment
+// rate's Arrhenius (k_i_Ea_, k_i_Tref_), k_mat_ and the acclimation kinetics move
+// only damage_rates(), never a solved output, so a slot here would report an exact
+// zero that reads as an answer. Their gradient is the trajectory's
+// (damage_trajectory_gradient).
+inline constexpr int par_A = 20;
+inline constexpr int par_I = 21;
+inline constexpr int par_D = 22;
+inline constexpr int par_topt_offset = 23;
+inline constexpr int par_dTopt_max = 24;
+inline constexpr int par_K_A = 25;
+inline constexpr int par_k_i = 26;
+inline constexpr int par_k_i_baseline = 27;
+inline constexpr int par_k_rec = 28;
+inline constexpr int par_m_rep = 29;
+inline constexpr int par_t_rep_cut = 30;
+inline constexpr int par_c_acclim_maint = 31;
+inline constexpr int par_c_repair_maint = 32;
+inline constexpr int par_c_protect_maint = 33;
+inline constexpr int par_c_repair_flux = 34;
+// The light the leaf is standing in: the INTERCEPTED PPFD per unit leaf area,
+// the photon flux incident on the leaf before its absorptance. A DRIVER rather
+// than a trait, on the same footing as `kmax`: the consumer seats it per cohort
+// and it carries that consumer's rows.
 //
 // ⚠️ IT IS THE ONLY ROUTE LIGHT HAS TO CARBON. Read off the `PPFD_` member the
 // forward pass seats, the electron transport is a constant in it, so every trait
 // that moves the light a cohort stands in -- the extinction coefficient, the leaf
 // area a stem carries -- reaches assimilation with no row at all and reads as an
 // exact zero, which is the signature of a missing accumulator.
-inline constexpr int par_PPFD = 19;
+inline constexpr int par_PPFD = 35;
 
 
 // The differentiable parameters, as one array indexed by the enumeration above.
@@ -174,6 +229,176 @@ inline constexpr int par_PPFD = 19;
 // instead is what lets a curve be stated twice and the two disagree.
 template <class S> using leaf_pars = std::array<S, n_pars>;
 
+// THE LAYER'S DYNAMICS, written ONCE as templates on the scalar type, so the
+// rates the solve's block reports, damage_rates(), damage_trajectory() and the
+// trajectory's exact sensitivities (damage_trajectory_gradient(), on a forward
+// dual number) are one set of expressions. At double each is the same expression,
+// in the same order, as the member it replaced, so nothing at double moves.
+namespace damage {
+
+// A forward-mode dual number: a value and its derivative in one seeded input.
+// Only what the dynamics need. Comparisons and clamps read the value.
+struct Dual {
+  double v = 0.0;
+  double d = 0.0;
+  Dual() = default;
+  Dual(double value) : v(value), d(0.0) {}  // NOLINT: implicit by design
+  Dual(double value, double slope) : v(value), d(slope) {}
+};
+inline double val(double x) { return x; }
+inline double val(const Dual& x) { return x.v; }
+inline Dual operator+(const Dual& a, const Dual& b) { return {a.v + b.v, a.d + b.d}; }
+inline Dual operator-(const Dual& a, const Dual& b) { return {a.v - b.v, a.d - b.d}; }
+inline Dual operator-(const Dual& a) { return {-a.v, -a.d}; }
+inline Dual operator*(const Dual& a, const Dual& b) {
+  return {a.v * b.v, a.d * b.v + a.v * b.d};
+}
+inline Dual operator/(const Dual& a, const Dual& b) {
+  return {a.v / b.v, (a.d * b.v - a.v * b.d) / (b.v * b.v)};
+}
+inline Dual operator+(const Dual& a, double b) { return {a.v + b, a.d}; }
+inline Dual operator+(double a, const Dual& b) { return {a + b.v, b.d}; }
+inline Dual operator-(const Dual& a, double b) { return {a.v - b, a.d}; }
+inline Dual operator-(double a, const Dual& b) { return {a - b.v, -b.d}; }
+inline Dual operator*(const Dual& a, double b) { return {a.v * b, a.d * b}; }
+inline Dual operator*(double a, const Dual& b) { return {a * b.v, a * b.d}; }
+inline Dual operator/(const Dual& a, double b) { return {a.v / b, a.d / b}; }
+inline Dual operator/(double a, const Dual& b) {
+  return {a / b.v, -a * b.d / (b.v * b.v)};
+}
+inline Dual exp(const Dual& a) {
+  const double e = std::exp(a.v);
+  return {e, e * a.d};
+}
+inline Dual log1p(const Dual& a) { return {std::log1p(a.v), a.d / (1.0 + a.v)}; }
+inline double exp(double a) { return std::exp(a); }
+inline double log1p(double a) { return std::log1p(a); }
+
+// `std::min(std::max(x, lo), hi)`, on the value. Returns x itself inside the
+// range, so a NaN passes through exactly as it does through `std::min` and
+// `std::max`.
+template <class T> inline T clamp(const T& x, double lo, double hi) {
+  if (val(x) < lo) return T(lo);
+  if (val(x) > hi) return T(hi);
+  return x;
+}
+
+// The dynamics parameters, by name. ⚠️ R's leaf_damage_gradient() names these by
+// POSITION through `Leaf::damage_par_names()`, and `test-thermal-damage.R` reads
+// the names back, so a reordering fails there rather than differentiating the
+// wrong parameter. The three initial states follow them in a gradient request.
+enum : int {
+  dp_impair_H, dp_impair_Tmid, dp_k_i, dp_k_i_Ea, dp_k_i_Tref, dp_k_rec,
+  dp_m_rep, dp_t_rep_cut, dp_k_mat, dp_acclim_alpha, dp_acclim_beta,
+  dp_acclim_T, dp_acclim_s, dp_dTimpair_max, dp_K_A, dp_topt_offset,
+  n_dyn_pars
+};
+template <class T> using dyn_pars = std::array<T, n_dyn_pars>;
+
+template <class T> inline T logistic(const T& x) {
+  const T z = clamp(x, -30.0, 30.0);
+  return 1.0 / (1.0 + exp(-z));
+}
+
+template <class T> inline T softplus(const T& x, const T& s) {
+  const T z = clamp(s * x, -30.0, 30.0);
+  return log1p(exp(z)) / s;
+}
+
+// The acclimation shift of the impairment switch's midpoint. Negative A is read
+// as zero.
+template <class T> inline T delta_impair(const T& A, const dyn_pars<T>& p) {
+  const T a = val(A) < 0.0 ? T(0.0) : A;
+  return p[dp_topt_offset] + p[dp_dTimpair_max] * a / (a + p[dp_K_A]);
+}
+
+template <class T>
+inline T impair_switch(double leaf_temp, const T& delta, const dyn_pars<T>& p) {
+  const T mid_K = clamp(p[dp_impair_Tmid] + C_to_K + delta, 250.0, 350.0);
+  const double T_K = leaf_temp + C_to_K;
+  const T arg = clamp((p[dp_impair_H] / gas_constant) * (1.0 / mid_K - 1.0 / T_K),
+                      -30.0, 30.0);
+  const T K = exp(arg);
+  return K / (1.0 + K);
+}
+
+template <class T> inline T k_i_eff(double leaf_temp, const dyn_pars<T>& p) {
+  const T arg = clamp((p[dp_k_i_Ea] / gas_constant) *
+                          (1.0 / (p[dp_k_i_Tref] + C_to_K) -
+                           1.0 / (leaf_temp + C_to_K)),
+                      -30.0, 30.0);
+  return p[dp_k_i] * exp(arg);
+}
+
+template <class T> inline T k_rec_eff(double leaf_temp, const dyn_pars<T>& p) {
+  return p[dp_k_rec] * logistic(-p[dp_m_rep] * (leaf_temp - p[dp_t_rep_cut]));
+}
+
+// {dA/dt, dI/dt, dD/dt}, per day.
+template <class T>
+inline std::array<T, 3> rates(double leaf_temp, const T& A, const T& I,
+                              const T& D, const dyn_pars<T>& p) {
+  const T F = 1.0 - I - D;
+  const T k_imp = k_i_eff(leaf_temp, p) *
+                  impair_switch(leaf_temp, delta_impair(A, p), p);
+  const T k_rec = k_rec_eff(leaf_temp, p);
+  const T dA = p[dp_acclim_alpha] *
+                   softplus(T(leaf_temp) - p[dp_acclim_T], p[dp_acclim_s]) -
+               p[dp_acclim_beta] * A;
+  const T dI = k_imp * F - (k_rec + p[dp_k_mat]) * I;
+  const T dD = p[dp_k_mat] * I;
+  return {dA, dI, dD};
+}
+
+// RK4 over a piecewise-linear leaf temperature; calls `put(i, y)` at every time.
+// The sub-step count is chosen from VALUES, so on a dual run it is the same
+// count as on the double run and the sensitivity is that of the discrete map
+// the double run evaluates.
+template <class T, class Put>
+inline void trajectory(const std::vector<double>& times,
+                       const std::vector<double>& leaf_temp,
+                       std::array<T, 3> y, const dyn_pars<T>& p, Put put) {
+  const std::size_t n = times.size();
+  put(0, y);
+  for (std::size_t i = 1; i < n; ++i) {
+    const double t0 = times[i - 1], dt_all = times[i] - t0;
+    const double T0 = leaf_temp[i - 1], T1 = leaf_temp[i];
+    // The stiffest rate on the interval bounds the sub-step. Both ends, because
+    // the impairment and repair rates are monotone in temperature.
+    double fastest = val(p[dp_acclim_beta]) + val(p[dp_k_mat]);
+    for (double Tx : {T0, T1}) {
+      fastest = std::max(fastest, val(k_i_eff(Tx, p)) + val(k_rec_eff(Tx, p)) +
+                                      val(p[dp_k_mat]) + val(p[dp_acclim_beta]));
+    }
+    // Two bounds on the sub-step: the fastest rate times the step below 0.1, and
+    // at most 0.25 K of temperature change per step, because the switch and the
+    // Arrhenius scale are steep in temperature and a forcing swept across them in
+    // one step is under-resolved however slow the rates are.
+    const int m = std::max({1, static_cast<int>(std::ceil(dt_all * fastest / 0.1)),
+                            static_cast<int>(std::ceil(std::abs(T1 - T0) / 0.25))});
+    const double h = dt_all / m;
+    auto temp_at = [&](double t) { return T0 + (T1 - T0) * (t - t0) / dt_all; };
+    for (int k = 0; k < m; ++k) {
+      const double t = t0 + k * h;
+      const std::array<T, 3> k1 = rates(temp_at(t), y[0], y[1], y[2], p);
+      const std::array<T, 3> k2 =
+          rates(temp_at(t + h / 2), y[0] + h / 2 * k1[0], y[1] + h / 2 * k1[1],
+                y[2] + h / 2 * k1[2], p);
+      const std::array<T, 3> k3 =
+          rates(temp_at(t + h / 2), y[0] + h / 2 * k2[0], y[1] + h / 2 * k2[1],
+                y[2] + h / 2 * k2[2], p);
+      const std::array<T, 3> k4 = rates(temp_at(t + h), y[0] + h * k3[0],
+                                        y[1] + h * k3[1], y[2] + h * k3[2], p);
+      for (int j = 0; j < 3; ++j) {
+        y[j] = y[j] + h / 6 * (k1[j] + 2 * k2[j] + 2 * k3[j] + k4[j]);
+      }
+    }
+    put(i, y);
+  }
+}
+
+}  // namespace damage
+
 class Leaf {
 public:
   Leaf();
@@ -185,7 +410,7 @@ public:
        double root_P50,
        double TF24_beta2, 
        double jmax_25, 
-       double a, 
+       double phi_J, 
        double curv_fact_elec_trans, 
        double curv_fact_colim,
        double GSS_tol_abs,
@@ -436,7 +661,7 @@ public:
   double psi_crit;
   double TF24_beta2;
   double jmax_25;
-  double a;
+  double phi_J;
   double curv_fact_elec_trans; // unitless - obtained from Smith and Keenan (2020)
   double curv_fact_colim;
   // Despite its name, no longer the tolerance of the collar solve, which is a
@@ -525,6 +750,40 @@ public:
   // rather than the model. See `kLambdaCF77` in tests/cpp/test_golden.cpp, which
   // makes the same point about the same units.
   double TF24_floor_lambda_o = util::na_value;     // umol C (kg H2O)^-1
+  // THE UNIT-COST RATIO OF LEAST-COST THEORY (@Prentice-2014's beta), and the
+  // LeastCost curve's ONLY parameter. An INPUT on the same footing as
+  // `CF77_lambda_` and `TF24_floor_lambda_o`: no default, never assigned by model
+  // code, not cleared by setup_clean_leaf().
+  //
+  // Least-cost minimises `C_P = (c_E*E + c_V*Vcmax)/A`, so it has two unit costs
+  // rather than one. ⚠️ ONE FIELD IS ENOUGH, AND THIS IS NOT A SIMPLIFICATION.
+  // Scaling both costs by k multiplies C_P by k, which moves neither the argmax nor
+  // the marginal cost of water: dividing through by `c_E` leaves
+  // `C_P/c_E = (E + beta*Vcmax)/A` with `beta = c_V/c_E`, and lambda (below) has
+  // `c_E` cancelling top and bottom. The ONLY quantity the missing factor reaches
+  // is the reported `profit_`, which on this curve -- as on SOX and JW26 -- is a
+  // ratio rather than a carbon flux and is not comparable with a subtracted curve's
+  // profit anyway. So the curve is parameterised by the published quantity: beta.
+  //
+  // ⚠️ DIMENSIONLESS, WHICH FIXES THE UNITS OF BOTH TERMS IT WEIGHS. beta is a ratio
+  // of two unit costs, so `E` and `Vcmax` must be in the SAME molar units for it to
+  // be the published number. This package carries `E` in kg H2O m^-2 s^-1 and
+  // `vcmax_` in umol CO2 m^-2 s^-1, so `leastcost_flux()` converts both to
+  // mol m^-2 s^-1 before weighing them. Feeding this field a beta derived against
+  // kg-and-umol would be off by a factor of 5.6e7.
+  //
+  // ⚠️ IT WEIGHS `vcmax_`, THE TEMPERATURE-ADJUSTED CAPACITY, not `vcmax_25`. That
+  // is what appears in the assimilation the ratio divides by, and it is what makes
+  // the first-order condition here the one @Prentice-2014 write down. It also means
+  // the two costs move apart as the leaf warms, which is the acclimation channel
+  // S1.4 of the theory paper flags: their beta carries a viscosity term (eta*) that
+  // this package does not model, so beta here is beta/eta* at the leaf's own
+  // temperature. At 25 C eta* is 1 by definition and the two agree.
+  //
+  // @Prentice-2014 report beta = 146 and @Dong-2017 fit 146 +- a factor of about
+  // two; below ~10 the water term dominates and the leaf closes, above ~1e4 the
+  // capacity term does and it opens to the wet bound.
+  double LeastCost_beta = util::na_value;          // dimensionless, c_V / c_E
   double hydraulic_cost_;
   
   double electron_transport_;
@@ -569,9 +828,29 @@ public:
   // Penman-Monteith leaf energy balance state (#523), only meaningful on the
   // use_energy_balance_ path. Set once per set_physiology; Tleaf itself is a
   // per-operating-point quantity computed in set_leaf_states_rates_from_psi_stem.
+  //
+  // ⚠️ Tair_, Rn_, g_rad_ and ra_ are all RE-SEATED by every set_physiology, so a
+  // caller supplying its own radiation budget overrides them after each call.
   double Tair_;  // air temperature, deg C (reinterprets the leaf_temp driver)
-  double Rn_;    // net radiation at the leaf, W m^-2
-  double ra_;    // aerodynamic (boundary-layer) resistance, s m^-1
+  // ISOTHERMAL net radiation, W m^-2: absorbed shortwave minus the net longwave a
+  // leaf AT AIR TEMPERATURE would exchange. The leaf's own departure from Tair is
+  // carried by g_rad_ below rather than by this term, which is what keeps the
+  // balance explicit -- see the longwave block in constants.hpp.
+  double Rn_;
+  // Radiative conductance, W m^-2 K^-1: 4*eps_leaf*sigma*Tair_K^3, the linearised
+  // sensitivity of the leaf's longwave emission to its own temperature. Adds to
+  // the sensible-heat conductance vol_heat_cap_air/ra_ in the balance, so a
+  // radiatively coupled leaf sits CLOSER to air temperature than ra_ alone
+  // implies: 13-18% of the total at the default leaf size and wind.
+  double g_rad_;
+  // AERODYNAMIC (boundary-layer) resistance to sensible heat, s m^-1. Convective
+  // ONLY: the radiative path is g_rad_, added beside it in leaf_temp_from_E.
+  // ⚠️ A caller injecting a COMBINED convective-plus-radiative resistance here
+  // (Jones et al.'s r_HR, or 1/(Gbh + Grad)) must also set g_rad_ = 0, or the
+  // radiative conductance is counted twice and every Tleaf - Tair and dTleaf/dE
+  // comes out 5-7% small with nothing to flag it. g_rad_ = 0 recovers the
+  // single-resistance balance Tair + (Rn_ - lambda*E)*ra_/vol_heat_cap_air.
+  double ra_;
   // Gate for the PM leaf energy balance. Default OFF: today's path runs
   // (prescribed leaf_temp, single-shot cached Arrhenius). R-settable (#523 full
   // cut) so TF24 (via pars.use_energy_balance) and the leaf-level demo can
@@ -608,6 +887,29 @@ public:
   double d_ = 0.05;          // characteristic leaf dimension, m
   double wind_speed_ = 2.0;  // above-canopy wind speed U0, m s^-1
 
+  // Leaf absorptances, the fractions of INTERCEPTED radiation the leaf absorbs.
+  // Light reaches the leaf as intercepted quantities (PPFD_ and NIR_int_); these
+  // are the leaf's own optical properties, so the conversion to absorbed happens
+  // here and nowhere upstream. alpha_PAR_ reaches both photosynthesis (APAR =
+  // alpha_PAR_ * PPFD_, which phi_J multiplies) and the energy balance;
+  // alpha_NIR_ only the energy balance. Leaf properties, not fitted traits.
+  //
+  // ⚠️ IN A GAS-EXCHANGE FIT ONLY phi_J * alpha_PAR_ IS IDENTIFIED: the two enter
+  // J as a product. Fix alpha_PAR_ (at this default or a measured absorptance)
+  // and the fitted phi_J is per absorbed photon.
+  double alpha_PAR_ = 0.85;  // PAR absorptance, unitless
+  double alpha_NIR_ = 0.20;  // near-infrared absorptance, unitless
+  // Intercepted near-infrared (700-3000 nm) per unit leaf area, W m^-2: the
+  // non-PAR part of the shortwave, which heats the leaf but drives no
+  // photosynthesis. A per-call driver like wind_speed_, set before
+  // set_physiology, and read on the energy-balance path ONLY.
+  //
+  // ⚠️ NO DEFAULT, BECAUSE NONE IS RIGHT. It depends on the light source, which
+  // the leaf cannot see: about PPFD_ / umol_par_per_joule in daylight, zero under
+  // an LED. A default of either would be silently wrong for the other, so
+  // set_physiology refuses a non-finite value on the energy-balance path.
+  double NIR_int_ = util::na_value;
+
   // --- Sicangco et al. (2026) thermal cost, default OFF -----------------------
   // An instantaneous cost of PSII damage, sigmoid in LEAF temperature:
   //
@@ -630,6 +932,143 @@ public:
   bool use_thermal_cost_ = false;
   double T50_ = 50.4;    // deg C; Sicangco Table 2, heatwave treatment
   double Tcrit_ = 46.5;  // deg C; Sicangco Table 2, heatwave treatment
+
+  // --- ATLS thermal damage and acclimation, default OFF (traitecoevo/plant#566) --
+  // A LASTING damage model on three states, fractions of leaf area named for what
+  // they do rather than for a mechanism:
+  //
+  //   functional F  <=>  impaired I  -->  damaged D,      F = 1 - I - D
+  //
+  //   dA/dt = acclim_alpha_ * softplus(T - acclim_T_; acclim_s_) - acclim_beta_ * A
+  //   dI/dt = k_imp(T) * F - (k_rec_eff(T) + k_mat_) * I
+  //   dD/dt = k_mat_ * I
+  //   k_imp(T) = k_i_eff(T) * K/(1 + K),  K = exp[(impair_H_/R)(1/Tmid - 1/T)]
+  //
+  // with T the LEAF temperature throughout and every rate per DAY. Impaired area
+  // returns to functional only by repair, at k_rec_eff; damaged area does not
+  // return. K/(1 + K) is a temperature SWITCH on the impairment rate, one half at
+  // the (acclimation-shifted) midpoint -- not a state and not a fraction of the
+  // leaf. damage_rates() evaluates the right-hand side and damage_trajectory()
+  // integrates it over a leaf-temperature series, so a leaf experiment can be
+  // fitted with this class alone; a caller that integrates the states itself (plant's
+  // TF24t, which adds dilution by leaf turnover and growth to dD/dt) calls
+  // damage_rates() and seats A_, I_ and D_ before each set_physiology.
+  //
+  // Behind the gate, update_temperature_dependent_params also:
+  //
+  //   * shifts the entropy term of the Vcmax and Jmax peaked Arrhenius so their
+  //     optimum moves by topt_offset_ + dTopt_max_ * A/(A + K_A_) degrees;
+  //   * scales both capacities by the functional fraction F = 1 - I_ - D_, floored
+  //     at damage_surv_floor: impaired and damaged area does not photosynthesise;
+  //   * reports k_imp_eff_, k_rec_eff_ and functional_ at that temperature;
+  //   * adds four maintenance costs to R_d_, after the Q10 response.
+  //
+  // ⚠️ IMPAIRMENT IS NOT THE PEAKED ARRHENIUS'S DEACTIVATION. The Vcmax and Jmax
+  // curves are the INSTANTANEOUS, fully reversible temperature response, and
+  // nothing about them persists past the call; impairment is rate-and-state and
+  // lasts until repaired. They share no parameter, so recalibrating the
+  // photosynthetic response cannot move the impairment switch. A hot leaf loses
+  // capacity both ways, by different mechanisms on different timescales, and that
+  // is intended rather than a double count.
+  //
+  // With the gate off none of these inputs is read by the solve, k_imp_eff_ and
+  // k_rec_eff_ are written as zero and functional_ as one, and every other number
+  // is bit-identical to a leaf without the layer.
+  //
+  // ⚠️ DAMAGE ENTERS THE BENEFIT, NOT THE HYDRAULIC COST: both capacities carry
+  // F and R_d_ carries the costs, so the optimiser sees the states only through
+  // assimilation. The rates enter no objective: a leaf cannot trade carbon now
+  // against impairment later.
+  //
+  // ⚠️ R_d_ IS NOT SCALED BY F. Respiration is R_d_25 * Q10(T) whatever the
+  // state, plus the costs below: impaired and damaged area costs carbon and
+  // gains none.
+  //
+  // ⚠️ ONLY THE TRAIT GRADIENT CARRIES THIS LAYER. leaf_gradient() and the
+  // batch difference the solve's own dprofit and outputs, which read the members
+  // this block writes, and take A_, I_, D_ and the parameters that reach the
+  // solve as inputs (gradient.hpp). The derivative surface (collar_at,
+  // outputs_at) reads capacities off the parameter pack, whose kernels do not
+  // apply the layer, and the closed form has not been checked with it, so those
+  // refuse a leaf with the gate on. The dynamics' own sensitivities are
+  // damage_trajectory_gradient().
+  bool use_thermal_damage_ = false;
+  // Constitutive thermostability shift, deg C. Moves BOTH the photosynthetic
+  // optimum (through the entropy term) and the impairment switch's midpoint by
+  // the same amount; the acclimated shifts below are separate.
+  double topt_offset_ = 0.0;
+  // The impairment switch, K = exp[(impair_H_/R)(1/Tmid - 1/T)] with Tmid in
+  // kelvin, so K/(1 + K) is one half at impair_Tmid_ (deg C) and impair_H_
+  // (J mol^-1) sets how sharply it turns on: K changes 10-fold over
+  // ln(10)*R*T^2/impair_H_ degrees, 9.7 K at the default near 45 C.
+  //
+  // ⚠️ THE DEFAULTS ARE THE JMAX CURVE'S DEACTIVATION TERM, H_d = 200 kJ mol^-1
+  // and H_d/d_S = 200000/650 K, which is where the original layer put the onset.
+  // They are COPIES, not references: moving jmax_H_d_ or jmax_d_S_ does not move
+  // the switch.
+  double impair_H_ = phylloptim::jmax_H_d;
+  double impair_Tmid_ = phylloptim::jmax_H_d / phylloptim::jmax_d_S - C_to_K;
+  // The impairment rate's scale, a centred Arrhenius:
+  //
+  //     k_i_eff = k_i_ * exp[(k_i_Ea_/R)(1/T_ref - 1/T)],  T_ref = k_i_Tref_ (deg C)
+  //
+  // so k_i_ (day^-1) is the rate at k_i_Tref_ with the switch fully on, and
+  // k_i_Ea_ (J mol^-1) its temperature sensitivity. Default k_i_Ea_ = 0 is a
+  // constant scale EXACTLY: the exponent is an exact zero and exp(0) is one.
+  double k_i_ = 0.5;
+  double k_i_Ea_ = 0.0;
+  double k_i_Tref_ = 25.0;
+  // The no-extra-protection baseline k_i_ is costed against, day^-1: protection
+  // bought is max(0, k_i_baseline_ - k_i_). A rate, not a temperature: the
+  // Arrhenius reference above is k_i_Tref_.
+  double k_i_baseline_ = 0.5;
+  // Repair, impaired -> functional: k_rec_eff = k_rec_ * logistic(-m_rep_ *
+  // (T - t_rep_cut_)), the cool-temperature rate (day^-1) shut off when hot with
+  // slope m_rep_ (deg C^-1) about t_rep_cut_ (deg C).
+  double k_rec_ = 0.25;
+  double m_rep_ = 0.4;
+  double t_rep_cut_ = 45.0;
+  // Maturation, impaired -> damaged, day^-1. Temperature-independent.
+  double k_mat_ = 0.02;
+  // Acclimation kinetics: dA/dt = acclim_alpha_ * softplus(T - acclim_T_;
+  // acclim_s_) - acclim_beta_ * A, with T the LEAF temperature. acclim_alpha_
+  // (day^-1 deg C^-1) is the gain, acclim_beta_ (day^-1) the decay, so 1/beta is
+  // the timescale and (alpha/beta)*softplus the equilibrium; acclim_T_ (deg C) is
+  // the forcing threshold and acclim_s_ (deg C^-1) the softplus sharpness.
+  double acclim_alpha_ = 0.02;
+  double acclim_beta_ = 0.01;
+  double acclim_T_ = 30.0;
+  double acclim_s_ = 1.0;
+  // What acclimation buys: the most the photosynthetic optimum can rise, and the
+  // most the impairment switch's midpoint can rise, deg C, both saturating in A
+  // with half-saturation K_A_. Neither is a hard cap on anything but the shift.
+  double dTopt_max_ = 6.0;
+  double dTimpair_max_ = 6.0;
+  double K_A_ = 1.0;
+  // STATE, set by the caller before each set_physiology: the acclimation state,
+  // and the impaired and damaged fractions of leaf area. Zero is an unacclimated,
+  // intact leaf. Negative A_ is read as zero.
+  double A_ = 0.0;
+  double I_ = 0.0;
+  double D_ = 0.0;
+  // Maintenance costs added to R_d_, umol C m^-2 s^-1 per unit of what each
+  // multiplies: the acclimation state A_; the repair capacity k_rec_ (day^-1);
+  // the protection bought, max(0, k_i_baseline_ - k_i_) (day^-1); and the realised
+  // repair flux k_rec_eff * I_ (day^-1). Zero by default, so the layer costs
+  // nothing until a caller prices it.
+  double c_acclim_maint_ = 0.0;
+  double c_repair_maint_ = 0.0;
+  double c_protect_maint_ = 0.0;
+  double c_repair_flux_ = 0.0;
+  // The functional fraction's floor. Strictly positive so the capacities stay
+  // positive and the solve stays well-conditioned as I_ + D_ -> 1.
+  static constexpr double damage_surv_floor = 1e-6;
+  // OUTPUTS, at the temperature the block was last seated at -- the operating
+  // point's leaf temperature after a solve on the energy-balance path, the
+  // leaf_temp driver off it.
+  double k_imp_eff_ = 0.0;   // impairment rate there, day^-1; zero with the gate off
+  double k_rec_eff_ = 0.0;   // repair rate there, day^-1; zero with the gate off
+  double functional_ = 1.0;  // the F that scaled the capacities; one with the gate off
 
   // Cells a stem route scans to locate the basin before refining, WHERE ONE IS
   // ASKED FOR -- see `basin_scan_cells()` below, which returns 0 with the energy
@@ -667,6 +1106,10 @@ public:
   int basin_scan_cells() const {
     return use_energy_balance_ ? boundary_scan_n_ : 0;
   }
+  // INTERCEPTED photosynthetic photon flux density per unit leaf area, umol m^-2
+  // s^-1: incident on the leaf, NOT absorbed. Absorption is the leaf's own
+  // business (alpha_PAR_), so the caller hands over the light that arrives and
+  // never the light that is kept. Seated by set_physiology's PPFD argument.
   double PPFD_;
   double atm_vpd_;
   // The vapour pressure deficit the DIFFUSION equations use, kPa. Off the
@@ -894,7 +1337,7 @@ public:
   //   * the cost is 17 double comparisons per set_physiology() call, i.e. per
   //     driver set, NOT per inner solve iteration. Measured: within run-to-run
   //     noise on bench_solve.
-  static constexpr int photo_temp_key_size = 22;
+  static constexpr int photo_temp_key_size = 23;
   std::array<double, photo_temp_key_size> photo_temp_cache_key_{};
   std::array<double, photo_temp_key_size> photo_temp_key() const;
   std::vector<double> f_r;
@@ -939,6 +1382,10 @@ public:
   // resistances that arrive already scaled, and a caller passing resistances built
   // from absolute carbon gets a silently wrong E_up rather than an error: no
   // check here can see the difference, because both are just positive numbers.
+  //
+  // `PPFD` is the INTERCEPTED photon flux per unit leaf area (see PPFD_). On the
+  // energy-balance path the leaf also needs the intercepted near-infrared,
+  // NIR_int_, set before this call.
   void set_physiology(const RootNetwork& root_network, double PPFD, const std::vector<double>& psi_soil, const std::vector<double>& soil_depth, double leaf_specific_conductance_max, double atm_vpd, double ca, double leaf_temp, double atm_o2_kpa, double atm_kpa);
 
   // Replace the fourteen traits on an existing Leaf, leaving the four numerical
@@ -988,7 +1435,7 @@ public:
   // photosynthetic parameters really are unknown until the drivers are re-supplied.
   void set_traits(double vcmax_25, double stem_c, double stem_P50,
                   double root_c, double root_P50,
-                  double TF24_beta2, double jmax_25, double a,
+                  double TF24_beta2, double jmax_25, double phi_J,
                   double curv_fact_elec_trans, double curv_fact_colim,
                   double TF24_cost_scale, double R_d_25, double JS22_gamma,
                   double CMax_a, double CMax_b);
@@ -1149,9 +1596,20 @@ public:
   // "u = 7.5 beyond the upper end" is ambiguous in exactly the way that matters.
   // Nor can it name the caller -- the same spline is read from four places, and
   // localising plant#576 came down to which.
+  //
+  // Past the UPPER end it answers rather than throws: the table is a cache of
+  // G(psi) = (b/c) gamma_lower(1/c, (psi/b)^c), which is defined at every
+  // potential, so a soil drier than P99 reads the closed form at the curve's
+  // (b, c). The knots are seeded from that same closed form, so the value is
+  // continuous at the join. Only the lower end, a negative potential, throws.
   static double eval_stem_curve(const odelia::interpolator::hermite_spline<double>& spline,
-                                double u, double scale, const char* spline_name,
+                                double u, double scale, double b, double c,
+                                const char* spline_name,
                                 const char* arg_name, const char* caller);
+  // G^-1 past the table's upper end, on the closed form: the inverse of the
+  // branch eval_stem_curve takes there. Infeasible only where no potential
+  // gives `w`, i.e. at or past G(inf).
+  double invert_stem_curve_past_grid(double w, const char* caller) const;
 
   // Move stem_b WITHOUT rebuilding the stem vulnerability spline, by the
   // homogeneity identity above. stem_c is not accepted: it has no such identity.
@@ -1402,8 +1860,11 @@ public:
     pair<T> ci;
   };
 
-  enum class CostCurve {
- TF24, CF77, JS22, CMax, SOX, JW26, ProfitMax, TF24_floor };
+  // Which cost curve a psi_stem derivative differentiates. The cost enters the
+  // chain through exactly ONE quantity -- dC/dpsi_stem -- so this selects that
+  // and nothing else.
+  enum class CostCurve { TF24, CF77, JS22, CMax, SOX, JW26, ProfitMax, TF24_floor,
+                         LeastCost };
 
   // ⚠️ THE ONE ABSTRACTION THAT MAKES EVERY MODEL THE SAME MODEL.
   //
@@ -1418,8 +1879,19 @@ public:
   //                                                   TF24_floor
   //     Log       h(A) = log A        h' = 1/A        SOX, JW26  (products: A*g
   //                                                   and log A + log g share
-  //                                                   an argmax)
+  //                                                   an argmax), LeastCost
+  //                                                   (a RATIO: minimising
+  //                                                   (c_E E + c_V V)/A is
+  //                                                   maximising log A -
+  //                                                   log(c_E E + c_V V))
   //     Scaled    h(A) = A/|A|max     h' = 1/|A|max   ProfitMax
+  //
+  // With the energy balance on, dA/dpsi also runs through Tleaf(E(psi)). That
+  // path is part of dA/dpsi and takes the same single h': there is no h'' in a
+  // first derivative, because h'(A) is never itself differentiated. Two costs
+  // read Tleaf, ProfitMax's thermal term and LeastCost's capacity term through
+  // `vcmax_`. Both are cost-side and take none. All three slopes live in
+  // `dprofit_energy_balance_term`.
   //
   // ⚠️ THE LINK IS NOT ONLY ON THE BENEFIT, AND READING IT THAT WAY IS THE NATURAL
   // MISTAKE. For the two product curves the COST is stored in log form as well --
@@ -1446,7 +1918,7 @@ public:
   // moment ProfitMax was appended -- the curve existed, had a link and a
   // derivative, and was simply invisible to R because `curve_name()` called it
   // unknown. Keep this the last member.
-  static constexpr int n_cost_curves = static_cast<int>(CostCurve::TF24_floor) + 1;
+  static constexpr int n_cost_curves = static_cast<int>(CostCurve::LeastCost) + 1;
 
   // ⚠️ THE MODEL IS CONFIGURATION, NOT A CALL ARGUMENT, and the reason is that its
   // PARAMETERS already are. `CF77_lambda_` and `TF24_floor_lambda_o` are fields;
@@ -1690,6 +2162,8 @@ public:
         return f(std::integral_constant<CostCurve, CostCurve::ProfitMax>{});
       case CostCurve::TF24_floor:
         return f(std::integral_constant<CostCurve, CostCurve::TF24_floor>{});
+      case CostCurve::LeastCost:
+        return f(std::integral_constant<CostCurve, CostCurve::LeastCost>{});
     }
     // Unreachable for any enumerator, and not a `default:` arm -- a `default`
     // would satisfy `-Werror=switch` and so remove the check this exists for.
@@ -1747,14 +2221,25 @@ public:
   // around a call with side effects, which is not a thing to keep two of.
   //
   // ⚠️ NOT const, and the caller sees no change. `update_temperature_dependent_
-  // params` writes eight members; this saves them, perturbs, reads R_d_, and puts
-  // all eight back. Adding a member to that block without adding it here leaves
-  // the leaf perturbed by 1e-3 degrees after a gradient evaluation, silently --
-  // the same failure mode `photo_temp_key()` guards for the cache.
+  // params` writes eleven outputs -- the eight capacities and rates, plus the
+  // thermal-damage layer's k_imp_eff_, k_rec_eff_ and functional_; this saves them,
+  // perturbs, reads R_d_, and puts all eleven back. Adding a member to that block
+  // without adding it here leaves the leaf perturbed by 1e-3 degrees after a
+  // gradient evaluation, silently -- the same failure mode `photo_temp_key()`
+  // guards for the cache. dprofit_energy_balance_term restores the same eleven.
   double respiration_temp_deriv(double leaf_temp);
-  // The energy-balance correction to the above, zero when the gate is off. Kept
-  // out of line so that adding it cannot change FMA contraction in the inlined
-  // gate-off path; the derivation and the two sign checks are at the definition.
+  // dVcmax/dTleaf, the same way and with the same save-and-restore. LeastCost's
+  // capacity cost reads `vcmax_`, so `lambda_LeastCost` needs this slope with the
+  // energy balance on. dprofit_energy_balance_term reads the same two
+  // evaluations inline, beside A_T.
+  double vcmax_temp_deriv(double leaf_temp);
+  // The energy-balance contribution to dJ/dpsi, zero when the gate is off: the
+  // benefit's motion through Tleaf(E(psi)) under the curve's link, plus the
+  // cost's for the two curves whose cost reads Tleaf (ProfitMax's thermal cost,
+  // LeastCost's Vcmax). Kept out of line so that adding it cannot
+  // change FMA contraction in the inlined gate-off path; the derivation and the
+  // two sign checks are at the definition.
+  template <CostCurve K>
   double dprofit_energy_balance_term(double ci, double gc, double g_ci,
                                      double inv_atm, double gc_const,
                                      double A_prime, double dgc_dpsistem,
@@ -1831,7 +2316,8 @@ public:
 
   // --- Penman-Monteith leaf energy balance (minimal core; #523) ---------------
   // Recompute the temperature-dependent photosynthetic parameters (vcmax_,
-  // jmax_, gamma_, ko_, kc_, R_d_, km_, electron_transport_) at a given leaf
+  // jmax_, gamma_, ko_, kc_, R_d_, km_, electron_transport_, and the
+  // thermal-damage layer's k_imp_eff_, k_rec_eff_ and functional_) at a given leaf
   // temperature. Extracted verbatim from the inline block in set_physiology so
   // the non-PM path is bit-identical; on the PM path it is called per
   // operating point with the energy-balance Tleaf (defeating the photo_temp
@@ -1855,7 +2341,9 @@ public:
   // taken at fixed ci and assim_colimited() reads no VPD at all. The VPD route
   // into the derivative is carried separately, by dgc_dT.
   void set_leaf_vpd(double leaf_temp);
-  // Explicit leaf energy balance: Tleaf = Tair + (Rn - lambda*E) * ra / (rho*cp).
+  // Explicit leaf energy balance:
+  // Tleaf = Tair + (Rn - lambda*E) / (rho*cp/ra + g_rad), with Rn the ISOTHERMAL
+  // net radiation and g_rad the linearised longwave (constants.hpp).
   // E is the hydraulically-pinned transpiration (kg H2O m^-2 s^-1); no PM
   // inversion and no A->E feedback, so this is a single algebraic forward pass.
   // `dT_dE`, when non-null, receives dTleaf/dE at the same point. It is an
@@ -2080,7 +2568,7 @@ public:
   // The objective at a placed operating point, and everything plant reads.
   //
   // ⚠️ TEMPLATED ON THE CURVE, IMPLEMENTED FOR TF24 AND TF24_floor. A
-  // static_assert refuses the other six, so another curve is a branch here rather
+  // static_assert refuses the other seven, so another curve is a branch here rather
   // than a redesign -- and until something differentiates one, a branch written
   // for it would have no caller and no reference to check it against.
   template <CostCurve K, class S>
@@ -2245,6 +2733,55 @@ public:
   // own `Pcrit`; deriving it instead is what makes this and SOX two interpolations
   // between the SAME two anchors (1 at zero tension, 0 at `psi_crit`) and so
   // comparable by construction rather than by matching a parameter.
+  // --- least-cost / cost-per-unit-carbon --------------------------------------
+  //
+  // Prentice et al. (2014) and Dong et al. (2017) minimise the cost of acquiring a
+  // unit of carbon, `C_P = (c_E*E + c_V*Vcmax)/A`, rather than maximising a
+  // difference. Minimising a ratio is maximising its reciprocal, and `log` turns
+  // that into `log A - log(c_E*E + c_V*Vcmax)` -- the same benefit link SOX and
+  // JW26 use, with the penalty now carrying CAPACITY as well as flux. That is the
+  // reduction written out in S1.4 of the theory manuscript; the family form is
+  // `h = log`, `Theta = log(c_E*E + c_V*Vcmax)`.
+  //
+  // ⚠️ THE ONLY CURVE HERE WHOSE PENALTY CARRIES SOMETHING OTHER THAN WATER. Every
+  // other cost in this class is a function of psi (or of E) alone; this one weighs
+  // photosynthetic capacity against transpiration, which is why its first-order
+  // condition reproduces Prentice et al.'s `chi = xi/(xi + sqrt(D))` and why a
+  // light sweep on it measures acclimation rather than the price of water.
+
+  // The weighted resource use `W = E_mol + beta*Vcmax_mol`, mol m^-2 s^-1, and the
+  // ONE place the two unit conversions live -- E from kg to mol, Vcmax from umol to
+  // mol. The cost is `log W`, its derivative `W'/W`, the objective `A/W` and the
+  // price `A*kg_to_mol_h2o/W`, so all four read this and cannot disagree about the
+  // units beta is dimensionless in.
+  double leastcost_flux(double psi_stem, double psi_upstream);
+
+  // ⚠️ A RATIO, so what comes back is NOT in carbon units -- the same caveat
+  // `profit_psi_stem_SOX` carries, and for a related reason. It is `A/W`, umol C
+  // per mol of weighted resource, and it is `c_E/C_P`: the reciprocal of the
+  // published cost per unit carbon, times a constant this curve does not carry
+  // (see `LeastCost_beta`). Monotone in `-C_P`, so the argmax is the published
+  // model's, and the VALUE must not be compared with a TF24 profit.
+  double profit_psi_stem_LeastCost(double psi_stem, double psi_upstream);
+
+  // The marginal cost of water this curve implies, umol C (kg H2O)^-1, on the same
+  // axis as every other `lambda_*` here:
+  //
+  //     lambda = h'(A)^-1 * dTheta/dE = A * kg_to_mol_h2o / W
+  //
+  // at a fixed leaf temperature. With the energy balance on, Vcmax moves with E
+  // through Tleaf and dTheta/dE gains `beta*umol_to_mol*dVcmax/dT*dT/dE / W`.
+  //
+  // which is eq. S1.4 of the theory manuscript, `lambda = c_E*A/(c_E*E +
+  // c_V*Vcmax)`, with `c_E` cancelled and the kg-to-mol factor supplied.
+  //
+  // ⚠️ IT DOES NOT VANISH AT THE WET END, and it is the only LOG-link curve here of
+  // which that is true. As E -> 0 this tends to `A*kg_to_mol_h2o/(beta*Vcmax_mol)`,
+  // finite and set by the capacity term; SOX's and JW26's both carry `A` to zero
+  // through their own `g`. It does carry `A`, so it still falls as assimilation
+  // does -- the wet end is finite in psi, not in light.
+  double lambda_LeastCost(double psi_stem, double psi_upstream);
+
   double jw26_reduction(double psi_stem) const;
   double jw26_reduction_deriv(double psi_stem) const;
   double profit_psi_stem_JW26(double psi_stem, double psi_upstream);
@@ -2333,6 +2870,28 @@ public:
   double stom_cond_H2O() const {
     return stom_cond_CO2_ * H2O_CO2_stom_diff_ratio_;
   }
+  // ⚠️ ON THE ENERGY-BALANCE PATH stom_cond_H2O() IS THE TOTAL LEAF-TO-AIR
+  // CONDUCTANCE, not a stomatal one. It is E*P/D_leaf, and E crosses the leaf
+  // boundary layer as well as the stoma, so comparing it with a measured gs
+  // compares different quantities. The two accessors below separate them (#122).
+  //
+  // Boundary-layer conductance to WATER VAPOUR, mol H2O m^-2 s^-1: the molar form
+  // of the heat resistance ra_ the energy balance reads, at air temperature,
+  // scaled by bl_vapour_heat_ratio. +Inf off the energy-balance path, where the
+  // leaf is at air temperature and coupled to it perfectly, and where ra_ is a
+  // fallback nothing validates.
+  double boundary_layer_cond_H2O() const;
+  // Stomatal conductance to water vapour with the boundary layer taken out in
+  // series, 1/g_s = 1/g_total - 1/g_b, mol H2O m^-2 s^-1. Exactly
+  // stom_cond_H2O() off the energy-balance path.
+  //
+  // ⚠️ REFUSES where g_total >= g_b. Then E is more than the boundary layer can
+  // carry at this deficit whatever the stoma does, and no finite g_s exists.
+  // Hydraulics set E here, so nothing in the solve prevents it; the refusal sits
+  // in this accessor rather than in the solve so that it cannot abort a plant
+  // run, and test_boundary_layer_bounds_the_total_conductance measures how far
+  // a realistic driver grid stays from it.
+  double stom_cond_stomatal_H2O() const;
 
   // Read-only on purpose: a settable one would be a way to disagree with the
   // operating point it is derived from.
@@ -2436,6 +2995,71 @@ public:
   // The instantaneous thermal cost at a leaf temperature, in [0,1]. Zero when the
   // gate is off, so callers need not branch.
   double thermal_cost_at(double leaf_temp) const;
+  // Its slope in leaf temperature, r*TC*(1 - TC) with r = 2/(T50 - Tcrit): the
+  // sigmoid's own derivative. Zero when the gate is off, like thermal_cost_at.
+  double thermal_cost_temp_deriv(double leaf_temp) const;
+
+  // --- the ATLS thermal-damage layer's pieces (see use_thermal_damage_) --------
+  // Every exponential argument is clamped to [-30, 30], and every shifted optimum
+  // or onset to [250, 350] K, so no driver or trait makes them non-finite.
+  //
+  // 1/(1 + exp(-x)), and the smooth max(0, x), log1p(exp(s*x))/s. Static: a
+  // caller's acclimation forcing uses them too.
+  static double logistic_(double x);
+  static double softplus_(double x, double s);
+  // The entropy term that moves a peaked Arrhenius optimum,
+  // Topt = H_d / (d_S - R*ln(Ea/(H_d - Ea))), by delta_topt degrees.
+  double d_S_shifted(double Ea, double H_d, double d_S_base,
+                     double delta_topt) const;
+  // The impairment switch K/(1+K), K = exp[(impair_H_/R)(1/Tmid - 1/T)], with
+  // the midpoint impair_Tmid_ moved by delta_impair degrees (clamped to [250, 350]
+  // K). Its own parameters: it reads nothing of the Vcmax or Jmax curves.
+  double impair_switch(double leaf_temp, double delta_impair) const;
+  // The impairment rate's Arrhenius scale, k_i_ at k_i_Tref_, day^-1.
+  double k_i_eff(double leaf_temp) const;
+  // The impairment rate, functional -> impaired: k_i_eff * impair_switch, day^-1.
+  double k_imp_eff(double leaf_temp, double delta_impair) const;
+  // The repair rate, impaired -> functional, day^-1.
+  double k_rec_eff(double leaf_temp) const;
+  // The acclimation shift of the impairment switch's midpoint at a state A.
+  double delta_impair_at(double A) const;
+
+  // The layer's parameters, packed for the templates in `damage`, and the
+  // refusal of a non-positive impair_H_ every entry point applies.
+  damage::dyn_pars<double> damage_pars() const;
+  void check_damage_pars() const;
+  void check_damage_series(const std::vector<double>& times,
+                           const std::vector<double>& leaf_temp) const;
+  // The names of damage_trajectory_gradient()'s inputs, in index order: the
+  // sixteen dynamics parameters, then the three initial states.
+  std::vector<std::string> damage_par_names() const;
+  // d(state)/d(input) along the trajectory, exact by forward-mode differentiation
+  // of the same RK4: 3 * times.size() * which.size() numbers, time fastest, then
+  // state (A, I, D), then input. `which` indexes damage_par_names().
+  std::vector<double> damage_trajectory_gradient(
+      const std::vector<double>& times, const std::vector<double>& leaf_temp,
+      double A0, double I0, double D0, const std::vector<int>& which) const;
+
+  // THE LAYER'S DYNAMICS, per DAY, at a leaf temperature and a state:
+  // {dA/dt, dI/dt, dD/dt}. Reads the layer's parameters and nothing of the
+  // members A_, I_, D_ or the drivers, and does not need set_physiology, so a
+  // caller can evaluate it at a measured leaf temperature. dD/dt is maturation
+  // only: a caller whose leaf area turns over (plant) subtracts that dilution
+  // itself. Does not read the gate either: asking for the rates is the request.
+  std::vector<double> damage_rates(double leaf_temp, double A, double I,
+                                   double D) const;
+  // Integrates damage_rates over a leaf-temperature series, linear between the
+  // given times (days, strictly increasing), from (A0, I0, D0) at times[0]. Fixed-
+  // step RK4, with each interval cut so that the fastest rate times the step stays
+  // below 0.1 and the temperature moves at most 0.25 K per step. Returns the
+  // states at every time, column-major (A, I, D): 3 * times.size() numbers.
+  std::vector<double> damage_trajectory(const std::vector<double>& times,
+                                        const std::vector<double>& leaf_temp,
+                                        double A0, double I0, double D0) const;
+  // Throws, naming `who`, when use_thermal_damage_ is on. Called by every path
+  // that reads the capacities off the parameter pack (vcmax_at and the rest),
+  // which do not apply the layer.
+  void refuse_thermal_damage(const char* who) const;
 
   // Sperry (2017) ProfitMax, with BOTH terms normalised as the paper defines them
   // -- see the ProfitMax notes above optimise_psi_stem_single for what that buys
@@ -2702,7 +3326,7 @@ inline Leaf::Leaf()
     stem_P50(3.4), // MPa, positive magnitude -- THE trait; stem_b/psi_crit derive
     TF24_beta2(1.5), //exponent for effect of hydraulic risk (unitless)
     jmax_25(157.44), // maximum electron transport rate umol m^-2 s^-1
-    a(0.30), //quantum yield of photosynthetic electron transport (mol mol^-1)
+    phi_J(0.30 / 0.85), // quantum yield of electron transport per ABSORBED photon (mol mol^-1); 0.30 per incident photon at alpha_PAR_ = 0.85
     curv_fact_elec_trans(0.7), //curvature factor for the light response curve (unitless)
     curv_fact_colim(0.99), //curvature factor for the colimited photosythnthesis equatiom
     GSS_tol_abs(1e-3),
@@ -2733,7 +3357,7 @@ inline Leaf::Leaf(double vcmax_25, double stem_c, double stem_P50,
            double root_c,
            double root_P50,
            double TF24_beta2, double jmax_25,
-           double a, double curv_fact_elec_trans, double curv_fact_colim, 
+           double phi_J, double curv_fact_elec_trans, double curv_fact_colim, 
            double GSS_tol_abs,
            double vulnerability_curve_ncontrol,
            double ci_abs_tol,
@@ -2744,7 +3368,7 @@ inline Leaf::Leaf(double vcmax_25, double stem_c, double stem_P50,
     stem_P50(stem_P50), // MPa, positive magnitude
     TF24_beta2(TF24_beta2), //exponent for effect of hydraulic risk (unitless)
     jmax_25(jmax_25), // maximum electron transport rate umol m^-2 s^-1
-    a(a), //quantum yield of photosynthetic electron transport (mol mol^-1)
+    phi_J(phi_J), // quantum yield of electron transport per ABSORBED photon (mol mol^-1)
     curv_fact_elec_trans(curv_fact_elec_trans), //curvature factor for the light response curve (unitless)
     curv_fact_colim(curv_fact_colim), //curvature factor for the colimited photosythnthesis equation
     GSS_tol_abs(GSS_tol_abs),
@@ -2799,7 +3423,7 @@ inline void Leaf::check_psi_magnitudes(double stem_P50, double stem_c,
 // See the header for why this exists rather than fourteen settable fields.
 inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
                              double root_c_, double root_P50_, double TF24_beta2_,
-                             double jmax_25_, double a_,
+                             double jmax_25_, double phi_J_,
                              double curv_fact_elec_trans_,
                              double curv_fact_colim_,
                              double TF24_cost_scale_, double R_d_25_,
@@ -2839,7 +3463,7 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
   psi_crit = psi_crit_;
   TF24_beta2 = TF24_beta2_;
   jmax_25 = jmax_25_;
-  a = a_;
+  phi_J = phi_J_;
   curv_fact_elec_trans = curv_fact_elec_trans_;
   curv_fact_colim = curv_fact_colim_;
   TF24_cost_scale = TF24_cost_scale_;
@@ -2867,8 +3491,9 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
   // that would otherwise hand back the old vcmax_.
   //
   // "The just-constructed state" is exact for the derived state and the outputs,
-  // which is all of it bar `CF77_lambda_` and `TF24_floor_lambda_o` -- caller inputs,
-  // left standing on purpose (#96, see their declarations).
+  // which is all of it bar `CF77_lambda_`, `TF24_floor_lambda_o` and
+  // `LeastCost_beta` -- caller inputs, left standing on purpose (#96, see their
+  // declarations).
   setup_clean_leaf();
 }
 
@@ -2908,7 +3533,7 @@ inline leaf_pars<double> Leaf::passive_pars() const {
   p[par_root_P50] = roots_.root_P50;
   p[par_TF24_beta2] = TF24_beta2;
   p[par_jmax_25] = jmax_25;
-  p[par_a] = a;
+  p[par_phi_J] = phi_J;
   p[par_curv_fact_elec_trans] = curv_fact_elec_trans;
   p[par_curv_fact_colim] = curv_fact_colim;
   p[par_TF24_cost_scale] = TF24_cost_scale;
@@ -2923,6 +3548,22 @@ inline leaf_pars<double> Leaf::passive_pars() const {
                                     : roots_.network_.r_R_V_sum.front();
   p[par_CF77_lambda] = CF77_lambda_;
   p[par_TF24_floor_lambda_o] = TF24_floor_lambda_o;
+  p[par_LeastCost_beta] = LeastCost_beta;
+  p[par_A] = A_;
+  p[par_I] = I_;
+  p[par_D] = D_;
+  p[par_topt_offset] = topt_offset_;
+  p[par_dTopt_max] = dTopt_max_;
+  p[par_K_A] = K_A_;
+  p[par_k_i] = k_i_;
+  p[par_k_i_baseline] = k_i_baseline_;
+  p[par_k_rec] = k_rec_;
+  p[par_m_rep] = m_rep_;
+  p[par_t_rep_cut] = t_rep_cut_;
+  p[par_c_acclim_maint] = c_acclim_maint_;
+  p[par_c_repair_maint] = c_repair_maint_;
+  p[par_c_protect_maint] = c_protect_maint_;
+  p[par_c_repair_flux] = c_repair_flux_;
   p[par_PPFD] = PPFD_;
   return p;
 }
@@ -2934,10 +3575,10 @@ inline void Leaf::setup_clean_leaf() {
   assim_colimited_= util::na_value; // umol C m^-2 s^-1 
   transpiration_= util::na_value; // kg m^-2 s^-1 
   profit_= util::na_value; // umol C m^-2 s^-1
-  // CF77_lambda_ and TF24_floor_lambda_o are deliberately NOT here: they are the
-  // caller's inputs, not derived state, and carry their NA defaults at the
-  // declarations instead (#96). Adding either back makes a prescribed price
-  // survive set_drivers() and vanish on set_traits().
+  // CF77_lambda_, TF24_floor_lambda_o and LeastCost_beta are deliberately NOT
+  // here: they are the caller's inputs, not derived state, and carry their NA
+  // defaults at the declarations instead (#96). Adding any back makes a
+  // prescribed price survive set_drivers() and vanish on set_traits().
   carbon_gain_= util::na_value;
   hydraulic_cost_norm_= util::na_value;
   thermal_cost_= util::na_value;
@@ -2962,7 +3603,8 @@ inline void Leaf::setup_clean_leaf() {
   photo_temp_= util::na_value; // deg C -- no block seated yet
   Tleaf_= util::na_value; // deg C -- an output, so NA until a solve writes it
   Tair_= util::na_value; // deg C
-  Rn_= util::na_value; // W m^-2
+  Rn_= util::na_value; // W m^-2 (isothermal)
+  g_rad_= util::na_value; // W m^-2 K^-1
   ra_= util::na_value; // s m^-1
   PPFD_= util::na_value; //umol m^-2 s^-1
   atm_vpd_= util::na_value; //kPa
@@ -3070,12 +3712,48 @@ inline void Leaf::set_physiology(const RootNetwork& root_network, double PPFD, c
    transpiration_cached_ = false;
    ca_ = ca;
    // Penman-Monteith leaf energy-balance inputs (#523). Reinterpret the incoming
-   // leaf_temp driver as air temperature; derive net radiation from the absorbed
-   // PAR (PPFD_, umol m^-2 s^-1): shortwave ~= 2*PAR converted to W m^-2, plus a
-   // fixed clear-sky longwave cooling offset (doc 3.3). ra fixed for the minimal
-   // cut (doc fallback). Only read on the use_energy_balance_ path.
+   // leaf_temp driver as air temperature. The isothermal net radiation is the
+   // ABSORBED shortwave -- each intercepted band times its own absorptance, the
+   // PAR band converted from photons to W m^-2 at the daylight ratio -- less the
+   // sky's longwave (#97). Only read on the use_energy_balance_ path.
+   if (use_energy_balance_ && !std::isfinite(NIR_int_)) {
+     util::stop("set_physiology: non-finite NIR_int_ on the energy-balance path. "
+                "Set the intercepted near-infrared (W m^-2) before set_physiology: "
+                "about PPFD / umol_par_per_joule in daylight, 0 under an LED; "
+                "NIR_int_=" + util::to_string(NIR_int_));
+   }
    Tair_ = leaf_temp_;
-   Rn_ = sw_abs_per_par * PPFD_ / umol_par_per_joule + longwave_net_offset;
+   {
+     // Isothermal net radiation and the radiative conductance (#97). Both depend
+     // only on the DRIVERS, so both are seated once here rather than per candidate
+     // potential -- Tleaf enters the balance linearly through g_rad_ and not
+     // through either of these.
+     const double Tair_K = Tair_ + C_to_K;
+     // Actual vapour pressure, IN PASCALS as the emissivity coefficient requires
+     // (constants.hpp). atm_vpd_ and esat are both kPa, hence the 1000.
+     const double ea_Pa =
+         std::max(1000.0 * (saturation_vapour_pressure(Tair_) - atm_vpd_),
+                  vapour_pressure_min);
+     // ⚠️ CLAMPED AT 1, A PHYSICAL BOUND AND NOT PADDING. Brutsaert's fit
+     // extrapolates past unity once ea > 22.25 Pa/K * Tair_K (about 7 kPa): above
+     // Tair 38.9 C in saturated air, 43.9 C at a 2 kPa deficit, 48.0 C at 4 kPa.
+     // Unclamped, the isothermal longwave turns POSITIVE there (+100 W m^-2 by
+     // Tair 60 at 2 kPa): a sky brighter than a blackbody heating the leaf, the
+     // right order of magnitude with the wrong sign. At ema == 1 the term is
+     // exactly 0, the correct limit for a sky radiating as a blackbody at Tair.
+     // ⚠️ ABOVE THE CLAMP Rn_ NO LONGER RESPONDS TO Tair OR HUMIDITY (only g_rad_
+     // does), which matters for a heatwave sweep. Replacing the clamp needs an
+     // emissivity parameterisation valid there, not a wider fit.
+     const double ema = std::min(
+         atmos_emissivity_coef *
+             std::pow(ea_Pa / Tair_K, atmos_emissivity_exponent),
+         1.0);
+     const double sw_abs =
+         alpha_PAR_ * PPFD_ / umol_par_per_joule + alpha_NIR_ * NIR_int_;
+     Rn_ = sw_abs - (1.0 - ema) * stefan_boltzmann * Tair_K * Tair_K * Tair_K *
+                        Tair_K;
+     g_rad_ = 4.0 * leaf_emissivity * stefan_boltzmann * Tair_K * Tair_K * Tair_K;
+   }
    // Aerodynamic resistance from leaf boundary-layer theory: ra = C_ra*sqrt(d/U)
    // (doc 4.1), with the per-strategy leaf dimension d_ and the above-canopy wind
    // wind_speed_. On the PM path a non-finite wind_speed_/d_ is a broken driver /
@@ -3106,8 +3784,13 @@ inline void Leaf::set_physiology(const RootNetwork& root_network, double PPFD, c
    // candidate psi in set_leaf_states_rates_from_psi_stem, so we always recompute
    // the Tair baseline (used for assim_max_ / feasibility) and let the solve
    // override it.
+   //
+   // ⚠️ AND IT IS BYPASSED WITH THE THERMAL-DAMAGE GATE ON. The block then reads
+   // A_, I_ and D_, which a caller moves between calls and which the key
+   // does not hold (see photo_temp_key).
    const std::array<double, photo_temp_key_size> photo_key = photo_temp_key();
    if (!use_energy_balance_ &&
+       !use_thermal_damage_ &&
        photo_temp_cached_ &&
        photo_key == photo_temp_cache_key_) {
      // Cache hit (non-PM): every input unchanged; only electron_transport_
@@ -3690,12 +4373,6 @@ if(assim_max_ < 0){
             return profit_psi_stem_for<K>(psi_stem, opt_root_psi);
           },
           [&](double psi_stem, bool* ok) -> double {
-            if constexpr (benefit_link<K>() != BenefitLink::Identity) {
-              if (use_energy_balance_) {
-                if (ok != nullptr) *ok = false;
-                return 0.0;
-              }
-            }
             return dprofit_dpsi_stem<K>(psi_stem, opt_root_psi, ok);
           },
           opt_root_psi, psi_crit, basin_scan_cells(), collar_root_tol,
@@ -4363,7 +5040,18 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
           leaf_specific_conductance_max_ *
           (stem_curve_integral_deriv(psi_stem) * dpsistem_dpsi -
            stem_curve_integral_deriv(psi));
-      dprofit += -Rd_T * dT_dE * dE_dpsi;
+      if constexpr (benefit_link<K>() == BenefitLink::Identity) {
+        dprofit += -Rd_T * dT_dE * dE_dpsi;
+      } else {
+        // The same term under the link, A being exactly -R_d here, and
+        // ProfitMax's thermal cost beside it -- see dprofit_energy_balance_term.
+        // A log link has no derivative at a negative A; the NaN it returns
+        // reaches the sentinel below.
+        dprofit += benefit_link_deriv<K>(-R_d_) * (-Rd_T * dT_dE * dE_dpsi);
+        if constexpr (K == CostCurve::ProfitMax) {
+          dprofit -= thermal_cost_temp_deriv(Tleaf_here) * dT_dE * dE_dpsi;
+        }
+      }
     }
     return std::isfinite(dprofit) ? dprofit : 0.0;
   }
@@ -4432,9 +5120,9 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   if (!use_energy_balance_) {
     return base;
   }
-  return base + dprofit_energy_balance_term(ci, gc, g_ci, inv_atm, gc_const,
-                                            A_prime, dgc_dpsistem, dgc_dpsi,
-                                            dpsistem_dpsi, dT_dE, Tleaf_here);
+  return base + dprofit_energy_balance_term<K>(ci, gc, g_ci, inv_atm, gc_const,
+                                               A_prime, dgc_dpsistem, dgc_dpsi,
+                                               dpsistem_dpsi, dT_dE, Tleaf_here);
 }
 
 
@@ -4504,10 +5192,28 @@ inline double Leaf::cost_deriv(double psi_stem, double psi_upstream) {
     // The same, and here `-g'/g` collapses: with `g = 1 - psi/psi_crit` it is
     // exactly `1/(psi_crit - psi)`.
     C_prime = 1.0 / (psi_crit - psi_stem);
+  } else if constexpr (K == CostCurve::LeastCost) {
+    // Under the log link the cost is `+log W`, where `W = E_mol + beta*Vcmax_mol`
+    // is the weighted resource use of `leastcost_flux`. So dC/dpsi is `W'/W`, and
+    // `W' = kg_to_mol_h2o * kmax * f(psi)` -- the capacity term is constant in
+    // psi_stem at a fixed leaf temperature, so it survives only in the
+    // denominator. With the energy balance on, Vcmax moves with Tleaf, and that
+    // slope is taken in `dprofit_energy_balance_term` beside the benefit's own
+    // temperature path, not here.
+    //
+    // ⚠️ THE SIGN IS THE OPPOSITE OF SOX's AND JW26's, and that is the one place a
+    // ratio differs from a product. Theirs is `-g'/g` with `g` falling; this is
+    // `+W'/W` with `W` rising. Both are costs that grow with tension; they get
+    // there from different halves of the objective.
+    C_prime = kg_to_mol_h2o * leaf_specific_conductance_max_ *
+              stem_curve_integral_deriv(psi_stem) /
+              leastcost_flux(psi_stem, psi_upstream);
   } else if constexpr (K == CostCurve::ProfitMax) {
-    // C = [k(psi_s) - k(psi)]/k_span, so dC/dpsi = kmax*|f'|/k_span. The thermal
-    // term is constant in psi with the energy balance off, and the guard below
-    // refuses the case where it is not.
+    // C = [k(psi_s) - k(psi)]/k_span, so dC/dpsi = kmax*|f'|/k_span: the
+    // hydraulic half alone. The thermal half TC(Tleaf) is constant in psi with
+    // the energy balance off. With it on, Tleaf moves with E(psi) and the slope
+    // needs dT/dE*dE/dpsi, which the benefit's own temperature path needs too,
+    // so it is taken in dprofit_energy_balance_term beside that path, not here.
     const double f = proportion_of_conductivity(psi_stem);
     const double abs_fprime =
         f * (stem_c / stem_b) * pow(psi_stem / stem_b, stem_c - 1.0);
@@ -4542,7 +5248,10 @@ inline double Leaf::cost_deriv(double psi_stem, double psi_upstream) {
 template <Leaf::CostCurve K>
 constexpr bool Leaf::cost_reads_upstream() {
   if constexpr (K == CostCurve::CF77 || K == CostCurve::JS22 ||
-                K == CostCurve::CMax || K == CostCurve::TF24_floor) {
+                K == CostCurve::CMax || K == CostCurve::TF24_floor ||
+                K == CostCurve::LeastCost) {
+    // LeastCost: `log W` with `W = E_mol + beta*Vcmax_mol`, and E is measured
+    // from the upstream potential -- the only log-link cost here that is.
     return true;
   } else {
     static_assert(K == CostCurve::TF24 || K == CostCurve::SOX ||
@@ -4573,12 +5282,21 @@ inline double Leaf::cost_deriv_upstream(double psi_stem, double psi_upstream) {
     // lower limit, as for any integral of the price.
     (void)psi_stem;
     return -(CMax_a * psi_upstream + CMax_b);
-  } else {
-    static_assert(K == CostCurve::TF24_floor, "unhandled CostCurve");
+  } else if constexpr (K == CostCurve::TF24_floor) {
     // TF24's half reads psi_stem alone; the floor's lambda_o*E is CF77's arm.
     (void)psi_stem;
     return -(TF24_floor_lambda_o * leaf_specific_conductance_max_ *
              stem_curve_integral_deriv(psi_upstream));
+  } else {
+    static_assert(K == CostCurve::LeastCost, "unhandled CostCurve");
+    // `d(log W)/du = (dW/du)/W`, and `W` reads upstream only through E, so
+    // `dW/du = -kg_to_mol_h2o * kmax * G'(u)` -- CF77's arm with the kg-to-mol
+    // factor in place of the price, over the same `W` `cost_deriv` divides by.
+    // The capacity term is constant in both potentials and survives only in
+    // that denominator.
+    return -(kg_to_mol_h2o * leaf_specific_conductance_max_ *
+             stem_curve_integral_deriv(psi_upstream)) /
+           leastcost_flux(psi_stem, psi_upstream);
   }
 }
 
@@ -4627,7 +5345,16 @@ inline double Leaf::dprofit_dpsi_stem(double psi_stem, double psi_upstream,
       // collar version's two-term dE/dpsi collapses to this one.
       const double dE_dpsi =
           leaf_specific_conductance_max_ * stem_curve_integral_deriv(psi_stem);
-      dprofit += -Rd_T * dT_dE * dE_dpsi;
+      if constexpr (benefit_link<K>() == BenefitLink::Identity) {
+        dprofit += -Rd_T * dT_dE * dE_dpsi;
+      } else {
+        // As on the collar route: the link on the respiration term, and
+        // ProfitMax's thermal cost beside it.
+        dprofit += benefit_link_deriv<K>(-R_d_) * (-Rd_T * dT_dE * dE_dpsi);
+        if constexpr (K == CostCurve::ProfitMax) {
+          dprofit -= thermal_cost_temp_deriv(Tleaf_here) * dT_dE * dE_dpsi;
+        }
+      }
     }
     return std::isfinite(dprofit) ? dprofit : 0.0;
   }
@@ -4664,23 +5391,16 @@ inline double Leaf::dprofit_dpsi_stem(double psi_stem, double psi_upstream,
   if (!use_energy_balance_) {
     return base;
   }
-  if constexpr (benefit_link<K>() != BenefitLink::Identity) {
-    // ⚠️ REFUSED RATHER THAN APPROXIMATED. The energy-balance term below is a
-    // further contribution to dA/dpsi through Tleaf(E), so under a non-identity
-    // link it needs the same `h'` factor -- and it also carries cost-side pieces
-    // (ProfitMax's thermal term moves with Tleaf) that are not separated in it.
-    // Returning it unscaled would be plausible and wrong.
-    util::stop("dprofit/dpsi_stem with a non-identity benefit link and the "
-               "energy balance ON is not implemented: the temperature term needs "
-               "the same h'(A) factor and, for ProfitMax, its thermal cost term "
-               "separated out. Solve with the optimiser, or run with the energy "
-               "balance off.");
-  }
   // dgc_dpsi = 0 and dpsistem_dpsi = 1: the term derives dE/dpsi from those two,
   // and with the upstream potential fixed that reduces to kmax * f(psi_stem).
-  return base + dprofit_energy_balance_term(ci, gc, g_ci, inv_atm, gc_const,
-                                            A_prime, dgc_dpsistem, 0.0, 1.0,
-                                            dT_dE, Tleaf_here);
+  // The term applies the curve's link itself, so a non-identity curve's
+  // temperature path takes the same h'(A) as its explicit path above, and
+  // ProfitMax's thermal cost takes its own slope. An unscaled term added here
+  // would be plausible and wrong, which is why the term is templated on K
+  // rather than scaled by its callers.
+  return base + dprofit_energy_balance_term<K>(ci, gc, g_ci, inv_atm, gc_const,
+                                               A_prime, dgc_dpsistem, 0.0, 1.0,
+                                               dT_dE, Tleaf_here);
 }
 
 // Evaluate at a prescribed psi_stem rather than optimising one. See the
@@ -4795,15 +5515,33 @@ inline double Leaf::respiration_temp_deriv(double leaf_temp) {
   const double h = 1e-3;
   const double vc0 = vcmax_, jm0 = jmax_, ga0 = gamma_, ko0 = ko_,
                kc0 = kc_, rd0 = R_d_, km0 = km_, J0 = electron_transport_;
+  const double kimp0 = k_imp_eff_, krec0 = k_rec_eff_, func0 = functional_;
   update_temperature_dependent_params(leaf_temp + h);
   const double Rd_up = R_d_;
   update_temperature_dependent_params(leaf_temp - h);
   const double Rd_dn = R_d_;
   vcmax_ = vc0; jmax_ = jm0; gamma_ = ga0; ko_ = ko0; kc_ = kc0;
   R_d_ = rd0; km_ = km0; electron_transport_ = J0;
+  k_imp_eff_ = kimp0; k_rec_eff_ = krec0; functional_ = func0;
   return (Rd_up - Rd_dn) / (2.0 * h);
 }
 
+inline double Leaf::vcmax_temp_deriv(double leaf_temp) {
+  const double h = 1e-3;
+  const double vc0 = vcmax_, jm0 = jmax_, ga0 = gamma_, ko0 = ko_,
+               kc0 = kc_, rd0 = R_d_, km0 = km_, J0 = electron_transport_;
+  const double kimp0 = k_imp_eff_, krec0 = k_rec_eff_, func0 = functional_;
+  update_temperature_dependent_params(leaf_temp + h);
+  const double vc_up = vcmax_;
+  update_temperature_dependent_params(leaf_temp - h);
+  const double vc_dn = vcmax_;
+  vcmax_ = vc0; jmax_ = jm0; gamma_ = ga0; ko_ = ko0; kc_ = kc0;
+  R_d_ = rd0; km_ = km0; electron_transport_ = J0;
+  k_imp_eff_ = kimp0; k_rec_eff_ = krec0; functional_ = func0;
+  return (vc_up - vc_dn) / (2.0 * h);
+}
+
+template <Leaf::CostCurve K>
 inline double Leaf::dprofit_energy_balance_term(
     double ci, double gc, double g_ci, double inv_atm, double gc_const,
     double A_prime, double dgc_dpsistem, double dgc_dpsi, double dpsistem_dpsi,
@@ -4834,6 +5572,7 @@ inline double Leaf::dprofit_energy_balance_term(
   const double h = 1e-3;
   const double vcmax0 = vcmax_, jmax0 = jmax_, gamma0 = gamma_, ko0 = ko_,
                kc0 = kc_, Rd0 = R_d_, km0 = km_, J0 = electron_transport_;
+  const double kimp0 = k_imp_eff_, krec0 = k_rec_eff_, func0 = functional_;
   // ⚠️ Tleaf, NOT leaf_temp_. On the energy-balance path set_physiology
   // reinterprets leaf_temp_ as AIR temperature (Tair_ = leaf_temp_), so
   // differencing around it evaluates dA/dT at the wrong point entirely. The
@@ -4844,13 +5583,16 @@ inline double Leaf::dprofit_energy_balance_term(
 
   update_temperature_dependent_params(T0 + h);
   const double A_up = assim_colimited(ci);
+  const double vcmax_up = vcmax_;
   update_temperature_dependent_params(T0 - h);
   const double A_dn = assim_colimited(ci);
+  const double vcmax_dn = vcmax_;
 
   // Restore by assignment rather than by a third update call: exact, and cheaper
   // than re-running the Arrhenius block.
   vcmax_ = vcmax0; jmax_ = jmax0; gamma_ = gamma0; ko_ = ko0; kc_ = kc0;
   R_d_ = Rd0; km_ = km0; electron_transport_ = J0;
+  k_imp_eff_ = kimp0; k_rec_eff_ = krec0; functional_ = func0;
 
   const double A_T = (A_up - A_dn) / (2.0 * h);
 
@@ -4870,8 +5612,56 @@ inline double Leaf::dprofit_energy_balance_term(
           ? -gc * saturation_vapour_pressure_slope(Tleaf) / vpd_leaf_
           : 0.0;
 
-  return tau *
-         (A_T * gc * inv_atm + A_prime * dgc_dT * (ca_ - ci) * inv_atm) / g_ci;
+  // What the bracket holds is dA/dTleaf TOTAL, the implicit-function theorem
+  // applied to the supply==demand residual with Tleaf moving: the direct A_T and
+  // the deficit's dgc/dT combine into exactly this quotient, and tau turns it
+  // into dA/dpsi along the temperature path. It is purely benefit-side. Two
+  // costs read Tleaf, and both are taken below: ProfitMax's thermal cost, and
+  // LeastCost's capacity term, through `vcmax_`. No identity-link cost does.
+  //
+  // ⚠️ THE IDENTITY ARM IS TEXTUALLY WHAT THIS RETURN ALWAYS WAS, so the five
+  // additive curves keep their arithmetic operation for operation.
+  if constexpr (benefit_link<K>() == BenefitLink::Identity) {
+    (void)vcmax_up;
+    (void)vcmax_dn;
+    return tau *
+           (A_T * gc * inv_atm + A_prime * dgc_dT * (ca_ - ci) * inv_atm) / g_ci;
+  } else {
+    // Under a link, J = h(A(psi)) - C(psi) with A(psi) the TOTAL dependence,
+    // temperature path included, so this path takes the same single h'(A) the
+    // call site put on the explicit dci/dpsi path. There is no h'' in a first
+    // derivative: h'(A) is never itself differentiated (#124).
+    const double dA_dpsi_T =
+        tau * (A_T * gc * inv_atm + A_prime * dgc_dT * (ca_ - ci) * inv_atm) /
+        g_ci;
+    // A at the operating point. The block was restored by assignment above, so
+    // this is the value the call site's own `base` used.
+    const double A = assim_colimited_kernel(ci);
+    double term = benefit_link_deriv<K>(A) * dA_dpsi_T;
+    if constexpr (K == CostCurve::ProfitMax) {
+      // The thermal cost TC(Tleaf) reads the leaf temperature, so with the gate
+      // on it moves with psi through E: dTC/dpsi = TC'(Tleaf) * dT/dE * dE/dpsi.
+      // COST-SIDE, so it takes no h' factor -- the link sits on the benefit
+      // alone -- and its slope is the one lambda_ProfitMax reports.
+      term -= thermal_cost_temp_deriv(Tleaf) * tau;
+    } else if constexpr (K == CostCurve::LeastCost) {
+      // C = log W with W = E_mol + beta*Vcmax_mol (`leastcost_flux`), and
+      // `vcmax_` is the value at Tleaf, so with the gate on the capacity term
+      // moves with psi: d(log W)/dpsi gains beta*umol_to_mol*dVcmax/dT*tau/W.
+      // `cost_deriv` holds only the E half, at fixed temperature. Cost-side, so
+      // no h'. dVcmax/dT comes from the same two temperature-block evaluations
+      // as A_T. W is rebuilt from gc, since gc = gc_const*E; the block is
+      // restored, so `vcmax_` is the operating point's.
+      const double dVcmax_dT = (vcmax_up - vcmax_dn) / (2.0 * h);
+      const double W = gc / gc_const * kg_to_mol_h2o +
+                       LeastCost_beta * vcmax_ * umol_to_mol;
+      term -= LeastCost_beta * umol_to_mol * dVcmax_dT * tau / W;
+    } else {
+      (void)vcmax_up;
+      (void)vcmax_dn;
+    }
+    return term;
+  }
 }
 
 template <typename T>
@@ -4921,16 +5711,48 @@ inline std::array<double, Leaf::photo_temp_key_size> Leaf::photo_temp_key() cons
           R_d_25, rd_q10_intercept_, rd_q10_slope_,
           // The thermal cost reaches jmax_ above, so it belongs in the key. A
           // bool widens to 0.0/1.0, which compares by == exactly like the rest.
-          double(use_thermal_cost_), T50_, Tcrit_};
+          double(use_thermal_cost_), T50_, Tcrit_,
+          // ⚠️ THE THERMAL-DAMAGE GATE IS HERE AND ITS INPUTS ARE NOT, because
+          // set_physiology never serves this cache while the gate is on: A_, I_
+          // and D_ are state a caller moves every step. The gate itself must be
+          // here, or switching it off at unchanged drivers would be served the
+          // gate-on block. Drop that bypass and every thermal input has to join
+          // this list.
+          double(use_thermal_damage_)};
 }
 
 inline void Leaf::update_temperature_dependent_params(double leaf_temp) {
   // FIRST: the pack-reading kernels take the block's temperature from here, and
   // two of them are called below.
   photo_temp_ = leaf_temp;
-  vcmax_ =
-      peak_arrh_curve(vcmax_ha_, vcmax_25, leaf_temp, vcmax_H_d_, vcmax_d_S_);
-  jmax_ = peak_arrh_curve(jmax_ha_, jmax_25, leaf_temp, jmax_H_d_, jmax_d_S_);
+  if (use_thermal_damage_) {
+    // The ATLS layer (see use_thermal_damage_). One shift moves both capacity
+    // optima; the impairment midpoint has its own, sharing only the constitutive
+    // offset and the acclimation state.
+    const double A = std::max(A_, 0.0);
+    const double delta_topt = topt_offset_ + dTopt_max_ * A / (A + K_A_);
+    const double vcmax_dS =
+        d_S_shifted(vcmax_ha_, vcmax_H_d_, vcmax_d_S_, delta_topt);
+    const double jmax_dS = d_S_shifted(jmax_ha_, jmax_H_d_, jmax_d_S_, delta_topt);
+    vcmax_ = peak_arrh_curve(vcmax_ha_, vcmax_25, leaf_temp, vcmax_H_d_, vcmax_dS);
+    jmax_ = peak_arrh_curve(jmax_ha_, jmax_25, leaf_temp, jmax_H_d_, jmax_dS);
+    // Only the functional area photosynthesises, so BOTH capacities are scaled
+    // by F. The instantaneous, reversible deactivation is inside the peaked
+    // Arrhenius already; impairment and damage are lasting losses on top of it,
+    // so this is not a second count of it.
+    functional_ = std::min(std::max(1.0 - I_ - D_, damage_surv_floor), 1.0);
+    vcmax_ *= functional_;
+    jmax_ *= functional_;
+    k_imp_eff_ = k_imp_eff(leaf_temp, delta_impair_at(A));
+    k_rec_eff_ = k_rec_eff(leaf_temp);
+  } else {
+    vcmax_ =
+        peak_arrh_curve(vcmax_ha_, vcmax_25, leaf_temp, vcmax_H_d_, vcmax_d_S_);
+    jmax_ = peak_arrh_curve(jmax_ha_, jmax_25, leaf_temp, jmax_H_d_, jmax_d_S_);
+    k_imp_eff_ = 0.0;
+    k_rec_eff_ = 0.0;
+    functional_ = 1.0;
+  }
   // Sicangco et al. (2026) Eqn 12: irreversible PSII damage takes electron
   // transport down with it, so the peaked Arrhenius Jmax is scaled by (1 - TC).
   // Branched rather than multiplied by a gate-off zero, so the gate-off
@@ -4954,8 +5776,209 @@ inline void Leaf::update_temperature_dependent_params(double leaf_temp) {
   const double q10 =
       rd_q10_intercept_ - rd_q10_slope_ * (leaf_temp + 25.0) / 2.0;
   R_d_ = R_d_25 * std::pow(q10, (leaf_temp - 25.0) / 10.0);
+  if (use_thermal_damage_) {
+    // The layer's maintenance costs, added to the respiration above rather than
+    // folded into it, so the gate-off arithmetic is untouched. Standing costs for
+    // the acclimation held and for the repair capacity and protection kept, paid
+    // whether or not they are used; an activity cost for the repair done.
+    const double acclim_load = std::max(A_, 0.0);
+    const double protection = std::max(0.0, k_i_baseline_ - k_i_);
+    const double repair_flux = k_rec_eff_ * std::max(0.0, I_);
+    R_d_ += c_acclim_maint_ * acclim_load + c_repair_maint_ * k_rec_ +
+            c_protect_maint_ * protection + c_repair_flux_ * repair_flux;
+  }
   km_ = (kc_*umol_per_mol_to_Pa_)*(1 + (atm_o2_kpa_*kPa_to_Pa)/(ko_*umol_per_mol_to_Pa_));
   electron_transport_ = electron_transport();
+}
+
+// --- the ATLS thermal-damage layer ------------------------------------------
+
+
+inline double Leaf::logistic_(double x) { return damage::logistic(x); }
+
+inline double Leaf::softplus_(double x, double s) {
+  return damage::softplus(x, s);
+}
+
+// Inverts the peaked Arrhenius optimum Topt = H_d/(d_S - corr), corr =
+// R*ln(Ea/(H_d - Ea)), for the d_S that puts it delta_topt higher.
+//
+// ⚠️ THE OPTIMUM EXISTS ONLY FOR 0 < Ea < H_d, and both are settable members, so
+// that is refused here rather than left to return a NaN capacity.
+inline double Leaf::d_S_shifted(double Ea, double H_d, double d_S_base,
+                                double delta_topt) const {
+  if (!(Ea > 0.0 && H_d > Ea)) {
+    util::stop("the thermal-damage layer moves the peaked Arrhenius optimum, "
+               "which exists only for 0 < Ea < H_d; got Ea = " +
+               util::format_double(Ea) + ", H_d = " + util::format_double(H_d));
+  }
+  const double corr = gas_constant * std::log(Ea / (H_d - Ea));
+  const double Topt0_K = H_d / (d_S_base - corr);
+  const double Topt_K = std::min(std::max(Topt0_K + delta_topt, 250.0), 350.0);
+  return H_d / Topt_K + corr;
+}
+
+// The layer's helpers on this leaf: its parameters, packed for the templates in
+// `damage` above.
+inline damage::dyn_pars<double> Leaf::damage_pars() const {
+  damage::dyn_pars<double> p{};
+  p[damage::dp_impair_H] = impair_H_;
+  p[damage::dp_impair_Tmid] = impair_Tmid_;
+  p[damage::dp_k_i] = k_i_;
+  p[damage::dp_k_i_Ea] = k_i_Ea_;
+  p[damage::dp_k_i_Tref] = k_i_Tref_;
+  p[damage::dp_k_rec] = k_rec_;
+  p[damage::dp_m_rep] = m_rep_;
+  p[damage::dp_t_rep_cut] = t_rep_cut_;
+  p[damage::dp_k_mat] = k_mat_;
+  p[damage::dp_acclim_alpha] = acclim_alpha_;
+  p[damage::dp_acclim_beta] = acclim_beta_;
+  p[damage::dp_acclim_T] = acclim_T_;
+  p[damage::dp_acclim_s] = acclim_s_;
+  p[damage::dp_dTimpair_max] = dTimpair_max_;
+  p[damage::dp_K_A] = K_A_;
+  p[damage::dp_topt_offset] = topt_offset_;
+  return p;
+}
+
+// ⚠️ A NON-POSITIVE impair_H_ IS REFUSED: the switch would then turn OFF with
+// temperature. A NaN passes through rather than throwing, so an unset input
+// poisons the outputs where a test can see it.
+inline void Leaf::check_damage_pars() const {
+  if (impair_H_ <= 0.0) {
+    util::stop("the thermal-damage layer needs impair_H_ > 0, so that "
+               "impairment switches on with temperature; got impair_H_ = " +
+               util::format_double(impair_H_));
+  }
+}
+
+// A centred Arrhenius K through a saturating link: below the midpoint the switch
+// is ~K, a plain Arrhenius rise with activation energy impair_H_; above it the
+// switch saturates at one, which is what keeps the impairment rate bounded by
+// k_i_eff.
+//
+// ⚠️ ITS OWN PARAMETERS, AND NOTHING OF THE JMAX CURVE. Do not read jmax_H_d_ or
+// jmax_d_S_ here: that would make recalibrating the instantaneous photosynthetic
+// response silently move the impairment onset. The DEFAULTS equal those values:
+// (d_S*T - H_d)/(R*T) and (H_d/R)(1/Tmid - 1/T) are the same expression at
+// Tmid = H_d/d_S, differently associated.
+inline double Leaf::impair_switch(double leaf_temp, double delta_impair) const {
+  check_damage_pars();
+  return damage::impair_switch(leaf_temp, delta_impair, damage_pars());
+}
+
+// k_i_ at k_i_Tref_, on a centred Arrhenius. At k_i_Ea_ = 0 the argument is an
+// exact (signed) zero and exp of it exactly one, so the default IS k_i_.
+inline double Leaf::k_i_eff(double leaf_temp) const {
+  return damage::k_i_eff(leaf_temp, damage_pars());
+}
+
+inline double Leaf::k_imp_eff(double leaf_temp, double delta_impair) const {
+  return k_i_eff(leaf_temp) * impair_switch(leaf_temp, delta_impair);
+}
+
+inline double Leaf::delta_impair_at(double A) const {
+  return damage::delta_impair(A, damage_pars());
+}
+
+inline double Leaf::k_rec_eff(double leaf_temp) const {
+  return damage::k_rec_eff(leaf_temp, damage_pars());
+}
+
+inline std::vector<double> Leaf::damage_rates(double leaf_temp, double A,
+                                              double I, double D) const {
+  check_damage_pars();
+  const std::array<double, 3> r = damage::rates(leaf_temp, A, I, D, damage_pars());
+  return {r[0], r[1], r[2]};
+}
+
+inline void Leaf::check_damage_series(const std::vector<double>& times,
+                                      const std::vector<double>& leaf_temp) const {
+  const std::size_t n = times.size();
+  if (n == 0 || leaf_temp.size() != n) {
+    util::stop("damage_trajectory: times and leaf_temp must be non-empty and "
+               "the same length; got " + std::to_string(n) + " and " +
+               std::to_string(leaf_temp.size()));
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(times[i]) || !std::isfinite(leaf_temp[i]) ||
+        (i > 0 && !(times[i] > times[i - 1]))) {
+      util::stop("damage_trajectory: times must be finite and strictly "
+                 "increasing, and leaf_temp finite; failed at index " +
+                 std::to_string(i));
+    }
+  }
+  check_damage_pars();
+}
+
+inline std::vector<double> Leaf::damage_trajectory(
+    const std::vector<double>& times, const std::vector<double>& leaf_temp,
+    double A0, double I0, double D0) const {
+  check_damage_series(times, leaf_temp);
+  const std::size_t n = times.size();
+  std::vector<double> out(3 * n);
+  damage::trajectory<double>(times, leaf_temp, {A0, I0, D0}, damage_pars(),
+                             [&](std::size_t i, const std::array<double, 3>& y) {
+                               out[i] = y[0];
+                               out[n + i] = y[1];
+                               out[2 * n + i] = y[2];
+                             });
+  return out;
+}
+
+inline std::vector<std::string> Leaf::damage_par_names() const {
+  return {"impair_H_", "impair_Tmid_", "k_i_", "k_i_Ea_", "k_i_Tref_", "k_rec_",
+          "m_rep_", "t_rep_cut_", "k_mat_", "acclim_alpha_", "acclim_beta_",
+          "acclim_T_", "acclim_s_", "dTimpair_max_", "K_A_", "topt_offset_",
+          "A0", "I0", "D0"};
+}
+
+// One forward-mode pass per requested input, each seeding a dual number in that
+// parameter (or initial state) and running the same RK4 the double trajectory
+// runs. Exact for the discrete map, at the sub-step count the double run uses.
+inline std::vector<double> Leaf::damage_trajectory_gradient(
+    const std::vector<double>& times, const std::vector<double>& leaf_temp,
+    double A0, double I0, double D0, const std::vector<int>& which) const {
+  check_damage_series(times, leaf_temp);
+  const std::size_t n = times.size(), np = which.size();
+  const int n_inputs = damage::n_dyn_pars + 3;
+  std::vector<double> out(3 * n * np);
+  const damage::dyn_pars<double> base = damage_pars();
+  for (std::size_t k = 0; k < np; ++k) {
+    const int w = which[k];
+    if (w < 0 || w >= n_inputs) {
+      util::stop("damage_trajectory_gradient: input index " + std::to_string(w) +
+                 " is out of range; see damage_par_names()");
+    }
+    damage::dyn_pars<damage::Dual> p;
+    for (int j = 0; j < damage::n_dyn_pars; ++j) {
+      p[std::size_t(j)] = damage::Dual(base[std::size_t(j)], j == w ? 1.0 : 0.0);
+    }
+    const int s0 = w - damage::n_dyn_pars;
+    std::array<damage::Dual, 3> y0{damage::Dual(A0, s0 == 0 ? 1.0 : 0.0),
+                                   damage::Dual(I0, s0 == 1 ? 1.0 : 0.0),
+                                   damage::Dual(D0, s0 == 2 ? 1.0 : 0.0)};
+    damage::trajectory<damage::Dual>(
+        times, leaf_temp, y0, p,
+        [&](std::size_t i, const std::array<damage::Dual, 3>& y) {
+          for (int st = 0; st < 3; ++st) {
+            out[i + n * (std::size_t(st) + 3 * k)] = y[std::size_t(st)].d;
+          }
+        });
+  }
+  return out;
+}
+
+inline void Leaf::refuse_thermal_damage(const char* who) const {
+  if (use_thermal_damage_) {
+    util::stop(std::string(who) +
+               ": refused with use_thermal_damage_ on. The derivative surface "
+               "takes Vcmax, Jmax and R_d from the traits through a temperature "
+               "response that does not apply the thermal-damage layer -- its "
+               "shifted optimum, its functional fraction and its maintenance costs -- "
+               "so its rows would describe a different model from the one the "
+               "solve ran. Set use_thermal_damage_ to false.");
+  }
 }
 
 // Saturation vapour pressure es(T) in kPa (Tetens), T in deg C.
@@ -5001,11 +6024,22 @@ inline void Leaf::set_leaf_vpd(double leaf_temp) {
   vpd_leaf_ = std::max(d, vpd_leaf_min);
 }
 
-// Explicit leaf energy balance (#523): Tleaf = Tair + (Rn - lambda*E)*ra/(rho*cp).
+// Explicit leaf energy balance (#523, #97):
+// Tleaf = Tair + (Rn - lambda*E) / (rho*cp/ra + g_rad).
 // E is the hydraulically-pinned transpiration (kg H2O m^-2 s^-1), so lambda*E is
-// the latent heat flux (W m^-2) and (Rn - lambda*E) the sensible heat flux H.
+// the latent heat flux (W m^-2) and (Rn - lambda*E) is what sensible heat and the
+// leaf's own extra longwave emission carry away between them.
+//
+// ⚠️ THE ONE PLACE Tleaf AND dTleaf/dE ARE COMPUTED. Every energy-balance route
+// (the collar and stem first-order conditions, the thermal cost, the reported
+// Tleaf_) calls this; a second copy of the expression is how a radiative term
+// gets dropped from a derivative while the value keeps it.
 inline double Leaf::leaf_temp_from_E(double E, double* dT_dE) const {
-  const double Tleaf = Tair_ + (Rn_ - latent_heat_vap * E) * ra_ / vol_heat_cap_air;
+  // Sensible heat plus the linearised longwave, in one conductance. Written as a
+  // division by the SUM rather than a multiplication by ra_/vol_heat_cap_air so
+  // the radiative term cannot be dropped by editing one factor.
+  const double g_total = vol_heat_cap_air / ra_ + g_rad_;
+  const double Tleaf = Tair_ + (Rn_ - latent_heat_vap * E) / g_total;
   // Clamp to a physical range so an extreme (non-equilibrium) E cannot drive the
   // Arrhenius block non-finite; see leaf_temp_min/max in the header.
   const double clamped = std::min(std::max(Tleaf, leaf_temp_min), leaf_temp_max);
@@ -5017,7 +6051,7 @@ inline double Leaf::leaf_temp_from_E(double E, double* dT_dE) const {
     // E at all. The two branches share the one comparison above deliberately --
     // see the note on the declaration.
     *dT_dE = (clamped == Tleaf)
-                 ? -latent_heat_vap * ra_ / vol_heat_cap_air
+                 ? -latent_heat_vap / g_total
                  : 0.0;
   }
   return clamped;
@@ -5144,7 +6178,7 @@ inline void Leaf::setup_transpiration(double resolution) {
     const char* caller);
 
 inline double Leaf::eval_stem_curve(const odelia::interpolator::hermite_spline<double>& spline,
-                                    double u, double scale,
+                                    double u, double scale, double b, double c,
                                     const char* spline_name,
                                     const char* arg_name, const char* caller) {
   // scale == 1.0 is the production path (no stem_b rescale), and it must not pay
@@ -5155,9 +6189,14 @@ inline double Leaf::eval_stem_curve(const odelia::interpolator::hermite_spline<d
   // ⚠️ THIS CHECK IS THE ONLY ONE -- DO NOT DROP IT AS A DUPLICATE OF ONE INSIDE
   // odelia. eval extends linearly past the end knot and raises nothing, so
   // without this a stem potential off the table is answered with a straight line
-  // rather than refused.
+  // rather than with the closed form (above) or refused (below).
+  //
+  // The upper-end branch sits inside the out-of-range test, so the in-range
+  // path pays nothing for it. At the curve's (b, c) the closed form is already
+  // in psi, so no rescale applies to it.
   if (scale == 1.0) {
     if (u < spline.min() || u > spline.max()) {
+      if (u > spline.max()) return cumulative_vulnerability_integral_at(u, b, c);
       stem_curve_out_of_domain(spline.min(), spline.max(), u, u, scale,
                                spline_name, arg_name, caller);
     }
@@ -5165,6 +6204,7 @@ inline double Leaf::eval_stem_curve(const odelia::interpolator::hermite_spline<d
   }
   const double v = u / scale;
   if (v < spline.min() || v > spline.max()) {
+    if (v > spline.max()) return cumulative_vulnerability_integral_at(u, b, c);
     stem_curve_out_of_domain(spline.min(), spline.max(), u, v, scale,
                              spline_name, arg_name, caller);
   }
@@ -5201,17 +6241,28 @@ inline double Leaf::stem_curve_integral(double psi, const char* caller) const {
   // out of the division anyway; the branch is kept because stem_b_spline_ is 0.0
   // before the first setup_transpiration and 0/0 is not 1.
   const double s = (stem_b == stem_b_spline_) ? 1.0 : stem_b / stem_b_spline_;
-  return eval_stem_curve(transpiration_from_psi, psi, s,
+  return eval_stem_curve(transpiration_from_psi, psi, s, stem_b, stem_c,
                          "transpiration_from_psi (the cumulative xylem "
                          "conductivity integral G, psi in +MPa)",
                          "psi", caller);
 }
 
 inline double Leaf::stem_curve_integral_deriv(double psi) const {
+  // Past the table's upper end, G' is the curve itself -- the same
+  // exp(-(psi/b)^c) the knot slopes were given, so the slope is continuous at
+  // the join. The spline's own slope past its last knot is its extension, not
+  // the curve.
   if (stem_b == stem_b_spline_) {
+    if (psi > transpiration_from_psi.max()) {
+      return proportion_of_conductivity_kernel(psi);
+    }
     return transpiration_from_psi.slope(psi);
   }
-  return transpiration_from_psi.slope(psi / (stem_b / stem_b_spline_));
+  const double v = psi / (stem_b / stem_b_spline_);
+  if (v > transpiration_from_psi.max()) {
+    return proportion_of_conductivity_kernel(psi);
+  }
+  return transpiration_from_psi.slope(v);
 }
 
 // G^-1 on the table G is read from. G is the integral of a positive
@@ -5311,7 +6362,12 @@ inline double Leaf::invert_stem_curve(double w, bool converge) const {
 inline double Leaf::stem_curve_integral_inverse(double w, const char* caller, bool converge) const {
   const double s = (stem_b == stem_b_spline_) ? 1.0 : stem_b / stem_b_spline_;
   const double v = (s == 1.0) ? w : w / s;
-  if (v < stem_curve_at_psi_.front() || v > stem_curve_at_psi_.back()) {
+  if (v > stem_curve_at_psi_.back()) {
+    // Past the table, the inverse of the closed form eval_stem_curve reads
+    // there. Infeasible only at or past G(inf).
+    return invert_stem_curve_past_grid(w, caller);
+  }
+  if (v < stem_curve_at_psi_.front()) {
     stem_curve_out_of_domain(stem_curve_at_psi_.front(),
                              stem_curve_at_psi_.back(), w, v, s,
                              "the cumulative xylem conductivity integral G, "
@@ -5319,6 +6375,54 @@ inline double Leaf::stem_curve_integral_inverse(double w, const char* caller, bo
                              "E/K_max", caller);
   }
   return (s == 1.0) ? invert_stem_curve(v, converge) : s * invert_stem_curve(v, converge);
+}
+
+inline double Leaf::invert_stem_curve_past_grid(double w, const char* caller) const {
+  // G is strictly increasing and bounded by G(inf) = (b/c) Gamma(1/c), so a
+  // potential gives w exactly when w < G(inf). At or past it no stem potential
+  // carries the flow, which is the infeasibility the lower end reports too.
+  const double G_inf = cumulative_vulnerability_integral_limit(stem_b, stem_c);
+  const double lo_0 = vulnerability_psi_max(stem_b, stem_c);
+  if (!(w < G_inf)) {
+    stem_curve_out_of_domain(0.0, G_inf, w, w, 1.0,
+                             "the cumulative xylem conductivity integral G, "
+                             "INVERTED (G^-1, argument in E/K_max), whose upper "
+                             "end is its limit G(inf)",
+                             "E/K_max", caller);
+  }
+  // Bracket: G at P99 is below w (that is why we are here), and doubling from
+  // there reaches a potential above it, since G -> G(inf) > w. The bound on the
+  // doublings is a guard: each one squares exp(-(psi/b)^c) at least, so w within
+  // rounding of G(inf) is the only way to exhaust it.
+  double lo = lo_0, hi = 2.0 * lo_0;
+  int doublings = 0;
+  while (cumulative_vulnerability_integral_at(hi, stem_b, stem_c) < w) {
+    lo = hi;
+    hi *= 2.0;
+    if (++doublings > 60) {
+      stem_curve_out_of_domain(0.0, G_inf, w, w, 1.0,
+                               "the cumulative xylem conductivity integral G, "
+                               "INVERTED (G^-1, argument in E/K_max): w is "
+                               "within rounding of its limit G(inf)",
+                               "E/K_max", caller);
+    }
+  }
+  // Newton on the closed form, bisecting whenever a step leaves the bracket or
+  // the slope has underflowed. Off the hot path: reached only past P99.
+  double psi = 0.5 * (lo + hi);
+  for (int i = 0; i < 200; ++i) {
+    const double f = cumulative_vulnerability_integral_at(psi, stem_b, stem_c) - w;
+    if (f == 0.0) return psi;
+    if (f > 0.0) hi = psi; else lo = psi;
+    const double slope = proportion_of_conductivity_kernel(psi);
+    double next = slope > 0.0 ? psi - f / slope : 0.5 * (lo + hi);
+    if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
+    if (std::abs(next - psi) <= 4.0 * std::numeric_limits<double>::epsilon() * psi) {
+      return next;
+    }
+    psi = next;
+  }
+  return psi;
 }
 
 inline double Leaf::stem_curve_integral_inverse_deriv(double w) const {
@@ -5401,6 +6505,18 @@ inline double Leaf::transpiration_to_psi_stem(double transpiration_, double psi_
   // with opposite-sign arguments. Under one representation they are not, and the
   // negation is deleted (#25).
 
+  // Past the knot grid G flattens to its limit, and far enough out it is G(inf)
+  // to rounding, so every potential there maps to one value and G^-1 cannot say
+  // which. A zero flux has the stem AT the upstream potential, which is the
+  // answer the inverse would give if it could; any positive flux there needs
+  // more than G(inf) and is infeasible. Restricted to past the grid so that no
+  // in-grid point changes, and taken before the forward read, which it makes
+  // redundant.
+  if (transpiration_ == 0.0 &&
+      psi_upstream > vulnerability_psi_max(stem_b, stem_c)) {
+    return psi_upstream;
+  }
+
   double E_psi_stem = transpiration_/leaf_specific_conductance_max_ +
     stem_curve_integral(psi_upstream, "Leaf::transpiration_to_psi_stem, at psi_upstream");
 
@@ -5433,17 +6549,15 @@ inline double Leaf:: stom_cond_CO2(double psi_stem, double psi_upstream) {
 
 
 // biochemical photosynthesis model equations
-//ensure that units of PPFD_ actually correspond to something real.
-// electron trnansport rate based on light availability and vcmax assuming co-limitation hypothesis
+// Electron transport: the non-rectangular hyperbola in the electron flux the
+// ABSORBED light can drive, phi_J * APAR with APAR = alpha_PAR_ * PPFD_ (PPFD_ is
+// the intercepted photon flux, umol m^-2 s^-1). electron_transport_at is the same
+// expression on the parameter pack, in the same order.
 inline double Leaf::electron_transport() {
-
-
-
-  double electron_transport_ = (a * PPFD_ + jmax_ - sqrt(pow(a * PPFD_ + jmax_, 2) - 
-  4 * curv_fact_elec_trans * a * PPFD_ * jmax_)) / (2 * curv_fact_elec_trans); // check brackets are correct
-
-  // double electron_transport_ = (4*a*PPFD_)/sqrt(pow(4*a*PPFD_/jmax_,2)+ 1);
-    return electron_transport_;           
+  const double I = phi_J * alpha_PAR_ * PPFD_;
+  double electron_transport_ = (I + jmax_ - sqrt(pow(I + jmax_, 2) -
+  4 * curv_fact_elec_trans * I * jmax_)) / (2 * curv_fact_elec_trans);
+    return electron_transport_;
 }
 
 //calculate the rubisco-limited assimilation rate, returns umol m^-2 s^-1
@@ -5852,10 +6966,9 @@ inline double Leaf::lambda_ProfitMax(double psi_stem) {
     const double E = transpiration(psi_stem, supply_psi_soil_scalar());
     double dT_dE = 0.0;
     const double Tleaf = leaf_temp_from_E(E, &dT_dE);
-    const double span = T50_ - Tcrit_;
-    const double TC = thermal_cost_at(Tleaf);
-    // Sigmoid derivative: dTC/dT = r*TC*(1-TC), r = 2/(T50 - Tcrit).
-    thermal = (2.0 / span) * TC * (1.0 - TC) * dT_dE;
+    // The same slope dprofit_energy_balance_term subtracts from dJ/dpsi, so the
+    // reported lambda and the first-order condition cannot disagree about it.
+    thermal = thermal_cost_temp_deriv(Tleaf) * dT_dE;
   }
   return profitmax_A_max_ *
          (abs_fprime / (f * profitmax_k_span_) + thermal);
@@ -5921,14 +7034,18 @@ inline T Leaf::hydraulic_cost_TF_kernel(T psi_stem) const {
 // filling it from the members give the same numbers bit for bit -- which
 // test_leaf asserts on both temperature paths rather than leaving to the reader.
 
+// ⚠️ THE THREE RESPONSES BELOW DO NOT APPLY THE THERMAL-DAMAGE LAYER, so each
+// refuses a leaf with it on rather than disagree with the member it twins.
 template <typename T>
 inline T Leaf::vcmax_at(const leaf_pars<T>& pars) const {
+  refuse_thermal_damage("Leaf::vcmax_at");
   return peak_arrh_curve<T>(vcmax_ha_, pars[par_vcmax_25], photo_temp_,
                             vcmax_H_d_, vcmax_d_S_);
 }
 
 template <typename T>
 inline T Leaf::jmax_at(const leaf_pars<T>& pars) const {
+  refuse_thermal_damage("Leaf::jmax_at");
   T j = peak_arrh_curve<T>(jmax_ha_, pars[par_jmax_25], photo_temp_, jmax_H_d_,
                            jmax_d_S_);
   // The thermal cost reads leaf temperature and two thresholds, none of which is
@@ -5943,6 +7060,7 @@ inline T Leaf::jmax_at(const leaf_pars<T>& pars) const {
 
 template <typename T>
 inline T Leaf::respiration_at(const leaf_pars<T>& pars) const {
+  refuse_thermal_damage("Leaf::respiration_at");
   const double q10 =
       rd_q10_intercept_ - rd_q10_slope_ * (photo_temp_ + 25.0) / 2.0;
   return pars[par_R_d_25] *
@@ -5951,12 +7069,12 @@ inline T Leaf::respiration_at(const leaf_pars<T>& pars) const {
 
 template <typename T>
 inline T Leaf::electron_transport_at(const leaf_pars<T>& pars) const {
-  const T a_at = pars[par_a];
+  // alpha_PAR_ is a leaf property, not a slot, so it enters as a constant.
+  const T I = pars[par_phi_J] * alpha_PAR_ * pars[par_PPFD];
   const T jm = jmax_at<T>(pars);
   const T curv = pars[par_curv_fact_elec_trans];
-  const T q = pars[par_PPFD];
-  return (a_at * q + jm -
-          sqrt(pow(a_at * q + jm, 2) - 4 * curv * a_at * q * jm)) /
+  return (I + jm -
+          sqrt(pow(I + jm, 2) - 4 * curv * I * jm)) /
          (2 * curv);
 }
 
@@ -6298,6 +7416,7 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
                                              const SupplyDraw<S>& draw,
                                              const leaf_pars<S>& pars) const {
   using odelia::util::to_passive;
+  refuse_thermal_damage("Leaf::outputs_at");
   check_draw(to_passive(collar), draw);
   LeafOutputs<S> out;
   const std::size_t n = static_cast<std::size_t>(supply_n_layers());
@@ -6470,6 +7589,10 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
 template <Leaf::CostCurve K, class S>
 inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
                          double interior_curvature) {
+  // At every kind, not only where the kernels below are read: a bound is placed
+  // by the supply alone, but outputs_at refuses beside it, and a surface that
+  // answers at some kinds and not others is one a caller cannot plan around.
+  refuse_thermal_damage("Leaf::collar_at");
   check_draw(opt_root_psi_, draw);
   S collar = S(opt_root_psi_);
   switch (operating_point_kind_) {
@@ -6620,6 +7743,15 @@ inline double Leaf::thermal_cost_at(double leaf_temp) const {
                util::format_double(Tcrit_));
   }
   return 1.0 / (1.0 + std::exp(-(2.0 / span) * (leaf_temp - T50_)));
+}
+
+inline double Leaf::thermal_cost_temp_deriv(double leaf_temp) const {
+  if (!use_thermal_cost_) {
+    return 0.0;
+  }
+  const double span = T50_ - Tcrit_;
+  const double TC = thermal_cost_at(leaf_temp);
+  return (2.0 / span) * TC * (1.0 - TC);
 }
 
 // Profit functions
@@ -6779,6 +7911,38 @@ inline double Leaf::hydraulic_cost_TF24_floor(double psi_stem,
 }
 
 
+inline double Leaf::boundary_layer_cond_H2O() const {
+  if (!use_energy_balance_) {
+    return std::numeric_limits<double>::infinity();
+  }
+  // Molar density of air at air temperature, mol m^-3, as plantecophys's CMOLAR.
+  const double air_molar_density =
+      atm_kpa_ * kPa_to_Pa / (gas_constant * (Tair_ + C_to_K));
+  return bl_vapour_heat_ratio * air_molar_density / ra_;
+}
+
+inline double Leaf::stom_cond_stomatal_H2O() const {
+  const double g_total = stom_cond_H2O();
+  if (!use_energy_balance_) {
+    return g_total;
+  }
+  // A shut leaf has no conductance on either side of the series, and a
+  // non-finite one has nothing to subtract from.
+  if (!(g_total > 0.0) || !std::isfinite(g_total)) {
+    return g_total;
+  }
+  const double g_b = boundary_layer_cond_H2O();
+  if (!(g_total < g_b)) {
+    util::stop("no stomatal conductance exists at this operating point: the total "
+               "leaf-to-air conductance " + util::to_string(g_total) +
+               " mol m^-2 s^-1 is not below the boundary layer's own " +
+               util::to_string(g_b) + ", so the transpiration is more than the "
+               "boundary layer can carry at this deficit (ra_ = " +
+               util::to_string(ra_) + " s m^-1). Check wind_speed_ and d_.");
+  }
+  return 1.0 / (1.0 / g_total - 1.0 / g_b);
+}
+
 // See the declaration for why zero on the other curves is a statement about the
 // curve and not about the cost.
 inline double Leaf::shadow_cost() const {
@@ -6877,6 +8041,63 @@ inline double Leaf::profit_psi_stem_JW26(double psi_stem,
   set_leaf_states_rates_from_psi_stem(psi_stem, psi_upstream);
   hydraulic_cost_ = util::na_value;
   return assim_colimited_ * jw26_reduction(psi_stem);
+}
+
+
+// --- least-cost / cost-per-unit-carbon ---------------------------------------
+
+// `W = E_mol + beta*Vcmax_mol`, mol m^-2 s^-1. Both conversions in one place; see
+// the declaration for why beta's dimensionlessness requires them.
+//
+// ⚠️ IT READS `vcmax_`, NOT `vcmax_25`, so with the energy balance on it moves with
+// the solved leaf temperature -- which is what makes `A/W` the ratio Prentice et
+// al. minimise rather than a ratio to a reference-temperature capacity. `vcmax_` is
+// re-derived per candidate potential by `set_leaf_states_rates_from_psi_stem`, and
+// this function is called from `cost_deriv` (which does not call it) as well as
+// from the profit (which does). At a fixed leaf temperature the two agree because
+// `vcmax_` does not move. With the energy balance ON, both derivatives read it at
+// the leaf temperature they solved for, and `dprofit_energy_balance_term` adds
+// the capacity term's own motion with that temperature, which `cost_deriv` leaves
+// out.
+inline double Leaf::leastcost_flux(double psi_stem, double psi_upstream) {
+  return transpiration(psi_stem, psi_upstream) * kg_to_mol_h2o +
+         LeastCost_beta * vcmax_ * umol_to_mol;
+}
+
+
+// ⚠️ A RATIO, not a carbon flux, and `hydraulic_cost_` IS EXPLICITLY POISONED for
+// the reason `profit_psi_stem_SOX` gives: there is no subtracted cost on this
+// curve, so leaving the field alone reports whichever curve ran last on a reused
+// `Leaf`.
+inline double Leaf::profit_psi_stem_LeastCost(double psi_stem,
+                                              double psi_upstream) {
+  set_leaf_states_rates_from_psi_stem(psi_stem, psi_upstream);
+  hydraulic_cost_ = util::na_value;
+  return assim_colimited_ / leastcost_flux(psi_stem, psi_upstream);
+}
+
+
+// `lambda = A*kg_to_mol_h2o/W`. Reads the solved `assim_colimited_` rather than
+// re-deriving it, exactly as `lambda_SOX` does, so it means what it says only at
+// the potential the leaf was last evaluated at -- which is how the optimisers call
+// it, immediately after writing `profit_`.
+inline double Leaf::lambda_LeastCost(double psi_stem, double psi_upstream) {
+  if (!use_energy_balance_) {
+    return assim_colimited_ * kg_to_mol_h2o /
+           leastcost_flux(psi_stem, psi_upstream);
+  }
+  // With the energy balance on, W's capacity term moves with E through Tleaf,
+  // so dTheta/dE gains beta*Vcmax_mol'(T)*dT/dE -- the slope the first-order
+  // condition takes in dprofit_energy_balance_term, as lambda_ProfitMax carries
+  // its thermal term. Zero on the leaf-temperature clamp, where dT/dE is.
+  double dT_dE = 0.0;
+  const double Tleaf =
+      leaf_temp_from_E(transpiration(psi_stem, psi_upstream), &dT_dE);
+  double dW_dE = kg_to_mol_h2o;
+  if (dT_dE != 0.0) {
+    dW_dE += LeastCost_beta * umol_to_mol * vcmax_temp_deriv(Tleaf) * dT_dE;
+  }
+  return assim_colimited_ * dW_dE / leastcost_flux(psi_stem, psi_upstream);
 }
 
 
@@ -7127,6 +8348,7 @@ inline std::string Leaf::curve_name(int curve) {
     case CostCurve::JW26: return "JW26";
     case CostCurve::ProfitMax: return "ProfitMax";
     case CostCurve::TF24_floor: return "TF24_floor";
+    case CostCurve::LeastCost: return "LeastCost";
   }
   return "unknown";   // unreachable past the bounds check above
 }
@@ -7175,7 +8397,14 @@ inline std::vector<double> Leaf::dprofit_dpsi_stem_checked(double psi_stem) {
 // asserts, so a curve added to the enum without a link is a build failure.
 template <Leaf::CostCurve K>
 constexpr Leaf::BenefitLink Leaf::benefit_link() {
-  if constexpr (K == CostCurve::SOX || K == CostCurve::JW26) {
+  if constexpr (K == CostCurve::SOX || K == CostCurve::JW26 ||
+                K == CostCurve::LeastCost) {
+    // ⚠️ LeastCost REACHES THIS ARM BY A DIFFERENT ROUTE FROM THE OTHER TWO, and
+    // the difference is worth keeping in view. SOX and JW26 are products `A*g`,
+    // whose log is `log A + log g`; LeastCost is a RATIO `A/W`, whose log is
+    // `log A - log W`. A product's log-cost is `-log g` and a ratio's is `+log W`,
+    // so the sign lands in `cost_deriv` rather than here -- the link itself is the
+    // same `h = log`, and `h' = 1/A` is all this table reports.
     return BenefitLink::Log;
   } else if constexpr (K == CostCurve::ProfitMax) {
     return BenefitLink::Scaled;
@@ -7300,6 +8529,29 @@ inline void Leaf::check_cost_parameters() {
                  "`TF24_floor_lambda_o =` to leaf_solve() / leaf_batch(); got " +
                  util::to_string(TF24_floor_lambda_o));
     }
+  } else if constexpr (K == CostCurve::LeastCost) {
+    // ⚠️ AN INPUT WITH NO DEFAULT, for CF77's reason rather than TF24_floor's.
+    // There is no other curve this one collapses into, so an unset beta is not a
+    // silent substitution -- it is a NaN objective, whose argmax is a property of
+    // the bracket and looks entirely plausible. Refuse instead.
+    //
+    // ⚠️ AND STRICTLY POSITIVE, WHICH IS NOT THE SAME CHECK `TF24_floor_lambda_o`
+    // GETS. Zero is accepted there and is the reduction test's own case; here it
+    // deletes the capacity term, leaving `A/E` -- water-use efficiency, which rises
+    // without bound as transpiration goes to zero, so the optimiser returns the wet
+    // bound for every driver set. That is a degenerate objective rather than a
+    // limiting case of this one.
+    if (!std::isfinite(LeastCost_beta) || LeastCost_beta <= 0.0) {
+      util::stop("the LeastCost cost curve needs LeastCost_beta set: it is "
+                 "Prentice et al. (2014)'s beta, the unit cost of maintaining "
+                 "carboxylation capacity relative to that of transpiration, "
+                 "DIMENSIONLESS (both fluxes are weighed in mol m^-2 s^-1), "
+                 "strictly positive, and NA until you assign one -- "
+                 "set_physiology and set_traits never touch it. The published "
+                 "value is 146. Set `$LeastCost_beta` on the leaf, or pass "
+                 "`LeastCost_beta =` to leaf_solve() / leaf_batch(); got " +
+                 util::to_string(LeastCost_beta));
+    }
   } else {
     static_assert(K == CostCurve::TF24 || K == CostCurve::SOX ||
                   K == CostCurve::JW26 || K == CostCurve::ProfitMax,
@@ -7309,9 +8561,10 @@ inline void Leaf::check_cost_parameters() {
 
 
 // Which objective. ⚠️ These are NOT all the same kind of number: five are carbon
-// (TF24, CF77, JS22, CMax, TF24_floor) and two are products (see
-// `profit_psi_stem_SOX`). That is
-// already true of `profit_` across the optimisers and is not introduced here.
+// (TF24, CF77, JS22, CMax, TF24_floor), two are products (see
+// `profit_psi_stem_SOX`) and one is a ratio (see `profit_psi_stem_LeastCost`).
+// That is already true of `profit_` across the optimisers and is not introduced
+// here.
 template <Leaf::CostCurve K>
 inline double Leaf::profit_psi_stem_for(double psi_stem, double psi_upstream) {
   if constexpr (K == CostCurve::TF24) {
@@ -7328,6 +8581,8 @@ inline double Leaf::profit_psi_stem_for(double psi_stem, double psi_upstream) {
     return profit_psi_stem_JW26(psi_stem, psi_upstream);
   } else if constexpr (K == CostCurve::TF24_floor) {
     return profit_psi_stem_TF24_floor(psi_stem, psi_upstream);
+  } else if constexpr (K == CostCurve::LeastCost) {
+    return profit_psi_stem_LeastCost(psi_stem, psi_upstream);
   } else {
     static_assert(K == CostCurve::ProfitMax, "unhandled CostCurve");
     return profit_psi_stem_ProfitMax(psi_stem, psi_upstream);
@@ -7365,6 +8620,8 @@ inline double Leaf::lambda_for(double psi_stem, double psi_upstream) {
     // only one of the two potentials.
     (void)psi_upstream;
     return lambda_TF24_floor(psi_stem);
+  } else if constexpr (K == CostCurve::LeastCost) {
+    return lambda_LeastCost(psi_stem, psi_upstream);
   } else {
     static_assert(K == CostCurve::ProfitMax, "unhandled CostCurve");
     (void)psi_upstream;
@@ -7467,10 +8724,12 @@ inline double Leaf::lambda_for(double psi_stem, double psi_upstream) {
 // ProfitMax -- the one curve needing setup before the search, and the one whose
 //   degenerate exit ZEROES where every other curve EVALUATES. See the branch below.
 //
-// TF24_floor -- TF24's cost plus CF77's price, and the only curve here whose marginal
-//   cost of water does NOT vanish at the wet end. That is the whole reason it
-//   exists: every conductance-loss curve in this package has `lambda -> 0` as the
-//   drop closes, which prices water as free precisely when it is abundant.
+// TF24_floor -- TF24's cost plus CF77's price, and the only DIFFERENCE objective
+//   here whose marginal cost of water does NOT vanish at the wet end (LeastCost's
+//   does not either, through its capacity term; see `lambda_LeastCost`). That is
+//   the whole reason it exists: every conductance-loss curve in this package has
+//   `lambda -> 0` as the drop closes, which prices water as free precisely when
+//   it is abundant.
 //   ⚠️ IT IS TF24 AT `lambda_o = 0`, AT TF24's OWN TRAITS. There is no second
 //   hydraulic parameter: the cost reads `TF24_cost_scale` and `TF24_beta2`, so the
 //   two curves differ by exactly one restriction and `lambda_o` is the whole of
@@ -7538,29 +8797,19 @@ inline void Leaf::optimise_psi_stem_single() {
   const auto objective = [&](double psi_stem) {
     return profit_psi_stem_for<K>(psi_stem, psi_soil);
   };
-  // ⚠️ WHETHER A DERIVATIVE EXISTS IS DECIDED HERE, NOT BY CATCHING A THROW. Under
-  // a non-identity benefit link with the energy balance on, dJ/dpsi is REFUSED
-  // rather than approximated (the temperature term needs the same h'(A) factor).
-  // The OBJECTIVE is still perfectly well defined there, so that configuration
-  // keeps the bracket-width refinement instead of losing the solve to an
-  // exception -- letting the refusal fire from inside the optimiser turned 3236 of
-  // 4608 golden rows into throws.
   // ONE solver, and NO caller-side branch on whether a derivative exists: the
-  // derivative closure reports that itself through `ok`, and the solver's own
-  // fallback handles it. A non-identity link with the energy balance on refuses
-  // dJ/dpsi (the temperature term needs the same h'(A) factor), and that refusal is
-  // reported rather than thrown, because the OBJECTIVE is perfectly well defined
-  // there. `basin_scan_cells()` already returns a scan whenever the gate is on,
-  // which is exactly when the fallback needs one.
+  // derivative closure reports that itself, through `ok` at a shut-down or
+  // compensation-point exit and as a non-finite value where a log link meets a
+  // non-positive A, and the solver's own fallback handles it. Every curve has
+  // dJ/dpsi on both gate states, so nothing here decides by curve. ⚠️ A
+  // derivative that does not exist must be REPORTED that way, never thrown: the
+  // objective is well defined wherever the derivative is not, and a throw from
+  // inside the optimiser loses the whole solve. `basin_scan_cells()` returns a
+  // scan whenever the gate is on, which is where the objective can carry two
+  // basins.
   opt_psi_stem_ = util::maximise_over_closed_interval_foc(
       objective,
       [&](double psi_stem, bool* ok) -> double {
-        if constexpr (benefit_link<K>() != BenefitLink::Identity) {
-          if (use_energy_balance_) {
-            if (ok != nullptr) *ok = false;
-            return 0.0;
-          }
-        }
         return dprofit_dpsi_stem<K>(psi_stem, psi_soil, ok);
       },
       psi_soil, psi_crit, basin_scan_cells(), collar_root_tol,

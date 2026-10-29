@@ -66,7 +66,14 @@
 ##' @param TF24_floor_lambda_o the `TF24_floor` curve's price of water as transpiration
 ##'   goes to zero, same units, one per observation. Only `model = "TF24_floor"`
 ##'   reads it; `NA_real_` (the default) leaves it unset. That curve refuses to
-##'   solve without one, deliberately: at zero it is `JS22`.
+##'   solve without one, deliberately: at zero it is `TF24`.
+##' @param LeastCost_beta least-cost theory's unit-cost ratio (Prentice et al.
+##'   2014's beta): the cost of maintaining carboxylation capacity relative to the
+##'   cost of transpiration, dimensionless, one per observation. Only
+##'   `model = "LeastCost"` reads it; `NA_real_` (the default) leaves it unset.
+##'   That curve refuses to solve without one, and refuses zero as well, since at
+##'   zero the capacity term vanishes and what is left is water-use efficiency,
+##'   which rises without bound as transpiration falls. The published value is 146.
 ##'
 ##' @return A `leaf_batch` object.
 ##' @seealso [leaf_gradient_batch()], [leaf_gradient()] for one observation.
@@ -89,7 +96,8 @@ leaf_batch <- function(psi_soil,
                        control = leaf_control(),
                        supply = leaf_supply_multilayer(),
                        CF77_lambda = NA_real_,
-                       TF24_floor_lambda_o = NA_real_) {
+                       TF24_floor_lambda_o = NA_real_,
+                       LeastCost_beta = NA_real_) {
   if (!inherits(traits, "leaf_traits")) {
     stop("`traits` must come from leaf_traits()", call. = FALSE)
   }
@@ -180,6 +188,7 @@ leaf_batch <- function(psi_soil,
          resistance = if (shared) resistance[[1L]] else resistance,
          CF77_lambda = CF77_lambda,
          TF24_floor_lambda_o = TF24_floor_lambda_o,
+         LeastCost_beta = LeastCost_beta,
          theta_nrow = if (shared) 1L else n),
     class = "leaf_batch")
 }
@@ -322,11 +331,13 @@ leaf_gradient_batch <- function(batch,
   # the leaf again per call -- so the value used to validate `pars` and the value
   # the solve uses still have one source.
   single <- identical(batch$supply_kind, "single")
+  # The thermal-damage inputs are parameters only with the batch leaf's gate on.
+  damage <- isTRUE(batch$leaf$use_thermal_damage_)
   par_names <- .gradient_par_names()
   if (is.null(pars)) {
-    pars <- .gradient_available_pars(single)
+    pars <- .gradient_available_pars(single, model, damage)
   }
-  .gradient_check_pars(pars, single, model)
+  .gradient_check_pars(pars, single, model, damage)
 
   # ⚠️ THE SAME ROUTE OBJECT `leaf_gradient()` USES, on the batch's own leaf, so
   # the two entry points cannot disagree about which model a name selects, which
@@ -354,7 +365,7 @@ leaf_gradient_batch <- function(batch,
     } else if (!inherits(traits, "leaf_traits")) {
       stop("`traits` must come from leaf_traits()", call. = FALSE)
     }
-    theta <- .gradient_theta_matrix(batch, traits)
+    theta <- .gradient_theta_matrix(batch, traits, damage)
   } else {
     if (!is.null(traits)) {
       stop("`traits` and `theta` both say where the gradient is taken; pass one ",
@@ -467,7 +478,7 @@ leaf_gradient_batch <- function(batch,
 # The two non-traits are `leaf_specific_conductance_max` and, on the
 # single-potential path only, `resistance`: both are DRIVERS that a calibration
 # fits like traits (#44), so the enumeration carries them after the traits.
-.gradient_theta_matrix <- function(batch, traits) {
+.gradient_theta_matrix <- function(batch, traits, damage = FALSE) {
   nr <- batch$theta_nrow
   par_names <- .gradient_par_names()
   m <- matrix(NA_real_, nrow = nr, ncol = length(par_names),
@@ -495,6 +506,14 @@ leaf_gradient_batch <- function(batch,
   # use.
   m[, "CF77_lambda_"] <- batch$CF77_lambda
   m[, "TF24_floor_lambda_o"] <- batch$TF24_floor_lambda_o
+  m[, "LeastCost_beta"] <- batch$LeastCost_beta
+  # The thermal-damage inputs, off the batch's leaf, when its gate is on; NA (and
+  # unread) otherwise. One row for every observation: pass `theta` to give each
+  # observation its own state.
+  if (damage) {
+    dv <- .gradient_damage_values(batch$leaf)
+    m[, names(dv)] <- rep(dv, each = nr)
+  }
   # Handed over WITHOUT names, as `leaf_gradient_batch()` documents: C++ indexes by
   # position, and the check there rejects any colnames that are not this order.
   unname(m)

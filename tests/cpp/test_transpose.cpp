@@ -260,8 +260,20 @@ void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
   const std::size_t nin = pl::n_pars + 3 * layers;
   const std::size_t nout = 4 + layers;
   std::vector<double> u(nin), v(nout);
-  for (double& x : u) x = rng.next();
+  // ⚠️ DRAWN IN A FIXED ORDER, NOT SLOT ORDER: the parameters before the
+  // thermal-damage layer, then PPFD, the soil state and v, and the layer's
+  // slots last. Drawn in slot order, every parameter added to the enumeration
+  // reweights every term, so the check moves with the parameter count rather
+  // than with the leaf. That is not academic: the kmax row disagrees between the
+  // two directions by up to 1e-4 relative, small enough to weigh ~1e-11 in the
+  // pairing as drawn here, and the layer's sixteen extra slots once reshuffled
+  // it to 7e-11, over the limit on Linux. The layer is off in this sweep, so its
+  // rows are exact zeros and their draws change nothing.
+  for (int k = 0; k < pl::par_A; ++k) u[k] = rng.next();
+  u[pl::par_PPFD] = rng.next();
+  for (std::size_t k = pl::n_pars; k < nin; ++k) u[k] = rng.next();
   for (double& x : v) x = rng.next();
+  for (int k = pl::par_A; k < pl::par_PPFD; ++k) u[k] = rng.next();
 
   const Arm arm = arm_of(l.operating_point_kind());
   if (arm == Arm::Refuses) return;
