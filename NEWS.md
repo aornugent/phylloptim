@@ -1,3 +1,25 @@
+# phylloptim 0.15.4
+
+Three defects the model registry (#166) surfaced, each found by checking an equation's base-R replica against the package.
+
+## The collar route reports the seated curve's lambda_emergent
+
+`lambda_emergent` is the marginal cost of water the operating point implies, `dC/dE`, and it is what puts every cost curve on one axis. The stem routes have always reported each curve's own. The collar route reported `marginal_cost_water_multilayer()` after every solve and every prescribed evaluation: TF24's lambda with the series correction for the soil-to-collar path, whatever curve was seated. CF77 at a price of 1e5, whose lambda is that price by construction, read 1.05e6.
+
+It is now `lambda_collar_for<K>()`, the same chain rule for every curve. The collar is the free variable, so uptake gives `dE/dpsi_r = S`, and the part of a cost that reads `psi_stem` alone takes the series factor `1 + kmax f(psi_r)/S`. The part that reads the potentials only through E (CF77's price, LeastCost's `log W`, the floor's `lambda_o E`, ProfitMax's thermal term) carries over unchanged. JS22 and CMax, which read the collar explicitly, add `dC/dpsi_r` over S. `test_collar_lambda_emergent_is_dA_dE` checks every curve, on one- and three-layer supplies, against `dA/dE` taken along the collar path at an interior optimum, where the first-order condition makes the two equal for every link. 26 interior optima agree to 1.8e-6. On the old reporting 23 of them fail, CF77 by up to 146%.
+
+**What moves:** `lambda_emergent` (and the last element of `operating_point_values()`) on the collar route, for every curve but TF24. TF24's row is the function it always called, so its value is bit-identical, as are all four golden files. Nothing in the solve reads `lambda_emergent`.
+
+## Four bound fields nothing wrote are no longer bound
+
+`count`, `psi_stem` (the member, not `opt_psi_stem_`), `opt_ci_` and `f_r` were bound as R fields and written by nothing in the C++. `count` and `psi_stem` were never initialised, so a read returned whatever the memory held (about 3e-314 measured); `opt_ci_` was always `NA` and `f_r` always empty. They are unbound here. The members stay, because plant's own bindings name them (moving a bound member breaks plant's generated glue); `count` and `psi_stem` are now initialised to `NA`, so a read through plant's bindings is defined.
+
+## The slope of the saturation curve is the exact derivative
+
+`saturation_vapour_pressure_slope()` used FAO-56's quoted numerator 4098, which rounds `17.27 * 237.3 = 4098.171`, so the slope was 4.2e-5 low. The slope reaches the energy-balance first-order condition through `dgc/dT = -gc * Delta(Tleaf) / D_leaf`, and there it made the analytic `dprofit/dpsi_stem` miss a central difference of the profit by 2e-6 to 2e-5 relative at every step from 1e-2 to 1e-6 MPa: a plateau rather than the difference's V. The numerator is now the product of the two Tetens coefficients, and the same comparison falls to the difference's own floor (median 1.5e-8 over 34 points at a step of 3e-4 MPa). `test_leaf.cpp` now makes it with the energy balance on, where only the gate-off case was checked before; on the old constant it fails.
+
+**What moves:** the energy-balance rows of `psi_stem_optima.tsv` and nothing else. 244 of its 5760 rows change, all with the energy balance on, none in status or kind: the argmax by at most 1.2e-5 relative, profit by at most 5.6e-10. `operating_points.tsv`, `primitives.tsv` and `gradient_golden.tsv` are bit-identical. With the gate off the slope is never read.
+
 # phylloptim 0.15.3
 
 ## The root curve's derivative answers past its dry end

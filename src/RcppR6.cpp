@@ -437,15 +437,6 @@ void Leaf__profit___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, doubl
 }
 
 // [[Rcpp::export]]
-double Leaf__psi_stem__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
-  return obj_->psi_stem;
-}
-// [[Rcpp::export]]
-void Leaf__psi_stem__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value) {
-  obj_->psi_stem = value;
-}
-
-// [[Rcpp::export]]
 double Leaf__CF77_lambda___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
   return obj_->CF77_lambda_;
 }
@@ -563,15 +554,6 @@ void Leaf__opt_root_psi___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_,
 }
 
 // [[Rcpp::export]]
-double Leaf__opt_ci___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
-  return obj_->opt_ci_;
-}
-// [[Rcpp::export]]
-void Leaf__opt_ci___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value) {
-  obj_->opt_ci_ = value;
-}
-
-// [[Rcpp::export]]
 double Leaf__E_up___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
   return obj_->E_up_;
 }
@@ -587,15 +569,6 @@ double Leaf__assim_max___get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) 
 // [[Rcpp::export]]
 void Leaf__assim_max___set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value) {
   obj_->assim_max_ = value;
-}
-
-// [[Rcpp::export]]
-double Leaf__count__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
-  return obj_->count;
-}
-// [[Rcpp::export]]
-void Leaf__count__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value) {
-  obj_->count = value;
 }
 
 // [[Rcpp::export]]
@@ -992,15 +965,6 @@ std::vector<double> Leaf__r_R_V_sum__get(phylloptim::RcppR6::RcppR6<phylloptim::
 // [[Rcpp::export]]
 void Leaf__r_R_V_sum__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, std::vector<double> value) {
   obj_->roots_.network_.r_R_V_sum = value;
-}
-
-// [[Rcpp::export]]
-std::vector<double> Leaf__f_r__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
-  return obj_->f_r;
-}
-// [[Rcpp::export]]
-void Leaf__f_r__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, std::vector<double> value) {
-  obj_->f_r = value;
 }
 
 // [[Rcpp::export]]

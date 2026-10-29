@@ -205,7 +205,6 @@ Leaf:
     transpiration_: {type: double, access: field}
     soil_consumption_: {type: "std::vector<double>", access: field}
     profit_: {type: double, access: field}
-    psi_stem: {type: double, access: field}
     CF77_lambda_: {type: double, access: field}
     # Turns the Medlyn (2011) soil-moisture factor on for the CF77 price, so the
     # marginal value of water becomes `CF77_lambda_ / beta(theta_)` instead of the
@@ -262,10 +261,8 @@ Leaf:
     hydraulic_cost_: {type: double, access: field}
     opt_psi_stem_: {type: double, access: field}
     opt_root_psi_: {type: double, access: field}
-    opt_ci_: {type: double, access: field}
     E_up_: {type: double, access: field}
     assim_max_: {type: double, access: field}
-    count: {type: double, access: field}
     # The leaf's OWN temperature at the operating point, deg C. Bound here rather
     # than in the energy-balance block below, because that block is the PM path's
     # configuration and this is an output on both paths -- off the PM path it is a
@@ -359,7 +356,6 @@ Leaf:
     r_R_H_min: {type: "std::vector<double>", access: field, name_cpp: "roots_.network_.r_R_H_min"}
     r_R_V: {type: "std::vector<double>", access: field, name_cpp: "roots_.network_.r_R_V"}
     r_R_V_sum: {type: "std::vector<double>", access: field, name_cpp: "roots_.network_.r_R_V_sum"}
-    f_r: {type: "std::vector<double>", access: field}
 
     # --- the closed-form method's instrumentation -----------------------------
     # Whether the LAST optimise() fell back from the closed form to the exact

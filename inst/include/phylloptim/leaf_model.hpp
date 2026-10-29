@@ -692,7 +692,11 @@ public:
   double transpiration_;
   std::vector<double> soil_consumption_;
   double profit_;
-  double psi_stem;
+  // ⚠️ KEPT ONLY BECAUSE plant's RcppR6 bindings name it (hazard 7), and nothing
+  // in this package writes or reads it. Initialised so a read through those
+  // bindings is a defined NA rather than whatever the memory held; this package
+  // no longer binds it.
+  double psi_stem = util::na_value;
   // ⚠️ THE ONLY TWO INPUTS IN THIS BLOCK, and the reason they carry their default
   // here rather than in setup_clean_leaf(). Everything around them is derived
   // state or a solved output, which setup_clean_leaf() exists to wipe; these are
@@ -1259,8 +1263,14 @@ public:
 
   
   double opt_psi_stem_;
+  // Kept for plant's bindings (hazard 7) and set to NA by setup_clean_leaf;
+  // nothing writes it, and the operating point's ci is ci_.
   double opt_ci_;
-  double count;
+  // ⚠️ KEPT ONLY BECAUSE plant's RcppR6 bindings name it (hazard 7), and nothing
+  // in this package writes or reads it. Initialised so a read through those
+  // bindings is a defined NA rather than whatever the memory held; this package
+  // no longer binds it.
+  double count = util::na_value;
   double E_up_;
 
   // --- Medlyn stomatal-conductance model (from develop #450) ------------------
@@ -1340,6 +1350,10 @@ public:
   static constexpr int photo_temp_key_size = 23;
   std::array<double, photo_temp_key_size> photo_temp_cache_key_{};
   std::array<double, photo_temp_key_size> photo_temp_key() const;
+  // ⚠️ KEPT ONLY BECAUSE plant's RcppR6 bindings name it (hazard 7), and nothing
+  // in this package writes or reads it. Initialised so a read through those
+  // bindings is a defined NA rather than whatever the memory held; this package
+  // no longer binds it.
   std::vector<double> f_r;
   // TODO: move into environment?
 
@@ -2211,6 +2225,8 @@ public:
                                                     double psi_upstream);
   template <CostCurve K> double lambda_for(double psi_stem,
                                            double psi_upstream);
+  // The collar route's lambda_emergent, for the seated curve. See the definition.
+  template <CostCurve K> double lambda_collar_for();
 
   template <CostCurve K>
   double evaluate_psi_stem(double target_psi_stem);
@@ -4684,11 +4700,10 @@ inline void Leaf::find_root_collar_psi_for(){
     // TF24's profit at SOX's argmax, which is finite, plausible, and always a
     // little below TF24's own maximum. Two of these survived the templating pass.
     profit_ = profit_psi_stem_for<K>(opt_psi_stem_, opt_root_psi);
-    // Reported on the same axis as the single-layer solvers, using the MULTI-LAYER
-    // lambda: the collar is the free variable here, so the marginal cost carries
-    // the series-resistance correction for the soil-to-collar path that the
-    // single-layer form has no term for.
-    lambda_emergent_ = marginal_cost_water_multilayer();
+    // Reported on the same axis as the single-layer solvers: the collar is the
+    // free variable here, so the marginal cost carries the series-resistance
+    // correction for the soil-to-collar path. For the SEATED curve, `<K>`.
+    lambda_emergent_ = lambda_collar_for<K>();
 
     if(!std::isfinite(profit_)){
         util::stop_infeasible("collar_solve", "non-finite profit; opt_psi_stem_=" + util::to_string(opt_psi_stem_) +
@@ -4872,7 +4887,7 @@ inline double Leaf::profit_at_collar_psi(double target_opt_root_psi,
     profit_ = profit_psi_stem_for<K>(opt_psi_stem_, opt_root_psi);
     // Well defined off the optimum too: dC/dE is a property of the point, not of
     // its being stationary. At a prescribed point it simply is not equal to dA/dE.
-    lambda_emergent_ = marginal_cost_water_multilayer();
+    lambda_emergent_ = lambda_collar_for<K>();
     // Not an optimum of any kind: the collar potential came from the caller. On
     // this path a non-zero dprofit is the answer (TF24f's acclimation rate), not
     // a residual to be checked against zero.
@@ -6000,9 +6015,18 @@ inline double Leaf::saturation_vapour_pressure(double temp) const {
   return 0.6108 * exp(17.27 * temp / (temp + 237.3));
 }
 
-// Slope of the saturation vapour pressure curve Delta(T) in kPa K^-1, T in deg C.
+// Slope of the saturation vapour pressure curve Delta(T) in kPa K^-1, T in deg C:
+// the derivative of the Tetens form above, so its numerator is the product of
+// that form's two coefficients.
+//
+// ⚠️ KEEP IT THE EXACT DERIVATIVE, NOT FAO-56's QUOTED 4098. That constant rounds
+// 17.27 * 237.3 = 4098.171, 4.2e-5 low, and the slope reaches the energy-balance
+// first-order condition through dgc/dT = -gc * Delta(Tleaf) / D_leaf. Rounded, the
+// analytic dprofit/dpsi_stem missed a central difference of the profit by 2e-6 to
+// 2e-5 relative at every step size; exact, it agrees to the difference's own floor.
 inline double Leaf::saturation_vapour_pressure_slope(double temp) const {
-  return 4098.0 * saturation_vapour_pressure(temp) / ((temp + 237.3) * (temp + 237.3));
+  return (17.27 * 237.3) * saturation_vapour_pressure(temp) /
+         ((temp + 237.3) * (temp + 237.3));
 }
 
 // The deficit that drives diffusion out of the leaf (#7).
@@ -8673,6 +8697,74 @@ inline double Leaf::lambda_for(double psi_stem, double psi_upstream) {
     static_assert(K == CostCurve::ProfitMax, "unhandled CostCurve");
     (void)psi_upstream;
     return lambda_ProfitMax(psi_stem);
+  }
+}
+
+
+// lambda_emergent on the COLLAR route: dC/dE along the path the solve moves on,
+// where the collar psi_r is the free variable and psi_stem follows it. Uptake
+// gives dE/dpsi_r = S, and the stem path E = kmax [G(psi_stem) - G(psi_r)] gives
+// dpsi_stem/dpsi_r = (S + kmax f(psi_r)) / (kmax f(psi_stem)). So, for the part
+// of a cost that reads psi_stem alone, with its stem-route lambda C_s/(kmax f),
+//
+//     lambda = lambda_stem * (1 + kmax f(psi_r) / S),
+//
+// the series correction. The part of a cost that reads the potentials only
+// through E (CF77's lambda*E, LeastCost's log W, the floor's lambda_o*E,
+// ProfitMax's thermal term) moves with E directly, so its lambda carries over
+// unchanged. A cost that reads the collar explicitly as well (JS22's drop,
+// CMax's lower limit) adds its partial dC/dpsi_r over S.
+//
+// ⚠️ THIS USED TO BE marginal_cost_water_multilayer() FOR EVERY CURVE, which is
+// the TF24 row of this table: every collar solve reported TF24's lambda whatever
+// it had maximised. CF77 at a price of 1e5 reported 1.05e6 where its emergent
+// lambda is, by construction, its price. TF24's row is still that function, so
+// its number is bit-identical. The check that every row is right is that at an
+// interior optimum lambda_emergent equals dA/dE along the collar path, for every
+// curve (test_collar_lambda_emergent_is_dA_dE).
+template <Leaf::CostCurve K>
+inline double Leaf::lambda_collar_for() {
+  if constexpr (K == CostCurve::TF24) {
+    return marginal_cost_water_multilayer();
+  } else if constexpr (K == CostCurve::CF77) {
+    return cf77_price();
+  } else if constexpr (K == CostCurve::LeastCost) {
+    return lambda_LeastCost(opt_psi_stem_, opt_root_psi_);
+  } else {
+    const double S = dE_from_soil_dpsi_collar(opt_root_psi_, supply_psi_soil());
+    if (!std::isfinite(S) || S <= 0.0) {
+      return util::na_value;
+    }
+    const double series =
+        1.0 + leaf_specific_conductance_max_ *
+                  proportion_of_conductivity(opt_root_psi_) / S;
+    if constexpr (K == CostCurve::TF24_floor) {
+      return lambda_TF24(opt_psi_stem_) * series + TF24_floor_lambda_o;
+    } else if constexpr (K == CostCurve::JS22 || K == CostCurve::CMax) {
+      return lambda_for<K>(opt_psi_stem_, opt_root_psi_) * series +
+             cost_deriv_upstream<K>(opt_psi_stem_, opt_root_psi_) / S;
+    } else if constexpr (K == CostCurve::SOX || K == CostCurve::JW26) {
+      return lambda_for<K>(opt_psi_stem_, opt_root_psi_) * series;
+    } else {
+      static_assert(K == CostCurve::ProfitMax, "unhandled CostCurve");
+      // The conductance term reads psi_stem alone; the thermal term, where the
+      // gates put one in, reads the leaf temperature and so E alone.
+      const double f = proportion_of_conductivity(opt_psi_stem_);
+      if (!(f > 0.0) || !(profitmax_k_span_ > 0.0) || !(profitmax_A_max_ > 0.0)) {
+        return util::na_value;
+      }
+      const double abs_fprime = (stem_c / stem_b) *
+                                pow(opt_psi_stem_ / stem_b, stem_c - 1.0) * f;
+      double thermal = 0.0;
+      if (use_thermal_cost_ && use_energy_balance_) {
+        double dT_dE = 0.0;
+        const double Tleaf = leaf_temp_from_E(
+            transpiration(opt_psi_stem_, opt_root_psi_), &dT_dE);
+        thermal = thermal_cost_temp_deriv(Tleaf) * dT_dE;
+      }
+      return profitmax_A_max_ *
+             (abs_fprime / (f * profitmax_k_span_) * series + thermal);
+    }
   }
 }
 
