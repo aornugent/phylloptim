@@ -1053,13 +1053,18 @@ test_that("CF77_lambda_ is in the enumeration and refused by other models", {
   # EMERGENT -- derived from that curve's own parameters rather than set -- so the
   # slot exists once in the enumeration and is available for one model.
   expect_true("CF77_lambda_" %in% gradient_par_names())
-  # ⚠️ NOT A FIXED POSITION. `TF24_floor_lambda_o` was appended after it, and the
-  # thermal-damage layer's inputs after both, which is exactly the "appending is
-  # safe" the enumeration is designed for -- so what is asserted is the pair and its
-  # order, adjacent, not where they sit.
+  # ⚠️ NOT A FIXED POSITION. `TF24_floor_lambda_o` was appended after it,
+  # `LeastCost_beta` after that, and the thermal-damage layer's inputs after all
+  # three, which is exactly the "appending is safe" the enumeration is designed
+  # for -- so what is asserted is the group and its order, adjacent, not where it
+  # sits.
+  #
+  # ⚠️ AND THE THIRD IS NOT A PRICE. `LeastCost_beta` is a dimensionless ratio of
+  # two unit costs; least-cost's price of water is emergent from it. What puts it
+  # in this group is only that one curve reads it and no other has the slot.
   i <- match("CF77_lambda_", gradient_par_names())
-  expect_identical(gradient_par_names()[i + 0:1],
-                   c("CF77_lambda_", "TF24_floor_lambda_o"))
+  expect_identical(gradient_par_names()[i + 0:2],
+                   c("CF77_lambda_", "TF24_floor_lambda_o", "LeastCost_beta"))
 
   # ⚠️ REFUSED, not returned as a zero. A zero means "in this objective but
   # inactive at this operating point", which is the psi_crit case and is
@@ -1135,7 +1140,7 @@ test_that("the curve registry is read from C++, not restated in R", {
   # trusted -- the same discipline gradient_par_names() gets.
   nms <- cost_curve_names()
   expect_identical(nms, c("TF24", "CF77", "JS22", "CMax", "SOX", "JW26",
-                          "ProfitMax", "TF24_floor"))
+                          "ProfitMax", "TF24_floor", "LeastCost"))
 
   # ⚠️ THERE IS NO `cost_curve_has_derivative()` ANY MORE, and its absence is the
   # statement. Every curve is `h(A) - C(psi)` and every derivative is

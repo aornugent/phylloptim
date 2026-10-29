@@ -1360,6 +1360,28 @@ BEGIN_RCPP
     return R_NilValue;
 END_RCPP
 }
+// Leaf__LeastCost_beta__get
+double Leaf__LeastCost_beta__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
+RcppExport SEXP _phylloptim_Leaf__LeastCost_beta__get(SEXP obj_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    rcpp_result_gen = Rcpp::wrap(Leaf__LeastCost_beta__get(obj_));
+    return rcpp_result_gen;
+END_RCPP
+}
+// Leaf__LeastCost_beta__set
+void Leaf__LeastCost_beta__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value);
+RcppExport SEXP _phylloptim_Leaf__LeastCost_beta__set(SEXP obj_SEXP, SEXP valueSEXP) {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< phylloptim::RcppR6::RcppR6<phylloptim::Leaf> >::type obj_(obj_SEXP);
+    Rcpp::traits::input_parameter< double >::type value(valueSEXP);
+    Leaf__LeastCost_beta__set(obj_, value);
+    return R_NilValue;
+END_RCPP
+}
 // Leaf__theta__get
 double Leaf__theta__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_);
 RcppExport SEXP _phylloptim_Leaf__theta__get(SEXP obj_SEXP) {
@@ -4143,6 +4165,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_phylloptim_Leaf__CF77_soil_beta___set", (DL_FUNC) &_phylloptim_Leaf__CF77_soil_beta___set, 2},
     {"_phylloptim_Leaf__TF24_floor_lambda_o__get", (DL_FUNC) &_phylloptim_Leaf__TF24_floor_lambda_o__get, 1},
     {"_phylloptim_Leaf__TF24_floor_lambda_o__set", (DL_FUNC) &_phylloptim_Leaf__TF24_floor_lambda_o__set, 2},
+    {"_phylloptim_Leaf__LeastCost_beta__get", (DL_FUNC) &_phylloptim_Leaf__LeastCost_beta__get, 1},
+    {"_phylloptim_Leaf__LeastCost_beta__set", (DL_FUNC) &_phylloptim_Leaf__LeastCost_beta__set, 2},
     {"_phylloptim_Leaf__theta__get", (DL_FUNC) &_phylloptim_Leaf__theta__get, 1},
     {"_phylloptim_Leaf__theta__set", (DL_FUNC) &_phylloptim_Leaf__theta__set, 2},
     {"_phylloptim_Leaf__theta_fc__get", (DL_FUNC) &_phylloptim_Leaf__theta_fc__get, 1},

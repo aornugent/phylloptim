@@ -66,7 +66,14 @@
 ##' @param TF24_floor_lambda_o the `TF24_floor` curve's price of water as transpiration
 ##'   goes to zero, same units, one per observation. Only `model = "TF24_floor"`
 ##'   reads it; `NA_real_` (the default) leaves it unset. That curve refuses to
-##'   solve without one, deliberately: at zero it is `JS22`.
+##'   solve without one, deliberately: at zero it is `TF24`.
+##' @param LeastCost_beta least-cost theory's unit-cost ratio (Prentice et al.
+##'   2014's beta): the cost of maintaining carboxylation capacity relative to the
+##'   cost of transpiration, dimensionless, one per observation. Only
+##'   `model = "LeastCost"` reads it; `NA_real_` (the default) leaves it unset.
+##'   That curve refuses to solve without one, and refuses zero as well, since at
+##'   zero the capacity term vanishes and what is left is water-use efficiency,
+##'   which rises without bound as transpiration falls. The published value is 146.
 ##'
 ##' @return A `leaf_batch` object.
 ##' @seealso [leaf_gradient_batch()], [leaf_gradient()] for one observation.
@@ -89,7 +96,8 @@ leaf_batch <- function(psi_soil,
                        control = leaf_control(),
                        supply = leaf_supply_multilayer(),
                        CF77_lambda = NA_real_,
-                       TF24_floor_lambda_o = NA_real_) {
+                       TF24_floor_lambda_o = NA_real_,
+                       LeastCost_beta = NA_real_) {
   if (!inherits(traits, "leaf_traits")) {
     stop("`traits` must come from leaf_traits()", call. = FALSE)
   }
@@ -180,6 +188,7 @@ leaf_batch <- function(psi_soil,
          resistance = if (shared) resistance[[1L]] else resistance,
          CF77_lambda = CF77_lambda,
          TF24_floor_lambda_o = TF24_floor_lambda_o,
+         LeastCost_beta = LeastCost_beta,
          theta_nrow = if (shared) 1L else n),
     class = "leaf_batch")
 }
@@ -497,6 +506,7 @@ leaf_gradient_batch <- function(batch,
   # use.
   m[, "CF77_lambda_"] <- batch$CF77_lambda
   m[, "TF24_floor_lambda_o"] <- batch$TF24_floor_lambda_o
+  m[, "LeastCost_beta"] <- batch$LeastCost_beta
   # The thermal-damage inputs, off the batch's leaf, when its gate is on; NA (and
   # unread) otherwise. One row for every observation: pass `theta` to give each
   # observation its own state.

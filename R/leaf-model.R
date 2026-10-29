@@ -986,6 +986,12 @@ operating_point <- function(x) {
 ##'   `CF77` reads `CF77_lambda` and `TF24_floor` reads `TF24_floor_lambda_o`,
 ##'   both below. Neither has a default, and each curve refuses to solve without
 ##'   its own.
+##' @param LeastCost_beta the `LeastCost` curve's unit-cost ratio (Prentice et
+##'   al. 2014's beta): the cost of maintaining carboxylation capacity relative to
+##'   the cost of transpiration, dimensionless. Only `model = "LeastCost"` reads
+##'   it. That curve refuses to solve without one, and refuses zero as well, since
+##'   at zero the capacity term vanishes and what is left is water-use efficiency,
+##'   which rises without bound as transpiration falls. The published value is 146.
 ##' @param CF77_lambda,TF24_floor_lambda_o the prescribed marginal value of water
 ##'   for the two curves that take one, in umol C (kg H2O)^-1. `NA_real_` (the
 ##'   default) leaves the field unset, which every other model wants.
@@ -1038,9 +1044,11 @@ leaf_solve <- function(psi_soil,
                        reuse = TRUE,
                        model = "collar",
                        CF77_lambda = NA_real_,
-                       TF24_floor_lambda_o = NA_real_) {
+                       TF24_floor_lambda_o = NA_real_,
+                       LeastCost_beta = NA_real_) {
   .check_model(model, supply)
-  prices <- .check_prices(model, CF77_lambda, TF24_floor_lambda_o)
+  prices <- .check_prices(model, CF77_lambda, TF24_floor_lambda_o,
+                          LeastCost_beta)
   layered <- .as_layer_list(psi_soil, "psi_soil")
   scalars <- list(PPFD = PPFD, atm_vpd = atm_vpd, ca = ca,
                   leaf_temp = leaf_temp, atm_o2_kpa = atm_o2_kpa,
@@ -1197,11 +1205,19 @@ leaf_solve <- function(psi_soil,
 # their lambda had no effect. Passing none is fine: the curve's own check is what
 # reports the omission, and it reports it with the units and the reason.
 .solve_price_fields <- c(CF77 = "CF77_lambda_",
-                         TF24_floor = "TF24_floor_lambda_o")
+                         TF24_floor = "TF24_floor_lambda_o",
+                         LeastCost = "LeastCost_beta")
 
-.check_prices <- function(model, CF77_lambda, TF24_floor_lambda_o) {
+# ⚠️ THE THIRD ENTRY IS NOT A PRICE, and the message below branches on it
+# rather than calling it one. `CF77_lambda_` and `TF24_floor_lambda_o` are
+# marginal values of water; `LeastCost_beta` is a dimensionless ratio of two unit
+# costs, and least-cost's price of water is emergent FROM it. What the three share
+# is the only thing this table is for: a field one curve reads and no other has.
+.check_prices <- function(model, CF77_lambda, TF24_floor_lambda_o,
+                          LeastCost_beta = NA_real_) {
   given <- c(CF77_lambda_ = CF77_lambda,
-             TF24_floor_lambda_o = TF24_floor_lambda_o)
+             TF24_floor_lambda_o = TF24_floor_lambda_o,
+             LeastCost_beta = LeastCost_beta)
   # ⚠️ NOT `[[model]]`, which raises "subscript out of bounds" on every unpriced
   # model rather than reporting no price. "" is a name no field has.
   mine <- if (model %in% names(.solve_price_fields)) {
@@ -1212,8 +1228,14 @@ leaf_solve <- function(psi_soil,
   wrong <- names(given)[!is.na(given) & names(given) != mine]
   if (length(wrong)) {
     owner <- names(.solve_price_fields)[match(wrong[[1]], .solve_price_fields)]
-    stop("`", sub("_$", "", wrong[[1]]), "` is the ", owner,
-         " curve's prescribed price of water, and model = \"", model,
+    what <- if (wrong[[1]] == "LeastCost_beta") {
+      paste("the LeastCost curve's unit-cost ratio, the cost of maintaining",
+            "carboxylation capacity relative to that of transpiration")
+    } else {
+      paste("the", owner, "curve's prescribed price of water")
+    }
+    stop("`", sub("_$", "", wrong[[1]]), "` is ", what,
+         ", and model = \"", model,
          "\" does not read it: on every other curve the price is emergent, ",
          "derived from that curve's own parameters rather than set. Pass ",
          "model = \"", owner, "\", or drop the argument.", call. = FALSE)

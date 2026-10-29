@@ -21,7 +21,8 @@ leaf_solve(
   reuse = TRUE,
   model = "collar",
   CF77_lambda = NA_real_,
-  TF24_floor_lambda_o = NA_real_
+  TF24_floor_lambda_o = NA_real_,
+  LeastCost_beta = NA_real_
 )
 }
 \arguments{
@@ -104,6 +105,13 @@ defaults the leaf's own marginal cost of water runs 9e4 to 3e5, and a price
 far outside that band pins the optimum against a bound — where the answer
 describes the bracket rather than the model. \code{\link[=operating_point]{operating_point()}}'s
 \code{lambda_emergent} is how you find a value that means something.}
+
+\item{LeastCost_beta}{the \code{LeastCost} curve's unit-cost ratio (Prentice et
+al. 2014's beta): the cost of maintaining carboxylation capacity relative to
+the cost of transpiration, dimensionless. Only \code{model = "LeastCost"} reads
+it. That curve refuses to solve without one, and refuses zero as well, since
+at zero the capacity term vanishes and what is left is water-use efficiency,
+which rises without bound as transpiration falls. The published value is 146.}
 }
 \value{
 A data.frame with one row per driver combination: the drivers, then

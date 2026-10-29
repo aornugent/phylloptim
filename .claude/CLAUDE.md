@@ -8,7 +8,7 @@ Read alongside:
 
 - **[README.md](../README.md)** — what it is and how to use it
 - **[NEWS.md](../NEWS.md)** — what changed in each release, and what it broke
-- **[`vignettes/the-models.Rmd`](../vignettes/the-models.Rmd)** — the eight
+- **[`vignettes/the-models.Rmd`](../vignettes/the-models.Rmd)** — the nine
   optimality models, the cost/link framework that unifies them, and two
   appendices: **B** derives the gradients, **C** is the numerical practice
   (finite-difference steps, golden files, cross-platform magnitudes)
@@ -131,7 +131,7 @@ tests/cpp/golden/              THREE bit-exact regression baselines.
                                ONE moved -- the lowest tier that changed is the
                                cause. #64
                                psi_stem_optima.tsv: 5184 rows covering what the
-                               other two cannot -- the eight STEM routes
+                               other two cannot -- the nine STEM routes
                                across solver x topology x energy balance
                                x thermal cost, in two passes, the second of which
                                reuses one Leaf with the outputs POISONED so stale
@@ -747,8 +747,13 @@ through `leaf_model()` — survivable while its documentation said so, and not
 survivable for a curve whose ONLY parameter is a price. `leaf_solve()` and
 `leaf_batch()` take the two prices as arguments now and `.seat_model()` applies
 them; `.solve_price_fields` is the one table saying which price belongs to which
-curve, and `.gradient_owned_pars` is its twin on the gradient side. A third priced
-curve needs a row in both.
+curve, and `.gradient_owned_pars` is its twin on the gradient side. `LeastCost_beta`
+is the third row in each (not a price: a dimensionless unit-cost ratio, which is
+why those tables are about *ownership* rather than prices); a fourth owned
+parameter needs a row in both, plus the write in `.gradient_setter` that pushes a
+perturbed theta back onto the leaf — the one place `LeastCost_beta` was first
+missed, which no finiteness check saw and only the R-versus-C++ batch comparison
+did.
 
 ⚠️ **`n` IS SET FROM MEASUREMENT, NOT FROM CAUTION, AND SCANNING BY DEFAULT IS THE
 EXPENSIVE MISTAKE.** This is a package whose reason for existing is a ~3 µs solve
@@ -1183,7 +1188,7 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    and −1.5459 at 1.88, so a search that steps in from the bounds reports an open
    stoma where the objective says shut.
 
-   So all eight stem routes maximise over a CLOSED interval: endpoints
+   So all nine stem routes maximise over a CLOSED interval: endpoints
    included, a `boundary_scan_n_` = 64 scan to pick the basin **where
    `basin_scan_cells()` asks for one**, and a refine that root-finds the
    first-order condition inside the winning cell. Against a
@@ -1276,11 +1281,14 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    easy to withdraw.
 
    ⚠️ **The MODEL-OWNED parameters are a second class now, and `CF77_lambda_` is
-   no longer the only one.** `TF24_floor_lambda_o` joins it: a slot in the
-   enumeration available for exactly one curve and refused, by name, on every
-   other. `R/gradient.R`'s `.gradient_owned_pars` is the single table mapping
-   price to owner — do not write a second one, and do not reason about "the CF77
-   slot" as though it were unique.
+   no longer the only one.** `TF24_floor_lambda_o` and `LeastCost_beta` join it:
+   slots in the enumeration available for exactly one curve each and refused, by
+   name, on every other. `R/gradient.R`'s `.gradient_owned_pars` is the single
+   table mapping parameter to owner — do not write a second one, and do not
+   reason about "the CF77 slot" as though it were unique. The three sit together
+   at `par_CF77_lambda`..`par_LeastCost_beta`, BEFORE the thermal-damage block:
+   a new owned slot goes after `par_LeastCost_beta` and renumbers that block,
+   which is safe because every consumer (plant included) reads the pack by name.
 14. **A derived `psi_crit` makes the P50 chain rule CONDITIONAL.** Since
    `psi_crit` is the curve's 95% quantile rather than a trait, moving `stem_P50`
    moves the threshold, and `d/dP50` picks up a term through it. That term is

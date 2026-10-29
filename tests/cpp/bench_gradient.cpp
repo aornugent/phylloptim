@@ -340,7 +340,13 @@ int main(int argc, char **argv) {
         // this array for what adding a trait did to it. Count against `n_theta`.
         kBase.v[10], 1.44,      /*JS22_gamma=*/1.0,
         /*CMax_a=*/0.6, /*CMax_b=*/0.0, kmax, 0.0};
-    static_assert(phylloptim::gradient::n_theta == 34,
+    // ⚠️ THE ZERO-FILLED TAIL IS `resistance`, THE THREE MODEL-OWNED SLOTS
+    // (`CF77_lambda_`, `TF24_floor_lambda_o`, `LeastCost_beta`) AND THE FIFTEEN
+    // THERMAL-DAMAGE INPUTS. This benchmark differentiates `vcmax_25` on the
+    // collar route with the layer off, which reads none of them. The short
+    // initialiser zero-fills the rest, which is why the assertion below is what
+    // makes it safe.
+    static_assert(phylloptim::gradient::n_theta == 35,
                   "theta above is positional and deliberately short; recount it "
                   "against n_theta and update this assertion together");
 

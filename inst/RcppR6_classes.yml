@@ -229,6 +229,18 @@ Leaf:
     # `leaf_solve()` and `leaf_batch()` take it as an argument; on a bare `Leaf`,
     # assign the field.
     TF24_floor_lambda_o: {type: double, access: field}
+    # Least-cost's unit-cost ratio, @Prentice-2014's beta: the cost of maintaining
+    # carboxylation capacity relative to the cost of transpiration.
+    #
+    # ⚠️ NO DEFAULT, FOR A DIFFERENT REASON FROM THE ONE ABOVE. `TF24_floor` has a
+    # curve it collapses into at zero, so a missing value there would be a silent
+    # substitution; `LeastCost` has none, so a missing value is a NaN objective
+    # whose argmax is a property of the bracket and looks entirely plausible.
+    #
+    # ⚠️ DIMENSIONLESS, so both fluxes it weighs are converted to mol m^-2 s^-1
+    # first. A beta derived against this package's kg H2O and umol CO2 would be out
+    # by 5.6e7. The published value is 146.
+    LeastCost_beta: {type: double, access: field}
     # --- soil-moisture inputs for the Medlyn beta factor ----------------------
     # ⚠️ SET THESE, NOT the trailing-underscore ones. `theta_`, `theta_fc_` and
     # `theta_w_` below are WORKING COPIES: set_physiology overwrites all three from

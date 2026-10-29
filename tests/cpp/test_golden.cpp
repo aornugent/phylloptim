@@ -633,18 +633,23 @@ const double kLambdaCF77 = 1.5e5;
 // to either invisible in the other's rows. The curve's hydraulic half is TF24's
 // cost at TF24's own traits, so there is nothing else to set.
 const double kLambdaFloorO = 1.5e5;
+// ⚠️ DIMENSIONLESS, unlike the two prices above, and it is @Prentice-2014's
+// published value. A beta derived against this package's kg H2O and umol CO2
+// rather than mol and mol would be out by 5.6e7 and would still solve.
+const double kBetaLeastCost = 146.0;
 
 // ⚠️ APPEND ONLY. The reuse pass drives ONE Leaf through kSolvers in order, so
 // inserting a solver changes what every solver after it inherits -- see the header.
 // Appending leaves every existing row byte-identical, which is the check when this
 // file is regenerated.
-enum class Solver { TF, ProfitMax, CF77, Collar, JS22, CMax, SOX, JW26, TF24_floor };
+enum class Solver { TF, ProfitMax, CF77, Collar, JS22, CMax, SOX, JW26, TF24_floor,
+                    LeastCost };
 
 // ⚠️ EVERY PER-SOLVER ARRAY IS SIZED FROM THIS, never from a literal. Those arrays
 // are indexed by the enum VALUE, so a hardcoded bound is an out-of-bounds write the
 // moment a solver is appended -- which is exactly the bug bench_gradient carried
 // through three trait-count changes before ASan named it. Keep it last-member + 1.
-constexpr int kNSolvers = static_cast<int>(Solver::TF24_floor) + 1;
+constexpr int kNSolvers = static_cast<int>(Solver::LeastCost) + 1;
 enum class Topology { Single, Multi1, Multi3 };
 
 const char *solver_name(Solver s) {
@@ -658,6 +663,7 @@ const char *solver_name(Solver s) {
     case Solver::SOX:           return "SOX";
     case Solver::JW26:          return "JW26";
     case Solver::TF24_floor:       return "TF24_floor";
+    case Solver::LeastCost:        return "LeastCost";
   }
   return "unknown";
 }
@@ -792,6 +798,12 @@ void dispatch(phylloptim::Leaf &l, Solver s) {
     case Solver::TF24_floor:
                             l.TF24_floor_lambda_o = kLambdaFloorO;
                             l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::TF24_floor>(); break;
+    // ⚠️ ALSO AN INPUT WITH NO DEFAULT, and refused at zero as well as unset --
+    // zero is not a limiting case here but deletes the capacity term. The only
+    // curve in this corpus whose penalty weighs something other than water.
+    case Solver::LeastCost:
+                            l.LeastCost_beta = kBetaLeastCost;
+                            l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::LeastCost>(); break;
   }
 }
 
@@ -822,7 +834,8 @@ const double kOptPPFDs[] = {0.0, 1500.0};
 const Solver kSolvers[] = {Solver::TF, Solver::ProfitMax,
                            Solver::CF77, Solver::Collar,
                            Solver::JS22, Solver::CMax, Solver::SOX,
-                           Solver::JW26, Solver::TF24_floor};
+                           Solver::JW26, Solver::TF24_floor,
+                           Solver::LeastCost};
 static_assert(sizeof(kSolvers) / sizeof(kSolvers[0]) == kNSolvers,
               "kSolvers must list every Solver exactly once");
 const Topology kTopologies[] = {Topology::Single, Topology::Multi1,

@@ -715,20 +715,32 @@ inline void optimise_into(Leaf &l) {
                "rescaling. Use method \"exact\", or add the derivative to "
                "closed_form.hpp.");
   } else {
-    static_assert(K == CostCurve::SOX || K == CostCurve::JW26,
+    static_assert(K == CostCurve::SOX || K == CostCurve::JW26 ||
+                      K == CostCurve::LeastCost,
                   "unhandled CostCurve in closed_form::optimise_into");
     // ⚠️ NOT A MISSING PIECE. This is the one place the closed form cannot exist,
     // and saying so precisely matters more than the refusal: the LOG benefit link
     // has h'(A) = 1/A, so lambda carries A, xi carries lambda, ci carries xi and
     // A = A(ci) closes the loop. It is a fixed point in the unknown, which can be
     // iterated but not inverted. Every other link's h' is a constant at solve time.
+    //
+    // ⚠️ LEAST-COST IS THE AWKWARD MEMBER OF THIS ARM, and the refusal is still
+    // right. Prentice et al. (2014) DO publish a closed form -- `chi = xi/(xi +
+    // sqrt(D))` with `xi = sqrt(beta*(Km + Gamma*)/1.6)` -- but they obtain it by
+    // solving the first-order condition in `ci` directly, where the `A` in lambda
+    // cancels against the `A` in the ratio. THIS routine inverts a lambda into a
+    // Medlyn xi and then into a potential, which is the step the fixed point
+    // blocks. `tests/cpp/test_leaf.cpp`'s least-cost test checks the exact solve
+    // against that published form instead; a closed form here would be a second
+    // solver for the same argmax, which this package does not add (see
+    // .claude/CLAUDE.md, "One solver").
     util::stop("the closed form does not exist for the " +
                Leaf::curve_name(static_cast<int>(K)) + " cost curve, and it is "
-               "not a matter of unwritten algebra. SOX and JW26 are the two "
-               "curves with the LOG benefit link, where h'(A) = 1/A -- so lambda "
-               "carries the assimilation the solve is for, and given lambda -> xi "
-               "-> ci -> A the dependency closes into a fixed point rather than "
-               "an inversion. Use method \"exact\".");
+               "not a matter of unwritten algebra. SOX, JW26 and LeastCost are the "
+               "three curves with the LOG benefit link, where h'(A) = 1/A -- so "
+               "lambda carries the assimilation the solve is for, and given "
+               "lambda -> xi -> ci -> A the dependency closes into a fixed point "
+               "rather than an inversion. Use method \"exact\".");
   }
 }
 

@@ -233,6 +233,7 @@ jobs:
                 0.0,                    // resistance
                 0.0,                    // CF77_lambda_ (CF77 only)
                 0.0,                    // TF24_floor_lambda_o (TF24_floor only)
+                0.0,                    // LeastCost_beta (LeastCost only)
                 0.0,                    // A_ (thermal-damage layer only)
                 0.0,                    // I_
                 0.0,                    // D_
@@ -248,7 +249,7 @@ jobs:
                 0.0,                    // c_repair_maint_
                 0.0,                    // c_protect_maint_
                 0.0};                   // c_repair_flux_
-            static_assert(phylloptim::gradient::n_theta == 34,
+            static_assert(phylloptim::gradient::n_theta == 35,
                           "theta above is written out element by element; update "
                           "it and this assertion together");
             const int pars[1] = {0};  // vcmax_25

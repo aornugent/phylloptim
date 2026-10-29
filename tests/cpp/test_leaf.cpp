@@ -685,6 +685,12 @@ int check_collar_foc_matches_profit(const Drivers &d) {
     phylloptim::Leaf l = make_leaf(d, s.psi, s.depth);
     l.CF77_lambda_ = kPriceForFOC;
     l.TF24_floor_lambda_o = kPriceForFOC;
+    // ⚠️ LeastCost IS THE ONE LOG-LINK CURVE CHECKED HERE, and it is here
+    // because its cost reads the upstream potential: `log W` with `W` carrying
+    // `E(psi_stem, psi_upstream)`. SOX and JW26 read no upstream. The reported
+    // `profit_` is the ratio `A/W` and the solve differentiates its LOG, so the
+    // difference below is taken of `log(profit_)` for this curve.
+    l.LeastCost_beta = 146.0;
     l.JS22_gamma = kGammaJS22;
     l.CMax_a = kCMaxA;
     l.CMax_b = kCMaxB;
@@ -694,8 +700,12 @@ int check_collar_foc_matches_profit(const Drivers &d) {
     for (double target : {p0 - 0.05, p0 - 0.1}) {
       const double eps = 1e-5;
       const double analytic = l.template dprofit_droot_collar_psi_for<K>(target);
-      const double up = l.template evaluate_root_collar_psi_for<K>(target + eps);
-      const double dn = l.template evaluate_root_collar_psi_for<K>(target - eps);
+      double up = l.template evaluate_root_collar_psi_for<K>(target + eps);
+      double dn = l.template evaluate_root_collar_psi_for<K>(target - eps);
+      if constexpr (K == phylloptim::Leaf::CostCurve::LeastCost) {
+        up = std::log(up);
+        dn = std::log(dn);
+      }
       if (!std::isfinite(up) || !std::isfinite(dn)) {
         continue;
       }
@@ -720,10 +730,11 @@ void test_collar_foc_matches_profit() {
                        check_collar_foc_matches_profit<CC::CF77>(d) +
                        check_collar_foc_matches_profit<CC::JS22>(d) +
                        check_collar_foc_matches_profit<CC::CMax>(d) +
-                       check_collar_foc_matches_profit<CC::TF24_floor>(d);
+                       check_collar_foc_matches_profit<CC::TF24_floor>(d) +
+                       check_collar_foc_matches_profit<CC::LeastCost>(d);
   // Hazard 16: a row whose difference straddles the feasible edge is skipped.
   printf("    %d points compared\n", compared);
-  ok(compared == 20, "every curve, layer count and point was compared");
+  ok(compared == 24, "every curve, layer count and point was compared");
 }
 
 // lambda = dA/dE is the first-order condition every model in this family shares,
@@ -4130,12 +4141,12 @@ void test_stem_curve_shortcut_needs_no_rebuild() {
       96.0,   2.680147, P50_0, 2.680147, P50_0, 1.5,
       157.44, 0.30 / 0.85,     0.7,   0.99,     7.5,   kRd25, kGammaJS22,
       kCMaxA, kCMaxB,  kmax,      0.0};
-  // The two prices and the fifteen thermal-damage inputs are left zero-filled:
-  // this test differentiates the collar route with the layer off, which reads
-  // none of them. ⚠️ THE ASSERTION IS WHAT MAKES THE SHORT
+  // The three model-owned slots and the fifteen thermal-damage inputs are left
+  // zero-filled: this test differentiates the collar route with the layer off,
+  // which reads none of them. ⚠️ THE ASSERTION IS WHAT MAKES THE SHORT
   // INITIALISER SAFE -- without it the next appended parameter shifts `kmax`
   // silently, which is the failure the comment above describes.
-  static_assert(phylloptim::gradient::n_theta == 34,
+  static_assert(phylloptim::gradient::n_theta == 35,
                 "theta above is positional and deliberately short; recount it "
                 "against n_theta and update this assertion together");
 
@@ -6412,6 +6423,254 @@ void test_tf24_floor_closed_form() {
      "and points at the curve that does have a start");
 }
 
+// ===========================================================================
+// Least-cost / cost-per-unit-carbon (Prentice et al. 2014)
+// ---------------------------------------------------------------------------
+// THIS IS THE ONLY CURVE HERE WITH A PUBLISHED ANALYTICAL SOLUTION, so it is the
+// only one whose solver can be checked against something outside this package.
+// Prentice et al. minimise `(c_E*E + c_V*Vcmax)/A` and solve the first-order
+// condition in `ci` directly -- where the `A` the log link puts into lambda
+// cancels against the `A` the ratio divides by. Writing
+//
+//     xi = sqrt(beta*(Km + Gamma*)/1.6),     beta = c_V/c_E,
+//
+// their condition is
+//
+//     (ci - Gamma*) / (ca - ci)  =  xi / sqrt(D)                        (FOC)
+//
+// and the form they report is (FOC) with `Gamma*` dropped from the numerator:
+//
+//     chi = ci/ca = xi / (xi + sqrt(D)).                          (published)
+//
+// ⚠️ THE TWO ARE NOT THE SAME EQUATION AND THE DIFFERENCE IS NOT SMALL. Solving
+// (FOC) for chi gives `chi = (Gamma*/ca + r)/(1 + r)` with `r = xi/sqrt(D)`, so
+// the published form understates chi by `(Gamma*/ca)/(1 + r)` -- some 4% at
+// D = 1 kPa and 8% at D = 4 kPa on this package's defaults, growing with deficit
+// because `r` falls as D rises. This test checks against (FOC), which is the
+// model; it then checks the gap to the published form against that expression,
+// which is what establishes that the gap is the approximation and not a defect.
+//
+// ⚠️ THREE THINGS HAVE TO BE ARRANGED BEFORE THE COMPARISON MEANS ANYTHING, and
+// each is a real difference between this package and the published derivation.
+//
+//   1. THE ASSIMILATION MUST BE THE SAME FUNCTION. Prentice et al. use the
+//      Rubisco-limited rate; this package co-limits it against electron
+//      transport through a hyperbolic minimum and subtracts `R_d_`. Zeroing
+//      `R_d_` removes the second difference, and driving `electron_transport_`
+//      up removes the first -- the hyperbolic minimum tends to the Rubisco
+//      branch exactly as the other limit goes to infinity. At this package's
+//      DEFAULT co-limited settings the agreement is a few percent rather than
+//      exact, which the last block below measures rather than hides.
+//   2. THE OPTIMUM MUST BE INTERIOR. There is no vulnerability curve in
+//      least-cost theory; here `E` is delivered through the supply relation, so
+//      a solve sitting on the wet bound or on `psi_crit` is answering a
+//      different question. `K_s` is raised so that it does not, and interiority
+//      is asserted rather than assumed.
+//   3. `xi` MUST CARRY THIS PACKAGE'S DIFFUSION RATIO, NOT THE PUBLISHED 1.6.
+//      The 1.6 in `xi` is the H2O:CO2 stomatal diffusion ratio, and this package
+//      uses 1.67 (`H2O_CO2_stom_diff_ratio`, a convention rather than a property
+//      of the leaf). Testing against `xi` built on 1.6 while the solver diffuses
+//      at 1.67 leaves a 0.6% error that looks like a solver defect and is not.
+//      Both settings are run below, and the check holds under each.
+//
+// ⚠️ THE VISCOSITY TERM IS ABSENT. Their `xi` carries `eta*`, water viscosity
+// relative to 25 C, which this package does not model, so every case here is run
+// at 25 C where `eta*` is 1 by definition. Away from 25 C this package's beta is
+// their `beta/eta*`.
+void test_leastcost_matches_prentice_closed_form() {
+  printf("LeastCost against Prentice et al. (2014)'s analytical solution\n");
+  const double beta = 146.0;   // the published unit-cost ratio
+  const double vpds[3] = {1.0, 2.0, 4.0};
+
+  // `K_s` raised for reason 2. Checked across 10-1000 while this test was
+  // written: the recovered chi is identical to six figures over that whole
+  // range, so the supply relation is genuinely out of the comparison rather
+  // than merely loose.
+  auto solved = [&](double vpd_kpa, double b, double ratio, bool rubisco_only) {
+    Drivers d;
+    d.K_s = 200.0;
+    d.PPFD = 3000.0;
+    d.leaf_temp = 25.0;
+    d.ca = 40.0;
+    d.atm_vpd = vpd_kpa;
+    phylloptim::Leaf l = make_single_leaf(d, 0.1);
+    if (rubisco_only) {
+      // Reason 1, both halves. `R_d_` and `electron_transport_` rather than
+      // `R_d_25` and `jmax_25`, because `set_physiology` has already run inside
+      // `make_single_leaf` and these are the derived fields the kernel reads.
+      l.R_d_ = 0.0;
+      l.electron_transport_ = 1.0e9;
+    }
+    l.H2O_CO2_stom_diff_ratio_ = ratio;
+    l.LeastCost_beta = b;
+    l.set_model(phylloptim::Leaf::CostCurve::LeastCost, false);
+    l.optimise();
+    return l;
+  };
+  // `r = xi/sqrt(D)`, the whole content of (FOC). Km and Gamma* are read off the
+  // solved leaf rather than recomputed here, so a change to the Arrhenius curves
+  // moves the prediction with the model instead of breaking the test.
+  auto r_of = [&](const phylloptim::Leaf &l, double vpd_kpa, double b,
+                  double ratio) {
+    const double gamma_star = l.gamma_ * l.umol_per_mol_to_Pa_;         // Pa
+    return std::sqrt(b * (l.km_ + gamma_star) / ratio) /
+           std::sqrt(vpd_kpa * 1000.0);
+  };
+
+  // --- (FOC), which is the model, under both diffusion conventions -----------
+  for (double ratio : {1.67, 1.6}) {
+    for (double vpd : vpds) {
+      phylloptim::Leaf l = solved(vpd, beta, ratio, true);
+      ok(std::isfinite(l.profit_), "the curve solves at the published beta");
+      ok(l.opt_psi_stem_ > 0.1 + 1e-6 && l.opt_psi_stem_ < l.psi_crit - 1e-6,
+         "the optimum is interior, so the supply relation is not binding");
+      const double gamma_star = l.gamma_ * l.umol_per_mol_to_Pa_;
+      const double r = r_of(l, vpd, beta, ratio);
+      const double chi = l.ci_ / l.ca_;
+      const double foc = (gamma_star / l.ca_ + r) / (1.0 + r);
+      printf("    ratio %.2f, D = %.1f kPa: chi = %.8f, (FOC) = %.8f, "
+             "rel = %.1e\n", ratio, vpd, chi, foc, (chi - foc) / foc);
+      ok(std::fabs(chi - foc) / foc < 1e-6,
+         "the solved chi is Prentice et al.'s first-order condition to solver "
+         "precision");
+    }
+  }
+
+  // --- and the gap to the PUBLISHED form is the Gamma* it drops --------------
+  //
+  // ⚠️ THIS IS WHAT MAKES THE BLOCK ABOVE EVIDENCE RATHER THAN A DEFINITION. A
+  // check against (FOC) alone could pass on a solver that had been fitted to
+  // (FOC); predicting the published form's ERROR, in size and in how it moves
+  // with deficit, cannot be arranged after the fact.
+  for (double vpd : vpds) {
+    phylloptim::Leaf l = solved(vpd, beta, 1.67, true);
+    const double gamma_star = l.gamma_ * l.umol_per_mol_to_Pa_;
+    const double r = r_of(l, vpd, beta, 1.67);
+    const double chi = l.ci_ / l.ca_;
+    const double published = r / (1.0 + r);
+    const double predicted_gap = (gamma_star / l.ca_) / (1.0 + r);
+    printf("    D = %.1f kPa: published = %.6f, gap = %.6f, "
+           "Gamma*/ca/(1+r) = %.6f\n", vpd, published, chi - published,
+           predicted_gap);
+    ok(std::fabs((chi - published) - predicted_gap) < 1e-6,
+       "the gap to the published form is exactly the Gamma* it neglects");
+  }
+
+  // --- that the solve READS beta, and reads it where (FOC) puts it -----------
+  //
+  // ⚠️ EVERY CHECK ABOVE RAN AT ONE BETA and would pass on a leaf that ignored
+  // it. `xi` goes as sqrt(beta), and (FOC) says the quantity proportional to it
+  // is `(ci - Gamma*)/(ca - ci)` -- NOT `chi/(1-chi)`, which is the published
+  // form's invariant and is out by 4% here for the same reason the levels are.
+  // This is what fails if `leastcost_flux` drops the capacity term, or weighs
+  // `vcmax_25` where the condition wants `vcmax_`.
+  {
+    double q[2];
+    const double betas[2] = {146.0, 292.0};
+    for (int i = 0; i < 2; ++i) {
+      phylloptim::Leaf l = solved(2.0, betas[i], 1.67, true);
+      const double gamma_star = l.gamma_ * l.umol_per_mol_to_Pa_;
+      q[i] = (l.ci_ - gamma_star) / (l.ca_ - l.ci_);
+    }
+    const double got = q[1] / q[0];
+    printf("    doubling beta scales (ci-Gamma*)/(ca-ci) by %.8f "
+           "(sqrt(2) = %.8f)\n", got, std::sqrt(2.0));
+    ok(std::fabs(got - std::sqrt(2.0)) / std::sqrt(2.0) < 1e-6,
+       "doubling beta scales (ci-Gamma*)/(ca-ci) by sqrt(2), so the solve reads "
+       "the unit-cost ratio where the published condition puts it");
+  }
+
+  // --- what the agreement is worth at this package's OWN settings ------------
+  //
+  // Reported rather than asserted tightly, because it is a property of the
+  // co-limitation this package models and Prentice et al. do not. The bound is
+  // loose on purpose: it is here to catch a change of KIND, not to pin a number
+  // that has no published counterpart.
+  for (double vpd : vpds) {
+    phylloptim::Leaf l = solved(vpd, beta, 1.67, false);
+    const double gamma_star = l.gamma_ * l.umol_per_mol_to_Pa_;
+    const double r = r_of(l, vpd, beta, 1.67);
+    const double chi = l.ci_ / l.ca_;
+    const double foc = (gamma_star / l.ca_ + r) / (1.0 + r);
+    printf("    co-limited, D = %.1f kPa: chi = %.6f, (FOC) = %.6f, "
+           "rel = %+.2f%%\n", vpd, chi, foc, 100.0 * (chi - foc) / foc);
+    ok(std::fabs(chi - foc) / foc < 0.05,
+       "at this package's co-limited default the solved chi is within 5% of "
+       "(FOC), the residual being the co-limitation Prentice et al. omit");
+  }
+}
+
+
+// ⚠️ THE GUARD IS STRICTER THAN `TF24_floor`'s, AND NOT OUT OF SYMMETRY.
+// `TF24_floor` accepts an explicit zero because zero is meaningful there -- the
+// curve is `TF24`. Zero here is not a limiting case of least-cost: it deletes
+// the capacity term, leaving `A/E`, which is water-use efficiency and rises
+// without bound as transpiration falls, so the optimiser returns the wet bound
+// for every driver set. That looks like a solve and is not one.
+void test_leastcost_refuses_an_unset_or_degenerate_beta() {
+  printf("LeastCost refuses an unset, zero or negative beta, and says why\n");
+  Drivers d;
+  {
+    phylloptim::Leaf l = make_single_leaf(d, 1.0);
+    l.set_model(phylloptim::Leaf::CostCurve::LeastCost, false);
+    ok(throws_with([&] { l.optimise(); }, "needs LeastCost_beta set"),
+       "an unset beta is refused rather than optimised as a NaN objective");
+    // The message has to carry the units. A beta derived against this package's
+    // kg H2O and umol CO2 rather than mol and mol is out by 5.6e7, and would
+    // otherwise solve to something entirely plausible.
+    ok(throws_with([&] { l.optimise(); }, "DIMENSIONLESS"),
+       "and says what units the published number is in");
+    ok(throws_with([&] { l.optimise(); }, "leaf_solve()"),
+       "and names a route that can supply one");
+  }
+  {
+    phylloptim::Leaf l = make_single_leaf(d, 1.0);
+    l.LeastCost_beta = 0.0;
+    l.set_model(phylloptim::Leaf::CostCurve::LeastCost, false);
+    ok(throws_with([&] { l.optimise(); }, "strictly positive"),
+       "zero is refused: it deletes the capacity term rather than limiting it");
+  }
+  {
+    phylloptim::Leaf l = make_single_leaf(d, 1.0);
+    l.LeastCost_beta = -1.0;
+    l.set_model(phylloptim::Leaf::CostCurve::LeastCost, false);
+    ok(throws_with([&] { l.optimise(); }, "strictly positive"),
+       "a negative unit-cost ratio is refused");
+  }
+}
+
+
+// The price of water a curve reports is the one quantity every member here is
+// compared on, so it has to be the price this objective actually pays. Checked
+// by finite difference against dA/dE at the solved optimum, which is the check
+// `test_lambda_emergent_reported` applies to the others.
+void test_leastcost_lambda_is_dA_dE() {
+  printf("LeastCost's reported lambda is dA/dE at its own optimum\n");
+  Drivers d;
+  d.PPFD = 1500.0;
+  phylloptim::Leaf l = make_single_leaf(d, 0.5);
+  l.LeastCost_beta = 146.0;
+  l.set_model(phylloptim::Leaf::CostCurve::LeastCost, false);
+  l.optimise();
+  ok(std::isfinite(l.lambda_emergent_), "a lambda is reported");
+
+  const double psi = l.opt_psi_stem_;
+  const double eps = 1e-6;
+  auto A_of = [&](double p) {
+    l.set_leaf_states_rates_from_psi_stem(p, 0.5);
+    return l.assim_colimited_;
+  };
+  auto E_of = [&](double p) { return l.transpiration(p, 0.5); };
+  const double dA = (A_of(psi + eps) - A_of(psi - eps)) / (2.0 * eps);
+  const double dE = (E_of(psi + eps) - E_of(psi - eps)) / (2.0 * eps);
+  const double fd = dA / dE;
+  printf("    lambda = %.6g, dA/dE = %.6g, rel = %+.3e\n",
+         l.lambda_emergent_, fd, (l.lambda_emergent_ - fd) / fd);
+  ok(std::fabs(l.lambda_emergent_ - fd) / std::fabs(fd) < 1e-4,
+     "the reported price equals dA/dE by finite difference");
+}
+
+
 void test_every_curve_returns_its_own_maximum() {
   printf("every cost curve's optimum beats a scan of its own objective\n");
 
@@ -6449,10 +6708,15 @@ void test_every_curve_returns_its_own_maximum() {
       d.leaf_temp = r.leaf_temp;
 
       phylloptim::Leaf l = make_single_leaf(d, r.psi_soil);
-      // The two curves with no default: prescribed, not derived, and unset is NA.
-      // Set unconditionally, because a field a curve does not read costs nothing.
+      // The three curves with no default: prescribed, not derived, and unset is
+      // NA. Set unconditionally, because a field a curve does not read costs
+      // nothing -- and because an unset one does not degrade gracefully. This
+      // loop runs to `n_cost_curves`, so a curve added to the enum arrives here
+      // whether or not anyone remembers to; `LeastCost` did, and aborted the
+      // whole binary on its refusal until its beta was set here.
       l.CF77_lambda_ = 1.5e5;
       l.TF24_floor_lambda_o = kFloorLambdaO;
+      l.LeastCost_beta = 146.0;
       l.set_model(static_cast<phylloptim::Leaf::CostCurve>(curve), false);
       l.optimise();
       const double got = l.profit_;
@@ -6464,6 +6728,7 @@ void test_every_curve_returns_its_own_maximum() {
       phylloptim::Leaf m = make_single_leaf(d, r.psi_soil);
       m.CF77_lambda_ = 1.5e5;
       m.TF24_floor_lambda_o = kFloorLambdaO;
+      m.LeastCost_beta = 146.0;
       // ⚠️ ProfitMax's objective is UNDEFINED on a leaf that has not scanned for
       // |A|max, so a fresh oracle leaf returns NaN at every point and the curve
       // silently contributes nothing -- which is how this test first passed while
@@ -6546,6 +6811,7 @@ void test_collar_profit_is_its_own_curve() {
     phylloptim::Leaf l = make_single_leaf(d, 1.0);
     l.CF77_lambda_ = 1.5e5;
     l.TF24_floor_lambda_o = kFloorLambdaO;
+    l.LeastCost_beta = 146.0;
     try {
       l.set_model(static_cast<phylloptim::Leaf::CostCurve>(c), true);
       l.optimise();
@@ -6560,6 +6826,7 @@ void test_collar_profit_is_its_own_curve() {
     phylloptim::Leaf m = make_single_leaf(d, 1.0);
     m.CF77_lambda_ = 1.5e5;
     m.TF24_floor_lambda_o = kFloorLambdaO;
+    m.LeastCost_beta = 146.0;
     m.set_model(static_cast<phylloptim::Leaf::CostCurve>(c), false);
     const double again = m.evaluate_psi_stem_at(psi);
     (void)collar;
@@ -7241,6 +7508,9 @@ int main() {
   test_tf24_floor_kmax_vpd_invariance();
   test_tf24_floor_refuses_an_unset_price();
   test_tf24_floor_closed_form();
+  test_leastcost_matches_prentice_closed_form();
+  test_leastcost_refuses_an_unset_or_degenerate_beta();
+  test_leastcost_lambda_is_dA_dE();
   test_every_curve_returns_its_own_maximum();
   test_collar_profit_is_its_own_curve();
   test_thermal_damage_gate_off_is_inert();

@@ -473,6 +473,15 @@ void Leaf__TF24_floor_lambda_o__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf>
 }
 
 // [[Rcpp::export]]
+double Leaf__LeastCost_beta__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
+  return obj_->LeastCost_beta;
+}
+// [[Rcpp::export]]
+void Leaf__LeastCost_beta__set(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_, double value) {
+  obj_->LeastCost_beta = value;
+}
+
+// [[Rcpp::export]]
 double Leaf__theta__get(phylloptim::RcppR6::RcppR6<phylloptim::Leaf> obj_) {
   return obj_->theta;
 }

@@ -75,6 +75,7 @@ using phylloptim::par_JS22_gamma; using phylloptim::par_CMax_a;
 using phylloptim::par_CMax_b;     using phylloptim::par_kmax;
 using phylloptim::par_resistance; using phylloptim::par_CF77_lambda;
 using phylloptim::par_TF24_floor_lambda_o;
+using phylloptim::par_LeastCost_beta;
 using phylloptim::par_A;          using phylloptim::par_I;
 using phylloptim::par_D;          using phylloptim::par_topt_offset;
 using phylloptim::par_dTopt_max;  using phylloptim::par_K_A;
@@ -117,6 +118,7 @@ inline const std::vector<std::string>& par_names() {
       "resistance",
       "CF77_lambda_",
       "TF24_floor_lambda_o",
+      "LeastCost_beta",
       "A_", "I_", "D_", "topt_offset_", "dTopt_max_", "K_A_", "k_i_",
       "k_i_baseline_", "k_rec_", "m_rep_", "t_rep_cut_", "c_acclim_maint_",
       "c_repair_maint_", "c_protect_maint_", "c_repair_flux_"};
@@ -490,6 +492,7 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
   // nothing is derived from either, so a bare write leaves no stale state behind.
   l.CF77_lambda_ = theta[par_CF77_lambda];
   l.TF24_floor_lambda_o = theta[par_TF24_floor_lambda_o];
+  l.LeastCost_beta = theta[par_LeastCost_beta];
   // The thermal-damage layer's inputs, ONLY with its gate on -- off, the slots
   // hold whatever a caller zero-filled and are never read -- and BEFORE the
   // drivers, because set_physiology is what seats the block that reads them.

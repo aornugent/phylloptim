@@ -89,17 +89,18 @@ namespace phylloptim {
 //
 // The fifteen traits in `Leaf::set_traits`' argument order, then the slots that
 // are not traits: `kmax` (the conductance driver), `resistance` (the
-// single-potential path's series resistance), the two model-owned prices
-// (`CF77_lambda`, `TF24_floor_lambda_o`), the fifteen inputs of the thermal-damage
-// layer that reach the solve, and `PPFD`. Everything before `PPFD` is what a
-// calibration fits, `gradient::n_theta` (34); `PPFD` is seated per observation
-// from the drivers and is never fitted, and `n_pars` (35) counts it.
+// single-potential path's series resistance), the three model-owned slots
+// (`CF77_lambda`, `TF24_floor_lambda_o`, `LeastCost_beta`), the fifteen inputs of
+// the thermal-damage layer that reach the solve, and `PPFD`. Everything before
+// `PPFD` is what a calibration fits, `gradient::n_theta` (35); `PPFD` is seated
+// per observation from the drivers and is never fitted, and `n_pars` (36) counts
+// it.
 //
 // ⚠️ R INDEXES THESE POSITIONS, so a reordering silently differentiates the wrong
 // parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
 // them with R's, so the two cannot drift apart without a failure.
 inline constexpr int n_traits = 15;
-inline constexpr int n_pars = 35;
+inline constexpr int n_pars = 36;
 
 // Every index by name, so nothing below indexes `theta` with a bare integer.
 // The first `n_traits` are `set_traits`' arguments in its order, which is also
@@ -148,12 +149,34 @@ inline constexpr int par_CF77_lambda = 17;
 // safe way to talk about this class. R's `.gradient_model_pars()` is the single
 // table that says which model owns which slot; there is no second copy here.
 inline constexpr int par_TF24_floor_lambda_o = 18;
+// Least-cost's unit-cost ratio (Prentice et al. 2014's beta), the THIRD
+// model-owned slot. Same treatment as the two prices above:
+// `.gradient_model_pars()` offers it for `LeastCost` alone and refuses it
+// elsewhere, naming the model. Inserted here rather than appended after the
+// thermal-damage block so the three slots one curve each owns stay contiguous,
+// which costs the fifteen slots below a renumbering -- safe, because every
+// consumer reads them by name (plant's `tf24_strategy.h` included).
+//
+// ⚠️ IT IS NOT A PRICE, unlike the other two model-owned slots, and the message
+// R raises for it says so. `CF77_lambda_` and `TF24_floor_lambda_o` are marginal
+// values of water in umol C (kg H2O)^-1; this is a DIMENSIONLESS ratio of two unit
+// costs, and least-cost's price of water is emergent from it rather than equal to
+// it. What the three share is the reason they live here: a parameter of one curve
+// that every other curve has no slot for.
+//
+// ⚠️ `gradient::step_for`'s RULE IS RIGHT FOR IT BY LUCK RATHER THAN BY DESIGN.
+// Its published value is 146, so the `max(|value|, 1)` floor never binds and it
+// takes a relative step. A caller sweeping beta below 1 would get the absolute
+// step instead, which at beta = 0.5 is a 2x perturbation -- the same trap
+// `leaf_specific_conductance_max` is exempted from, and not exempted here because
+// no such use exists yet.
+inline constexpr int par_LeastCost_beta = 19;
 // The thermal-damage layer's inputs that REACH THE SOLVE (use_thermal_damage_):
 // its three states, the acclimated shift of the Vcmax/Jmax optima, and every
-// quantity a maintenance cost multiplies. Model-owned in the same sense as the two
-// prices -- available only on a leaf with the gate on, and refused by name
-// elsewhere -- and seated BEFORE the drivers, because set_physiology is what reads
-// them.
+// quantity a maintenance cost multiplies. Model-owned in the same sense as the
+// three slots above -- available only on a leaf with the gate on, and refused by
+// name elsewhere -- and seated BEFORE the drivers, because set_physiology is what
+// reads them.
 //
 // ⚠️ THE LAYER'S DYNAMICS PARAMETERS ARE NOT HERE, AND MUST NOT BE ADDED. The
 // impairment switch (impair_H_, impair_Tmid_, dTimpair_max_), the impairment
@@ -161,21 +184,21 @@ inline constexpr int par_TF24_floor_lambda_o = 18;
 // only damage_rates(), never a solved output, so a slot here would report an exact
 // zero that reads as an answer. Their gradient is the trajectory's
 // (damage_trajectory_gradient).
-inline constexpr int par_A = 19;
-inline constexpr int par_I = 20;
-inline constexpr int par_D = 21;
-inline constexpr int par_topt_offset = 22;
-inline constexpr int par_dTopt_max = 23;
-inline constexpr int par_K_A = 24;
-inline constexpr int par_k_i = 25;
-inline constexpr int par_k_i_baseline = 26;
-inline constexpr int par_k_rec = 27;
-inline constexpr int par_m_rep = 28;
-inline constexpr int par_t_rep_cut = 29;
-inline constexpr int par_c_acclim_maint = 30;
-inline constexpr int par_c_repair_maint = 31;
-inline constexpr int par_c_protect_maint = 32;
-inline constexpr int par_c_repair_flux = 33;
+inline constexpr int par_A = 20;
+inline constexpr int par_I = 21;
+inline constexpr int par_D = 22;
+inline constexpr int par_topt_offset = 23;
+inline constexpr int par_dTopt_max = 24;
+inline constexpr int par_K_A = 25;
+inline constexpr int par_k_i = 26;
+inline constexpr int par_k_i_baseline = 27;
+inline constexpr int par_k_rec = 28;
+inline constexpr int par_m_rep = 29;
+inline constexpr int par_t_rep_cut = 30;
+inline constexpr int par_c_acclim_maint = 31;
+inline constexpr int par_c_repair_maint = 32;
+inline constexpr int par_c_protect_maint = 33;
+inline constexpr int par_c_repair_flux = 34;
 // The light the leaf is standing in: the INTERCEPTED PPFD per unit leaf area,
 // the photon flux incident on the leaf before its absorptance. A DRIVER rather
 // than a trait, on the same footing as `kmax`: the consumer seats it per cohort
@@ -186,7 +209,7 @@ inline constexpr int par_c_repair_flux = 33;
 // that moves the light a cohort stands in -- the extinction coefficient, the leaf
 // area a stem carries -- reaches assimilation with no row at all and reads as an
 // exact zero, which is the signature of a missing accumulator.
-inline constexpr int par_PPFD = 34;
+inline constexpr int par_PPFD = 35;
 
 
 // The differentiable parameters, as one array indexed by the enumeration above.
@@ -726,6 +749,40 @@ public:
   // rather than the model. See `kLambdaCF77` in tests/cpp/test_golden.cpp, which
   // makes the same point about the same units.
   double TF24_floor_lambda_o = util::na_value;     // umol C (kg H2O)^-1
+  // THE UNIT-COST RATIO OF LEAST-COST THEORY (@Prentice-2014's beta), and the
+  // LeastCost curve's ONLY parameter. An INPUT on the same footing as
+  // `CF77_lambda_` and `TF24_floor_lambda_o`: no default, never assigned by model
+  // code, not cleared by setup_clean_leaf().
+  //
+  // Least-cost minimises `C_P = (c_E*E + c_V*Vcmax)/A`, so it has two unit costs
+  // rather than one. ⚠️ ONE FIELD IS ENOUGH, AND THIS IS NOT A SIMPLIFICATION.
+  // Scaling both costs by k multiplies C_P by k, which moves neither the argmax nor
+  // the marginal cost of water: dividing through by `c_E` leaves
+  // `C_P/c_E = (E + beta*Vcmax)/A` with `beta = c_V/c_E`, and lambda (below) has
+  // `c_E` cancelling top and bottom. The ONLY quantity the missing factor reaches
+  // is the reported `profit_`, which on this curve -- as on SOX and JW26 -- is a
+  // ratio rather than a carbon flux and is not comparable with a subtracted curve's
+  // profit anyway. So the curve is parameterised by the published quantity: beta.
+  //
+  // ⚠️ DIMENSIONLESS, WHICH FIXES THE UNITS OF BOTH TERMS IT WEIGHS. beta is a ratio
+  // of two unit costs, so `E` and `Vcmax` must be in the SAME molar units for it to
+  // be the published number. This package carries `E` in kg H2O m^-2 s^-1 and
+  // `vcmax_` in umol CO2 m^-2 s^-1, so `leastcost_flux()` converts both to
+  // mol m^-2 s^-1 before weighing them. Feeding this field a beta derived against
+  // kg-and-umol would be off by a factor of 5.6e7.
+  //
+  // ⚠️ IT WEIGHS `vcmax_`, THE TEMPERATURE-ADJUSTED CAPACITY, not `vcmax_25`. That
+  // is what appears in the assimilation the ratio divides by, and it is what makes
+  // the first-order condition here the one @Prentice-2014 write down. It also means
+  // the two costs move apart as the leaf warms, which is the acclimation channel
+  // S1.4 of the theory paper flags: their beta carries a viscosity term (eta*) that
+  // this package does not model, so beta here is beta/eta* at the leaf's own
+  // temperature. At 25 C eta* is 1 by definition and the two agree.
+  //
+  // @Prentice-2014 report beta = 146 and @Dong-2017 fit 146 +- a factor of about
+  // two; below ~10 the water term dominates and the leaf closes, above ~1e4 the
+  // capacity term does and it opens to the wet bound.
+  double LeastCost_beta = util::na_value;          // dimensionless, c_V / c_E
   double hydraulic_cost_;
   
   double electron_transport_;
@@ -1802,8 +1859,11 @@ public:
     pair<T> ci;
   };
 
-  enum class CostCurve {
- TF24, CF77, JS22, CMax, SOX, JW26, ProfitMax, TF24_floor };
+  // Which cost curve a psi_stem derivative differentiates. The cost enters the
+  // chain through exactly ONE quantity -- dC/dpsi_stem -- so this selects that
+  // and nothing else.
+  enum class CostCurve { TF24, CF77, JS22, CMax, SOX, JW26, ProfitMax, TF24_floor,
+                         LeastCost };
 
   // ⚠️ THE ONE ABSTRACTION THAT MAKES EVERY MODEL THE SAME MODEL.
   //
@@ -1818,7 +1878,11 @@ public:
   //                                                   TF24_floor
   //     Log       h(A) = log A        h' = 1/A        SOX, JW26  (products: A*g
   //                                                   and log A + log g share
-  //                                                   an argmax)
+  //                                                   an argmax), LeastCost
+  //                                                   (a RATIO: minimising
+  //                                                   (c_E E + c_V V)/A is
+  //                                                   maximising log A -
+  //                                                   log(c_E E + c_V V))
   //     Scaled    h(A) = A/|A|max     h' = 1/|A|max   ProfitMax
   //
   // ⚠️ THE LINK IS NOT ONLY ON THE BENEFIT, AND READING IT THAT WAY IS THE NATURAL
@@ -1846,7 +1910,7 @@ public:
   // moment ProfitMax was appended -- the curve existed, had a link and a
   // derivative, and was simply invisible to R because `curve_name()` called it
   // unknown. Keep this the last member.
-  static constexpr int n_cost_curves = static_cast<int>(CostCurve::TF24_floor) + 1;
+  static constexpr int n_cost_curves = static_cast<int>(CostCurve::LeastCost) + 1;
 
   // ⚠️ THE MODEL IS CONFIGURATION, NOT A CALL ARGUMENT, and the reason is that its
   // PARAMETERS already are. `CF77_lambda_` and `TF24_floor_lambda_o` are fields;
@@ -2090,6 +2154,8 @@ public:
         return f(std::integral_constant<CostCurve, CostCurve::ProfitMax>{});
       case CostCurve::TF24_floor:
         return f(std::integral_constant<CostCurve, CostCurve::TF24_floor>{});
+      case CostCurve::LeastCost:
+        return f(std::integral_constant<CostCurve, CostCurve::LeastCost>{});
     }
     // Unreachable for any enumerator, and not a `default:` arm -- a `default`
     // would satisfy `-Werror=switch` and so remove the check this exists for.
@@ -2485,7 +2551,7 @@ public:
   // The objective at a placed operating point, and everything plant reads.
   //
   // ⚠️ TEMPLATED ON THE CURVE, IMPLEMENTED FOR TF24 AND TF24_floor. A
-  // static_assert refuses the other six, so another curve is a branch here rather
+  // static_assert refuses the other seven, so another curve is a branch here rather
   // than a redesign -- and until something differentiates one, a branch written
   // for it would have no caller and no reference to check it against.
   template <CostCurve K, class S>
@@ -2650,6 +2716,52 @@ public:
   // own `Pcrit`; deriving it instead is what makes this and SOX two interpolations
   // between the SAME two anchors (1 at zero tension, 0 at `psi_crit`) and so
   // comparable by construction rather than by matching a parameter.
+  // --- least-cost / cost-per-unit-carbon --------------------------------------
+  //
+  // Prentice et al. (2014) and Dong et al. (2017) minimise the cost of acquiring a
+  // unit of carbon, `C_P = (c_E*E + c_V*Vcmax)/A`, rather than maximising a
+  // difference. Minimising a ratio is maximising its reciprocal, and `log` turns
+  // that into `log A - log(c_E*E + c_V*Vcmax)` -- the same benefit link SOX and
+  // JW26 use, with the penalty now carrying CAPACITY as well as flux. That is the
+  // reduction written out in S1.4 of the theory manuscript; the family form is
+  // `h = log`, `Theta = log(c_E*E + c_V*Vcmax)`.
+  //
+  // ⚠️ THE ONLY CURVE HERE WHOSE PENALTY CARRIES SOMETHING OTHER THAN WATER. Every
+  // other cost in this class is a function of psi (or of E) alone; this one weighs
+  // photosynthetic capacity against transpiration, which is why its first-order
+  // condition reproduces Prentice et al.'s `chi = xi/(xi + sqrt(D))` and why a
+  // light sweep on it measures acclimation rather than the price of water.
+
+  // The weighted resource use `W = E_mol + beta*Vcmax_mol`, mol m^-2 s^-1, and the
+  // ONE place the two unit conversions live -- E from kg to mol, Vcmax from umol to
+  // mol. The cost is `log W`, its derivative `W'/W`, the objective `A/W` and the
+  // price `A*kg_to_mol_h2o/W`, so all four read this and cannot disagree about the
+  // units beta is dimensionless in.
+  double leastcost_flux(double psi_stem, double psi_upstream);
+
+  // ⚠️ A RATIO, so what comes back is NOT in carbon units -- the same caveat
+  // `profit_psi_stem_SOX` carries, and for a related reason. It is `A/W`, umol C
+  // per mol of weighted resource, and it is `c_E/C_P`: the reciprocal of the
+  // published cost per unit carbon, times a constant this curve does not carry
+  // (see `LeastCost_beta`). Monotone in `-C_P`, so the argmax is the published
+  // model's, and the VALUE must not be compared with a TF24 profit.
+  double profit_psi_stem_LeastCost(double psi_stem, double psi_upstream);
+
+  // The marginal cost of water this curve implies, umol C (kg H2O)^-1, on the same
+  // axis as every other `lambda_*` here:
+  //
+  //     lambda = h'(A)^-1 * dTheta/dE = A * kg_to_mol_h2o / W
+  //
+  // which is eq. S1.4 of the theory manuscript, `lambda = c_E*A/(c_E*E +
+  // c_V*Vcmax)`, with `c_E` cancelled and the kg-to-mol factor supplied.
+  //
+  // ⚠️ IT DOES NOT VANISH AT THE WET END, and it is the only LOG-link curve here of
+  // which that is true. As E -> 0 this tends to `A*kg_to_mol_h2o/(beta*Vcmax_mol)`,
+  // finite and set by the capacity term; SOX's and JW26's both carry `A` to zero
+  // through their own `g`. It does carry `A`, so it still falls as assimilation
+  // does -- the wet end is finite in psi, not in light.
+  double lambda_LeastCost(double psi_stem, double psi_upstream);
+
   double jw26_reduction(double psi_stem) const;
   double jw26_reduction_deriv(double psi_stem) const;
   double profit_psi_stem_JW26(double psi_stem, double psi_upstream);
@@ -3333,8 +3445,9 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
   // that would otherwise hand back the old vcmax_.
   //
   // "The just-constructed state" is exact for the derived state and the outputs,
-  // which is all of it bar `CF77_lambda_` and `TF24_floor_lambda_o` -- caller inputs,
-  // left standing on purpose (#96, see their declarations).
+  // which is all of it bar `CF77_lambda_`, `TF24_floor_lambda_o` and
+  // `LeastCost_beta` -- caller inputs, left standing on purpose (#96, see their
+  // declarations).
   setup_clean_leaf();
 }
 
@@ -3389,6 +3502,7 @@ inline leaf_pars<double> Leaf::passive_pars() const {
                                     : roots_.network_.r_R_V_sum.front();
   p[par_CF77_lambda] = CF77_lambda_;
   p[par_TF24_floor_lambda_o] = TF24_floor_lambda_o;
+  p[par_LeastCost_beta] = LeastCost_beta;
   p[par_A] = A_;
   p[par_I] = I_;
   p[par_D] = D_;
@@ -3415,10 +3529,10 @@ inline void Leaf::setup_clean_leaf() {
   assim_colimited_= util::na_value; // umol C m^-2 s^-1 
   transpiration_= util::na_value; // kg m^-2 s^-1 
   profit_= util::na_value; // umol C m^-2 s^-1
-  // CF77_lambda_ and TF24_floor_lambda_o are deliberately NOT here: they are the
-  // caller's inputs, not derived state, and carry their NA defaults at the
-  // declarations instead (#96). Adding either back makes a prescribed price
-  // survive set_drivers() and vanish on set_traits().
+  // CF77_lambda_, TF24_floor_lambda_o and LeastCost_beta are deliberately NOT
+  // here: they are the caller's inputs, not derived state, and carry their NA
+  // defaults at the declarations instead (#96). Adding any back makes a
+  // prescribed price survive set_drivers() and vanish on set_traits().
   carbon_gain_= util::na_value;
   hydraulic_cost_norm_= util::na_value;
   thermal_cost_= util::na_value;
@@ -5017,6 +5131,19 @@ inline double Leaf::cost_deriv(double psi_stem, double psi_upstream) {
     // The same, and here `-g'/g` collapses: with `g = 1 - psi/psi_crit` it is
     // exactly `1/(psi_crit - psi)`.
     C_prime = 1.0 / (psi_crit - psi_stem);
+  } else if constexpr (K == CostCurve::LeastCost) {
+    // Under the log link the cost is `+log W`, where `W = E_mol + beta*Vcmax_mol`
+    // is the weighted resource use of `leastcost_flux`. So dC/dpsi is `W'/W`, and
+    // `W' = kg_to_mol_h2o * kmax * f(psi)` -- the capacity term is constant in
+    // psi_stem, so it survives only in the denominator.
+    //
+    // ⚠️ THE SIGN IS THE OPPOSITE OF SOX's AND JW26's, and that is the one place a
+    // ratio differs from a product. Theirs is `-g'/g` with `g` falling; this is
+    // `+W'/W` with `W` rising. Both are costs that grow with tension; they get
+    // there from different halves of the objective.
+    C_prime = kg_to_mol_h2o * leaf_specific_conductance_max_ *
+              stem_curve_integral_deriv(psi_stem) /
+              leastcost_flux(psi_stem, psi_upstream);
   } else if constexpr (K == CostCurve::ProfitMax) {
     // C = [k(psi_s) - k(psi)]/k_span, so dC/dpsi = kmax*|f'|/k_span. The thermal
     // term is constant in psi with the energy balance off, and the guard below
@@ -5055,7 +5182,10 @@ inline double Leaf::cost_deriv(double psi_stem, double psi_upstream) {
 template <Leaf::CostCurve K>
 constexpr bool Leaf::cost_reads_upstream() {
   if constexpr (K == CostCurve::CF77 || K == CostCurve::JS22 ||
-                K == CostCurve::CMax || K == CostCurve::TF24_floor) {
+                K == CostCurve::CMax || K == CostCurve::TF24_floor ||
+                K == CostCurve::LeastCost) {
+    // LeastCost: `log W` with `W = E_mol + beta*Vcmax_mol`, and E is measured
+    // from the upstream potential -- the only log-link cost here that is.
     return true;
   } else {
     static_assert(K == CostCurve::TF24 || K == CostCurve::SOX ||
@@ -5086,12 +5216,21 @@ inline double Leaf::cost_deriv_upstream(double psi_stem, double psi_upstream) {
     // lower limit, as for any integral of the price.
     (void)psi_stem;
     return -(CMax_a * psi_upstream + CMax_b);
-  } else {
-    static_assert(K == CostCurve::TF24_floor, "unhandled CostCurve");
+  } else if constexpr (K == CostCurve::TF24_floor) {
     // TF24's half reads psi_stem alone; the floor's lambda_o*E is CF77's arm.
     (void)psi_stem;
     return -(TF24_floor_lambda_o * leaf_specific_conductance_max_ *
              stem_curve_integral_deriv(psi_upstream));
+  } else {
+    static_assert(K == CostCurve::LeastCost, "unhandled CostCurve");
+    // `d(log W)/du = (dW/du)/W`, and `W` reads upstream only through E, so
+    // `dW/du = -kg_to_mol_h2o * kmax * G'(u)` -- CF77's arm with the kg-to-mol
+    // factor in place of the price, over the same `W` `cost_deriv` divides by.
+    // The capacity term is constant in both potentials and survives only in
+    // that denominator.
+    return -(kg_to_mol_h2o * leaf_specific_conductance_max_ *
+             stem_curve_integral_deriv(psi_upstream)) /
+           leastcost_flux(psi_stem, psi_upstream);
   }
 }
 
@@ -7701,6 +7840,49 @@ inline double Leaf::profit_psi_stem_JW26(double psi_stem,
 }
 
 
+// --- least-cost / cost-per-unit-carbon ---------------------------------------
+
+// `W = E_mol + beta*Vcmax_mol`, mol m^-2 s^-1. Both conversions in one place; see
+// the declaration for why beta's dimensionlessness requires them.
+//
+// ⚠️ IT READS `vcmax_`, NOT `vcmax_25`, so with the energy balance on it moves with
+// the solved leaf temperature -- which is what makes `A/W` the ratio Prentice et
+// al. minimise rather than a ratio to a reference-temperature capacity. `vcmax_` is
+// re-derived per candidate potential by `set_leaf_states_rates_from_psi_stem`, and
+// this function is called from `cost_deriv` (which does not call it) as well as
+// from the profit (which does). At a fixed leaf temperature the two agree because
+// `vcmax_` does not move; with the energy balance ON they can differ by one
+// candidate, which is the same exposure `lambda_SOX` has and is why the derivative
+// is refused under a non-identity link with the energy balance on (see
+// `optimise_psi_stem_single`).
+inline double Leaf::leastcost_flux(double psi_stem, double psi_upstream) {
+  return transpiration(psi_stem, psi_upstream) * kg_to_mol_h2o +
+         LeastCost_beta * vcmax_ * umol_to_mol;
+}
+
+
+// ⚠️ A RATIO, not a carbon flux, and `hydraulic_cost_` IS EXPLICITLY POISONED for
+// the reason `profit_psi_stem_SOX` gives: there is no subtracted cost on this
+// curve, so leaving the field alone reports whichever curve ran last on a reused
+// `Leaf`.
+inline double Leaf::profit_psi_stem_LeastCost(double psi_stem,
+                                              double psi_upstream) {
+  set_leaf_states_rates_from_psi_stem(psi_stem, psi_upstream);
+  hydraulic_cost_ = util::na_value;
+  return assim_colimited_ / leastcost_flux(psi_stem, psi_upstream);
+}
+
+
+// `lambda = A*kg_to_mol_h2o/W`. Reads the solved `assim_colimited_` rather than
+// re-deriving it, exactly as `lambda_SOX` does, so it means what it says only at
+// the potential the leaf was last evaluated at -- which is how the optimisers call
+// it, immediately after writing `profit_`.
+inline double Leaf::lambda_LeastCost(double psi_stem, double psi_upstream) {
+  return assim_colimited_ * kg_to_mol_h2o /
+         leastcost_flux(psi_stem, psi_upstream);
+}
+
+
 //optimisation functions
 
 // Everything a single-layer optimiser leaves untouched, cleared rather than
@@ -7948,6 +8130,7 @@ inline std::string Leaf::curve_name(int curve) {
     case CostCurve::JW26: return "JW26";
     case CostCurve::ProfitMax: return "ProfitMax";
     case CostCurve::TF24_floor: return "TF24_floor";
+    case CostCurve::LeastCost: return "LeastCost";
   }
   return "unknown";   // unreachable past the bounds check above
 }
@@ -7996,7 +8179,14 @@ inline std::vector<double> Leaf::dprofit_dpsi_stem_checked(double psi_stem) {
 // asserts, so a curve added to the enum without a link is a build failure.
 template <Leaf::CostCurve K>
 constexpr Leaf::BenefitLink Leaf::benefit_link() {
-  if constexpr (K == CostCurve::SOX || K == CostCurve::JW26) {
+  if constexpr (K == CostCurve::SOX || K == CostCurve::JW26 ||
+                K == CostCurve::LeastCost) {
+    // ⚠️ LeastCost REACHES THIS ARM BY A DIFFERENT ROUTE FROM THE OTHER TWO, and
+    // the difference is worth keeping in view. SOX and JW26 are products `A*g`,
+    // whose log is `log A + log g`; LeastCost is a RATIO `A/W`, whose log is
+    // `log A - log W`. A product's log-cost is `-log g` and a ratio's is `+log W`,
+    // so the sign lands in `cost_deriv` rather than here -- the link itself is the
+    // same `h = log`, and `h' = 1/A` is all this table reports.
     return BenefitLink::Log;
   } else if constexpr (K == CostCurve::ProfitMax) {
     return BenefitLink::Scaled;
@@ -8121,6 +8311,29 @@ inline void Leaf::check_cost_parameters() {
                  "`TF24_floor_lambda_o =` to leaf_solve() / leaf_batch(); got " +
                  util::to_string(TF24_floor_lambda_o));
     }
+  } else if constexpr (K == CostCurve::LeastCost) {
+    // ⚠️ AN INPUT WITH NO DEFAULT, for CF77's reason rather than TF24_floor's.
+    // There is no other curve this one collapses into, so an unset beta is not a
+    // silent substitution -- it is a NaN objective, whose argmax is a property of
+    // the bracket and looks entirely plausible. Refuse instead.
+    //
+    // ⚠️ AND STRICTLY POSITIVE, WHICH IS NOT THE SAME CHECK `TF24_floor_lambda_o`
+    // GETS. Zero is accepted there and is the reduction test's own case; here it
+    // deletes the capacity term, leaving `A/E` -- water-use efficiency, which rises
+    // without bound as transpiration goes to zero, so the optimiser returns the wet
+    // bound for every driver set. That is a degenerate objective rather than a
+    // limiting case of this one.
+    if (!std::isfinite(LeastCost_beta) || LeastCost_beta <= 0.0) {
+      util::stop("the LeastCost cost curve needs LeastCost_beta set: it is "
+                 "Prentice et al. (2014)'s beta, the unit cost of maintaining "
+                 "carboxylation capacity relative to that of transpiration, "
+                 "DIMENSIONLESS (both fluxes are weighed in mol m^-2 s^-1), "
+                 "strictly positive, and NA until you assign one -- "
+                 "set_physiology and set_traits never touch it. The published "
+                 "value is 146. Set `$LeastCost_beta` on the leaf, or pass "
+                 "`LeastCost_beta =` to leaf_solve() / leaf_batch(); got " +
+                 util::to_string(LeastCost_beta));
+    }
   } else {
     static_assert(K == CostCurve::TF24 || K == CostCurve::SOX ||
                   K == CostCurve::JW26 || K == CostCurve::ProfitMax,
@@ -8130,9 +8343,10 @@ inline void Leaf::check_cost_parameters() {
 
 
 // Which objective. ⚠️ These are NOT all the same kind of number: five are carbon
-// (TF24, CF77, JS22, CMax, TF24_floor) and two are products (see
-// `profit_psi_stem_SOX`). That is
-// already true of `profit_` across the optimisers and is not introduced here.
+// (TF24, CF77, JS22, CMax, TF24_floor), two are products (see
+// `profit_psi_stem_SOX`) and one is a ratio (see `profit_psi_stem_LeastCost`).
+// That is already true of `profit_` across the optimisers and is not introduced
+// here.
 template <Leaf::CostCurve K>
 inline double Leaf::profit_psi_stem_for(double psi_stem, double psi_upstream) {
   if constexpr (K == CostCurve::TF24) {
@@ -8149,6 +8363,8 @@ inline double Leaf::profit_psi_stem_for(double psi_stem, double psi_upstream) {
     return profit_psi_stem_JW26(psi_stem, psi_upstream);
   } else if constexpr (K == CostCurve::TF24_floor) {
     return profit_psi_stem_TF24_floor(psi_stem, psi_upstream);
+  } else if constexpr (K == CostCurve::LeastCost) {
+    return profit_psi_stem_LeastCost(psi_stem, psi_upstream);
   } else {
     static_assert(K == CostCurve::ProfitMax, "unhandled CostCurve");
     return profit_psi_stem_ProfitMax(psi_stem, psi_upstream);
@@ -8186,6 +8402,8 @@ inline double Leaf::lambda_for(double psi_stem, double psi_upstream) {
     // only one of the two potentials.
     (void)psi_upstream;
     return lambda_TF24_floor(psi_stem);
+  } else if constexpr (K == CostCurve::LeastCost) {
+    return lambda_LeastCost(psi_stem, psi_upstream);
   } else {
     static_assert(K == CostCurve::ProfitMax, "unhandled CostCurve");
     (void)psi_upstream;
@@ -8288,10 +8506,12 @@ inline double Leaf::lambda_for(double psi_stem, double psi_upstream) {
 // ProfitMax -- the one curve needing setup before the search, and the one whose
 //   degenerate exit ZEROES where every other curve EVALUATES. See the branch below.
 //
-// TF24_floor -- TF24's cost plus CF77's price, and the only curve here whose marginal
-//   cost of water does NOT vanish at the wet end. That is the whole reason it
-//   exists: every conductance-loss curve in this package has `lambda -> 0` as the
-//   drop closes, which prices water as free precisely when it is abundant.
+// TF24_floor -- TF24's cost plus CF77's price, and the only DIFFERENCE objective
+//   here whose marginal cost of water does NOT vanish at the wet end (LeastCost's
+//   does not either, through its capacity term; see `lambda_LeastCost`). That is
+//   the whole reason it exists: every conductance-loss curve in this package has
+//   `lambda -> 0` as the drop closes, which prices water as free precisely when
+//   it is abundant.
 //   ⚠️ IT IS TF24 AT `lambda_o = 0`, AT TF24's OWN TRAITS. There is no second
 //   hydraulic parameter: the cost reads `TF24_cost_scale` and `TF24_beta2`, so the
 //   two curves differ by exactly one restriction and `lambda_o` is the whole of

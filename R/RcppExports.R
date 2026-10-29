@@ -445,6 +445,14 @@ Leaf__TF24_floor_lambda_o__set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__TF24_floor_lambda_o__set', PACKAGE = 'phylloptim', obj_, value))
 }
 
+Leaf__LeastCost_beta__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__LeastCost_beta__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__LeastCost_beta__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__LeastCost_beta__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
 Leaf__theta__get <- function(obj_) {
     .Call('_phylloptim_Leaf__theta__get', PACKAGE = 'phylloptim', obj_)
 }

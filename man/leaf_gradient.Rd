@@ -79,7 +79,8 @@ differentiate at}
 \item{pars}{what to differentiate with respect to. Any of the fifteen
 \code{\link[=leaf_traits]{leaf_traits()}} names, plus \code{"leaf_specific_conductance_max"}, on the
 single-potential path only \code{"resistance"}, on \code{model = "CF77"} only
-\code{"CF77_lambda_"}, and on \code{model = "TF24_floor"} only \code{"TF24_floor_lambda_o"}.
+\code{"CF77_lambda_"}, on \code{model = "TF24_floor"} only \code{"TF24_floor_lambda_o"},
+and on \code{model = "LeastCost"} only \code{"LeastCost_beta"}.
 On a reused leaf \code{x} with \code{use_thermal_damage_} on, also the layer's inputs
 that reach the solve: its states \code{"A_"}, \code{"I_"}, \code{"D_"}, the optimum shift
 \code{"topt_offset_"}, \code{"dTopt_max_"}, \code{"K_A_"}, and every quantity a maintenance

@@ -403,7 +403,8 @@ set_traits <- function(x, traits) {
 ##' @param pars what to differentiate with respect to. Any of the fifteen
 ##'   [leaf_traits()] names, plus `"leaf_specific_conductance_max"`, on the
 ##'   single-potential path only `"resistance"`, on `model = "CF77"` only
-##'   `"CF77_lambda_"`, and on `model = "TF24_floor"` only `"TF24_floor_lambda_o"`.
+##'   `"CF77_lambda_"`, on `model = "TF24_floor"` only `"TF24_floor_lambda_o"`,
+##'   and on `model = "LeastCost"` only `"LeastCost_beta"`.
 ##'   On a reused leaf `x` with `use_thermal_damage_` on, also the layer's inputs
 ##'   that reach the solve: its states `"A_"`, `"I_"`, `"D_"`, the optimum shift
 ##'   `"topt_offset_"`, `"dTopt_max_"`, `"K_A_"`, and every quantity a maintenance
@@ -611,6 +612,8 @@ leaf_gradient <- function(psi_soil,
                              x$CF77_lambda_,
                            TF24_floor_lambda_o = if (is.null(x)) NA_real_ else
                              x$TF24_floor_lambda_o,
+                           LeastCost_beta = if (is.null(x)) NA_real_ else
+                             x$LeastCost_beta,
                            damage = if (damage) .gradient_damage_values(x))
   if (is.null(pars)) {
     # ⚠️ WHAT IS AVAILABLE, not every slot in `theta`. The enumeration now carries
@@ -1126,6 +1129,7 @@ leaf_gradient <- function(psi_soil,
 # the last two", which was correct only while there were exactly two.
 .gradient_non_traits <- c("leaf_specific_conductance_max", "resistance",
                           "CF77_lambda_", "TF24_floor_lambda_o",
+                          "LeastCost_beta",
                           # .gradient_damage_pars, spelled out because this file
                           # is collated before the definition below is needed
                           "A_", "I_", "D_", "topt_offset_", "dTopt_max_", "K_A_",
@@ -1177,7 +1181,15 @@ leaf_gradient <- function(psi_soil,
 # copy of it. There are two such parameters now, so "the CF77 slot" has stopped
 # being a safe way to describe the class: what the function returns is everything
 # owned by a model OTHER than the active one.
-.gradient_owned_pars <- c(CF77 = "CF77_lambda_", TF24_floor = "TF24_floor_lambda_o")
+# ⚠️ THE THIRD ENTRY IS NOT A PRICE. `CF77_lambda_` and `TF24_floor_lambda_o` are
+# marginal values of water in umol C (kg H2O)^-1; `LeastCost_beta` is a
+# dimensionless ratio of two unit costs, and least-cost's price of water is
+# emergent from it rather than equal to it. What all three share is the only thing
+# this table is about: a parameter that one curve owns and no other curve has a
+# slot for.
+.gradient_owned_pars <- c(CF77 = "CF77_lambda_",
+                          TF24_floor = "TF24_floor_lambda_o",
+                          LeastCost = "LeastCost_beta")
 
 .gradient_model_pars <- function(model) {
   if (!(model %in% .gradient_models())) {
@@ -1261,6 +1273,7 @@ leaf_gradient <- function(psi_soil,
 .gradient_theta <- function(traits, kmax, supply, root_network,
                             CF77_lambda = NA_real_,
                             TF24_floor_lambda_o = NA_real_,
+                            LeastCost_beta = NA_real_,
                             damage = NULL) {
   theta <- c(unlist(traits), leaf_specific_conductance_max = kmax)
   if (identical(supply$kind, "single")) {
@@ -1271,7 +1284,8 @@ leaf_gradient <- function(psi_soil,
   # on every other route that number is never read, exactly as `resistance` is not
   # read on the multi-layer path.
   theta <- c(theta, CF77_lambda_ = CF77_lambda,
-             TF24_floor_lambda_o = TF24_floor_lambda_o)
+             TF24_floor_lambda_o = TF24_floor_lambda_o,
+             LeastCost_beta = LeastCost_beta)
   # The thermal-damage inputs, read off the leaf when its gate is on and NA
   # otherwise -- in which case neither side reads them.
   if (is.null(damage)) {
@@ -1401,6 +1415,16 @@ leaf_gradient <- function(psi_soil,
     lam_o <- theta[["TF24_floor_lambda_o"]]
     if (!is.na(lam_o)) {
       l$TF24_floor_lambda_o <- lam_o
+    }
+    # The third model-owned slot, on the same terms. ⚠️ WITHOUT THIS WRITE THE R
+    # REFERENCE DIFFERENTIATES NOTHING IN `LeastCost_beta`: the perturbed theta
+    # never reaches the leaf, the solve repeats at the seated beta, and the
+    # column comes back exactly zero while C++'s `gradient::apply()` writes the
+    # slot and reports a number -- an R-versus-C++ disagreement rather than an
+    # error, which is how this was first missed.
+    beta <- theta[["LeastCost_beta"]]
+    if (!is.na(beta)) {
+      l$LeastCost_beta <- beta
     }
     invisible(l)
   }

@@ -1,3 +1,98 @@
+# phylloptim 0.15.0
+
+## A new cost curve, `LeastCost`: cost per unit carbon (Prentice et al. 2014)
+
+The ninth member, and the one whose objective is not a difference. Least-cost
+minimises the cost of acquiring a unit of carbon,
+
+```
+C_P = (c_E*E + c_V*Vcmax) / A
+```
+
+which is a **ratio**. Minimising a ratio is maximising its reciprocal, and a
+logarithm separates the two factors, so it joins the family through the benefit
+link rather than through a new kind of objective:
+
+```
+max  log A - log(c_E*E + c_V*Vcmax)      h = log,  Theta = log(c_E*E + c_V*Vcmax)
+lambda = c_E*A / (c_E*E + c_V*Vcmax)
+```
+
+`h = log` is the link `SOX` and `JW26` already use. ⚠️ **It reaches that arm by a
+different route, and the sign lands elsewhere.** Those two are products `A*g`,
+whose log-cost is `-log g`; this is a ratio, whose log-cost is `+log W`. The link
+table reports `h' = 1/A` for all three; `cost_deriv` is where they differ.
+
+⚠️ **The only penalty here that carries something other than water.** Every other
+cost in this package is a function of potential alone. This one weighs
+photosynthetic capacity against transpiration, which is why its first-order
+condition reproduces Prentice et al.'s `chi` and why a light sweep on it measures
+acclimation rather than the price of water.
+
+```r
+leaf_solve(psi_soil = 0.1, PPFD = 3000, atm_vpd = 2, ca = 40, leaf_temp = 25,
+           supply = leaf_supply_singlelayer(),
+           model = "LeastCost", LeastCost_beta = 146)   # dimensionless
+```
+
+`LeastCost_beta` is `c_V/c_E`, the published unit-cost ratio. **One field is
+enough and that is not a simplification:** scaling both unit costs by `k`
+multiplies `C_P` by `k`, which moves neither the argmax nor `lambda`. ⚠️ It is
+**dimensionless**, so both fluxes are weighed in `mol m^-2 s^-1` — a beta derived
+against this package's kg H2O and umol CO2 would be out by `5.6e7`.
+
+⚠️ **Unset is refused, and so is zero** — stricter than `TF24_floor`, which
+accepts an explicit zero because zero is `TF24` there. Zero here is not a limiting
+case: it deletes the capacity term, leaving `A/E`, which rises without bound as
+transpiration falls, so the optimiser returns the wet bound for every driver set.
+
+**Checked against the published analytical solution**, which no other curve here
+has. Prentice et al.'s first-order condition is
+
+```
+(ci - Gamma*) / (ca - ci) = xi / sqrt(D),    xi = sqrt(beta*(Km + Gamma*)/1.6)
+```
+
+and the solved `chi` reproduces it to **1e-11** across `D` = 1, 2 and 4 kPa, on a
+leaf driven onto the Rubisco-limited branch with `R_d` zeroed. Doubling beta
+scales `(ci - Gamma*)/(ca - ci)` by `sqrt(2)` to eight figures. At this package's
+own co-limited defaults the agreement is within 1.3%.
+
+⚠️ **Two reasons the widely-quoted `chi = xi/(xi + sqrt(D))` does not match to
+that precision, and neither is a defect.** That form is the condition above with
+`Gamma*` dropped from the numerator, so it understates `chi` by
+`(Gamma*/ca)/(1 + xi/sqrt(D))` — 4% at 1 kPa, 8% at 4 kPa, growing with deficit.
+And the `1.6` in `xi` is the H2O:CO2 stomatal diffusion ratio, where this package
+uses **1.67**; testing against 1.6 while the solver diffuses at 1.67 leaves a 0.6%
+error. The test suite asserts the size of the first gap rather than tolerating it.
+
+**No closed form.** `method = "closed"` is refused, for the reason `SOX` and
+`JW26` are: the log link puts `A` into lambda, and `lambda -> xi -> ci -> A`
+closes into a fixed point rather than an inversion. Prentice et al. do publish one,
+but they obtain it by solving in `ci` directly, where that `A` cancels.
+
+**The collar route solves the right first-order condition on it.** The cost reads
+the upstream potential through `E`, so `cost_reads_upstream<LeastCost>()` is true
+and `cost_deriv_upstream` carries `-k_max f(psi_up) / W` (in mol); without that row
+the collar solve converges on a point that is not the maximum, with every number
+plausible (#141). `test_collar_foc_matches_profit` includes the curve, 24 points.
+
+**What a consumer sees.** `LeastCost_beta` is a new `Leaf` field and a new slot in
+the parameter enumeration, `par_LeastCost_beta` = 19, placed after
+`TF24_floor_lambda_o` so the three model-owned slots stay contiguous; the fifteen
+thermal-damage slots and `par_PPFD` move up one, `gradient::n_theta` is **35** and
+`phylloptim::n_pars` **36**. Nothing that reads the pack by name moves; a `theta`
+written out by hand must gain the entry. `leaf_solve()`, `leaf_batch()` and
+`leaf_gradient()` take `LeastCost_beta`; every other model refuses it by name, and
+`leaf_gradient()` differentiates it on `model = "LeastCost"` (the R setter writes it
+back per perturbation, as C++'s `gradient::apply()` does).
+
+⚠️ **With the energy balance on, `W` moves with leaf temperature through `vcmax_`
+and no derivative here carries that term.** On the stem routes every log-link
+derivative is already refused with the gate on and the solver scans instead, so the
+optimum is unaffected; the collar route's first-order condition omits it. The same
+class of omission the other log-link curves carry there; stated rather than fixed.
+
 # phylloptim 0.14.1
 
 ## A soil drier than the stem curve's P99 is a closed leaf, not an error
