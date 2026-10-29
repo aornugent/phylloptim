@@ -14,7 +14,7 @@
 #include <phylloptim/clamp_sites.hpp>
 
 #include <odelia/interpolator.hpp>
-#include <odelia/value_with_slope.hpp>
+#include <odelia/with_slope.hpp>
 #include <odelia/tangent.hpp>
 #include <odelia/implicit_node.hpp>
 
@@ -50,7 +50,7 @@
 // `out.profit` and each layer's `out.uptake[j]` then carry their derivatives in
 // `pars` and `supply`, supplied from the implicit function theorem at the
 // converged point; nothing the root-find did is recorded. S is double, a tangent
-// (odelia::ode::tangent_scalar) or an adjoint (odelia::ode::active_scalar).
+// (odelia::ode::tangent_scalar) or an adjoint (odelia::ode::adjoint_scalar).
 // Preconditions, none checked beyond the first:
 //
 //   - the draw is taken at the solved collar (collar_at refuses another);
@@ -218,13 +218,13 @@ inline constexpr int par_PPFD = 35;
 // THIS IS THE INPUT PACK, and it is deliberately not a struct of named fields.
 // A struct would be a fourth spelling of an order that set_traits, leaf_traits()
 // and par_names() already spell three times, and every field would have to be
-// listed again in a walk for seeding -- which is how a parameter gets added to
+// listed again in a walk that sets directions -- which is how a parameter gets added to
 // the model and silently omitted from its gradient. Indexed by `par_*` the
 // access reads the same (`pars[par_kmax]`, not `pars[15]`) and there is one list.
 //
 // ⚠️ IT CARRIES THE TRAITS, NOT THE QUANTITIES DERIVED FROM THEM. stem_b and
 // psi_crit are functions of (stem_P50, stem_c) and are derived where they are
-// used, so a seed in stem_P50 reaches them by the chain rule rather than by a
+// used, so a direction in stem_P50 reaches them by the chain rule rather than by a
 // caller remembering to move three numbers together. Passing the derived pair
 // instead is what lets a curve be stated twice and the two disagree.
 template <class S> using leaf_pars = std::array<S, n_pars>;
@@ -236,7 +236,7 @@ template <class S> using leaf_pars = std::array<S, n_pars>;
 // in the same order, as the member it replaced, so nothing at double moves.
 namespace damage {
 
-// A forward-mode dual number: a value and its derivative in one seeded input.
+// A forward-mode dual number: a value and its derivative along one input.
 // Only what the dynamics need. Comparisons and clamps read the value.
 struct Dual {
   double v = 0.0;
@@ -1723,8 +1723,6 @@ public:
         break;
     }
   }
-  // A value and its response in the collar potential, travelling as one pair.
-  template <class T> using pair = odelia::value_with_slope<T>;
 
   // What the leaf hands over: the objective plant bills, and the water it drew
   // from each layer. At any scalar, because both re-enter plant's chain.
@@ -1746,7 +1744,7 @@ public:
   template <class S>
   struct SupplyDraw {
     double at = 0.0;
-    pair<S> flux;
+    odelia::with_slope<S> flux;
     std::vector<S> uptake;
     std::vector<double> duptake_dp;
 
@@ -1814,7 +1812,7 @@ public:
     // `NaN * step` in every layer's uptake, NaN in the value and in the row. That
     // reached plant, where one NaN row takes every trait column that shares the
     // adjoint accumulator -- and nothing named it, because the row plant hands to
-    // `record_with_derivatives` is the constant 1.0 and the sentinel is already
+    // `supply_derivatives` is the constant 1.0 and the sentinel is already
     // on the tape behind it.
     //
     // The rows go with the sentinel, which is right rather than a loss: the
@@ -1870,8 +1868,8 @@ public:
   // intercellular CO2 that goes with it.
   template <class T>
   struct CollarCoords {
-    pair<T> sigma;
-    pair<T> ci;
+    odelia::with_slope<T> sigma;
+    odelia::with_slope<T> ci;
   };
 
   // Which cost curve a psi_stem derivative differentiates. The cost enters the
@@ -2672,7 +2670,7 @@ public:
 
 
   // The pack as this leaf currently stands. The double path passes this where the
-  // active path passes a seeded copy, so both reach the kernels the same way and
+  // active path passes a copy carrying directions, so both reach the kernels the same way and
   // there is one call convention rather than a member-reading twin.
   leaf_pars<double> passive_pars() const;
   double assim_minus_stom_cond_CO2(double x, double psi_stem, double psi_upstream);
@@ -3527,7 +3525,7 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
 
 // ⚠️ THE ROWS ARE IN (P50, c), NOT (b, c). stem_b is derived, so a row in it
 // describes a parameter this model does not have -- and set_traits re-derives b
-// from P50 on every call, so a seed in b reaches nothing at all. The chain is
+// from P50 on every call, so a direction in b reaches nothing at all. The chain is
 // exact: with L = ln 2 and b = P50 * L^(-1/c),
 //
 //     db/dP50 = b / P50            db/dc = b * ln(L) / c^2
@@ -5962,9 +5960,10 @@ inline std::vector<std::string> Leaf::damage_par_names() const {
           "A0", "I0", "D0"};
 }
 
-// One forward-mode pass per requested input, each seeding a dual number in that
-// parameter (or initial state) and running the same RK4 the double trajectory
-// runs. Exact for the discrete map, at the sub-step count the double run uses.
+// One forward-mode pass per requested input, each setting a dual number's
+// direction in that parameter (or initial state) and running the same RK4 the
+// double trajectory runs. Exact for the discrete map, at the sub-step count the
+// double run uses.
 inline std::vector<double> Leaf::damage_trajectory_gradient(
     const std::vector<double>& times, const std::vector<double>& leaf_temp,
     double A0, double I0, double D0, const std::vector<int>& which) const {
@@ -7155,24 +7154,24 @@ inline S Leaf::kernel_slope_at(Kernel&& kernel, const char* what, const S& x,
   // reads -- on the path that places every operating point.
   if constexpr (std::is_same_v<S, double>) {
     inner xd(x);
-    odelia::ode::seed_direction(xd, 1.0);
+    odelia::ode::set_direction(xd, 1.0);
     return odelia::ode::derivative_along(kernel(xd, inner(args)...));
   } else {
     std::array<outer, n_dir> lift;
     std::size_t d = 0;
-    const auto seed = [&](const S& v) {
+    const auto set = [&](const S& v) {
       lift[d] = outer(to_passive(v));
       xad::value(xad::derivative(lift[d])[d]) = 1.0;
       ++d;
     };
-    seed(x);
-    (seed(args), ...);
-    odelia::ode::seed_direction(xad::value(lift[0]), 1.0);
+    set(x);
+    (set(args), ...);
+    odelia::ode::set_direction(xad::value(lift[0]), 1.0);
 
     const outer y = std::apply(kernel, lift);
     const double slope = odelia::ode::derivative_along(xad::value(y));
 
-    // Every argument gets a row, in the order the walk seeded them. A braced
+    // Every argument gets a row, in the order the walk set them. A braced
     // list is sequenced left to right, so the counter follows the walk; a stack
     // array rather than a vector because the rows cross as a span, which borrows
     // storage instead of owning it.
@@ -7182,8 +7181,8 @@ inline S Leaf::kernel_slope_at(Kernel&& kernel, const char* what, const S& x,
     };
     const odelia::input_and_derivative<S> rows[n_dir]{row(x), row(args)...};
     S out;
-    const odelia::record_report report =
-        odelia::record_with_derivatives<S>(slope, rows, out);
+    const odelia::supply_report report =
+        odelia::supply_derivatives<S>(slope, rows, out);
     if (!report.whole) {
       util::stop(std::string("Leaf::kernel_slope_at: ") + what + ": " +
                  report.why);
@@ -7351,11 +7350,12 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // ⚠️ THE SLOPES COME BACK NOT-A-NUMBER, WHICH IS DELIBERATE. They are absent
   // here, and an absent derivative spelled 0.0 is the one failure this codebase
   // cannot see -- a channel that has gone missing with every number still
-  // finite. A caller that reads one gets NaN instead, which record_with_derivatives
+  // finite. A caller that reads one gets NaN instead, which supply_derivatives
   // refuses by name. Only marginal_at reads a slope, and it asks for the channel.
   if (!collar_moves) {
     const S absent(std::numeric_limits<double>::quiet_NaN());
-    return CollarCoords<S>{pair<S>{sigma_h, absent}, pair<S>{ci_h, absent}};
+    return CollarCoords<S>{odelia::with_slope<S>{sigma_h, absent},
+                           odelia::with_slope<S>{ci_h, absent}};
   }
 
   // The collar's own channel.
@@ -7416,8 +7416,8 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // The step is exactly zero in VALUE, so both coordinates are the residuals'
   // bit for bit and only the collar's channel is added.
   const S step = collar - held;
-  return CollarCoords<S>{pair<S>{sigma_h + V * step, V},
-                         pair<S>{ci_h + dci_dp * step, dci_dp}};
+  return CollarCoords<S>{odelia::with_slope<S>{sigma_h + V * step, V},
+                         odelia::with_slope<S>{ci_h + dci_dp * step, dci_dp}};
 }
 
 template <class S>
@@ -7718,8 +7718,8 @@ inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
                         : bound_at<K, S>(false, opt_root_psi_, draw, pars,
                                          dry_bound_root_);
       const odelia::input_and_derivative<S> rows[]{{wet, 0.5}, {dry, 0.5}};
-      const odelia::record_report report =
-          odelia::record_with_derivatives<S>(opt_root_psi_, rows, collar);
+      const odelia::supply_report report =
+          odelia::supply_derivatives<S>(opt_root_psi_, rows, collar);
       if (!report.whole) {
         util::stop("Leaf::collar_at: determined collar: " + report.why);
       }

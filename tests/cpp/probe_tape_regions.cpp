@@ -39,7 +39,7 @@
 #include <vector>
 
 namespace pl = phylloptim;
-using A = odelia::ode::active_scalar<double>;
+using A = odelia::ode::adjoint_scalar<double>;
 using Tape = odelia::ode::adjoint_tape<double>;
 constexpr auto K = pl::Leaf::CostCurve::TF24;
 
@@ -65,7 +65,7 @@ pl::Leaf set_up(int layers, double psi0) {
 struct Inputs {
   pl::leaf_pars<A> in;
   std::vector<A> psi_soil, rh, rv;
-  void seed(Tape& tape, const pl::Leaf& l) {
+  void register_on(Tape& tape, const pl::Leaf& l) {
     const pl::leaf_pars<double> p = l.passive_pars();
     for (std::size_t i = 0; i < p.size(); ++i) in[i] = A(p[i]);
     const int n = l.supply_n_layers();
@@ -121,7 +121,7 @@ Regions measure(int layers, double psi0) {
 
   Tape tape;
   Inputs io;
-  io.seed(tape, l);
+  io.register_on(tape, l);
   const pl::SupplyAt<A> supply = io.supply();
 
   // The three calls plant makes, in its order, each charged what it added.
@@ -215,7 +215,7 @@ void placements(int n, int layers) {
   if (!interior(l, curv)) { printf("(fixture not interior)\n"); return; }
   Tape tape;
   Inputs io;
-  io.seed(tape, l);
+  io.register_on(tape, l);
   const pl::SupplyAt<A> supply = io.supply();
   volatile double sink = 0.0;
   for (int i = 0; i < n; ++i) {
@@ -236,7 +236,7 @@ void kernels() {
   if (!interior(l, curv)) { printf("\n(kernel prices: fixture not interior)\n"); return; }
   Tape tape;
   Inputs io;
-  io.seed(tape, l);
+  io.register_on(tape, l);
   const pl::SupplyAt<A> supply = io.supply();
   const A collar(l.opt_root_psi_), sigma(l.opt_psi_stem_), ci(l.ci_);
   volatile double sink = 0.0;

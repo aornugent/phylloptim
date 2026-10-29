@@ -1468,8 +1468,8 @@ void test_root_rows_past_the_dry_end_match_the_table() {
     for (int k = 0; k < 3; ++k) {
       AD a_P50 = P50, a_c = c;
       std::vector<AD> soil{AD(psi_soil)}, r_h{AD(1.0)}, r_v{AD(0.0)};
-      AD* seeded[3] = {&a_P50, &a_c, &soil[0]};
-      xad::derivative(*seeded[k]) = 1.0;
+      AD* along[3] = {&a_P50, &a_c, &soil[0]};
+      xad::derivative(*along[k]) = 1.0;
       const phylloptim::SupplyAt<AD> supply{soil, r_h, r_v, a_P50, a_c};
       std::vector<AD> consumption(1, AD(0.0));
       AD E_up = 0.0;
@@ -3918,7 +3918,7 @@ void test_every_answered_point_hands_over_finite_rows() {
         phylloptim::leaf_pars<T> pars;
         const phylloptim::leaf_pars<double> seated = l.passive_pars();
         for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
-        odelia::ode::seed_direction(pars[phylloptim::par_vcmax_25], 1.0);
+        odelia::ode::set_direction(pars[phylloptim::par_vcmax_25], 1.0);
         std::vector<T> soil, r_h, r_v;
         for (int i = 0; i < l.supply_n_layers(); ++i) {
           soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
@@ -4044,7 +4044,7 @@ void test_tf24_floor_rows_at_a_price() {
       phylloptim::leaf_pars<T> pars;
       const phylloptim::leaf_pars<double> seated = l.passive_pars();
       for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
-      odelia::ode::seed_direction(pars[phylloptim::par_TF24_floor_lambda_o], 1.0);
+      odelia::ode::set_direction(pars[phylloptim::par_TF24_floor_lambda_o], 1.0);
       std::vector<T> soil, r_h, r_v;
       for (int i = 0; i < l.supply_n_layers(); ++i) {
         soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
@@ -4102,7 +4102,7 @@ double profit_row_at_current_point(phylloptim::Leaf &l, int par) {
   phylloptim::leaf_pars<T> pars;
   const phylloptim::leaf_pars<double> seated = l.passive_pars();
   for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
-  odelia::ode::seed_direction(pars[par], 1.0);
+  odelia::ode::set_direction(pars[par], 1.0);
   std::vector<T> soil, r_h, r_v;
   for (int i = 0; i < l.supply_n_layers(); ++i) {
     soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
@@ -4250,10 +4250,10 @@ void test_a_determined_collar_moves_with_its_bounds() {
     std::vector<T> soil{T(l.roots_.psi_soil_[0])},
         r_h{T(l.roots_.network_.r_R_H_min[0])},
         r_v{T(l.roots_.network_.r_R_V_sum[0])};
-    odelia::ode::seed_direction(direction == 0   ? pars[phylloptim::par_root_P50]
-                                : direction == 1 ? pars[phylloptim::par_stem_P50]
-                                                 : soil[0],
-                                1.0);
+    odelia::ode::set_direction(direction == 0   ? pars[phylloptim::par_root_P50]
+                               : direction == 1 ? pars[phylloptim::par_stem_P50]
+                                                : soil[0],
+                               1.0);
     const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
                                          pars[phylloptim::par_root_P50],
                                          pars[phylloptim::par_root_c]};

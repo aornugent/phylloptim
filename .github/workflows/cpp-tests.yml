@@ -59,7 +59,7 @@ jobs:
           # installs: an unpinned checkout builds against whatever odelia's
           # default branch holds, so an odelia merge would move this package's
           # bit-exact goldens with no change here.
-          ref: v0.8.0
+          ref: v0.10.0
           path: odelia
           fetch-depth: 1
 
