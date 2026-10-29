@@ -5215,6 +5215,90 @@ void test_closed_form_is_a_selectable_method() {
   }
 }
 
+// The closed form is confined to the prescribed-temperature path (#116).
+//
+// `Leaf::optimise_closed` refuses the energy balance, and
+// `test_closed_form_is_a_selectable_method` covers that route. This test covers
+// the HEADER's own entry points, which a bench, a test or a consumer can call
+// directly: each of the four solvers must refuse too, from the same stop, because
+// the alternative is a wrong answer that `within_guard` passes. Measured with the
+// gate forced through, against a 4000-point argmax of the exact objective,
+// assimilation was over by 15% at Tair 25 and 178% at Tair 40 and the guard
+// returned true on every row -- it reads the solution and three bounds, not the
+// deficit the solution was built from.
+void test_closed_form_is_prescribed_temperature_only() {
+  printf("closed form: prescribed-temperature path only\n");
+  Drivers d;
+  d.PPFD = 900.0;
+  d.atm_vpd = 2.0;
+  d.leaf_temp = 30.0;
+  namespace cf = phylloptim::closed_form;
+
+  // 1. Every solver refuses on the energy-balance path, naming the gate. The
+  //    stop comes first, so the explicit-form arm is exercised without seating
+  //    beta2 = 1/stem_c: what is under test is the refusal, not the arithmetic.
+  {
+    phylloptim::Leaf l = make_single_leaf(d, 1.0, true);
+    l.CF77_lambda_ = 1.5e5;
+    l.TF24_floor_lambda_o = 1.5e5;
+    const double psi_soil = l.supply_psi_soil_scalar();
+    ok(throws_with([&] { cf::solve(l, psi_soil); }, "use_energy_balance_"),
+       "closed_form::solve refuses the energy-balance path, naming the gate");
+    ok(throws_with([&] { cf::solve_exact_beta2(l, psi_soil); },
+                   "use_energy_balance_"),
+       "and so does solve_exact_beta2");
+    ok(throws_with([&] { cf::solve_CF77(l, psi_soil); }, "use_energy_balance_"),
+       "and solve_CF77");
+    ok(throws_with([&] { cf::solve_TF24_floor(l, psi_soil); },
+                   "use_energy_balance_"),
+       "and solve_TF24_floor");
+    // The production route raises the SAME stop: one function, so the two
+    // cannot drift on what they refuse or why.
+    l.set_model("TF24", "stem", "closed");
+    ok(throws_with([&] { l.optimise(); }, "up to 178%"),
+       "optimise_closed raises the shared stop, measurement included");
+  }
+
+  // 2. Off the gate the deficit it divides by IS the air deficit, bit-exactly --
+  //    the equality that makes `vpd_leaf_` a no-op substitution there, and whose
+  //    absence from the tests is how the header drifted behind the live model.
+  {
+    phylloptim::Leaf l = make_single_leaf(d, 1.0, false);
+    ok(l.vpd_leaf_ == l.atm_vpd_, "gate off: vpd_leaf_ IS atm_vpd_, bit-for-bit");
+    const cf::Solution sol = cf::solve(l, l.supply_psi_soil_scalar());
+    ok(std::isfinite(sol.assim) && std::isfinite(sol.transpiration),
+       "and the closed form solves");
+    // The closed form's conductance is the live model's expression
+    // (`Leaf::stom_cond_CO2`), so at the SAME (E, ci) the two agree exactly.
+    const double gc_live = l.atm_kpa_ * sol.transpiration *
+                           phylloptim::kg_to_mol_h2o / l.vpd_leaf_ /
+                           l.H2O_CO2_stom_diff_ratio_;
+    ok(sol.stom_cond_CO2 == gc_live,
+       "and its conductance is the live model's expression, bit-for-bit");
+  }
+
+  // 3. The guard's scope, pinned so its role cannot be misread: it is the ci/ca
+  //    test plus the bracket, and it reads NO driver. Tripling the deficit after
+  //    the solve -- the size of the error the energy balance would introduce --
+  //    leaves its verdict unchanged, which is the whole reason the refusal above
+  //    is a stop in the solvers rather than a case in the guard.
+  {
+    phylloptim::Leaf l = make_single_leaf(d, 1.0, false);
+    const double psi_soil = l.supply_psi_soil_scalar();
+    const cf::Solution sol = cf::solve(l, psi_soil);
+    const bool verdict = cf::within_guard(l, sol);
+    ok(verdict == (std::isfinite(sol.psi_stem) && std::isfinite(sol.ci) &&
+                   std::isfinite(sol.assim) && sol.ci / l.ca_ > 0.5 &&
+                   sol.psi_stem > psi_soil && sol.psi_stem < l.psi_crit),
+       "within_guard is exactly the ci/ca test plus the bracket");
+    ok(verdict, "and the wet reference row passes it");
+    l.vpd_leaf_ *= 3.0;
+    l.atm_vpd_ *= 3.0;
+    ok(cf::within_guard(l, sol) == verdict,
+       "and a deficit wrong by 3x after the fact does not change its verdict");
+  }
+}
+
 void test_single_layer_optimisers_clear_collar_state() {
   printf("single-layer optimisers do not inherit a collar solve's outputs\n");
   Drivers d;
@@ -7494,6 +7578,7 @@ int main() {
   test_profitmax_normalisation();
   test_profitmax_thermal_cost();
   test_closed_form_is_a_selectable_method();
+  test_closed_form_is_prescribed_temperature_only();
   test_single_layer_optimisers_clear_collar_state();
   test_transpiration_survives_negative_assim();
   test_profitmax_finds_a_closed_optimum();

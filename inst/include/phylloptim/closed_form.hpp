@@ -176,9 +176,21 @@
 //    `atm_vpd_` EXACTLY when `use_energy_balance_` is false. It is not a no-op with
 //    the gate on, and there the form is not closed at all: `vpd_leaf_` depends on
 //    Tleaf, Tleaf depends on E, and E is what these expressions solve for, so `D`
-//    is not known at the moment of inversion. Option 3 of the three in #116, taken
-//    because it is the honest one and because the measurement is in that issue: the
-//    error with the gate bypassed is reported in the PR.
+//    is not known at the moment of inversion.
+//
+//    ⚠️ THE REFUSAL IS IN THE SOLVERS THEMSELVES, NOT ONLY AT `optimise_closed`,
+//    BECAUSE `within_guard` CANNOT SEE THIS. Measured with the gate forced through
+//    (#121): against a 4000-point argmax of the exact TF24 objective, single layer,
+//    PPFD 900, D_air 1 kPa, the closed form overstates assimilation by 15% at Tair
+//    25, 38% at 30, 146% at 35 and 178% at 40 -- and the guard passed every row.
+//    It compares the solution against itself, so a wrong INPUT (a deficit out by
+//    the 3-4x `vpd_leaf_`/`atm_vpd_` ratio on that path) leaves ci/ca plausible.
+//    Off the gate the same comparison is 0-4%, which is the accuracy claimed above.
+//    Two repairs were worked through in #116 and not taken: one Picard pass over
+//    `D` roughly halves the speedup, and linearising `esat(Tleaf)` about Tair makes
+//    `E` explicit again but leaves a fixed point in `ci`. Hence
+//    `require_prescribed_temperature` below, a hard stop rather than a NaN: a NaN
+//    would reach `within_guard`, read as "fall back", and hide the cause.
 
 #include <phylloptim/constants.hpp>
 #include <phylloptim/leaf_model.hpp>
@@ -270,6 +282,27 @@ inline double dassim_dci(const Leaf &l, double ci, double electron_transport) {
   const double ddisc =
       (2.0 * s * ds - 4.0 * cv * (dar * ae + ar * dae)) / (2.0 * disc);
   return (ds - ddisc) / (2.0 * cv);
+}
+
+// The energy-balance refusal, in ONE place: `Leaf::optimise_closed` and each of
+// the four solvers below call it, so the production route and a direct call of a
+// solver -- from a test, a bench, a consumer -- cannot drift apart on what they
+// refuse. A hard stop rather than a NaN, because a NaN would reach `within_guard`,
+// which would report `false`, which `optimise_into` reads as "fall back to the
+// exact solve": the right answer, silently, with the cause one step further away.
+// The cost on the hot path is one bool read.
+inline void require_prescribed_temperature(const Leaf &l, const char *who) {
+  if (l.use_energy_balance_) {
+    util::stop(std::string(who) +
+               " is refused with use_energy_balance_ on, and this is a statement "
+               "about the form rather than about its accuracy (#116). Fick's law "
+               "divides by vpd_leaf_, which depends on Tleaf, which depends on E "
+               "-- and E is what the inversion solves for. So the deficit D is not "
+               "known at the moment of inversion and the form is not closed; "
+               "forced through, it overstates assimilation by up to 178% and "
+               "within_guard does not see it. Use method \"exact\", or prescribe "
+               "the leaf temperature by setting use_energy_balance_ to false.");
+  }
 }
 
 struct Solution {
@@ -370,6 +403,7 @@ inline double wet_end_p(double C, double p_up, double n, double p_crit) {
 // steps on the full supply-minus-demand residual. Requires set_physiology to have
 // run. See note 1 in the header: leave newton_steps at 1.
 inline Solution solve(Leaf &l, double psi_upstream, int newton_steps = 1) {
+  require_prescribed_temperature(l, "closed_form::solve");
   const double kmax = l.leaf_specific_conductance_max_;
   const double sqrt_D = std::sqrt(l.vpd_leaf_);
   const double Q = uso_group(l);
@@ -441,6 +475,7 @@ inline Solution solve(Leaf &l, double psi_upstream, int newton_steps = 1) {
 // clean test of the n = 0 arm; the claim that it is the preferred parameterisation
 // is withdrawn.
 inline Solution solve_exact_beta2(Leaf &l, double psi_upstream) {
+  require_prescribed_temperature(l, "closed_form::solve_exact_beta2");
   const double sqrt_D = std::sqrt(l.vpd_leaf_);
   const double Q = uso_group(l);
   const double xi = std::sqrt(Q * l.stem_b * l.leaf_specific_conductance_max_ /
@@ -470,6 +505,7 @@ inline bool beta2_is_exact(const Leaf &l, double tol = 1e-12) {
 // inversion, exact to the spline. The n = 0 exactness is a statement about lambda,
 // which is the only thing the power-law machinery approximates.
 inline Solution solve_CF77(Leaf &l, double psi_upstream) {
+  require_prescribed_temperature(l, "closed_form::solve_CF77");
   const double sqrt_D = std::sqrt(l.vpd_leaf_);
   const double xi = std::sqrt(uso_group(l) / l.cf77_price());
   const double ci = l.ca_ * xi / (xi + sqrt_D);
@@ -526,6 +562,7 @@ inline Solution solve_CF77(Leaf &l, double psi_upstream) {
 // `newton_steps` defaults to 1 for note 1's reason unchanged.
 inline Solution solve_TF24_floor(Leaf &l, double psi_upstream,
                               int newton_steps = 1) {
+  require_prescribed_temperature(l, "closed_form::solve_TF24_floor");
   const double kmax = l.leaf_specific_conductance_max_;
   const double sqrt_D = std::sqrt(l.vpd_leaf_);
   const double Q = uso_group(l);
@@ -596,6 +633,13 @@ inline Solution solve_TF24_floor(Leaf &l, double psi_upstream,
 // error. A bound is where the two methods are least comparable and where the exact
 // solve is cheapest to be right about -- it tests the gradient's sign there
 // explicitly -- so a closed form that arrives at one hands the row back.
+// ⚠️ AND IT GUARDS THE EXPANSION, NOT THE MODEL. It reads the solution and three
+// bounds (`ca_`, `psi_soil`, `psi_crit`) and no driver, so it cannot see an INPUT
+// being wrong: with the energy balance forced through, the deficit out by 3-4x and
+// assimilation by up to 178%, it returned true on every row (#116). A `false`
+// means "outside the expansion, fall back to the exact solve"; a `true` never
+// means "the answer is right". That is why the energy-balance refusal is a stop in
+// the solvers and not a case here.
 inline bool within_guard(const Leaf &l, const Solution &s) {
   return std::isfinite(s.psi_stem) && std::isfinite(s.ci) &&
          std::isfinite(s.assim) && s.ci / l.ca_ > 0.5 &&
@@ -771,15 +815,8 @@ inline void Leaf::optimise_closed() {
                + util::to_string(static_cast<int>(supply_n_layers())) +
                " layers; use one layer, or method \"exact\".");
   }
-  if (use_energy_balance_) {
-    util::stop("the closed form is refused with use_energy_balance_ on, and this "
-               "is a statement about the form rather than about its accuracy "
-               "(#116). Fick's law divides by vpd_leaf_, which depends on Tleaf, "
-               "which depends on E -- and E is what the inversion solves for. So "
-               "the deficit D is not known at the moment of inversion and the "
-               "form is not closed. Use method \"exact\", or prescribe the leaf "
-               "temperature by setting use_energy_balance_ to false.");
-  }
+  // The same stop the four solvers raise, so this check and theirs cannot drift.
+  closed_form::require_prescribed_temperature(*this, "the closed form");
   if (use_thermal_damage_) {
     util::stop("the closed form is refused with use_thermal_damage_ on: it has "
                "not been checked against the exact solve with the thermal-damage "

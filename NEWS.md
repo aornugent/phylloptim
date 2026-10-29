@@ -1,3 +1,37 @@
+# phylloptim 0.15.1
+
+## The closed form's own solvers refuse the energy balance (#116)
+
+**No numbers move**: all three golden files are bit-identical. #131 already made
+every deficit in `closed_form.hpp` read `vpd_leaf_` and made `Leaf::optimise_closed`
+refuse `use_energy_balance_`. What was still open was the header's own entry points
+-- `closed_form::solve`, `solve_exact_beta2`, `solve_CF77`, `solve_TF24_floor` -- which
+a bench, a test or a consumer can call directly, and which with the gate on returned a
+number rather than a refusal.
+
+That number is wrong, and **`within_guard` does not see it**. Measured against a
+4000-point argmax of the exact TF24 objective with the gate forced through, single
+layer, PPFD 900, D_air 1 kPa:
+
+| Tair | A exact | A closed form | error | `within_guard` |
+|---|---|---|---|---|
+| 25 | 16.37 | 18.76 | **+15%** | pass |
+| 30 | 11.86 | 16.37 | **+38%** | pass |
+| 35 | 4.19 | 10.28 | **+146%** | pass |
+| 40 | −3.76 | 2.94 | **+178%** | pass |
+
+Off the gate the same comparison is 0–4%. The guard tests the solution against three
+bounds and reads no driver, so a deficit out by the 3–4x `vpd_leaf_`/`atm_vpd_` ratio
+leaves ci/ca plausible. The refusal is therefore a stop in the solvers rather than a
+case in the guard, and it is ONE function, `require_prescribed_temperature`, which
+`optimise_closed` now calls as well -- so the production route and a direct call
+cannot drift on what they refuse. The header records the two repairs considered in
+#116 (a Picard pass over `D`; linearising `esat(Tleaf)`) and why neither is taken.
+
+`test_closed_form_is_prescribed_temperature_only` pins all four refusals, that
+`vpd_leaf_ == atm_vpd_` bit-for-bit off the gate, and the guard's scope: tripling
+the deficit after a solve does not change its verdict.
+
 # phylloptim 0.15.0
 
 ## A new cost curve, `LeastCost`: cost per unit carbon (Prentice et al. 2014)
