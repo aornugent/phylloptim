@@ -31,7 +31,7 @@ double uniroot(Function f, double min, double max, double tol,
   std::pair<double, double> root = bisect(f, min, max,
                                           internals::uniroot_tol(tol, tol),
                                           it);
-  if (it > static_cast<boost::uintmax_t>(max_iterations)) {
+  if (it >= static_cast<boost::uintmax_t>(max_iterations)) {
     util::stop_infeasible("root_find_iterations",
                           "exceeded max_iterations");
   }
