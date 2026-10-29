@@ -307,10 +307,8 @@ value against the C++ suite, which does track headers.
 which is what a `LinkingTo: phylloptim` consumer gets — so a consumer running their own
 `R CMD check` is told when one of our headers stops compiling.
 
-This guide used to say to expect exactly one NOTE here — `'LinkingTo' field is
-unused: package has no 'src' directory`. **That NOTE is gone**, because there is
-a `src/` now. If it comes back, the R layer has stopped being built, which is a
-real failure and not the harmless artefact it used to be.
+If `R CMD check` reports `'LinkingTo' field is unused: package has no 'src'
+directory`, the R layer has stopped being built. Treat it as a failure.
 
 It compiles the two sources directly rather than calling `make`, and
 `tests/cpp/Makefile` is `.Rbuildignore`d, because `R CMD check` warns about the
@@ -471,21 +469,15 @@ achievable. CI compares bit-exactly on macOS and with `--cross-platform` elsewhe
 not one number.** The nine reported fields split into two classes, and the gap between
 them has narrowed sharply:
 
-| field | master (16d2963) | 0.6.0 | this file used to say |
-|---|---|---|---|
-| `profit` | 2.13e-09 | **1.86e-07** | 2.14e-09 |
-| the other eight | 9.02e-06 | **9.02e-06** | 1.4e-04 |
+| field | master (16d2963) | 0.6.0 |
+|---|---|---|
+| `profit` | 2.13e-09 | **1.86e-07** |
+| the other eight | 9.02e-06 | **9.02e-06** |
 
 Read off CI's summary line, gcc and clang identical in every column: 3815 of 5184
 values differ on master, 3626 on 0.6.0, against tolerances of 1e-05 and 5e-03.
 
-⚠️ **THE LAST COLUMN IS THE LESSON, AND IT CAUGHT ME TOO.** The argmax figure had
-been wrong by 15× since before 0.6.0 — master reads 9.02e-06, not 1.4e-04. So a
-first pass at this entry read the stale 1.4e-04 as the baseline, concluded 0.6.0 had
-*improved* the argmax class 15×, and wrote a retraction of the sqrt mechanism on the
-strength of it. Both were wrong: the argmax class **did not move at all**, and the
-only column 0.6.0 changed is `profit`. **Read the BASELINE off master's CI, not off
-this table** — `gh run list --branch master --workflow cpp-tests.yml`, then grep the
+**Read the baseline off master's CI, not off this table** — `gh run list --branch master --workflow cpp-tests.yml`, then grep the
 g++ job's log for "values differ". Reading the summary line rather than the FAIL
 lines is necessary and not sufficient: it has to be the summary line from the right
 commit.
@@ -500,10 +492,9 @@ cross-platform figure is that `stem_b` and `psi_crit` are DERIVED now, through
 `pow`/`log` of `(P50, c)`, where master had them as decimal literals: the curve
 itself now carries a platform difference that master's could not.
 
-### ⚠️ AND BOTH CLASS FIGURES ARE CANCELLATION ARTEFACTS OF THE METRIC
+### Both class figures are cancellation artefacts of the metric
 
-The test names the worst row per class now, and the answer disposes of most of what
-this section used to argue. **Both** worst rows are rows where the reported quantity
+The test names the worst row per class. **Both** worst rows are rows where the reported quantity
 is passing through zero:
 
 | class | worst RELATIVE row | the value there | grid median | amplification |
@@ -572,9 +563,7 @@ That is a mechanism, not an identity, and the arithmetic has never quite closed:
 `sqrt(2.13e-09)` ≈ 4.6e-05 against master's 9.02e-06 observed, so it OVER-predicts
 by 5× — the two column maxima fall at different operating points. **Do not expect
 `sqrt(worst profit)` to predict `worst argmax` in either direction.** It is a reason
-the two classes differ, not a formula relating them. (This paragraph used to read
-the other way round, comparing against the stale 1.4e-04, and so claimed the
-mechanism under-predicted.)
+the two classes differ, not a formula relating them.
 
 Two things follow that matter beyond this file:
 
@@ -594,9 +583,6 @@ Two things follow that matter beyond this file:
   So bit-exactness is now a drift detector *and* the numbers are determined. What
   has not changed: **cross-platform disagreement is still sqrt-amplified** at the
   argmax, because that comes from the flat maximum rather than from the solver.
-  (An earlier pass retracted that sentence, on the strength of a 15× improvement in
-  the argmax class. There was no improvement — the baseline it was measured against
-  was this file's own stale figure. The sentence stands.)
 
 ⚠️ **Profit is the wrong instrument for checking a collar-solve change, and this
 cost real time.** It is the maximum, so it is flat, and its own numerical floor is
@@ -606,13 +592,8 @@ magnitude. **Check the residual `|dprofit|` at the returned point instead** — 
 improved on 240 of 240 feasible rows with none worse, which is a statement profit
 could not have made.
 
-⚠️ **The numbers above were wrong twice, the same way both times.** First this note
-said the worst cross-platform difference was 1.7e-15 (13 ULP); then, after that was
-caught, 2.1e-07 and 4.5e-04. Both came from the 20 lines `test_golden` prints
-before it truncates — reading a truncated failure list as if it were the
-distribution. The truncated sample is biased toward whichever operating points
-happen to be listed first, which is not a random draw.
-
+`test_golden` prints only the first 20 failing lines, a sample biased toward
+whichever operating points are listed first — never read it as the distribution.
 The figures in the table are the full-grid maxima CI now prints on every run. The
 per-class reporting exists so the number never has to be inferred from the printed
 failures again — **if you need a magnitude, read the summary line, not the FAIL
@@ -1378,6 +1359,22 @@ plant build:
   **It is this package's first customer, not a downstream user**: its blockers are
   ours (the multi-layer λ is issue #2), and its central result — that six optimality
   models differ only in λ(state) — is what issue #3 is built on.
+
+## Writing in this guide
+
+This file is read in full at the start of every agent session, as current
+instructions, by a reader who was not in your session and cannot tell which
+parts are out of date. When you change it:
+
+- Write what is true now, in the present tense. If something here turns out to
+  be wrong, replace it; the story of how you found out belongs in the PR.
+- Give each rule its reason, in plain case. A reason persuades where capitals
+  and warning signs do not.
+- Point to where a value lives (`DESCRIPTION`, a header, a Makefile target)
+  rather than copying the value, and leave out anything a fresh clone cannot
+  resolve, such as local paths or notes from one session.
+- Write in complete sentences that say what happens and what it causes, using
+  names that already exist in the code.
 
 ## Writing commits here
 
