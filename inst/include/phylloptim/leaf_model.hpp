@@ -1290,6 +1290,26 @@ public:
   // and `dprofit`'s `gc_const` -- so a solved leaf must be re-solved after changing
   // it. Nothing caches a conductance, so there is no cache to invalidate.
   double H2O_CO2_stom_diff_ratio_ = phylloptim::H2O_CO2_stom_diff_ratio;
+
+  // The diffusion ratio the MEDLYN route uses, deliberately 1.6 rather than
+  // `H2O_CO2_stom_diff_ratio_`. It appears in three places that must agree -- the
+  // USO expression, the solver residual, and the conversion of the result to a CO2
+  // basis -- so it is named once here rather than written as a literal three times.
+  //
+  // ⚠️ WHY NOT 1.67. Published `g1` values are fitted with 1.6, so the USO
+  // expression has to use it or the parameter means something else. Given that, the
+  // conversion back has to use the SAME constant: the residual below equates
+  // `gs/1.6` to the CO2 flux, so dividing the result by 1.67 instead reports a
+  // conductance inconsistent with the `ci` the solve returned -- measured as a
+  // systematic -4.2% violation of `A = gs*(ca-ci)`, where 1.6 satisfies it. This is
+  // a property of the published parameterisation, not of the leaf, which is why it
+  // is a constant here while `H2O_CO2_stom_diff_ratio_` is a settable field.
+  static constexpr double medlyn_H2O_CO2_ratio = 1.6;
+
+  // ⚠️ mol CO2 m^-2 s^-1, and it is the CO2 basis that is load-bearing: the USO
+  // expression is a WATER VAPOUR conductance, so `medlyn_model_gs` divides by
+  // `medlyn_H2O_CO2_ratio` before storing. Omitting that division is #129, which
+  // reported this field 1.6x high on both Medlyn entry points.
   double medlyn_model_gs_;  // mol CO2 m^-2 s^-1
   double theta_w_;          // current soil water content at wilting point (m^3 m^-3)
   double theta_fc_;         // current soil water content at field capacity (m^3 m^-3)
@@ -1680,6 +1700,12 @@ public:
   double medlyn_stom_cond_minus_coupled_stom_cond(double x);
   void solve_medlyn_ci_numerical();
   void solve_medlyn_ci_analytical();
+  // Collapses a negative-conductance result to the class's closed state. Called by
+  // both solve routes, so neither can report a negative gs. See the definition.
+  void set_medlyn_shutdown_if_closed();
+  // The soil-moisture factor both Medlyn routes multiply g1 by, clamped to
+  // [0, 1]. See the definition.
+  double medlyn_beta() const;
   // std::vector<double> root_collar_psi(std::vector<double> soil_moist_);
 
   // Every psi crossing this boundary is a POSITIVE MAGNITUDE in MPa (#25). The
@@ -8966,13 +8992,29 @@ inline void Leaf::optimise_psi_stem_single() {
 // ===========================================================================
 inline double Leaf::medlyn_model_gs(double assim_colimited_){
 
-  double beta_ = (theta_ - theta_w_)/(theta_fc_ - theta_w_);
+  const double beta_ = medlyn_beta();
 
-  if(atm_vpd == 0){
-     medlyn_model_gs_ = g0;
-  } else{
-     medlyn_model_gs_ = g0 + 1.6*(1 + (g1*beta_)/sqrt(atm_vpd_))*(assim_colimited_/(ca_*(1/umol_per_mol_to_Pa_)));
+  // The USO expression as published, which is a WATER VAPOUR conductance -- that is
+  // what its diffusion ratio is doing there, and what `g1` is fitted against.
+  //
+  // ⚠️ The zero-deficit guard reads `atm_vpd_`, the DRIVEN value, not the `atm_vpd`
+  // input field. It used to read the input while the expression below read the
+  // working copy, so a leaf driven at zero deficit took the else-branch and
+  // returned Inf from `sqrt(0)` -- the input field is still at its 2.0 default and
+  // so never looked like zero. Same shape as the theta_/theta hazard.
+  double gs_h2o;
+  if (atm_vpd_ == 0) {
+     gs_h2o = g0;
+  } else {
+     gs_h2o = g0 + medlyn_H2O_CO2_ratio*(1 + (g1*beta_)/sqrt(atm_vpd_))*(assim_colimited_/(ca_*(1/umol_per_mol_to_Pa_)));
   }
+
+  // ...converted to the CO2 basis every other conductance in this class is on, so
+  // that `A == stom_cond_CO2_*(ca_ - ci_)` holds for this route as it does for the
+  // optimality routes. Storing the water-basis value here was #129. Dividing the
+  // whole expression, `g0` included, is deliberate: Medlyn's `g0` is a water-basis
+  // residual conductance too.
+  medlyn_model_gs_ = gs_h2o / medlyn_H2O_CO2_ratio;
   return medlyn_model_gs_;
 }
 
@@ -8983,12 +9025,20 @@ inline double Leaf::medlyn_model_gs(double assim_colimited_){
 // 1/(ca_-x) singularity at the upper end. The root (zero crossing) is identical
 // to that of the raw difference for x < ca_:
 //   gs_medlyn*(ca_-x) - gs_coupled*(ca_-x),  where
-//   gs_coupled*(ca_-x) = assim * (atm_kpa_*kPa_to_Pa) * 1.6 / 1e6.
+//   gs_coupled*(ca_-x) = assim * (atm_kpa_*kPa_to_Pa) / 1e6.
+//
+// ⚠️ BOTH TERMS ARE ON THE CO2 BASIS. `medlyn_model_gs` returns a CO2 conductance
+// now, so the CO2 flux on the right carries no diffusion ratio. This residual used
+// to compare a water-basis conductance against a ratio-scaled flux, which is the
+// same equation scaled by that ratio -- so THE ROOT IS UNCHANGED and `ci_`,
+// `assim_colimited_` and everything downstream keep their values. Only the stored
+// conductance moves (#129). Scaling both sides is what makes that true; changing
+// one of them alone would move the operating point.
 inline double Leaf::medlyn_stom_cond_minus_coupled_stom_cond(double x) {
   const double assim_colimited_x_ = assim_colimited(x);
   medlyn_model_gs_ = medlyn_model_gs(assim_colimited_x_);
   return medlyn_model_gs_ * (ca_ - x)
-         - assim_colimited_x_ * (atm_kpa_ * kPa_to_Pa) * 1.6 / 1e6;
+         - assim_colimited_x_ * (atm_kpa_ * kPa_to_Pa) / 1e6;
 }
 
 // Solve for the leaf-internal CO2 (ci) at which the Medlyn optimal stomatal
@@ -9032,15 +9082,66 @@ inline void Leaf::solve_medlyn_ci_numerical(){
   }
   assim_colimited_ = assim_colimited(ci_);
   stom_cond_CO2_ = medlyn_model_gs(assim_colimited_);
+  set_medlyn_shutdown_if_closed();
   return;
 }
 
+// Medlyn's CLOSED FORM for chi = ci/ca, which is the same model as the numerical
+// route above rather than a different one: the coupled solve converges on this
+// expression exactly as g0 -> 0 (measured, chi agreeing to every printed digit at
+// g0 == 0, against a gap of 0.036 at the default g0 = 0.022). The gap IS the g0
+// term, which the closed form drops along with Gamma* and respiration. Use this
+// when a non-iterative chi is wanted and that approximation is acceptable.
+//
+// ⚠️ beta MULTIPLIES g1 HERE TOO. It did not, so this route was invariant to soil
+// moisture while the coupled route moved chi from 0.681 to 0.446 over
+// beta in [0.2, 1] -- the two entry points were different models rather than two
+// forms of one. The substitution is the same one `medlyn_model_gs` makes, so at
+// beta == 1 this reproduces the previous value exactly and only a soil-moisture
+// sweep moves.
 inline void Leaf::solve_medlyn_ci_analytical(){
 
-  ci_ = ca_ * (g1/(g1 + sqrt(atm_vpd_)));
+  const double beta_ = medlyn_beta();
+  const double g1_beta = g1 * beta_;
+  ci_ = ca_ * (g1_beta/(g1_beta + sqrt(atm_vpd_)));
   assim_colimited_ = assim_colimited(ci_);
   stom_cond_CO2_ = medlyn_model_gs(assim_colimited_);
+  set_medlyn_shutdown_if_closed();
   return;
+}
+
+// A negative conductance is not an operating point. It arises where the USO
+// expression's `A/ca` term goes negative faster than `g0` holds the stomata open --
+// a leaf below its compensation point with a small or zero `g0` -- and the
+// numerical route's "closest approach" exit would otherwise return it silently. At
+// g0 == 0 and beta = 3.3e-4 that was gs = -3.95e-06, A = -9.7e-04.
+//
+// The answer is the class's own closed state, matching the three optimality
+// shutdown exits: no water moves, ci sits at the compensation point, and the leaf
+// still respires, so assimilation is -R_d_ rather than zero. Clamped rather than
+// refused because a hot or dry leaf reaching it is a legitimate model state, unlike
+// the parameter errors `check_cost_parameters` rejects.
+// The soil-moisture factor, the linear beta of the beta-factor literature,
+// CLAMPED TO [0, 1]. Unclamped, a soil wetter than field capacity scaled g1 ABOVE
+// its fitted value (theta 0.6 with field capacity 0.5 and wilting point 0.2 gave
+// beta 1.33), and one drier than the wilting point gave a negative beta, so a
+// negative g1 term the shutdown exit then had to catch. Between the two the
+// factor is unchanged, so every value inside [theta_w_, theta_fc_] is
+// bit-identical. CF77's soil price clamps the same factor at 1 for the same
+// reason, and divides by it, so it has no use for the lower clamp.
+inline double Leaf::medlyn_beta() const {
+  const double beta = (theta_ - theta_w_) / (theta_fc_ - theta_w_);
+  return std::min(std::max(beta, 0.0), 1.0);
+}
+
+inline void Leaf::set_medlyn_shutdown_if_closed(){
+  if (medlyn_model_gs_ < 0.0 || stom_cond_CO2_ < 0.0) {
+    stom_cond_CO2_ = 0.0;
+    medlyn_model_gs_ = 0.0;
+    transpiration_ = 0.0;
+    ci_ = gamma_ * umol_per_mol_to_Pa_;
+    assim_colimited_ = -R_d_;
+  }
 }
 
 } // namespace phylloptim

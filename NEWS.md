@@ -1,3 +1,24 @@
+# phylloptim 0.16.2
+
+## The Medlyn route reports a CO2-basis conductance (#129)
+
+`medlyn_model_gs` returns the Medlyn (2011) USO expression, which is a **water vapour** conductance -- that is what the 1.6 in it is for, and what published `g1` values are fitted against. Both `solve_medlyn_ci_*` stored it in `stom_cond_CO2_` without converting, so that field came back **1.6x high** on this route. Checked against the model's own outputs, `A = gs*(ca - ci)` was violated by 1.5984-1.6004 across VPD 1-4 and two soil-moisture levels, where the optimality routes satisfy it to 1.00000.
+
+`ci_`, `assim_colimited_` and everything downstream of them are **unchanged**: the solver residual carried a compensating factor, so scaling both sides leaves the root where it was. Only the stored conductance moves. All three golden files are bit-identical and the R suite is unchanged at 1371 passing.
+
+The divisor is 1.6, not `H2O_CO2_stom_diff_ratio_` (1.67): the residual converts with 1.6, so 1.67 would report a conductance inconsistent with the `ci` returned -- a systematic -4.2% violation instead of a 60% one. It is a named constant now, `Leaf::medlyn_H2O_CO2_ratio`, used in all three places that have to agree.
+
+Three smaller defects in the same function, all found while measuring the first:
+
+- **The zero-deficit guard read the wrong variable.** It tested the `atm_vpd` input field while the expression below read the driven `atm_vpd_`, so a leaf driven at zero deficit took the else-branch and returned `Inf` from `sqrt(0)` -- the input is still at its 2.0 default and so never looks like zero.
+- **`solve_medlyn_ci_analytical` ignored the soil-moisture factor.** `beta` multiplies `g1` in the coupled route but not in the closed form, so the two entry points disagreed about whether the model has a soil-moisture response at all: chi frozen at 0.645 against 0.681 to 0.446 over beta in [0.2, 1]. At `beta == 1` the value is unchanged, so only a soil-moisture sweep moves.
+- **The soil-moisture factor is clamped to [0, 1]**, on both routes, through one function, `medlyn_beta()`. Unclamped, a soil wetter than field capacity scaled `g1` above its fitted value (theta 0.6 against field capacity 0.5 gave beta 1.33) and one drier than the wilting point gave a negative `g1` term. Inside [wilting point, field capacity] every value is bit-identical.
+- **Neither route can report a negative conductance now.** With `g0 = 0` near the wilting point the USO expression goes negative, and the numerical route's "closest approach" exit returned it silently (gs = -3.95e-06). It collapses to the class's closed state instead -- no water moving, ci at the compensation point, still respiring.
+
+⚠️ **The two entry points are two forms of ONE model**, which is now asserted rather than assumed: the coupled solve converges on the closed form as `g0 -> 0` (chi agreeing to 1e-6, against a gap of 0.036 at the default `g0`). The remaining gap IS the `g0` term the closed form drops. A consequence worth knowing when reading output: the analytical route's `gs` and `ci` are mutually consistent only in that limit, running 1.084 to 1.316 on the diffusion identity at the default `g0`. That is the approximation, not a units error, and it is pinned so the two cannot be confused.
+
+This route had **no tests and no golden coverage**, which is how a 1.6x error survived in shipped code; `tests/testthat/test-medlyn.R` is the first, and the regression test is the substantive part of this change rather than the arithmetic.
+
 # phylloptim 0.16.1
 
 ## The ci root-find is solved to 1e-13
