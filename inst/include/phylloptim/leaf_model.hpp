@@ -72,7 +72,6 @@
 //   ShadeDeath          the same wet bound
 //   BoundaryCrit        the stem reaching psi_crit at the dry bound
 //   BoundaryRootCrit    the root's own critical potential at the dry bound
-//   Determined          the mean of the two bounds; the stem holds at psi_crit
 //   HydraulicShutdown   the collar is held; uptake rows are exactly zero
 //   Unsolved, Prescribed, SolverRefused, NonFiniteGradient: refused
 //
@@ -665,10 +664,9 @@ public:
   double curv_fact_elec_trans; // unitless - obtained from Smith and Keenan (2020)
   double curv_fact_colim;
   // Despite its name, no longer the tolerance of the collar solve, which is a
-  // root-find on dprofit = 0. It has two jobs: the width below which the feasible
-  // collar interval counts as collapsed (the point is then tagged `Determined`),
-  // and the tolerance of the golden-section FALLBACK maximise_profit_over_collar
-  // drops to when either bracket endpoint has no usable gradient. It does NOT reach the stem route, which refines by a
+  // root-find on dprofit = 0. It is the tolerance of the golden-section FALLBACK
+  // maximise_profit_over_collar drops to when either bracket endpoint has no
+  // usable gradient. It does NOT reach the stem route, which refines by a
   // root-find at collar_root_tol, and it no longer sets how well the reported
   // operating point is determined -- collar_root_tol does.
   double GSS_tol_abs;
@@ -684,6 +682,8 @@ public:
   // calls a difference real, and the cost of going there from GSS_tol_abs's 1e-3
   // is a handful of evaluations, because TOMS748 is superlinear.
   static constexpr double collar_root_tol = 1e-12;
+  // Tolerance to which find_root_psi places the collar interval's two bounds.
+  static constexpr double bracket_tol = 1e-4;
 
 
   double ci_;
@@ -2687,16 +2687,9 @@ public:
   // so it is an ordinary expression the chain differentiates itself and there is
   // no theorem to apply: a point the root's limit pins is tagged
   // `BoundaryRootCrit`, and collar_at places it at root_psi_crit_at.
-  //
-  // `root` is where the bound's residual vanishes, for a draw taken somewhere
-  // else: a determined collar's midpoint, up to GSS_tol_abs / 2 from either
-  // bound. The draw is carried to the root along its own slope and the residual's
-  // slope is the supply's at the root, so the row is the bound's own. NaN keeps
-  // the pinned-point behaviour, where the draw sits at or a step inside the bound.
   template <CostCurve K, class S>
   S bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
-             const leaf_pars<S>& pars,
-             double root = std::numeric_limits<double>::quiet_NaN()) const;
+             const leaf_pars<S>& pars) const;
 
   // The ROOT curve's critical potential, derived from its trait pair exactly as
   // the stem's is.
@@ -3222,12 +3215,6 @@ public:
     // root's own critical potential never wins the min, so a fixture for this arm
     // has to lower it deliberately rather than wait for one.
     BoundaryRootCrit,
-    // The feasible collar interval is narrower than GSS_tol_abs. The collar is
-    // held at the interval's midpoint and only the stem potential is optimised,
-    // with the collar pinned; continuity between the two is not re-imposed, so
-    // the point is not a solution of the full problem. The collar moves as the
-    // mean of the two bounds.
-    Determined,
     // Shutdown on water: no collar potential both moves water and stays inside
     // the stem's and the root's critical potentials. The stem holds at psi_crit,
     // transpiration is zero, and the leaf pays respiration plus the hydraulic
@@ -3347,9 +3334,6 @@ private:
   // the residual back to the root, so the row is the root's derivative rather
   // than one proportional to the step.
   double wet_bound_root_ = std::numeric_limits<double>::quiet_NaN();
-  // The continuity root a determined collar's dry end was solved to, or NaN. Read
-  // with wet_bound_root_ by collar_at, which places that collar from both bounds.
-  double dry_bound_root_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 // Human-readable tag. The switch has no default, so a missing name is a -Wswitch
@@ -3361,7 +3345,6 @@ inline const char* Leaf::operating_point_kind_name(OperatingPointKind kind) {
     case OperatingPointKind::BoundarySoil:      return "boundary-soil";
     case OperatingPointKind::BoundaryCrit:      return "boundary-crit";
     case OperatingPointKind::BoundaryRootCrit:  return "boundary-root-crit";
-    case OperatingPointKind::Determined:        return "determined";
     case OperatingPointKind::HydraulicShutdown: return "hydraulic-shutdown";
     case OperatingPointKind::ShadeDeath:        return "shade-death";
     case OperatingPointKind::Prescribed:        return "prescribed";
@@ -4008,7 +3991,7 @@ inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<d
       // at the two endpoints, but the LOWER bound must come first, and in
       // magnitudes the wettest layer is the smallest suction (#25).
       return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, f_wettest,
-                                  f_crit, 1e-4, ci_niter);
+                                  f_crit, bracket_tol, ci_niter);
     } catch (const std::exception& e) {
       util::stop_infeasible("collar_bracket",
                  "find_root_psi(find_root_crit=1) failed: " + std::string(e.what()) +
@@ -4022,7 +4005,7 @@ inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<d
   };
   try {
     return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, f_wettest,
-                                f_crit, 1e-4, ci_niter);
+                                f_crit, bracket_tol, ci_niter);
   } catch (const std::exception& e) {
     util::stop_infeasible("collar_bracket",
                "find_root_psi(find_root_crit=0) failed: " + std::string(e.what()) +
@@ -4065,7 +4048,7 @@ inline double Leaf::polish_bracket_bound(double x0,
   // is the bracket's own tolerance (1e-4 absolute plus relative), which holds the
   // root it was placed around, so one probe usually suffices.
   const double sign = f0 > 0.0 ? -1.0 : 1.0;
-  for (double d = 1.5e-4 * (1.0 + std::abs(x0)); d <= 0.1; d *= 4.0) {
+  for (double d = 1.5 * bracket_tol * (1.0 + std::abs(x0)); d <= 0.1; d *= 4.0) {
     for (double side : {sign, -sign}) {
       const double x = x0 + side * d;
       const double fx = target(x);
@@ -4121,8 +4104,7 @@ inline double Leaf::find_psi_stem_from_psi_root(double psi_root, const std::vect
 //   * maximum possible assimilation (at ci = ca) is negative.
 //
 // psi_soil is a positive magnitude here as everywhere else, so nothing is
-// flipped. A collapsed-interval branch handles the degenerate case (kind
-// `Determined`).
+// flipped.
 //
 // Shut-down operating point shared by find_root_collar_psi's early-exits: no
 // water moves, the stem holds at the first critical potential reached, and the
@@ -4222,7 +4204,6 @@ inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b){
   // point (hazard 8). Every exit below, and both callers, write it again.
   operating_point_kind_ = OperatingPointKind::Unsolved;
   wet_bound_root_ = std::numeric_limits<double>::quiet_NaN();
-  dry_bound_root_ = std::numeric_limits<double>::quiet_NaN();
 
   // Hand the supply path the start of a solve: it builds its per-solve caches and
   // reports back the wettest rooted layer -- the SMALLEST suction, and the lower
@@ -4363,120 +4344,20 @@ if(assim_max_ < 0){
     // a jump the model does not have.
     dry_bound_is_root_limit_ = !(root_crit < supply_psi_crit());
 
-    // ⚠️ The clamp can INVERT the interval, and nothing handled that before,
-    // because with the clamp dead it could not happen. bound_a is root_zero_E, the
-    // collar suction at which uptake is exactly zero: to draw any water at all the
-    // collar must pull harder than that. So when root_psi_crit lands *below*
-    // root_zero_E there is no operating point that both moves water and stays
-    // inside the root vulnerability limit, and the answer is shut-down rather than
-    // an optimisation over an empty interval.
-    //
-    // Measured at psi_crit = 5.91988 (plant's TF24 value, drier than
-    // root_psi_crit = 5.870283), single layer:
-    //
-    //   psi_soil   root_zero_E   root_crit   bound_b     inverted
-    //     5.850      5.854900     5.863944   5.863944    no
-    //     5.880      5.884900     5.889736   5.870283    YES
-    //     5.910      5.914900     5.915587   5.870283    YES
-    //
-    // Without this exit, golden_section_max is handed bound_a > bound_b and returns
-    // a point between them -- past the limit the clamp exists to enforce, which is
-    // the very failure #24 is about, reintroduced by its own fix.
-    if (bound_b < bound_a) {
-      set_shutdown_state<K>(supply_psi_crit());
-      return false;
-    }
-
-    // If no interval exists (single feasible root-collar value), use that
-    // point directly as the alternative solution instead of running the solve.
-    //
-    // ⚠️ "NO INTERVAL" MEANS NARROWER THAN THE SOLVE RESOLVES, collar_root_tol,
-    // NOT GSS_tol_abs. This test read GSS_tol_abs from when golden section was the
-    // collar solver and could not search a bracket narrower than its tolerance.
-    // The root-find has no such floor, and the width matters: below it the branch
-    // pins the collar at the midpoint and frees the stem, so the leaf transpires
-    // more than the roots supply. In a drying soil the interval narrows to zero at
-    // the root limit, so a wide threshold turned the approach to shutdown into a
-    // band of that state -- 0.57 MPa of soil at plant's GSS_tol_abs of 0.1, with
-    // transpiration 2.2x the uptake and a +12% jump in profit on entering it
-    // (test_collar_continuous_into_shutdown). At collar_root_tol the regular solve
-    // carries the narrowing interval continuously into shutdown.
-    if (std::abs(bound_b - bound_a) <= collar_root_tol) {
-      // The collar is the bounds' midpoint, so both are solved to collar
-      // precision first, for the reason polish_bracket_bound gives. A polished
-      // continuity root past the root's own limit hands the dry end to that limit.
-      const double wet = polish_bracket_bound(bound_a, supply_psi_soil(), 0);
-      double dry = bound_b;
+    // An interval narrower than bracket_tol has ends that cannot be trusted, so
+    // they are solved to collar precision before anything is decided on it.
+    if (bound_b - bound_a < 1.5 * bracket_tol * (1.0 + bound_b)) {
+      bound_a = polish_bracket_bound(bound_a, supply_psi_soil(), 0);
       if (!dry_bound_is_root_limit_) {
-        dry = std::min(polish_bracket_bound(bound_b, supply_psi_soil(), 1),
-                       supply_psi_crit());
-        dry_bound_is_root_limit_ = !(dry < supply_psi_crit());
+        bound_b = std::min(polish_bracket_bound(bound_b, supply_psi_soil(), 1),
+                           supply_psi_crit());
+        dry_bound_is_root_limit_ = !(bound_b < supply_psi_crit());
       }
-      // collar_at differentiates each bound at its own root, not at the midpoint.
-      wet_bound_root_ = wet;
-      dry_bound_root_ = dry;
-      const double opt_root_psi = 0.5 * (wet + dry);
-      const double psi_stem_single = find_psi_stem_from_psi_root(opt_root_psi, supply_psi_soil());
-
-      if (!std::isfinite(psi_stem_single)) {
-        util::stop_infeasible("collar_solve",
-                   "non-finite psi_stem_single in collapsed-root interval; "
-                   "opt_root_psi=" + util::to_string(opt_root_psi) +
-                   "; bound_a=" + util::to_string(bound_a) +
-                   "; bound_b=" + util::to_string(bound_b) +
-                   "; root_crit=" + util::to_string(root_crit) +
-                   "; root_zero_E=" + util::to_string(root_zero_E) +
-                   "; E_up_=" + util::to_string(E_up_));
-      }
-
-      // ⚠️ THE COLLAR IS DETERMINED; psi_stem IS NOT. This branch used to DERIVE
-      // psi_stem from continuity at the collapsed collar and stop, which threw the
-      // remaining degree of freedom away: the leaf can still choose how far to let
-      // psi_stem fall, it is only the COLLAR that feasibility has pinned. Measured
-      // at psi_soil 1.0, PPFD 900, single potential: deriving gave psi_stem 1.6465
-      // and profit 8.255 where optimising gives 3.0935 and 13.389 -- a 38% loss,
-      // and the reason the collar route's r -> 0 limit did not converge onto the
-      // stem route's answer.
-      //
-      // So optimise psi_stem with the upstream potential pinned at the determined
-      // collar. That is exactly the problem `optimise_psi_stem_single` solves, and
-      // the same shared solver does it -- `profit_psi_stem_for` and
-      // `dprofit_dpsi_stem` both already take the upstream potential as an
-      // argument, so nothing new is derived here.
-      //
-      // ⚠️ COSTS NOTHING ON THE NORMAL PATH. This runs only where the interval has
-      // collapsed, which is where the solve previously gave up; a bracket wider
-      // than GSS_tol_abs never reaches it.
-      double collapsed_profit = 0.0;
-      opt_psi_stem_ = util::maximise_over_closed_interval_foc(
-          [&](double psi_stem) {
-            return profit_psi_stem_for<K>(psi_stem, opt_root_psi);
-          },
-          [&](double psi_stem, bool* ok) -> double {
-            return dprofit_dpsi_stem<K>(psi_stem, opt_root_psi, ok);
-          },
-          opt_root_psi, psi_crit, basin_scan_cells(), collar_root_tol,
-          static_cast<size_t>(ci_niter), &collapsed_profit);
-      profit_ = profit_psi_stem_for<K>(opt_psi_stem_, opt_root_psi);
-      (void)psi_stem_single;
-      opt_root_psi_ = opt_root_psi;
-      // The collar is held, not optimised; see the enumerator for what that
-      // leaves out.
-      operating_point_kind_ = OperatingPointKind::Determined;
-
-      if (!std::isfinite(profit_)) {
-        util::stop_infeasible("collar_solve",
-                   "non-finite profit in collapsed-root interval; "
-                   "opt_psi_stem_=" + util::to_string(opt_psi_stem_) +
-                   "; opt_root_psi_=" + util::to_string(opt_root_psi_) +
-                   "; bound_a=" + util::to_string(bound_a) +
-                   "; bound_b=" + util::to_string(bound_b) +
-                   "; root_crit=" + util::to_string(root_crit) +
-                   "; root_zero_E=" + util::to_string(root_zero_E) +
-                   "; E_up_=" + util::to_string(E_up_) +
-                   "; assim_colimited_=" + util::to_string(assim_colimited_) +
-                   "; hydraulic_cost_=" + util::to_string(hydraulic_cost_));
-      }
+    }
+    // No collar both moves water and stays inside the critical potentials: the
+    // interval has closed, or the clamp to the root's limit inverted it.
+    if (bound_b - bound_a <= collar_root_tol) {
+      set_shutdown_state<K>(bound_b);
       return false;
     }
 
@@ -7302,15 +7183,6 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
     util::stop("Leaf::collar_coords_at: no operating point to place at a "
                "hydraulic shutdown; outputs_at answers there instead");
   }
-  // ⚠️ A DETERMINED COLLAR LEAVES THE STEM AT ITS OWN OPTIMUM, NOT AT T1. Placed by
-  // T1 it keeps its value and takes the wrong rows: profit's row in root_P50 came
-  // out 0.053 where a difference of the solve gives -0.83. Only an optimum at
-  // psi_crit is placed here; one inside the stem's interval needs its curvature.
-  const bool determined = operating_point_kind_ == OperatingPointKind::Determined;
-  if (determined && sigma_star != psi_crit) {
-    util::stop("Leaf::collar_coords_at: the stem at a determined collar sits "
-               "inside its interval, and only psi_crit is placed there");
-  }
 
   // ⚠️ THE RESIDUALS SEE A HELD COLLAR, AND THE COLLAR'S CHANNEL IS ADDED BACK AS
   // ONE SUPPLIED SLOPE. That is the split closed_form_rows.hpp states, and here it
@@ -7343,18 +7215,15 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // MUST BE IN THIS LIST -- one left out is a row that never arrives, which
   // reads as an exact zero in that column rather than as an error. `held` is
   // to_passive and carries none.
-  const S sigma_h =
-      determined
-          ? psi_crit_at<S>(pars)
-          : odelia::implicit_value<S>(
-                sigma_star, dT1_dsigma,
-                [&](const S& sg) -> S {
-                  return pars[par_kmax] *
-                             (leaf.template stem_integral_at<S>(sg, pars) -
-                              leaf.template stem_integral_at<S>(held, pars)) -
-                         draw.flux.value;
-                },
-                pars, draw.flux.value);
+  const S sigma_h = odelia::implicit_value<S>(
+      sigma_star, dT1_dsigma,
+      [&](const S& sg) -> S {
+        return pars[par_kmax] *
+                   (leaf.template stem_integral_at<S>(sg, pars) -
+                    leaf.template stem_integral_at<S>(held, pars)) -
+               draw.flux.value;
+      },
+      pars, draw.flux.value);
 
   // The stem's flux at the placed sigma. gc is built from THIS, not from the
   // draw, because that is what the model's ci solve reads -- the two agree only
@@ -7440,7 +7309,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   const S dsigma_du =
       S(stem_curve_integral_inverse_deriv(u_at)) + (recip - S(to_passive(recip)));
   // psi_crit does not move with the collar.
-  const S V = determined ? S(0.0) : dsigma_du * (draw.flux.slope / kmax + f_p);
+  const S V = dsigma_du * (draw.flux.slope / kmax + f_p);
 
   const S gc_const = S(gc_per_flux);
   const S inv = S(inv_atm);
@@ -7630,7 +7499,7 @@ inline S Leaf::root_psi_crit_at(const leaf_pars<S>& pars) const {
 
 template <Leaf::CostCurve K, class S>
 inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
-                        const leaf_pars<S>& pars, double root) const {
+                        const leaf_pars<S>& pars) const {
   using odelia::util::to_passive;
   check_draw(bound_x, draw);
   const Leaf& leaf = *this;
@@ -7641,35 +7510,6 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
   // point -- supply_draw_at has already differenced it, so there is no sentinel
   // to test for here and no second definition of the fallback.
   const double dflux_dx = to_passive(draw.flux.slope);
-
-  if (std::isfinite(root) && root != bound_x) {
-    // ⚠️ BOTH HALVES OF THE QUOTIENT ARE MOVED TO THE ROOT. Carrying only the
-    // residual, as the pinned wet bound does a step away, leaves the residual's
-    // slope at the draw, an error proportional to the distance: a determined
-    // collar's row along psi_soil read 0.50004 where its two bounds give 0.5
-    // exactly. The flux is carried along its active slope, which is second order;
-    // the slope at the root is passive, from the held supply, as at any bound.
-    const S flux_at_root = draw.flux.value + (root - bound_x) * draw.flux.slope;
-    const double slope_at_root =
-        supply_draw_at<double>(root, roots_.held_supply()).flux.slope;
-    if (wet) {
-      return odelia::implicit_value<S>(
-          root, slope_at_root, [&](const S&) -> S { return flux_at_root; },
-          flux_at_root);
-    }
-    return odelia::implicit_value<S>(
-        root,
-        -to_passive(pars[par_kmax]) * stem_curve_integral_deriv(root) -
-            slope_at_root,
-        [&](const S& x) -> S {
-          return pars[par_kmax] *
-                     (leaf.template stem_integral_at<S>(psi_crit_at<S>(pars),
-                                                        pars) -
-                      leaf.template stem_integral_at<S>(x, pars)) -
-                 flux_at_root;
-        },
-        pars, flux_at_root);
-  }
 
   if (wet) {
     // The residual IS the draw: uptake vanishes at this collar. implicit_value
@@ -7774,23 +7614,6 @@ inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
       // residual -- so it needs no theorem, only its own chain.
       collar = root_psi_crit_at<S>(pars);
       break;
-    case OperatingPointKind::Determined: {
-      // The midpoint of a collapsed interval, so it moves as the mean of its
-      // bounds. Recorded against them rather than summed, so the number stays
-      // the solve's: the root limit's own value is the bound, not the midpoint.
-      const S wet = bound_at<K, S>(true, opt_root_psi_, draw, pars, wet_bound_root_);
-      const S dry = dry_bound_is_root_limit_
-                        ? root_psi_crit_at<S>(pars)
-                        : bound_at<K, S>(false, opt_root_psi_, draw, pars,
-                                         dry_bound_root_);
-      const odelia::input_and_derivative<S> rows[]{{wet, 0.5}, {dry, 0.5}};
-      const odelia::supply_report report =
-          odelia::supply_derivatives<S>(opt_root_psi_, rows, collar);
-      if (!report.whole) {
-        util::stop("Leaf::collar_at: determined collar: " + report.why);
-      }
-      break;
-    }
     case OperatingPointKind::HydraulicShutdown:
       // The stem holds at its critical potential and nothing defines the collar
       // at all, so it does not move.

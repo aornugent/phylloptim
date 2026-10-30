@@ -226,13 +226,12 @@ enum class Arm { CarriesRows, NoRows, Refuses };
 
 Arm arm_of(pl::Leaf::OperatingPointKind kind) {
   switch (kind) {
-    // Placed by a rule that reads the inputs: the interior condition, one of
-    // the two bounds, or the midpoint of both.
+    // Placed by a rule that reads the inputs: the interior condition, or one of
+    // the two bounds.
     case pl::Leaf::OperatingPointKind::Interior:
     case pl::Leaf::OperatingPointKind::BoundarySoil:
     case pl::Leaf::OperatingPointKind::BoundaryCrit:
     case pl::Leaf::OperatingPointKind::BoundaryRootCrit:
-    case pl::Leaf::OperatingPointKind::Determined:
     case pl::Leaf::OperatingPointKind::ShadeDeath:
       return Arm::CarriesRows;
     // The stem holds at psi_crit and nothing defines the collar at all.
@@ -252,7 +251,7 @@ Arm arm_of(pl::Leaf::OperatingPointKind kind) {
 // sits three orders above what the check can resolve. Scaled by the terms too,
 // for the reason the identity is.
 const double kControlFloor = 1e-7;
-int seen_carry = 0, seen_norows = 0, seen_determined = 0;
+int seen_carry = 0, seen_norows = 0;
 
 void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
   const std::size_t layers = std::size_t(l.supply_n_layers());
@@ -317,9 +316,6 @@ void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
   ++compared;
   if (rel > worst) worst = rel;
   if (cancel > worst_cancel) worst_cancel = cancel;
-  if (l.operating_point_kind() == pl::Leaf::OperatingPointKind::Determined) {
-    ++seen_determined;
-  }
   ok(rel < 1e-10, "transpose identity: " + at + " rel=" + std::to_string(rel) +
                       " cancellation=" + std::to_string(cancel));
 }
@@ -332,27 +328,6 @@ void check(int layers, double psi0, double ppfd, double leaf_temp,
                "layers=" + std::to_string(layers) + " psi_soil=" +
                    std::to_string(psi0) + " ppfd=" + std::to_string(ppfd) +
                    " T=" + std::to_string(leaf_temp),
-               seed);
-}
-
-// A collapsed interval, which no point of the sweep reaches. test_leaf's drivers,
-// with the stem's critical potential drier than the root's and the soil in a band
-// ~1e-3 MPa wide.
-void check_determined(double root_P50, double psi_soil, unsigned long seed) {
-  pl::Leaf l;
-  l.setup_transpiration(100);
-  l.setup_root_vulnerability(100);
-  const std::vector<double> ps{psi_soil}, depth{1.0}, root{1.0 / 0.05};
-  l.set_traits(96.0, 2.680147, 3.4287, 2.680147, root_P50, 1.5, 157.44, 0.30, 0.7,
-               0.99, 7.5, 1.44, 1.0, 0.6, 0.0);
-  l.set_physiology(fixture::root_network(root, depth), 900.0, ps, depth,
-                   0.000157 / 5.0, 2.0, 40.0, 25.0, 21.0, 101.3);
-  l.find_root_collar_psi();
-  ok(l.operating_point_kind() == pl::Leaf::OperatingPointKind::Determined,
-     "the fixture at root_P50=" + std::to_string(root_P50) + " is determined");
-  check_solved(l,
-               "determined root_P50=" + std::to_string(root_P50) +
-                   " psi_soil=" + std::to_string(psi_soil),
                seed);
 }
 
@@ -372,9 +347,6 @@ int main() {
       }
     }
   }
-  // One per dry bound: the root's own limit, and the continuity root.
-  check_determined(3.4, 5.8649, seed += 7919);
-  check_determined(6.0, 5.9105, seed += 7919);
   printf("    %d operating points compared | worst relative %.3e\n", compared,
          worst);
   // Reported because it is what the scaling above is for: a sweep that stopped
@@ -389,7 +361,6 @@ int main() {
   ok(compared >= 20, "the sweep reached at least 20 operating points");
   ok(seen_carry > 0, "the sweep reached an arm whose collar carries rows");
   ok(seen_norows > 0, "the sweep reached an arm whose collar does not move");
-  ok(seen_determined == 2, "both determined fixtures were compared");
-  printf("%d checks, %d failures\n", compared + seen_carry + seen_norows + 6, failures);
+  printf("%d checks, %d failures\n", compared + seen_carry + seen_norows + 3, failures);
   return failures == 0 ? 0 : 1;
 }
