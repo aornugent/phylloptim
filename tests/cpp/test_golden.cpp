@@ -146,13 +146,12 @@ std::vector<Row> run_grid() {
 // not reproduce this split, because dprofit's shut-down sentinel is exactly 0.0
 // and would move all 48 shutdown points into `interior`.
 //
-// Seven kinds are expected to be EMPTY here, and the table below asserts each:
+// Six kinds are expected to be EMPTY here, and the table below asserts each:
 // `shade-death` because assim_max_ never gets there (it is reached by light, not by
 // drying, and not by heat either at 40 C); `solver-refused` and
 // `non-finite-gradient` because both bracket endpoints admit a usable gradient on
 // every feasible row; `boundary-root-crit` because the continuity root never
-// reaches the root's own limit at these traits; `determined` because no interval
-// collapses at the package's GSS_tol_abs; and `prescribed` and `unsolved` because
+// reaches the root's own limit at these traits; and `prescribed` and `unsolved` because
 // every row is solved rather than evaluated at a given collar.
 //
 // ⚠️ The hot end does NOT reach the compensation-point exit either, which is worth
@@ -200,7 +199,7 @@ int check_operating_kinds(const std::vector<Row> &rows) {
         // this list is a kind the golden file stops covering.
         {Kind::BoundaryRootCrit, 0},
         {Kind::HydraulicShutdown, e.shutdown},
-        {Kind::Determined, 0},        {Kind::ShadeDeath, 0},
+        {Kind::ShadeDeath, 0},
         {Kind::Prescribed, 0},        {Kind::SolverRefused, 0},
         {Kind::NonFiniteGradient, 0}, {Kind::Unsolved, 0},
     };
@@ -605,9 +604,9 @@ int compare(Tolerance tol) {
 //             the other three optimise psi_stem with upstream pinned at
 //             psi_soil, ignoring that path -- which is what their own refusal
 //             message means by "non-root-based". These are different problems,
-//             and the gap does not close as the root resistance goes to zero --
-//             the collar loses its freedom there and reports `determined`
-//             instead of optimising. Neither arm is a check on the other.
+//             and the gap does not close as the root resistance goes to zero,
+//             where the collar parameterises the flux ever more poorly.
+//             Neither arm is a check on the other.
 //   topology  single-potential supply, or a multi-layer profile at 1 or 3
 //             layers. The three psi_stem solvers refuse 3 layers; the refusal
 //             is RECORDED rather than skipped, so a change that lifts it shows

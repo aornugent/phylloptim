@@ -499,8 +499,8 @@ void test_shutdown_when_soil_is_drier_than_psi_crit() {
 
 // The shutdown path used to leak the previous solve's fluxes (plant #578/#577).
 // set_shutdown_state now writes them, so this asserts the fixed behaviour: a
-// shut-down leaf moves no water, respires at R_d, and sits at the CO2
-// compensation point -- and, critically, none of that depends on what ran before.
+// shut-down leaf moves no water, nets the no-flow assimilation at the no-flow ci,
+// and none of that depends on what ran before.
 void test_shutdown_writes_its_own_fluxes() {
   printf("shutdown writes its own fluxes (plant #578 fixed)\n");
   Drivers d;
@@ -527,12 +527,12 @@ void test_shutdown_writes_its_own_fluxes() {
   for (double s : l.soil_consumption_) {
     near(s, 0.0, 1e-300, "per-layer consumption is zero, not stale");
   }
-  // Respiring, not simply idle: profit_ is -R_d_ - hydraulic_cost, so the
-  // consistent assimilation is -R_d_. Zero would be inconsistent with profit_.
-  ok(l.assim_colimited_ < 0.0, "assimilation is negative (respiring)");
-  near(l.assim_colimited_, l.profit_ + l.hydraulic_cost_TF(l.psi_crit), 1e-12,
+  // Moving no gas: net assimilation is the no-flow value, zero in light, and
+  // profit_ is that less the hydraulic cost where the stem is held.
+  near(l.assim_colimited_, 0.0, 1e-300, "assimilation is the no-flow value (zero)");
+  near(l.assim_colimited_, l.profit_ + l.hydraulic_cost_TF(l.opt_psi_stem_), 1e-12,
        "assimilation is consistent with profit and the hydraulic cost");
-  ok(std::isfinite(l.ci_), "ci is set to the compensation point, not left stale");
+  ok(std::isfinite(l.ci_), "ci is set to the no-flow ci, not left stale");
 
   // Order independence is the property that was actually broken: a fresh leaf
   // taken straight to dry must report exactly the same thing.
@@ -627,8 +627,12 @@ void test_negative_assim_exit_writes_its_own_rates() {
   ok(l.assim_max_ < 0.0, "the dim solve takes the assim_max_ < 0 exit");
   near(l.transpiration_, 0.0, 1e-300, "transpiration is zero, not stale");
   near(l.stom_cond_CO2_, 0.0, 1e-300, "conductance is zero, not stale");
-  near(l.assim_colimited_, -l.R_d_, 1e-12,
-       "net assimilation is -R_d, not the bright solve's");
+  // The closed leaf nets what the dim light still fixes at ambient CO2, which is
+  // negative here and above -R_d.
+  near(l.assim_colimited_, l.assim_colimited(l.ca_), 1e-12,
+       "net assimilation is A(ci = ca), not the bright solve's");
+  ok(l.assim_colimited_ < 0.0 && l.assim_colimited_ > -l.R_d_,
+     "a loss, smaller than R_d");
   // The invariant the fix buys: profit_ == assim_colimited_ - hydraulic cost in
   // every branch. It held numerically to the last bit when measured.
   near(l.assim_colimited_ - l.hydraulic_cost_TF(l.opt_root_psi_), l.profit_,
@@ -1636,10 +1640,106 @@ void test_root_psi_crit_clamp_binds() {
     near(l.opt_root_psi_, l.roots_.root_psi_crit, 1e-12,
          "past the window the collar sits at root_psi_crit");
     near(l.transpiration_, 0.0, 1e-300, "and the leaf is shut down, not optimising");
-    near(l.opt_psi_stem_, l.psi_crit, 1e-12, "with the stem held at psi_crit");
+    // Held where flow stopped: the root limit, which this soil reaches before
+    // the stem's psi_crit.
+    near(l.opt_psi_stem_, l.roots_.root_psi_crit, 1e-12,
+         "with the stem held at the root limit, where flow stopped");
     ok(l.opt_root_psi_ <= l.roots_.root_psi_crit,
        "the collar never passes root_psi_crit in any regime");
   }
+}
+
+// As the soil dries through the end of the collar interval, transpiration,
+// profit and the held stem move continuously into shutdown, and every open leaf
+// transpires what its roots supply. Swept at both GSS_tol_abs a caller uses.
+void test_collar_continuous_into_shutdown() {
+  printf("the collar solve is continuous through collapse into shutdown\n");
+  Drivers d;
+  for (double gss : {1e-3, 1e-1}) {
+    const auto solve = [&](double psi_soil) {
+      phylloptim::Leaf l;
+      l.psi_crit = 5.91988;   // drier than root_psi_crit = 5.870283, as in plant
+      l.GSS_tol_abs = gss;
+      l.setup_transpiration(100);
+      l.setup_root_vulnerability(100);
+      std::vector<double> ps{psi_soil}, depth{1.0}, root{1.0 / d.area_leaf};
+      l.set_physiology(fixture::root_network(root, depth), d.PPFD, ps, depth,
+                       d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
+                       d.atm_o2_kpa, d.atm_kpa);
+      l.find_root_collar_psi();
+      return l;
+    };
+    const std::string tag = " (GSS_tol_abs " + std::to_string(gss) + ")";
+    double worst_water = 0.0, worst_step = 0.0, last_open = NAN, first_shut = NAN;
+    double prev = NAN;
+    int n_open = 0, n_shut = 0;
+    for (int i = 0; i <= 8000; ++i) {
+      const double psi_soil = 5.10 + 1e-4 * i;   // to 5.90, past the shutdown
+      phylloptim::Leaf l = solve(psi_soil);
+      if (l.transpiration_ > 0.0) {
+        ++n_open;
+        worst_water = std::max(worst_water,
+                               std::abs(l.transpiration_ - l.E_up_) / l.E_up_);
+        last_open = l.profit_;
+      } else if (std::isnan(first_shut)) {
+        ++n_shut;
+        first_shut = l.profit_;
+      }
+      if (!std::isnan(prev)) worst_step = std::max(worst_step, std::abs(l.profit_ - prev));
+      prev = l.profit_;
+    }
+    ok(n_open > 0 && n_shut > 0, "the sweep reaches both regimes" + tag);
+    ok(worst_water < 1e-9, "a transpiring leaf transpires what its roots supply" + tag);
+    // A 1e-4 MPa step in psi_soil moves a smooth profit by ~2e-5 here.
+    ok(worst_step < 1e-3, "no jump in profit along the sweep" + tag);
+    near(first_shut, last_open, 1e-3, "shutdown is the E -> 0 limit" + tag);
+  }
+}
+
+// The same continuity across the light-compensation point, where a closed leaf
+// nets A(ci = ca): zero at compensation and -R_d in the dark.
+void test_collar_continuous_through_light_compensation() {
+  printf("the collar solve is continuous through the light-compensation point\n");
+  Drivers d;
+  double prev = NAN, worst_step = 0.0, dark = NAN;
+  int n_shade = 0, n_open = 0;
+  for (int i = 0; i <= 6000; ++i) {
+    Drivers di = d;
+    di.PPFD = 0.01 * i;   // to 60, past compensation
+    phylloptim::Leaf l = make_leaf(di, {1.0}, {1.0});
+    l.find_root_collar_psi();
+    if (l.transpiration_ > 0.0) ++n_open; else ++n_shade;
+    if (i == 0) dark = l.assim_colimited_ + l.R_d_;
+    if (!std::isnan(prev)) worst_step = std::max(worst_step, std::abs(l.profit_ - prev));
+    prev = l.profit_;
+  }
+  ok(n_open > 0 && n_shade > 0, "the sweep crosses the compensation point");
+  // A 0.01 step in PPFD moves a smooth profit by ~4e-4 here.
+  ok(worst_step < 1e-2, "no jump in profit across compensation");
+  near(dark, 0.0, 1e-12, "and in the dark the closed leaf nets -R_d");
+}
+
+// On a layered soil the collar interval narrows below the 1e-4 MPa its bounds
+// are placed to before it closes; the solve must still reach shutdown smoothly.
+void test_layered_soil_dries_into_shutdown() {
+  printf("a layered soil dries into shutdown without a refused solve\n");
+  Drivers d;
+  int refused = 0, shut = 0;
+  double prev = NAN, worst_step = 0.0;
+  for (int i = 0; i <= 400; ++i) {
+    const double psi = 5.599 + 1e-5 * i;
+    phylloptim::Leaf l = make_leaf(d, {psi + 0.4, psi + 0.2, psi}, {1.0, 2.0, 3.0});
+    l.find_root_collar_psi();
+    const auto k = l.operating_point_kind();
+    if (k == phylloptim::Leaf::OperatingPointKind::SolverRefused) ++refused;
+    if (k == phylloptim::Leaf::OperatingPointKind::HydraulicShutdown) ++shut;
+    if (!std::isnan(prev)) worst_step = std::max(worst_step, std::abs(l.profit_ - prev));
+    prev = l.profit_;
+  }
+  ok(shut > 0, "the sweep reaches shutdown");
+  ok(refused == 0, "no solve on the way is refused, got " + std::to_string(refused));
+  // A 1e-5 MPa step moves a smooth profit here by ~1e-5.
+  ok(worst_step < 1e-4, "no jump in profit along the sweep");
 }
 
 void test_lambda_equals_dA_dE_single_layer() {
@@ -1774,10 +1874,11 @@ void test_cowan_farquhar_reproduces_the_TF_optimum() {
 }
 
 // The cost is lambda*E and E is exactly zero when the two potentials coincide, so
-// the no-flow profit is exactly -R_d whatever lambda is. That makes this the one
-// degenerate branch in the file whose value can be predicted rather than recorded.
+// the no-flow profit is exactly the no-flow assimilation -- zero in light --
+// whatever lambda is. That makes this the one degenerate branch in the file whose
+// value can be predicted rather than recorded.
 void test_cowan_farquhar_closed_state() {
-  printf("Cowan-Farquhar: the closed-stomata profit is -R_d, for any lambda\n");
+  printf("Cowan-Farquhar: the closed-stomata profit is zero, for any lambda\n");
   Drivers d;
   phylloptim::Leaf l = make_leaf(d, {6.0}, {1.0}); // drier than psi_crit
   l.CF77_lambda_ = 800.0;
@@ -1785,7 +1886,7 @@ void test_cowan_farquhar_closed_state() {
   near(l.opt_psi_stem_, 6.0, 1e-12, "the stem is held at the soil potential");
   near(l.transpiration_, 0.0, 1e-300, "transpiration is exactly zero");
   near(l.hydraulic_cost_, 0.0, 1e-300, "so the cost is exactly zero");
-  near(l.profit_, -l.R_d_, 1e-12, "and profit is -R_d");
+  near(l.profit_, 0.0, 1e-300, "and profit is zero: no gas moves, so A = 0");
   // Every reported field describes that point rather than a search probe -- the
   // property the evaluate-at-the-closed-point convention exists to give.
   near(l.profit_, l.assim_colimited_ - l.hydraulic_cost_, 1e-12,
@@ -2208,6 +2309,38 @@ phylloptim::Leaf make_pm_leaf(const Drivers &d, std::vector<double> psi_soil,
   return l;
 }
 
+// With the energy balance on, a shut leaf is warmer than the air and an open one
+// cooler; shade death is decided at the shut leaf's own temperature, where its
+// value is taken, so the light edge is continuous and a hot leaf is not refused.
+void test_shade_death_is_decided_at_the_shut_leaf_temperature() {
+  printf("shade death is decided at the shut leaf's own temperature\n");
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  double prev = NAN, worst_step = 0.0;
+  int shade = 0, open = 0;
+  for (int i = 0; i <= 1000; ++i) {
+    Drivers d;
+    d.PPFD = 20.0 + 0.01 * i;
+    phylloptim::Leaf l = make_pm_leaf(d, {1.0}, {1.0}, true);
+    l.find_root_collar_psi();
+    if (l.operating_point_kind() == Kind::ShadeDeath) ++shade; else ++open;
+    if (!std::isnan(prev)) worst_step = std::max(worst_step, std::abs(l.profit_ - prev));
+    prev = l.profit_;
+  }
+  ok(shade > 0 && open > 0, "the sweep crosses the compensation point");
+  // A 0.01 step in PPFD moves a smooth profit here by ~5e-4.
+  ok(worst_step < 5e-3, "no jump in profit across compensation");
+
+  Drivers hot;
+  hot.leaf_temp = 40.0;
+  phylloptim::Leaf l = make_pm_leaf(hot, {1.0}, {1.0}, true);
+  l.find_root_collar_psi();
+  ok(l.operating_point_kind() == Kind::ShadeDeath,
+     "a hot leaf that cannot fix carbon at its shut temperature is shut");
+  ok(l.Tleaf_ > hot.leaf_temp && l.assim_colimited_ < 0.0,
+     "and nets what it fixes there at ambient CO2");
+}
+
+
 // Tleaf as a reported OUTPUT, on both paths and out of every exit.
 //
 // The gap this closes: on the PM path the leaf's temperature is solved per
@@ -2382,13 +2515,13 @@ void test_shutdown_reports_one_temperature() {
     l.find_root_collar_psi();
     const std::string what = std::string(" (") + c.name + ")";
 
-    ok(l.assim_colimited_ == -l.R_d_,
-       "net assimilation is -R_d at zero transpiration" + what);
+    ok(l.assim_colimited_ == l.no_flow_assim(),
+       "net assimilation is the no-flow value at zero transpiration" + what);
     near(l.profit_, l.assim_colimited_ - l.hydraulic_cost_TF(l.opt_psi_stem_),
          1e-12, "profit == assimilation - hydraulic cost" + what);
     ok(std::isfinite(l.ci_), "ci is written, and finite" + what);
-    ok(l.ci_ == l.gamma_ * l.umol_per_mol_to_Pa_,
-       "ci sits at the compensation point of the reported temperature" + what);
+    ok(l.ci_ == l.ci_no_flow(),
+       "ci sits at the no-flow point of the reported temperature" + what);
     // #93's leaf-to-air deficit is on the same footing: reported, read by
     // g1_eff(), and derived from a temperature -- so it has to be THIS
     // temperature and not set_physiology's Tair baseline.
@@ -2480,18 +2613,13 @@ void test_zero_E_branch_derives_its_own_block() {
     ok(l.transpiration_ == 0.0, "the branch really transpires nothing");
     ok(l.Tleaf_ == l.leaf_temp_from_E(0.0),
        "and its temperature is the E = 0 one");
-    ok(l.ci_ == l.gamma_ * l.umol_per_mol_to_Pa_,
-       "ci sits at the compensation point");
-    // ⚠️ A TOLERANCE, DELIBERATELY, AND DO NOT TIGHTEN IT TO EXACT. Gross
-    // assimilation at ci = gamma* is analytically zero, so net is -R_d, but the
-    // co-limiting expression rounds -- 4.44e-16, one ULP. The exits outside the
-    // solve assign `-R_d_` directly and so are bit-exact; this branch goes through
-    // `assim_colimited`, and cannot be. The bit-exact statement that pins the
-    // TEMPERATURE is the next one.
-    near(l.assim_colimited_, -l.R_d_, 1e-14,
-         "net assimilation is -R_d at zero transpiration");
-    ok(l.assim_colimited_ == l.assim_colimited(l.ci_),
-       "and it is this block's value at this branch's ci, bit-for-bit");
+    ok(l.ci_ == l.ci_no_flow(), "ci sits at the no-flow point");
+    ok(l.assim_colimited_ == l.no_flow_assim(),
+       "net assimilation is the no-flow value at zero transpiration");
+    // ci is the root of net assimilation, to the root-find's 1e-13 in ci. The
+    // bit-exact statement that pins the TEMPERATURE is the next block.
+    near(l.assim_colimited(l.ci_), 0.0, 1e-8,
+         "and this block's assimilation at that ci is zero");
     ok(l.vpd_leaf_ == l.atm_vpd_ + (l.saturation_vapour_pressure(Tleaf) -
                                     l.saturation_vapour_pressure(Tair)),
        "and the deficit is the leaf-to-air one at that temperature");
@@ -2504,7 +2632,8 @@ void test_zero_E_branch_derives_its_own_block() {
     l.update_temperature_dependent_params(Tleaf);
     ok(l.R_d_ == rd, "R_d is the curve's value at the reported Tleaf");
     ok(l.gamma_ == gamma, "and so is the compensation point");
-    ok(ci == gamma * l.umol_per_mol_to_Pa_, "so ci follows it");
+    ok(ci == l.ci_no_flow(), "so ci follows it");
+    (void)gamma;
     l.update_temperature_dependent_params(Tair);
     ok(l.R_d_ != rd, "and it is NOT the Tair value -- the two really differ");
   }
@@ -2523,8 +2652,8 @@ void test_zero_E_branch_derives_its_own_block() {
     l.set_leaf_states_rates_from_psi_stem(1.0, 1.0);
     ok(l.assim_colimited_ == a0, "and the closure candidate is reproducible");
     l.update_temperature_dependent_params(l.leaf_temp_from_E(0.0));
-    near(a0, -l.R_d_, 1e-14,
-         "its carbon is -R_d at the temperature E = 0 implies");
+    near(a0, l.no_flow_assim(), 1e-300,
+         "its carbon is the no-flow value at the temperature E = 0 implies");
 
     // And |A|max EXCLUDES it: a positive normaliser cannot be a respiration rate.
     l.prepare_profitmax();
@@ -4217,130 +4346,6 @@ void test_the_dry_end_reports_which_bound_closed_it() {
   (void)continuity;
 }
 
-// A collapsed interval leaves the collar at the midpoint of its two bounds, so it
-// moves as their mean, and the stem at psi_crit rather than at continuity with the
-// draw. One fixture per dry bound, each inside a band of soil ~1e-3 MPa wide.
-void test_a_determined_collar_moves_with_its_bounds() {
-  printf("a determined collar moves as the mean of its two bounds\n");
-  using T = odelia::ode::tangent_scalar<double>;
-  using Kind = phylloptim::Leaf::OperatingPointKind;
-  constexpr auto K = phylloptim::Leaf::CostCurve::TF24;
-  const auto solve = [](double stem_P50, double root_P50, double psi_soil) {
-    Drivers d;
-    const std::vector<double> ps{psi_soil}, depth{1.0}, root{1.0 / d.area_leaf};
-    phylloptim::Leaf l = make_leaf(d, ps, depth);
-    l.set_traits(96.0, 2.680147, stem_P50, 2.680147, root_P50, 1.5, 157.44, 0.30,
-                 0.7, 0.99, 7.5, kRd25, kGammaJS22, kCMaxA, kCMaxB);
-    l.set_physiology(fixture::root_network(root, depth), d.PPFD, ps, depth,
-                     d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
-                     d.atm_o2_kpa, d.atm_kpa);
-    l.find_root_collar_psi();
-    return l;
-  };
-  // The tangent of the collar, and of the outputs placed at it, along one of
-  // root_P50, stem_P50 or psi_soil.
-  struct Rows {
-    T collar;
-    phylloptim::Leaf::LeafOutputs<T> out;
-  };
-  const auto rows_along = [&](phylloptim::Leaf &l, int direction) {
-    phylloptim::leaf_pars<T> pars;
-    const phylloptim::leaf_pars<double> seated = l.passive_pars();
-    for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
-    std::vector<T> soil{T(l.roots_.psi_soil_[0])},
-        r_h{T(l.roots_.network_.r_R_H_min[0])},
-        r_v{T(l.roots_.network_.r_R_V_sum[0])};
-    odelia::ode::set_direction(direction == 0   ? pars[phylloptim::par_root_P50]
-                               : direction == 1 ? pars[phylloptim::par_stem_P50]
-                                                : soil[0],
-                               1.0);
-    const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
-                                         pars[phylloptim::par_root_P50],
-                                         pars[phylloptim::par_root_c]};
-    const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
-    Rows r;
-    r.collar = l.collar_at<K, T>(draw, pars);
-    r.out = l.outputs_at<K, T>(r.collar, draw, pars);
-    return r;
-  };
-
-  struct Case {
-    const char *dry;
-    double root_P50, psi_soil;
-  };
-  // psi_crit 5.9198, drier than root_psi_crit 5.8703 at root_P50 3.4. The
-  // continuity case sits where that root's bracket stopped furthest from it.
-  for (const Case &c : {Case{"root limit", 3.4, 5.8649}, Case{"continuity", 6.0, 5.911964}}) {
-    const double stem_P50 = 3.4287;
-    const std::string at = " (" + std::string(c.dry) + ")";
-    phylloptim::Leaf l = solve(stem_P50, c.root_P50, c.psi_soil);
-    ok(l.operating_point_kind() == Kind::Determined,
-       "the fixture is determined" + at + ", got " +
-           l.operating_point_kind_name(l.operating_point_kind()));
-    ok(l.opt_psi_stem_ == l.psi_crit, "the stem sits at psi_crit" + at);
-
-    const char *names[] = {"root_P50", "stem_P50", "psi_soil"};
-    const double steps[] = {1e-5, 1e-5, 1e-6};
-    for (int dir = 0; dir < 3; ++dir) {
-      const std::string along = " along " + std::string(names[dir]) + at;
-      Rows r;
-      try {
-        r = rows_along(l, dir);
-      } catch (const std::exception &e) {
-        ok(false, "the derivative path answers" + along + ": " + e.what());
-        continue;
-      }
-      ok(odelia::util::to_passive(r.collar) == l.opt_root_psi_,
-         "the collar is the solved one, bit for bit" + along);
-      near(odelia::util::to_passive(r.out.profit), l.profit_, 1e-12,
-           "profit is the solved one" + along);
-      const double collar_row = odelia::ode::derivative_along(r.collar);
-      const double profit_row = odelia::ode::derivative_along(r.out.profit);
-      const double uptake_row = odelia::ode::derivative_along(r.out.uptake[0]);
-      ok(std::isfinite(collar_row) && std::isfinite(profit_row) &&
-             std::isfinite(uptake_row),
-         "every row is finite" + along);
-
-      // Each step holds the kind, so this differences the determined point alone;
-      // both bounds are polished, so its error is ~1e-15 / h.
-      const double h = steps[dir];
-      const auto at_step = [&](double s) {
-        return solve(stem_P50 + (dir == 1 ? s : 0.0), c.root_P50 + (dir == 0 ? s : 0.0),
-                     c.psi_soil + (dir == 2 ? s : 0.0));
-      };
-      const phylloptim::Leaf up = at_step(h), down = at_step(-h);
-      ok(up.operating_point_kind() == Kind::Determined &&
-             down.operating_point_kind() == Kind::Determined,
-         "both steps stay determined" + along);
-      const auto fd = [&](auto read) { return (read(up) - read(down)) / (2.0 * h); };
-      const double collar_fd = fd([](const phylloptim::Leaf &x) { return x.opt_root_psi_; });
-      const double profit_fd = fd([](const phylloptim::Leaf &x) { return x.profit_; });
-      const double uptake_fd =
-          fd([](const phylloptim::Leaf &x) { return x.soil_consumption_[0]; });
-      // Each bound is differentiated at its own root, up to GSS_tol_abs / 2 from
-      // the draw. Taken at the draw instead, the collar's row along psi_soil read
-      // 0.50004 where the bounds give 0.5; measured now, the worst is 2e-8.
-      near(collar_row, collar_fd, 1e-6, "the collar's row matches the solve's" + along);
-      near(profit_row, profit_fd, 1e-5, "profit's row matches the solve's" + along);
-      // Against the uptake itself where its row is too small to compare.
-      const double uptake = l.soil_consumption_[0];
-      ok(std::abs(uptake_row - uptake_fd) <=
-             1e-3 * (std::abs(uptake_fd) + std::abs(uptake)),
-         "the uptake's row matches the solve's" + along);
-      printf("    %-10s along %-8s  collar %11.8f (%11.8f)  profit %11.8f (%11.8f)\n",
-             c.dry, names[dir], collar_row, collar_fd, profit_row, profit_fd);
-    }
-  }
-
-  // A stem optimum inside its interval needs a curvature that is not taken, so the
-  // outputs refuse by name while the collar still answers.
-  phylloptim::Leaf l = solve(7.0, 3.4, 5.8649);
-  ok(l.operating_point_kind() == Kind::Determined && l.opt_psi_stem_ < l.psi_crit,
-     "a drier stem leaves the stem inside its interval");
-  ok(throws_with([&] { rows_along(l, 2); }, "only psi_crit is placed there"),
-     "the outputs refuse a stem inside its interval by name");
-}
-
 void test_rd_temperature_response() {
   printf("R_d rises with temperature\n");
   Drivers d;
@@ -4425,7 +4430,10 @@ void test_rd_temperature_response() {
     l.find_root_collar_psi();
     printf("    T = %4.1f C   R_d %6.3f   A %8.4f%s\n", T, l.R_d_,
            l.assim_colimited_,
-           l.ci_at_compensation_point() ? "   <-- shut down" : "");
+           l.operating_point_kind() ==
+                   phylloptim::Leaf::OperatingPointKind::ShadeDeath
+               ? "   <-- shut down"
+               : "");
   }
 
   // ⚠️ AND IT MUST SHUT DOWN RATHER THAN THROW. A leaf too hot to gain carbon at
@@ -4442,10 +4450,10 @@ void test_rd_temperature_response() {
       threw = true;
     }
     ok(!threw, "a leaf too hot to gain carbon shuts down instead of throwing");
-    ok(hot.ci_at_compensation_point(),
-       "and says so, rather than reporting an ordinary operating point");
-    near(hot.ci_, hot.gamma_ * hot.umol_per_mol_to_Pa_, 1e-12,
-         "ci sits at the compensation point");
+    ok(hot.operating_point_kind() ==
+           phylloptim::Leaf::OperatingPointKind::ShadeDeath,
+       "it is shut, since even at ambient CO2 it cannot fix carbon");
+    near(hot.ci_, hot.ca_, 1e-12, "ci sits at ambient");
     ok(hot.assim_colimited_ <= 0.0, "with no net carbon gain");
   }
 
@@ -4455,7 +4463,9 @@ void test_rd_temperature_response() {
   {
     phylloptim::Leaf ok_leaf = make_leaf(d, {2.0}, {1.0});
     ok_leaf.find_root_collar_psi();
-    ok(!ok_leaf.ci_at_compensation_point(),
+    ok(ok_leaf.operating_point_kind() !=
+               phylloptim::Leaf::OperatingPointKind::ShadeDeath &&
+           !ok_leaf.ci_assigned(),
        "an ordinary leaf is not flagged as shut down");
   }
 }
@@ -5442,6 +5452,36 @@ phylloptim::Leaf make_single_leaf(const Drivers &d, double psi_soil,
   return l;
 }
 
+// An open leaf that cannot fix carbon at ambient CO2 at its own temperature
+// nets A(ci = ca), as a shut one does, so profit along the stem has no step at
+// zero flow, and its slope there is the difference of the profit it reports.
+void test_stem_route_is_continuous_at_zero_flow_below_compensation() {
+  printf("below compensation the stem route is continuous at zero flow\n");
+  struct At { double ppfd, temp; bool eb; };
+  for (At at : {At{10.0, 25.0, false}, At{10.0, 25.0, true},
+                At{1500.0, 45.0, false}, At{1500.0, 45.0, true}}) {
+    Drivers d;
+    d.PPFD = at.ppfd;
+    d.leaf_temp = at.temp;
+    phylloptim::Leaf l = make_single_leaf(d, 1.0, at.eb);
+    const std::string tag = " at PPFD " + std::to_string(at.ppfd) + ", " +
+                            std::to_string(at.temp) + " C" +
+                            (at.eb ? ", energy balance" : "");
+    const double shut = l.profit_psi_stem_TF(1.0, 1.0);
+    const double open = l.profit_psi_stem_TF(1.0 + 1e-7, 1.0);
+    ok(l.assim_colimited_ < 0.0, "the leaf is below compensation" + tag);
+    ok(std::abs(open - shut) < 1e-5, "no step in profit at zero flow" + tag);
+
+    const double psi = 1.05, h = 1e-6;
+    bool feasible = false;
+    const double slope =
+        l.dprofit_dpsi_stem<phylloptim::Leaf::CostCurve::TF24>(psi, 1.0, &feasible);
+    const double fd = (l.profit_psi_stem_TF(psi + h, 1.0) -
+                       l.profit_psi_stem_TF(psi - h, 1.0)) / (2 * h);
+    near(slope, fd, 1e-4, "dprofit/dpsi_stem is the profit's slope" + tag);
+  }
+}
+
 // ===========================================================================
 // Sperry (2017) ProfitMax
 // ---------------------------------------------------------------------------
@@ -5643,8 +5683,8 @@ void test_profitmax_thermal_cost() {
 
 // Thresholds that put the thermal cost on its steep flank at 25 C air. At the
 // class defaults (Sicangco's heatwave pair, T50 50.4) the cost is ~1e-5 wherever
-// assimilation is positive under these drivers -- every hotter row sits at the
-// compensation point -- so the term would be compiled and never exercised.
+// assimilation is positive under these drivers -- every hotter row has ci
+// assigned at ca -- so the term would be compiled and never exercised.
 const double kLiveT50 = 32.0, kLiveTcrit = 28.0;
 
 // A single-potential leaf with the energy balance and the wind model configured
@@ -5705,7 +5745,7 @@ bool seed_linked_curve(phylloptim::Leaf &l) {
 template <phylloptim::Leaf::CostCurve K>
 int check_linked_eb_derivative_fd(const Drivers &d, bool tc, double psi_soil,
                                   double &worst, int &thermal_rows,
-                                  int &compensation_rows, bool print_v) {
+                                  int &assigned_rows, bool print_v) {
   const std::string name =
       phylloptim::Leaf::curve_name(static_cast<int>(K)) + (tc ? "+TC" : "") +
       " at Tair " + std::to_string(static_cast<int>(d.leaf_temp));
@@ -5731,14 +5771,15 @@ int check_linked_eb_derivative_fd(const Drivers &d, bool tc, double psi_soil,
     const double psi = psi_soil + frac * (l.psi_crit - psi_soil);
     bool feasible = false;
     const double an = l.template dprofit_dpsi_stem<K>(psi, psi_soil, &feasible);
-    // An infeasible row is the compensation-point branch, where the derivative
-    // is still a number (ProfitMax's scaled link) or the 0.0 sentinel (a log
-    // link has none at A < 0). Only the number is comparable.
-    if (!std::isfinite(an) || (!feasible && an == 0.0)) {
+    // Read before the objective below re-solves ci. On the assigned-ci branch
+    // the derivative is a number, flagged feasible, except where a log link
+    // has none at A < 0: that is the 0.0 sentinel, and it is not comparable.
+    const bool assigned = l.ci_assigned();
+    if (!std::isfinite(an) || !feasible) {
       continue;
     }
-    if (!feasible) {
-      ++compensation_rows;
+    if (assigned) {
+      ++assigned_rows;
     }
     // ⚠️ THE STEP IS SWEPT, NOT PICKED (hazard 15). The differenced objective
     // runs through the ci root-find AND the leaf-temperature balance, so its
@@ -5785,9 +5826,9 @@ void test_linked_dprofit_with_energy_balance_matches_a_finite_difference() {
          "swept-step difference of the objective\n");
   using CC = phylloptim::Leaf::CostCurve;
   double worst = 0.0;
-  int rows = 0, thermal_rows = 0, compensation_rows = 0;
+  int rows = 0, thermal_rows = 0, assigned_rows = 0;
   // 25 and 30 C air give interior rows; at 45 C every row under these drivers
-  // is at the compensation point, which is the other branch the link reaches.
+  // has ci assigned at ca, which is the other branch the link reaches.
   for (double tair : {25.0, 30.0, 45.0}) {
     Drivers d;
     d.PPFD = 1500.0;
@@ -5795,20 +5836,20 @@ void test_linked_dprofit_with_energy_balance_matches_a_finite_difference() {
     for (bool tc : {false, true}) {
       const bool print_v = (tair == 25.0 && tc);
       rows += check_linked_eb_derivative_fd<CC::SOX>(
-          d, tc, 1.0, worst, thermal_rows, compensation_rows, print_v);
+          d, tc, 1.0, worst, thermal_rows, assigned_rows, print_v);
       rows += check_linked_eb_derivative_fd<CC::JW26>(
-          d, tc, 1.0, worst, thermal_rows, compensation_rows, false);
+          d, tc, 1.0, worst, thermal_rows, assigned_rows, false);
       rows += check_linked_eb_derivative_fd<CC::ProfitMax>(
-          d, tc, 1.0, worst, thermal_rows, compensation_rows, print_v);
+          d, tc, 1.0, worst, thermal_rows, assigned_rows, print_v);
       rows += check_linked_eb_derivative_fd<CC::LeastCost>(
-          d, tc, 1.0, worst, thermal_rows, compensation_rows, print_v);
+          d, tc, 1.0, worst, thermal_rows, assigned_rows, print_v);
     }
   }
   printf("    %d rows (%d on the compensation branch) | worst error/scale at "
          "the floor %.3e | %d rows with a live thermal cost\n",
-         rows, compensation_rows, worst, thermal_rows);
-  ok(rows - compensation_rows >= 36, "enough interior rows were compared");
-  ok(compensation_rows >= 4,
+         rows, assigned_rows, worst, thermal_rows);
+  ok(rows - assigned_rows >= 36, "enough interior rows were compared");
+  ok(assigned_rows >= 4,
      "the compensation-point branch was compared too (hazard 16)");
   ok(thermal_rows >= 12,
      "the thermal-cost term was exercised, not only compiled (hazard 16)");
@@ -6387,12 +6428,11 @@ void test_transpiration_survives_negative_assim() {
        "and equals the supply function exactly");
   ok(l.stom_cond_CO2_ > 0.0, "so the conductance is positive too");
 
-  // The carbon state is the one the branch used to set by hand, and it now comes
-  // from the ci solver's own compensation-point fallback.
-  near(l.ci_, l.gamma_ * l.umol_per_mol_to_Pa_, 1e-9,
-       "ci sits at the compensation point");
-  near(l.assim_colimited_, -l.R_d_, 1e-9,
-       "and net assimilation is exactly -R_d");
+  // The carbon state comes from the ci solver's fallback: a leaf that cannot fix
+  // carbon even at ambient CO2 sits there and nets A(ca).
+  near(l.ci_, l.ca_, 1e-12, "ci sits at ambient");
+  near(l.assim_colimited_, l.assim_colimited(l.ca_), 1e-12,
+       "and net assimilation is A(ca)");
   printf("    Tleaf %.0f C: assim_max_ %.3f, E %.3e kg m-2 s-1, A %.3f\n",
          d.leaf_temp, l.assim_max_, E, l.assim_colimited_);
 
@@ -8186,9 +8226,10 @@ void reseat_thermal_leaf(phylloptim::Leaf &l, const Drivers &d,
 }
 
 // The block update_temperature_dependent_params writes, as one comparable value.
-std::array<double, 11> thermal_block(const phylloptim::Leaf &l) {
+std::array<double, 12> thermal_block(const phylloptim::Leaf &l) {
   return {l.vcmax_, l.jmax_, l.gamma_, l.ko_, l.kc_, l.R_d_, l.km_,
-          l.electron_transport_, l.k_imp_eff_, l.k_rec_eff_, l.functional_};
+          l.electron_transport_, l.k_imp_eff_, l.k_rec_eff_, l.functional_,
+          l.photo_temp_};
 }
 
 // NaN in every input, gate off, against a leaf that never had them: bit-identical
@@ -8369,7 +8410,7 @@ void test_thermal_damage_dprofit_is_the_solves_own() {
      "the sweep compared enough rows of each kind");
 }
 
-// respiration_temp_deriv and dprofit_energy_balance_term perturb the block by
+// temp_deriv and dprofit_energy_balance_term perturb the block by
 // 1e-3 degrees and put it back by assignment. The layer adds three outputs to
 // the block, so each must put back eleven numbers, not eight.
 void test_thermal_damage_fd_helpers_restore_the_block() {
@@ -8381,20 +8422,20 @@ void test_thermal_damage_fd_helpers_restore_the_block() {
   l.find_root_collar_psi();
   ok(l.operating_point_kind() == phylloptim::Leaf::OperatingPointKind::Interior,
      "the fixture is an interior point");
-  const std::array<double, 11> before = thermal_block(l);
+  const std::array<double, 12> before = thermal_block(l);
   ok(before[8] > 0.0 && before[9] > 0.0 && before[10] > 0.0,
      "the fixture has non-zero k_imp_eff, k_rec_eff and functional to lose");
 
-  const double dRd = l.respiration_temp_deriv(l.Tleaf_ + 2.0);
-  ok(thermal_block(l) == before, "respiration_temp_deriv restores all eleven");
-  ok(std::isfinite(dRd), "respiration_temp_deriv is finite");
+  const double dRd = l.temp_deriv(l.Tleaf_ + 2.0, [&] { return l.R_d_; });
+  ok(thermal_block(l) == before, "temp_deriv restores the whole block");
+  ok(std::isfinite(dRd), "temp_deriv is finite");
 
   using CC = phylloptim::Leaf::CostCurve;
   const double term = l.dprofit_energy_balance_term<CC::TF24>(
       l.ci_, l.stom_cond_CO2_, 1.0, 1e-5, 1.0, 0.1, 0.1, 0.1, 1.0, -1e3,
       l.Tleaf_ + 2.0);
   ok(std::isfinite(term), "dprofit_energy_balance_term is finite");
-  ok(thermal_block(l) == before, "dprofit_energy_balance_term restores all eleven");
+  ok(thermal_block(l) == before, "dprofit_energy_balance_term restores the whole block");
   // The linked arm evaluates A after the restore, so it must leave the same
   // eleven in place too.
   const double linked = l.dprofit_energy_balance_term<CC::SOX>(
@@ -8402,15 +8443,15 @@ void test_thermal_damage_fd_helpers_restore_the_block() {
       l.Tleaf_ + 2.0);
   ok(std::isfinite(linked), "the linked dprofit_energy_balance_term is finite");
   ok(thermal_block(l) == before,
-     "and the linked arm restores all eleven as well");
+     "and the linked arm restores the whole block as well");
 
   // The repair-flux cost reads k_rec_eff(T), so it reaches dR_d/dT: the
   // derivative moves with that coefficient, at a temperature where repair is
   // switching off.
   phylloptim::Leaf no_flux = l;
   no_flux.c_repair_flux_ = 0.0;
-  ok(no_flux.respiration_temp_deriv(l.t_rep_cut_) !=
-         l.respiration_temp_deriv(l.t_rep_cut_),
+  ok(no_flux.temp_deriv(l.t_rep_cut_, [&] { return no_flux.R_d_; }) !=
+         l.temp_deriv(l.t_rep_cut_, [&] { return l.R_d_; }),
      "the repair-flux cost's temperature response reaches dR_d/dT");
 }
 
@@ -8586,6 +8627,11 @@ int main() {
   test_root_rows_past_the_dry_end_match_the_table();
   test_stem_rows_past_the_dry_end_are_the_closed_forms();
   test_root_psi_crit_clamp_binds();
+  test_collar_continuous_into_shutdown();
+  test_collar_continuous_through_light_compensation();
+  test_layered_soil_dries_into_shutdown();
+  test_shade_death_is_decided_at_the_shut_leaf_temperature();
+  test_stem_route_is_continuous_at_zero_flow_below_compensation();
   test_signed_potentials_are_rejected();
   test_lambda_equals_dA_dE_single_layer();
   test_cowan_farquhar_equates_dA_dE_to_lambda();
@@ -8621,7 +8667,6 @@ int main() {
   test_temperature_params_invalidate_cache();
   test_rd_temperature_response();
   test_the_dry_end_reports_which_bound_closed_it();
-  test_a_determined_collar_moves_with_its_bounds();
   test_pack_kernels_are_the_models_own();
   test_light_reaches_carbon_with_a_row();
   test_every_answered_point_hands_over_finite_rows();

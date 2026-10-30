@@ -203,7 +203,11 @@ test_that("the recorded gradients have not moved", {
     "pinned-dry-3layer" = list(args = batch_drivers(4.0, vpd = 0.5,
                                                     layers = 3L),
                                pars = pars_grid),
-    "shutdown-1layer" = list(args = batch_drivers(6.0), pars = pars_grid),
+    # Off the default traits' tie between the stem's and the root's critical
+    # potentials, where the held stem has a kink -- see tools/gradient_golden.R.
+    "shutdown-1layer" = list(args = c(batch_drivers(6.0),
+                                      list(traits = leaf_traits(root_P50 = 4.0))),
+                             pars = pars_grid),
     "single-potential" = list(
       args = list(psi_soil = 1.5, PPFD = 900, atm_vpd = 2.0,
                   supply = leaf_supply_singlelayer(),

@@ -93,7 +93,7 @@ Those names are used throughout this page. The literature calls the first "non-r
 
 These are the same optimality problem in two coordinates, over different supply. Neither is a check on the other. Over 30 driver rows they disagree on 20, and the disagreement is the soil-to-collar drop, which only the root-based route charges for. Remove that drop and the two converge. Sweeping the series resistance down through three decades closes the gap by about a factor of ten per decade, reaching 4.0e-04 MPa.
 
-One point in that sweep looks like a structural gap and is not. At a resistance small enough that the feasible collar interval collapses, the root-based solve reports that feasibility *determined* the answer rather than that it optimised one. Comparing that with an optimum compares two different things, so read the trend rather than the endpoint.
+One point in that sweep looks like a structural gap and is not. At a resistance small enough that the whole range of flux fits inside a collar interval a few times the resistance wide, a collar known to double precision no longer resolves the flux, and once the interval closes the root-based solve reports hydraulic shutdown (#176). Real resistances are around 1e3, far from this, so read the trend rather than the endpoint.
 
 ### One problem, several coordinates
 
@@ -191,7 +191,7 @@ The feasible interval runs from `ψ_soil`, where there is no tension gradient an
 
 : The four kinds of operating point the reference grid reaches, and what each says about the leaf.
 
-The solve records eleven kinds in all; the others are rarer or are refusals. `vignette("derivative-surface")` lists them with what each means for a derivative.
+The solve records ten kinds in all; the others are rarer or are refusals. `vignette("derivative-surface")` lists them with what each means for a derivative.
 
 `boundary-soil` is the stressed case, despite sitting at the wet end of the interval. That is why the two are named for the bound rather than for the moisture: `ψ_soil` is the least-tension end, so "wet" reads as the comfortable case, whereas in fact it describes what a leaf does when carbon cannot pay for water. The reference grid makes the direction plain: warming the leaf from 25 °C to 40 °C takes `boundary-soil` from 24 rows to 80, and `boundary-crit` from 18 rows to none.
 
@@ -231,7 +231,7 @@ A general point follows, and it is the reason this subsection sits directly afte
 
 The tolerance you can set from R is not this one. The inner `c_i` root-find is fixed at 1e-13 on both routes. `ci_abs_tol` in `leaf_control()` is read in exactly one place, `solve_medlyn_ci_numerical`, which is the empirical Medlyn-conductance route. It reaches neither family of optimality solver, so tightening it buys no precision anywhere in the optimality model. The name promises otherwise, which is why it is worth stating.
 
-There is one regime where the implicit function theorem does not hold. When the leaf is hot enough that assimilation is negative across the whole `[Γ*, c_a]` bracket, there is no supply-equals-demand root. `c_i` is held at the compensation point instead, so the residual is not zero and so the theorem has nothing to stand on. Derivatives on that branch drop the assimilation term rather than approximating it, and report themselves as not feasible. A gradient that ignored that flag would get a plausible number.
+There is one regime where the implicit function theorem does not apply. When the leaf is dark enough, or hot enough, that assimilation is negative across the whole `[Γ*, c_a]` bracket, there is no supply-equals-demand root. `c_i` is then put at `c_a` and the leaf nets `A(c_a)`, as a leaf moving no gas does, so the open branch meets the shut one continuously as `E → 0`. There is no residual to differentiate there, so the derivatives take `A(c_a)`'s own slope instead. Only a genuine absence of a root reaches that branch; a failure of the root-finder stops rather than land there, because `c_a` would net the largest `A` on offer.
 
 
 ## The cost curves
@@ -303,7 +303,7 @@ So a product objective is a difference objective with a transformed benefit. The
 - Its λ carries a factor of `A`, because the cost is levied on proportional rather than absolute carbon. The section on λ derives this in one line, and shows that it is a property of the product form rather than of this particular `g`.
 - **It can never be boundary-crit.** `g(psi_crit)` is exactly zero, so `C` diverges there. Water becomes infinitely expensive before the bound is reached, and no parameter of the model's own is involved in arranging that.
 
-**The link states the cost; it is not how the optimum is found.** At full closure `A = −R_d < 0`, so `log A` does not exist, and that endpoint has to be a candidate. The optimiser therefore maximises the product directly, which is exact because `log` is monotone, while the *derivative* uses the log form.
+**The link states the cost; it is not how the optimum is found.** At full closure `A = min(0, A(c_a)) ≤ 0`, so `log A` does not exist, and that endpoint has to be a candidate. The optimiser therefore maximises the product directly, which is exact because `log` is monotone, while the *derivative* uses the log form.
 
 `LeastCost` reaches the same link from the other side. @prentice2014 minimise the cost of acquiring a unit of carbon, $(c_E E + c_V V_{c\max})/A$, which is a *ratio*; minimising it is maximising $\log A-\log\big(E+\beta_{\rm LC}V_{c\max}\big)$, so its log-cost is $+\log W$ where a product's is $-\log g$, and the sign lands in the marginal cost rather than in the link. Two things follow. Its penalty is the only one in the table that weighs something other than water — photosynthetic capacity, against transpiration — so a light sweep on this curve measures acclimation rather than the price of water. And its λ does **not** vanish at the wet end: as `E → 0` the denominator tends to the capacity term and λ to a finite value set by it, where a product curve's `g` carries λ to zero. Its first-order condition is the paper's own, $(c_i-\Gamma^*)/(c_a-c_i)=\xi/\sqrt{D}$ with $\xi=\sqrt{\beta_{\rm LC}(K_m+\Gamma^*)/1.6}$, and the C++ suite checks the solved $c_i/c_a$ against it to 1e-11 on the Rubisco-limited branch. The widely quoted $\chi=\xi/(\xi+\sqrt{D})$ is that condition with $\Gamma^*$ dropped from the numerator, and understates $\chi$ by 4–8% over `D` = 1–4 kPa; the suite predicts that gap rather than tolerating it.
 
@@ -611,15 +611,15 @@ The thermal cost is inert on its own, without the energy balance. With a prescri
 
 ## When the leaf cannot transpire
 
-Where the soil is drier than the stem's critical potential there is no flow, and the only feasible operating point is the no-flow one. The package evaluates the objective there rather than zeroing the reported fields, so every output describes one consistent state. For Cowan-Farquhar the result is exactly predictable: `E` is zero, so the cost is zero, so profit is `−R_d` whatever λ is.
+Where the soil is drier than the stem's critical potential there is no flow, and the only feasible operating point is the no-flow one. The package evaluates the objective there rather than zeroing the reported fields, so every output describes one consistent state. A leaf moving no gas nets `min(0, A(c_a))`: zero in light, which is what a transpiring leaf tends to as `E → 0`, and `A(c_a) < 0` in the dark. For Cowan-Farquhar the result is exactly predictable: `E` is zero, so the cost is zero, so in light profit is zero whatever λ is.
 
 ```{r}
 d <- leaf_model()                       # psi_soil drier than psi_crit
 set_drivers(d, psi_soil = 6.0, PPFD = 1500)
 d$CF77_lambda_ <- 1.5e5
 d$set_model("CF77", "stem"); d$optimise()
-cat(sprintf("E = %.1e, cost = %.1e, profit = %.6f, -R_d = %.6f\n",
-            d$transpiration_, d$hydraulic_cost_, d$profit_, -d$R_d_))
+cat(sprintf("E = %.1e, cost = %.1e, A = %.6f, profit = %.6f\n",
+            d$transpiration_, d$hydraulic_cost_, d$assim_colimited_, d$profit_))
 ```
 
 ---
@@ -689,7 +689,7 @@ $$A=\frac{A_c+A_j-\sqrt{(A_c+A_j)^{2}-4\,\theta_c A_c A_j}}{2\theta_c}-R_d$$
 
 $$K_m=K_c\Big(1+\frac{O_2}{K_o}\Big)$$
 
-`A` here is **net** assimilation. `R_d` is inside it, which is why the closed-stomata profit is `−R_d` rather than zero, and why `A` can be negative.
+`A` here is **net** assimilation. `R_d` is inside it, which is why `A` can be negative. A leaf with its stomata closed nets `min(0, A(c_a))`: zero in light, where the transpiring leaf tends to `A = 0` as `E → 0`, and `−R_d` in the dark.
 
 ### 2. Temperature responses
 
