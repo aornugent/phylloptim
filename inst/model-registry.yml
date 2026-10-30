@@ -2084,7 +2084,7 @@ equations:
       \quad \psi_r = \tfrac{1}{2}(\psi_a + \psi_b) \text{ if } \psi_b - \psi_a \le \epsilon_\mathrm{GSS}
     code: phylloptim::Leaf::prepare_collar_solve
     also: [phylloptim::Leaf::supply_psi_crit, phylloptim::Leaf::set_shutdown_state]
-    reads: [psi_crit, root_psi_crit, GSS_tol_abs]
+    reads: [psi_crit, root_psi_crit, collar_root_tol]
     writes: []
     kind: closed_form
     note: '$\psi_{\mathrm{crit},\mathrm{supply}}$ is the root''s own 5%-conductivity potential on the multi-layer supply and $\psi_\mathrm{crit}$ on the single one. The dry end is whichever limit binds first: the continuity root (kind `boundary-crit` if the optimum pins there) or the root limit (`boundary-root-crit`); the clamp can invert the interval, which is a shut-down, not an optimisation over an empty set. An interval narrower than bracket_tol_at(bound_b) has both ends polished to collar precision, and one no wider than collar_root_tol is a shut-down too. Shade death ($A_\max < 0$) is no_flow_state.'
