@@ -1614,7 +1614,7 @@ equations:
     reads: [fd_step, ca, vpd_leaf_min, use_energy_balance_]
     writes: []
     kind: derivative
-    note: '$A_T = \partial A/\partial T_\mathrm{leaf}$ at fixed $c_i$ is a central difference of the temperature block with the fixed step $h$. The term is not observable on its own: it reaches the outputs only through the stem-route derivative.''s noise floor; with FAO-56''s rounded 4098 in the slope of the saturation curve (before 0.15.4) it was a 2e-6 to 2e-5 plateau at every step, 1.9e-5 here, so the tolerance still fails that.'
+    note: '$A_T = \partial A/\partial T_\mathrm{leaf}$ at fixed $c_i$ is a central difference of the temperature block with the fixed step $h$. The term is not observable on its own: it reaches the outputs only through the stem-route derivative.'
 
   # --- damage, repair and acclimation ---------------------------------------------
   acclimation_shift:
@@ -1849,7 +1849,7 @@ equations:
     reads: [root_b, root_c, vulnerability_curve_ncontrol]
     writes: []
     kind: closed_form
-    note: 'The conductivity spline (values and slopes exact at the knots) read at an argument clamped into the grid (#77), so past P99 it reports the floor conductivity, 0.01, however dry the layer: #85''s question. No binding: read through E_from_Soil_to_Root_Collar at a collar equal to the layer''s potential, where the layer flux is $-\rho_w g z/(r_{H,\min}/\hat f_r + r_{V,\Sigma})$ (multilayer_uptake), with $r_{V,\Sigma} = 0$.'
+    note: 'The conductivity spline (values and slopes exact at the knots) read at an argument clamped into the grid (#77), so past P99 it reports the floor conductivity, 0.01, however dry the layer: #85''s question. Not bound.'
   root_vulnerability_integral:
     section: vulnerability
     title: Root integral as the code reads it
@@ -1964,7 +1964,7 @@ equations:
     reads: [ca, atm_kpa, umol_to_mol, kPa_to_Pa]
     writes: [ci_]
     kind: closed_form
-    note: '$A$ in µmol m⁻² s⁻¹ (net, the assimilation entry), $g_c$ in mol m⁻² s⁻¹ (the stomatal_conductance entry), $c_i$, $c_a$ in Pa, $P$ in kPa. TOMS748 to 1e-10 absolute plus relative in $c_i$. $g$ is negative at $\Gamma^* c_P$, so a root exists exactly when $A(c_a) > 0$; otherwise (no root in the bracket, or any solver failure with the energy balance on) $c_i$ is put at the compensation point, where gross assimilation is zero and net is $-R_d$.'
+    note: '$A$ in µmol m⁻² s⁻¹ (net, the assimilation entry), $g_c$ in mol m⁻² s⁻¹ (the stomatal_conductance entry), $c_i$, $c_a$ in Pa, $P$ in kPa. TOMS748 to 1e-13 absolute plus relative in $c_i$. $g$ is negative at $\Gamma^* c_P$, so a root exists exactly when $A(c_a) > 0$; otherwise (no root in the bracket, or any solver failure with the energy balance on) $c_i$ is put at the compensation point, where gross assimilation is zero and net is $-R_d$.'
 
   assim_max:
     section: solve
@@ -2032,7 +2032,7 @@ equations:
     reads: [ca, atm_kpa, umol_to_mol, kPa_to_Pa, leaf_specific_conductance_max, use_energy_balance_]
     writes: []
     kind: derivative
-    note: '$dc_i/d\psi$ by the implicit function theorem on the residual of intercellular_co2, so the derivative never passes through the $c_i$ iteration; $A''$ by forward AD of the assimilation kernel. Upstream potential fixed at $\psi_\mathrm{soil}$. Returns (value, feasible): feasible is 0 on the no-flow exit ($\psi_\mathrm{up} \ge \psi_\mathrm{stem}$, a 0.0 sentinel) and on the compensation-point branch, where the residual is not zero and only the cost term survives. The energy-balance term is energy_balance_foc. Measured over 4 difference curves (TF24, CF77, JS22, CMax) × 3 temperatures × 5 potentials at PPFD 300 and 1800 (120 rows, all feasible) and at PPFD 0 (60 compensation-point rows, flag 0, value $-\partial C/\partial\psi$): worst floor 2.5e-9 relative, most rows ~1e-10 at 1e-4 to 1e-5 MPa. No row has a step-independent plateau. What sets the floor is noise in $J$ itself: the $c_i$ root-find stops anywhere in its 1e-10 band, which leaves jumps of up to 5.5e-10 (s.d. 9e-11) in $J$ on some stretches of $\psi$ and none on others, and a central difference turns that into ~1e-10/$h$. The tolerance is the noise floor measured on two platforms, not one: the worst row is 2.5e-9 on macOS/arm64 and 1.05e-8 on ubuntu/x86-64, because the c_i root-find''s ~1e-10 noise in profit, divided by 2h, depends on libm. The same mechanism sets foc_collar''s, so both carry 5e-8; a wrong chain-rule term is an O(1) error and a plateau, which no step moves.'
+    note: '$dc_i/d\psi$ by the implicit function theorem on the residual of intercellular_co2, so the derivative never passes through the $c_i$ iteration; $A''$ by forward AD of the assimilation kernel. Upstream potential fixed at $\psi_\mathrm{soil}$. Returns (value, feasible): feasible is 0 on the no-flow exit ($\psi_\mathrm{up} \ge \psi_\mathrm{stem}$, a 0.0 sentinel) and on the compensation-point branch, where the residual is not zero and only the cost term survives. The energy-balance term is energy_balance_foc.'
 
   foc_collar:
     section: solve
@@ -2047,7 +2047,7 @@ equations:
     reads: [ca, atm_kpa, umol_to_mol, kPa_to_Pa, leaf_specific_conductance_max, use_energy_balance_]
     writes: []
     kind: derivative
-    note: 'The collar potential is the decision variable and $\psi_\mathrm{stem}$ follows by continuity (stem_from_collar), whose slope is the second fraction: $E_\mathrm{up}''$ is the soil-to-collar conductance (analytic, with a 1e-6 central difference of the transport at a layer kink). $\partial C/\partial \psi_r$ is non-zero only for a curve whose cost reads the upstream potential (JS22). The same two sentinels as the stem route: no flow ($\psi_r \ge \psi_\mathrm{stem}$) returns 0.0 with feasible 0, and the compensation-point branch drops the assimilation term. Measured over TF24, CF77 and JS22 × 3 temperatures × 4 supplies × 3 collars (108 rows, all feasible): worst floor 3.5e-8 relative, median 1e-10; 98 rows reach 1e-9 and 73 reach 2e-10. No plateau: on the worst rows the error runs from 6e-5 to 3e-8 and changes sign across the sweep. It is the same $c_i$-tolerance noise in $J$ as on the stem route (measured s.d. 1.4e-10, jumps to 4.6e-10, at 5e-6 MPa spacing), which lands inside the stencil on 10 of these rows and leaves no step at which both truncation ($\propto h^2$, clean at 1e-3 and above) and noise ($\propto 1/h$) are below 1e-8. A difference cannot certify this route more tightly than that; the stem route''s 2.5e-9 is the same noise landing less often.'
+    note: 'The collar potential is the decision variable and $\psi_\mathrm{stem}$ follows by continuity (stem_from_collar), whose slope is the second fraction: $E_\mathrm{up}''$ is the soil-to-collar conductance (analytic, with a 1e-6 central difference of the transport at a layer kink). $\partial C/\partial \psi_r$ is non-zero only for a curve whose cost reads the upstream potential (JS22). The same two sentinels as the stem route: no flow ($\psi_r \ge \psi_\mathrm{stem}$) returns 0.0 with feasible 0, and the compensation-point branch drops the assimilation term.'
 
   continuity_root:
     section: solve
@@ -2307,7 +2307,7 @@ equations:
     reads: [TF24_cost_scale, TF24_beta2, CF77_lambda_, JS22_gamma, CMax_a, CMax_b, TF24_floor_lambda_o, LeastCost_beta, kg_to_mol_h2o, leaf_specific_conductance_max, stem_b, stem_c, psi_crit]
     writes: []
     kind: identity
-    note: 'The one place the cost enters a derivative, shared by both routes. TF24 by forward AD of the cost kernel, the rest analytic. CF77, TF24_floor and LeastCost multiply by $G''(\psi)$, the slope of the integral TABLE the solve runs on, where the printed form has $f$: measured up to 5.0e-8 relative apart over the three trait sets (2.3e-8 at the defaults), the interpolation error of the table, not a defect; the other curves agree to rounding. Off the energy balance; with it on ProfitMax adds $(dTC/dT)(dT/dE)(dE/d\psi)$ in dprofit_energy_balance_term, not here. Read off the stem-route derivative as $h_K''(A)\, d_0 - \partial J_K/\partial\psi$ (see benefit_link_deriv), over three trait sets and two soils.'
+    note: 'The one place the cost enters a derivative, shared by both routes. TF24 by forward AD of the cost kernel, the rest analytic. CF77, TF24_floor and LeastCost multiply by $G''(\psi)$, the slope of the integral TABLE the solve runs on, where the printed form has $f$: the two differ by up to 5e-8 relative, the interpolation error of the table, not a defect; the other curves agree to rounding. Off the energy balance; with it on ProfitMax adds $(dTC/dT)(dT/dE)(dE/d\psi)$ in dprofit_energy_balance_term, not here.'
   cost_deriv_upstream:
     section: costs
     title: The marginal cost in the upstream potential
@@ -2473,7 +2473,7 @@ equations:
     reads: [leaf_specific_conductance_max]
     writes: []
     kind: identity
-    note: 'dC/dE along the collar path. $\lambda_\psi$ is the part of a cost that reads $\psi_\mathrm{stem}$ alone (TF24, SOX, JW26, ProfitMax''s conductance term), which takes the series factor; $\lambda_E$ the part that reads the potentials only through E (CF77''s price, LeastCost, the floor''s $\lambda_o$, ProfitMax''s thermal term), which carries over; the last term is the explicit collar read of JS22 and CMax. At an interior optimum the first-order condition makes λ equal $dA/dE$ along the collar path for every link, taken by central difference of assimilation and transpiration at the collar either side. Measured worst 1.8e-6 (C++ suite); the tolerance leaves platform room and still fails a λ of the wrong curve, which is off by O(1).'
+    note: 'dC/dE along the collar path. $\lambda_\psi$ is the part of a cost that reads $\psi_\mathrm{stem}$ alone (TF24, SOX, JW26, ProfitMax''s conductance term), which takes the series factor; $\lambda_E$ the part that reads the potentials only through E (CF77''s price, LeastCost, the floor''s $\lambda_o$, ProfitMax''s thermal term), which carries over; the last term is the explicit collar read of JS22 and CMax. At an interior optimum the first-order condition makes λ equal $dA/dE$ along the collar path for every link; test_collar_lambda_emergent_is_dA_dE (tests/cpp) asserts it.'
   lambda_emergent:
     section: marginal_cost
     title: The seated curve's λ at its operating point
