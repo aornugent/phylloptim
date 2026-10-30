@@ -48,6 +48,10 @@
 # Then for psi_stem_to_ci's tolerance going 1e-10 -> 1e-13 (#172), which moved 23
 # of the 54 values by up to 2.6e-14 relative.
 #
+# Then for the continuous no-flow value (#175), which moved the shut-down row's
+# ci, assim and profit only: a leaf moving no gas nets min(0, A(ci = ca)), which
+# at 100 umol m-2 s-1 is 0 rather than -R_d.
+#
 # Before that, #92 (the indexed knot grid) moved 27, the psi_stem_to_ci tolerance
 # 18, and the collar root-find 27.
 
@@ -61,7 +65,7 @@
 #                    reversed soil profile is invisible at one layer
 #   the last row     a SHUT-DOWN point (psi_soil 6 MPa, low light, high VPD):
 #                    transpiration and gc are exactly zero, assimilation is
-#                    negative and the collar sits at psi_stem. This is the
+#                    min(0, A(ca)) and the collar sits at psi_stem. This is the
 #                    branch #15 fixed, and it is the one where an output a code
 #                    path declines to write becomes the previous leaf's value.
 #                    Pinning it here means the R layer is checked on the exit
@@ -114,11 +118,11 @@ golden_rows <- list(
     expected = list(
       psi_stem      = "0x1.77b2b65270b19p+2",
       opt_root_psi  = "0x1.77b2b65270b19p+2",
-      ci            = "0x1.1528240b78034p+2",
-      assim         = "-0x1.70a3d70a3d70ap+0",
+      ci            = "0x1.ec6f9e7580bddp+2",
+      assim         = "0x0p+0",
       transpiration = "0x0.0p+0",
       gc            = "0x0.0p+0",
-      profit        = "-0x1.0c4e91b92c8b1p+3",
+      profit        = "-0x1.bc742dafc9b9fp+2",
       e_up          = "0x0.0p+0",
       uptake        = "0x0.0p+0"
     )

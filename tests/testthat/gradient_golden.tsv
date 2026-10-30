@@ -13,8 +13,8 @@ pinned-dry-3layer	pinned	fd	stem_c	-0x1.1b045a2645ec5p+2	-0x1.4fac91a982b9bp-6	-
 pinned-dry-3layer	pinned	fd	R_d_25	-0x1.b4148386a06c7p-3	0x0p+0	0x0p+0	0x0p+0	-0x1.b4148386a06c7p-3
 shutdown-1layer	no-gradient	fd	vcmax_25	0x0p+0	0x0p+0	0x0p+0	0x0p+0	0x0p+0
 shutdown-1layer	no-gradient	fd	stem_P50	0x0p+0	0x0p+0	0x1.b9ff6d1693da6p+0	0x1.b9ff6d1693da6p+0	0x0p+0
-shutdown-1layer	no-gradient	fd	stem_c	0x0p+0	0x0p+0	-0x1.323874d87eaa4p+0	-0x1.323874d87eaa4p+0	0x0p+0
-shutdown-1layer	no-gradient	fd	R_d_25	-0x1.ffffffff73c8bp-1	0x0p+0	0x0p+0	0x0p+0	-0x1.00000000636f2p+0
+shutdown-1layer	no-gradient	fd	stem_c	0x0p+0	0x0p+0	-0x1.323874d87eaa4p+0	-0x1.323874d87eaa4p+0	-0x1.6c5e7737dc06ep-33
+shutdown-1layer	no-gradient	fd	R_d_25	0x0p+0	0x0p+0	0x0p+0	0x0p+0	0x0p+0
 single-potential	interior	ift	vcmax_25	0x1.8dcf9dc5bd05ap-11	0x1.8655e08863a1bp-20	0x1.0f0fc12f862d7p-11	0x1.f6baf4e4b0605p-12	0x1.226a303ea4p-12
 single-potential	interior	ift	leaf_specific_conductance_max	0x1.61f35dfef6766p+11	0x1.11788fcfa3a72p+3	0x1.c6e1620bfb75p+10	0x1.60371fb854837p+11	0x1.1bfef95be7512p+10
 single-potential	interior	ift	resistance	-0x1.f8dc04efba0fep-14	-0x1.8611182469734p-22	-0x1.33d7d5d589b1ap-14	-0x1.0e9619ea29953p-14	-0x1.b3f5359a58p-15
