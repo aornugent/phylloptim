@@ -4247,8 +4247,17 @@ double root_crit = find_root_psi(
 double root_zero_E = find_root_psi(wettest_soil_layer, supply_psi_soil(), 0,
                                    E_up_at_wettest, E_at_crit);
 
-// If assimilation would be less than 0 even at Ca, also end loop
-if(assim_max_ < 0){
+// Shade death: shut, the leaf cannot fix carbon even at ambient CO2. Asked at the
+// shut leaf's own temperature, where its value is taken, so the two agree at the
+// edge; the air's is neither the shut nor the open leaf's on the PM path.
+if (use_energy_balance_) {
+  update_temperature_dependent_params(leaf_temp_from_E(0.0));
+}
+const bool shade_death = no_flow_assim() < 0.0;
+if (use_energy_balance_ && !shade_death) {
+  update_temperature_dependent_params(leaf_temp_);
+}
+if (shade_death) {
     // At zero transpiration the stem equilibrates with the collar (no flux, no
     // gradient), so the operating point is root_zero_E for both -- and now they
     // are literally the same number, where #7 had to pair a magnitude with its
@@ -4264,21 +4273,10 @@ if(assim_max_ < 0){
 
     // As at the shut-down exits, and for the same reason: the reported state is
     // the E = 0 one, so the temperature block has to be at the E = 0 temperature
-    // before `R_d_` and `gamma_` are read out of it (#105).
-    //
-    // ⚠️ THE TEST ABOVE STAYS AT THE Tair BASELINE, and that is a decision rather
-    // than an oversight. `assim_max_` asks "can gross assimilation at ci = ca
-    // cover respiration", i.e. whether any OPEN operating point is worth taking --
-    // and an open leaf transpires, so it is cooler than this exit's leaf. Re-taking
-    // the test at the zero-transpiration temperature would judge the coolest option
-    // at the hottest temperature and shut down leaves that would have paid. The
-    // asymmetry is therefore: the branch is chosen on the transpiring baseline, the
-    // state it reports is self-consistent at the temperature it describes.
+    // before `R_d_` and `gamma_` are read out of it (#105). The test above
+    // seated the block there already.
     Tleaf_ = use_energy_balance_ ? leaf_temp_from_E(0.0) : leaf_temp_;
     set_leaf_vpd(Tleaf_);
-    if (use_energy_balance_) {
-      update_temperature_dependent_params(Tleaf_);
-    }
 
     profit_ = no_flow_profit<K>(opt_root_psi_);
     // As on the shut-down exits: the leaf moves no gas, so the reported net rate
