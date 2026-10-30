@@ -148,11 +148,10 @@ tests/cpp/golden/              THREE bit-exact regression baselines.
                                reuses one Leaf with the outputs POISONED so stale
                                state is visible. ⚠️ It records today's known
                                defects on purpose; read its header before reading
-                               a row as intended behaviour. ⚠️ Its cross-platform
-                               tolerances are INHERITED from operating_points.tsv
-                               and unmeasured -- it prints the worst observed
-                               difference even when it passes, so read that off
-                               the first non-macOS run
+                               a row as intended behaviour. Its cross-platform
+                               tolerances are its own (`kOptimaCrossPlatform`),
+                               and it prints the worst difference per class even
+                               when it passes
 tests/cpp/test_primitives.cpp  the reader for the second of those. ⚠️ Read its
                                per-tier table before anything else on a failure
 tests/cpp/bench_solve.cpp      timing harness for the collar solve AND the five
@@ -540,14 +539,18 @@ Two things follow:
 arm64, and FMA contraction differs too, so cross-platform bit-equality was never
 achievable. CI compares bit-exactly on macOS and with `--cross-platform` elsewhere.
 
-**The size of the cross-platform disagreement**, read off CI's summary line, with gcc
-and clang identical in every column (3808 of 5184 values differ), against tolerances
-of 1e-05 for `profit` and 5e-03 for the eight argmax-evaluated fields:
+**The size of the cross-platform disagreement**, read off CI's summary lines on
+Linux, with gcc and clang identical in every column (3808 of 5184 golden values
+differ). The tolerances are the decade ~50-100× above each figure, defined in
+`tests/cpp/test_golden.cpp` and mirrored for the R route in `helper-golden.R`:
 
-| class | worst RELATIVE | worst ABSOLUTE |
-|---|---|---|
-| `profit` | 2.13e-11 | 9.05e-13 µmol C m⁻² s⁻¹ |
-| the other eight | 8.6e-08 (`assim`) | 3.78e-11 Pa (`ci`) |
+| file | class | worst RELATIVE | worst ABSOLUTE | tolerance |
+|---|---|---|---|---|
+| `operating_points.tsv` | `profit` | 2.13e-11 | 9.05e-13 µmol C m⁻² s⁻¹ | 1e-9 |
+| | the other eight | 8.6e-08 (`assim`) | 3.78e-11 Pa (`ci`) | 1e-5 |
+| `psi_stem_optima.tsv` | `profit` | 2.01e-12 | 7.5e-12 | 1e-9 |
+| | the rest | 6.63e-06 (`assim`) | — | 1e-3 |
+| `gradient_golden.tsv` | all | 1.19e-07 | — | 1e-5 |
 
 ⚠️ **What sets these figures is the loosest tolerance in the solve, not libm.** At
 `psi_stem_to_ci`'s former 1e-10, both classes landed on ~1e-9 absolute, the solver
@@ -577,11 +580,11 @@ it is and only the reporting distinguishes the cases. The sibling file
 (`kOptNegligible`, 1e-12) below which it declines to compare — worth knowing that
 the two files answer this differently on purpose.
 
-⚠️ **`psi_stem_optima.tsv`'s cross-platform tolerances are INHERITED from
-`operating_points.tsv`, not measured for it.** Its worst relative difference is
-**6.63e-06**, at `fresh/TF/single psi_soil=0.5 ppfd=1500 T=40 eb=1 tc=0 assim`, a
-near-zero `assim`, against the argmax class's 5e-03. 138 of its values compare as
-zero on both sides.
+**`psi_stem_optima.tsv`'s argmax class needs the wider decade** because its worst,
+6.63e-06 at `fresh/TF/single psi_soil=0.5 ppfd=1500 T=40 eb=1 tc=0 assim`, is a
+near-zero `assim` cancelling. Its absolute figure is no help for that class: it
+includes `lambda_emergent`, whose values reach 2.4e22 (its worst absolute, 1.26e7,
+is 5e-16 relative), so read the relative line there. 138 of its values compare as zero on both sides.
 
 gcc and clang report *identical* figures. They used to differ by 2–3×, and what
 differed was which way a golden-section comparison fell; with that search gone,

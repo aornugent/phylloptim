@@ -7,12 +7,12 @@
 # defaults still equal `phylloptim::Leaf`'s, rather than quietly measuring a
 # different model than the one the golden file was generated from.
 #
-# ⚠️ THAT REACHES THE TRAITS AND NOT leaf_control()'s NUMERICAL SETTINGS. A trait
-# enters the answer, so a drifted one moves these rows past tolerance; a spline
-# resolution only refines it. Measured: vulnerability_curve_ncontrol at 40 rather
-# than 400 moves every field here by 3.0e-06, and at 20 by 5.0e-06, against the
-# per-class tolerances of 1e-05 and 5e-03 below. What holds THAT default to the
-# C++ one is plant's test-control.R, one repository away.
+# ⚠️ THAT REACHES THE TRAITS, AND leaf_control()'s NUMERICAL SETTINGS ONLY BARELY.
+# A trait enters the answer, so a drifted one moves these rows past tolerance; a
+# spline resolution only refines it. Measured: vulnerability_curve_ncontrol at 40
+# rather than 400 moves every field here by 3.0e-06, and at 20 by 5.0e-06 --
+# past `profit`'s tolerance below, but inside the argmax class's. What holds THAT
+# default to the C++ one is plant's test-control.R, one repository away.
 default_leaf <- function() leaf_model()
 
 # --- how exactly to compare -------------------------------------------------
@@ -26,15 +26,17 @@ default_leaf <- function() leaf_model()
 # first version of this file asserted bit-exactness everywhere, passed on macOS,
 # and failed on Linux CI at the 16th significant figure.
 #
-# Tolerances are the C++ suite's, measured over the full grid rather than
-# guessed, and they are per-CLASS because the fields split into two groups three
-# orders of magnitude apart:
+# Tolerances are the C++ suite's `kCrossPlatform` (tests/cpp/test_golden.cpp),
+# measured over its full grid rather than guessed, and per CLASS because the fields
+# split into two groups orders of magnitude apart:
 #
 #   profit          the maximum itself, and so well conditioned
-#   everything else evaluated at the ARGMAX of a flat maximum, so an error dp in
-#                   the profit value displaces its location by sqrt(dp/k)
+#   everything else evaluated at the ARGMAX, which inherits its displacement
 #
-# If you need a magnitude, read those numbers, not a failure list.
+# These six points are a subset of that grid and sit well inside it: on Linux CI
+# their worst is 7.6e-14 (profit) and 9.6e-13 (the rest), which test-golden.R
+# prints on every run. If you need a magnitude, read those numbers, not a
+# failure list.
 golden_bit_exact_platform <- function() {
   si <- Sys.info()
   identical(unname(si[["sysname"]]), "Darwin") &&
@@ -42,7 +44,7 @@ golden_bit_exact_platform <- function() {
 }
 
 golden_tolerance <- function(field) {
-  if (identical(field, "profit")) 1.0e-5 else 1.0e-3
+  if (identical(field, "profit")) 1.0e-9 else 1.0e-5
 }
 
 # THE RECORDED GRADIENTS HAVE THEIR OWN TOLERANCE, because their floor is not the
