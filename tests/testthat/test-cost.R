@@ -267,3 +267,15 @@ test_that("leaf_solve() reports the seated curve's lambda, not TF24's", {
   expect_equal(fl$lambda_emergent, fl$lambda + price)
   expect_gt(fl$lambda_emergent, fl$lambda)
 })
+
+test_that("lambda_molar is lambda in mol CO2 per mol H2O", {
+  # umol -> mol is 1e-6, and per kg of water -> per mol of water multiplies by
+  # the molar mass, 0.018015 kg mol^-1. Written out here rather than read from
+  # the package, so an inverted conversion fails: nothing else reads this field.
+  l <- leaf_model(supply = leaf_supply_singlelayer())
+  set_drivers(l, psi_soil = 1.0, PPFD = 900, atm_vpd = 2)
+  l$set_model("TF24", "stem")
+  l$optimise()
+  expect_true(is.finite(l$lambda) && l$lambda > 0)
+  expect_equal(l$lambda_molar, l$lambda * 1e-6 * 0.018015, tolerance = 1e-12)
+})

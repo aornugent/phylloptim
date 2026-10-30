@@ -9110,17 +9110,6 @@ inline void Leaf::solve_medlyn_ci_analytical(){
   return;
 }
 
-// A negative conductance is not an operating point. It arises where the USO
-// expression's `A/ca` term goes negative faster than `g0` holds the stomata open --
-// a leaf below its compensation point with a small or zero `g0` -- and the
-// numerical route's "closest approach" exit would otherwise return it silently. At
-// g0 == 0 and beta = 3.3e-4 that was gs = -3.95e-06, A = -9.7e-04.
-//
-// The answer is the class's own closed state, matching the three optimality
-// shutdown exits: no water moves, ci sits at the compensation point, and the leaf
-// still respires, so assimilation is -R_d_ rather than zero. Clamped rather than
-// refused because a hot or dry leaf reaching it is a legitimate model state, unlike
-// the parameter errors `check_cost_parameters` rejects.
 // The soil-moisture factor, the linear beta of the beta-factor literature,
 // CLAMPED TO [0, 1]. Unclamped, a soil wetter than field capacity scaled g1 ABOVE
 // its fitted value (theta 0.6 with field capacity 0.5 and wilting point 0.2 gave
@@ -9134,6 +9123,17 @@ inline double Leaf::medlyn_beta() const {
   return std::min(std::max(beta, 0.0), 1.0);
 }
 
+// A negative conductance is not an operating point. It arises where the USO
+// expression's `A/ca` term goes negative faster than `g0` holds the stomata open --
+// a leaf below its compensation point with a small or zero `g0` -- and the
+// numerical route's "closest approach" exit would otherwise return it silently. At
+// g0 == 0 and beta = 3.3e-4 that was gs = -3.95e-06, A = -9.7e-04.
+//
+// The answer is the class's own closed state, matching the three optimality
+// shutdown exits: no water moves, ci sits at the compensation point, and the leaf
+// still respires, so assimilation is -R_d_ rather than zero. Clamped rather than
+// refused because a hot or dry leaf reaching it is a legitimate model state, unlike
+// the parameter errors `check_cost_parameters` rejects.
 inline void Leaf::set_medlyn_shutdown_if_closed(){
   if (medlyn_model_gs_ < 0.0 || stom_cond_CO2_ < 0.0) {
     stom_cond_CO2_ = 0.0;

@@ -31,6 +31,7 @@ Family context lives in [`plant-meta`](https://github.com/traitecoevo/plant-meta
 | change a trait or the parameter set | hazards 10, 12 and 13 |
 | move a golden number | "The golden file is the safety net" |
 | build and test | "Build and test" |
+| add or change an equation, or bind a new field | "The model registry" |
 
 **Map of the headers**, `inst/include/phylloptim/`, in dependency order:
 
@@ -94,6 +95,16 @@ inst/include/phylloptim/
                                model. Never include one from a model header
 inst/RcppR6_classes.yml        the R bindings' source of truth. Edit this, then
                                `Rscript -e 'RcppR6::RcppR6()'`, never the output
+inst/model-registry.yml        the model registry: the leaf's equations,
+                               parameters and code symbols, which documents are
+                               generated from. Its header holds the schema and
+                               the rules; see "The model registry" below
+R/registry-locations.R         reads the registry and resolves its symbols in
+                               Doxygen's XML. Sourced standalone by docs.yml, so
+                               it may reference nothing else in the package
+R/registry.R                   the registry as data frames, and the parameters'
+                               values read off a live Leaf
+tools/registry_symbols.R       what docs.yml runs after the render
 src/, R/                       the R layer. Depends downward on inst/include/;
                                nothing there depends back on it
 R/leaf-model.R                 the friendly surface: leaf_traits/leaf_control,
@@ -343,6 +354,70 @@ code, 120 lines away in the case that found it. **A local `doxygen` run renders
 it in silence**, so this is only ever visible in CI and only cryptically. Put the
 equations in one display rather than one on each side of a paragraph; `docs.yml`
 now asserts the shape and names the block, so it fails legibly.
+
+### The model registry
+
+`inst/model-registry.yml` is the one place the leaf's equations are written
+down for documents: each with its LaTeX, the C++ symbol that evaluates it, the
+parameters it reads and the bound fields it writes; and each parameter with its symbol, units, class, meaning, source
+and placeholder flag (#166). It covers every bound field: a parameter, an
+equation's `writes`, or an entry under `diagnostics` (a bound field that is
+neither; none is needed today). A document's equation list or parameter
+table is generated from it rather than typed beside it. `model_registry()`
+reads it, `registry_values()` adds the values, `registry_resolve()` adds file,
+line and API link.
+
+Three rules keep it from rotting, and each has a mechanism:
+
+- **It stores no line number and no default.** Both go stale silently: the
+  methods document this grew out of cited line numbers that moved twice in one
+  day, and a default's comment that outlived the parameter's rename. Lines come
+  from Doxygen's XML (`GENERATE_XML` in the Doxyfile); values come off a live
+  `Leaf`, `set_drivers()`'s formals or a constexpr's initializer in that XML.
+  The one number the file holds is a `literal:`, a constant written inside an
+  equation (Tetens' 17.27), and docs.yml checks that it appears in the body of
+  the function its `code` names.
+- **CI validates it.** `test-registry.R` checks every symbol and field named
+  exists and asserts that every bound field is accounted for, so binding a
+  field without registering it fails by name. `docs.yml` resolves every symbol
+  in the XML, checks that what an equation `reads` is what its function
+  references (`REFERENCES_RELATION`), and checks every literal, through
+  `tools/registry_symbols.R`.
+- **One registry per package.** plant's will cover its strategies and point at
+  these ids rather than copy them.
+
+**When you change an equation's code, re-read its entry.** Nothing compares
+the LaTeX with the C++: CI sees a renamed symbol, a changed `reads` and a
+changed literal, but not a changed formula. The registry is a record, not a
+check; the numbers are checked by the golden files and the test suites, and an
+equation that has no test there gets one there, not in the registry.
+
+That is a decision, not an omission. The registry first carried a base-R
+replica of every equation and a probe that compared it with the package
+(about 2,900 lines). Measured by planting sixteen one-line bugs in the C++,
+the replicas caught all sixteen and the existing suites thirteen. The three
+they alone caught were two slips in the closed form's own arithmetic, which
+`test-closed-form.R` compared with the exact solve only at approximation
+tolerances, and an inverted `lambda_molar`, which nothing tested. The USO
+collapse now has an identity test on the CF77 arm and `lambda_molar` a units
+test, and each fails on its planted bug. The third, a wrong slope in the TF24
+arm's fixed Newton steps (`wet_end_p`), moves psi* by 2e-5 in a method
+accurate to a few percent, and catching it would need that arm written out a
+second time; it is left uncaught. The replicas were removed because a second
+implementation of the whole leaf, touching about 237 bindings, costs more to
+keep in step than three catches are worth. Do not reintroduce a per-equation
+replica check without a measurement that says otherwise.
+
+Doxygen's line numbers are in the stream it parsed, which is the awk filter's
+output, not the source: the filter inserts a `\file` block and `\verbatim`
+pairs and drops held blank `//` lines. The lines that are not whole-line
+comments are byte-identical in both streams, docs.yml asserts that, and every
+line Doxygen reports is one of them, so `registry_line_map()` maps the k-th
+code line of one to the k-th of the other and refuses a header whose code
+lines differ. Do not read a line out of the XML without that map.
+
+YAML 1.1 reads `1e-3` as a string: write a float with a point and a signed
+exponent (`1.0e-3`), which the reader checks.
 
 ## Cost: the one thing the golden file cannot see
 

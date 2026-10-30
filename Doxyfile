@@ -65,3 +65,13 @@ CALLER_GRAPH           = NO
 QUIET                  = YES
 WARN_IF_UNDOCUMENTED   = NO
 WARN_AS_ERROR          = NO
+
+# The model registry (inst/model-registry.yml) names C++ symbols and never a
+# line: registry_resolve() reads each symbol's file, line and page anchor from
+# this XML, and checks what each equation reads against what its function
+# references, which REFERENCES_RELATION records. Listings are left out of the
+# XML because nothing reads them and they treble its size.
+GENERATE_XML           = YES
+XML_OUTPUT             = xml
+XML_PROGRAMLISTING     = NO
+REFERENCES_RELATION    = YES
