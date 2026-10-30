@@ -2616,7 +2616,7 @@ void test_zero_E_branch_derives_its_own_block() {
     ok(l.ci_ == l.ci_no_flow(), "ci sits at the no-flow point");
     ok(l.assim_colimited_ == l.no_flow_assim(),
        "net assimilation is the no-flow value at zero transpiration");
-    // ci is the root of net assimilation, to the root-find's 1e-10 in ci. The
+    // ci is the root of net assimilation, to the root-find's 1e-13 in ci. The
     // bit-exact statement that pins the TEMPERATURE is the next block.
     near(l.assim_colimited(l.ci_), 0.0, 1e-8,
          "and this block's assimilation at that ci is zero");
@@ -5677,13 +5677,14 @@ int check_linked_eb_derivative_fd(const Drivers &d, bool tc, double psi_soil,
     const double psi = psi_soil + frac * (l.psi_crit - psi_soil);
     bool feasible = false;
     const double an = l.template dprofit_dpsi_stem<K>(psi, psi_soil, &feasible);
-    // An infeasible row is the assigned-ci branch, where the derivative
-    // is still a number (ProfitMax's scaled link) or the 0.0 sentinel (a log
-    // link has none at A < 0). Only the number is comparable.
-    if (!std::isfinite(an) || (!feasible && an == 0.0)) {
+    // Read before the objective below re-solves ci. On the assigned-ci branch
+    // the derivative is a number, flagged feasible, except where a log link
+    // has none at A < 0: that is the 0.0 sentinel, and it is not comparable.
+    const bool assigned = l.ci_assigned();
+    if (!std::isfinite(an) || !feasible) {
       continue;
     }
-    if (!feasible) {
+    if (assigned) {
       ++assigned_rows;
     }
     // ⚠️ THE STEP IS SWEPT, NOT PICKED (hazard 15). The differenced objective

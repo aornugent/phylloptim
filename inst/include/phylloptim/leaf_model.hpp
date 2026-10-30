@@ -2081,7 +2081,7 @@ public:
     closed_form_fallbacks_ = 0;
   }
   // Shared setup for the root-collar solve: builds the soil-side caches, handles
-  // every feasibility early-exit (shutdown / assim<0 / collapsed interval) by
+  // every feasibility early-exit (shutdown / shade death / closed interval) by
   // setting the final operating point itself, and otherwise returns the feasible
   // collar-potential interval [bound_a, bound_b] (positive magnitudes). Returns
   // false when the operating point is already fully determined (caller is done),
@@ -3815,7 +3815,7 @@ inline void Leaf::set_physiology(const RootNetwork& root_network, double PPFD, c
    // reusing is exact. On the PM path the cache is bypassed: leaf_temp_ here is
    // only Tair, and the operating-point Tleaf (hence these params) is set per
    // candidate psi in set_leaf_states_rates_from_psi_stem, so we always recompute
-   // the Tair baseline (used for assim_max_ / feasibility) and let the solve
+   // the Tair baseline (reported as assim_max_) and let the solve
    // override it.
    //
    // ⚠️ AND IT IS BYPASSED WITH THE THERMAL-DAMAGE GATE ON. The block then reads
@@ -4177,7 +4177,7 @@ inline void Leaf::set_shutdown_state(double root_collar) {
 // verbatim from find_root_collar_psi (no reordering of floating-point ops, so
 // the TF24 optimisation path stays bit-identical) and reused by
 // evaluate_root_collar_psi. Returns false when the final operating point is
-// already determined here (shutdown / assim<0 / collapsed interval) and the
+// already determined here (shutdown / shade death / closed interval) and the
 // caller should stop; returns true with [bound_a, bound_b] set to the feasible
 // collar-potential interval (positive magnitudes) otherwise.
 template <Leaf::CostCurve K>
@@ -4750,7 +4750,7 @@ inline double Leaf::evaluate_root_collar_psi_for(double target_opt_root_psi){
     double bound_a, bound_b;
     if (!prepare_collar_solve<K>(bound_a, bound_b)) {
       // Operating point fully determined by feasibility handling (shutdown /
-      // assim<0 / collapsed interval); profit_ is already set.
+      // shade death / closed interval); profit_ is already set.
       return profit_;
     }
 
@@ -4985,7 +4985,15 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
         }
       }
     }
-    return std::isfinite(dprofit) ? dprofit : 0.0;
+    // A real derivative, not a sentinel: A(ca)'s own slope is exact here, so
+    // the optimisers may refine on it exactly as on the main branch.
+    if (!std::isfinite(dprofit)) {
+      return 0.0;
+    }
+    if (feasible != nullptr) {
+      *feasible = true;
+    }
+    return dprofit;
   }
   // Past both exits: whatever is returned below is a real derivative, so a zero
   // from here IS a stationary point.
@@ -5265,10 +5273,9 @@ inline double Leaf::dprofit_dpsi_stem(double psi_stem, double psi_upstream,
 
   const double C_prime = cost_deriv<K>(psi_stem, psi_upstream);
 
-  // ci assigned at ca: the supply==demand residual is not zero
-  // there, so the implicit function theorem below does not hold and the
-  // assimilation term is dropped rather than approximated. `feasible` stays
-  // false, which is what tells a caller the difference.
+  // ci assigned at ca: the supply==demand residual is not zero there, so the
+  // implicit function theorem below does not hold. A = A(ca, T) instead, which
+  // moves only with temperature, so its slope is taken directly.
   if (ci_assigned()) {
     double dprofit = -C_prime;
     if (use_energy_balance_ && dT_dE != 0.0) {
@@ -5281,15 +5288,23 @@ inline double Leaf::dprofit_dpsi_stem(double psi_stem, double psi_upstream,
       if constexpr (benefit_link<K>() == BenefitLink::Identity) {
         dprofit += A_T * dT_dE * dE_dpsi;
       } else {
-        // As on the collar route: the link on the respiration term, and
-        // ProfitMax's thermal cost beside it.
+        // As on the collar route: the link on A(ca), and ProfitMax's thermal
+        // cost beside it.
         dprofit += benefit_link_deriv<K>(assim_colimited(ca_)) * (A_T * dT_dE * dE_dpsi);
         if constexpr (K == CostCurve::ProfitMax) {
           dprofit -= thermal_cost_temp_deriv(Tleaf_here) * dT_dE * dE_dpsi;
         }
       }
     }
-    return std::isfinite(dprofit) ? dprofit : 0.0;
+    // A real derivative, not a sentinel: A(ca)'s own slope is exact here, so
+    // the optimisers may refine on it exactly as on the main branch.
+    if (!std::isfinite(dprofit)) {
+      return 0.0;
+    }
+    if (feasible != nullptr) {
+      *feasible = true;
+    }
+    return dprofit;
   }
 
   if (feasible != nullptr) {
@@ -6697,12 +6712,13 @@ inline void Leaf::set_leaf_states_rates_from_psi_stem(double psi_stem, double ps
   // [gamma*, ca] -- assimilation is monotone in ci and negative at both ends -- so
   // psi_stem_to_ci falls back to ci = ca, and the leaf nets A(ca).
   //
-  // ⚠️ AND IT IS UNREACHABLE FROM THE COLLAR SOLVE, which is why plant is
-  // unaffected: prepare_collar_solve has its OWN shade-death exit and returns
-  // false before any candidate potential is evaluated. The golden grid's minimum
-  // assim_max_ is 3.71, so the file never reaches this branch either and is
-  // bit-identical across the change -- which is a statement about the grid, not
-  // evidence that the change is inert. test_transpiration_survives_negative_assim
+  // ⚠️ THE COLLAR SOLVE REACHES IT ONLY UNDER THE ENERGY BALANCE.
+  // prepare_collar_solve exits as shade death when A(ca) < 0 at the shut leaf's
+  // temperature, before any candidate potential is evaluated; with the energy
+  // balance on, an open leaf is warmer or cooler than that one and can still land
+  // here. The golden grid's minimum assim_max_ is 3.71, so its prescribed-
+  // temperature rows never reach this branch -- a statement about the grid, not
+  // evidence that the branch is inert. test_transpiration_survives_negative_assim
   // is the test that can see it.
   //
   // ⚠️ `Tleaf_` IS WRITTEN ON BOTH PATHS BELOW, which is hazard 8 applied to the
@@ -6767,7 +6783,7 @@ inline void Leaf::set_leaf_states_rates_from_psi_stem(double psi_stem, double ps
       }
     }
   // Exactly the no-flow value where no gas moves, rather than A at a ci root-found
-  // to 1e-10: the shut-down state writes the same number, and the two must agree.
+  // to ci_root_tol: the shut-down state writes the same number, and the two must agree.
   assim_colimited_ = psi_upstream >= psi_stem ? no_flow_assim() : assim_colimited(ci_);
 }
 
@@ -7126,7 +7142,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   using odelia::util::to_passive;
   check_draw(to_passive(collar), draw);
   // ⚠️ THERE IS NO OPERATING POINT TO PLACE AT A SHUTDOWN. The stem is held at
-  // where flow stopped, no water moves, and ci is no root of T2 -- so both residuals are conditions the model did not solve, and
+  // where flow stopped, no water moves, and ci is assigned rather than solved from T2 -- so both residuals are conditions the model did not solve, and
   // dT2/dci is a cancellation of two vanishing terms. Refused here, by name,
   // rather than left to implicit_value's non-finite-denominator guard, which
   // reports a fold in a caller that never asked for one. outputs_at has the
@@ -7552,8 +7568,8 @@ inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
       collar = root_psi_crit_at<S>(pars);
       break;
     case OperatingPointKind::HydraulicShutdown:
-      // The stem holds at its critical potential and nothing defines the collar
-      // at all, so it does not move.
+      // The stem holds where flow stopped (root_limit_binds_first) and nothing
+      // defines the collar at all, so it does not move.
       break;
     default:
       util::stop(std::string("Leaf::collar_at: no operating point to place at "
@@ -8934,9 +8950,11 @@ inline double Leaf::medlyn_beta() const {
 // numerical route's "closest approach" exit would otherwise return it silently. At
 // g0 == 0 and beta = 3.3e-4 that was gs = -3.95e-06, A = -9.7e-04.
 //
-// The answer is the class's own closed state, matching the three optimality
-// shutdown exits: no water moves, ci sits at the compensation point, and the leaf
-// still respires, so assimilation is -R_d_ rather than zero. Clamped rather than
+// The answer is a closed state: no water moves, ci sits at the compensation point,
+// and the leaf still respires, so assimilation is -R_d_ rather than zero.
+// ⚠️ THIS IS NOT THE OPTIMALITY ROUTES' NO-FLOW VALUE. Those net min(0, A(ca))
+// (no_flow_assim), which is zero in light, so in light this route still steps
+// from a near-zero A to -R_d_ as it shuts. Clamped rather than
 // refused because a hot or dry leaf reaching it is a legitimate model state, unlike
 // the parameter errors `check_cost_parameters` rejects.
 inline void Leaf::set_medlyn_shutdown_if_closed(){
