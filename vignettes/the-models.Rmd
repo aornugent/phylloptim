@@ -219,17 +219,17 @@ The inner tolerance sets what every reported output of this model means, so it w
 |---|---|
 | 1e-7 | 1.82e-07 |
 | 1e-8 | 3.15e-08 |
-| **1e-10** | **5.41e-10** ← here |
+| 1e-10 | 5.41e-10 |
 | 1e-11 | 5.41e-10 |
-| 1e-13 | 7.48e-13 |
+| **1e-13** | **7.48e-13** ← here |
 
-1e-10 is the knee, and it is where the model runs. It lands 335 times closer to a converged solve than 1e-7 does, for 3.4% in time: 2.65 against 2.75 µs per solve, both binaries built from one tree and interleaved. Going on to 1e-13 buys roughly 700 times more again, for about three times the cost.
+The model runs at 1e-13. 1e-10 looks like the knee of that table, and it is cheaper by about 5% per solve and per gradient, but what the table measures is the worst case at fixed drivers. A caller that differences the solve sees something else: where the root-finder stops inside its tolerance band depends on the state, so at 1e-10 the outputs are noisy along any smooth path through the drivers. Along plant height at fixed light that noise reached 3.7e-11 relative, which a finite difference at a step of 1e-7 turns into an error of 1e-4. At 1e-13 the same paths are smooth to 2.3e-14, and the trait gradient's own finite-difference partials stop inheriting the noise: on the reference gradient file they moved by up to 2.3e-3 relative, toward a Richardson-extrapolated difference of the solve, which they now match to 1e-8.
 
-The plateaus in that table matter. 1e-10 and 1e-11 return the same number, because they are the same count of solver iterations, so tightening *between* plateaus costs something and buys nothing.
+The plateaus in that table matter. 1e-10 and 1e-11 return the same number, because they are the same count of solver iterations, so tightening *between* plateaus costs something and buys nothing. 1e-12 still left 1.2e-12 of noise at some states.
 
 A general point follows, and it is the reason this subsection sits directly after the last one: a nested solver's precision is only as visible as the loosest tolerance above it. An outer search terminating on a 1e-3 bracket would hide this inner tolerance completely, whatever it was set to. Solving the outer first-order condition is what makes it the model's dominant amplifier. If you tighten one tolerance in a stack, expect the next one down to become the answer.
 
-The tolerance you can set from R is not this one. The inner `c_i` root-find is fixed at 1e-10 on both routes. `ci_abs_tol` in `leaf_control()` is read in exactly one place, `solve_medlyn_ci_numerical`, which is the empirical Medlyn-conductance route. It reaches neither family of optimality solver, so tightening it buys no precision anywhere in the optimality model. The name promises otherwise, which is why it is worth stating.
+The tolerance you can set from R is not this one. The inner `c_i` root-find is fixed at 1e-13 on both routes. `ci_abs_tol` in `leaf_control()` is read in exactly one place, `solve_medlyn_ci_numerical`, which is the empirical Medlyn-conductance route. It reaches neither family of optimality solver, so tightening it buys no precision anywhere in the optimality model. The name promises otherwise, which is why it is worth stating.
 
 There is one regime where the implicit function theorem does not hold. When the leaf is hot enough that assimilation is negative across the whole `[Γ*, c_a]` bracket, there is no supply-equals-demand root. `c_i` is held at the compensation point instead, so the residual is not zero and so the theorem has nothing to stand on. Derivatives on that branch drop the assimilation term rather than approximating it, and report themselves as not feasible. A gradient that ignored that flag would get a plausible number.
 

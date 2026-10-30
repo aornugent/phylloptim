@@ -418,9 +418,9 @@ addition — the 25 °C block must come out byte-identical.
 rubber-stamps the change. If a diff is intended, regenerate and say so in the
 commit message with the measured size of the change.
 
-Guide to magnitudes, measured: **~1e-16 is reassociation, ~1e-9 is the solver
+Guide to magnitudes, measured: **~1e-16 is reassociation, ~1e-12 is the solver
 floor, ~1e-4 is a real difference.** Anything above the floor deserves
-investigation. Where that floor comes from, and the two times it moved:
+investigation. Where that floor comes from, and the three times it moved:
 
 A perturbation this small does not stay small — the nested solvers amplify it up to
 whichever tolerance is loosest, because a last-bit change shifts *which point*
@@ -432,18 +432,21 @@ perturbation** (unifying the AD replica with the function it mirrors) at each st
 |---|---|
 | golden section, `GSS_tol_abs` 1e-3 | **5.53e-04** — the old collar solve |
 | `psi_stem_to_ci` at 1e-7 | **4.98e-07** — golden section gone |
-| `psi_stem_to_ci` at **1e-10 — where we are now** | **~1e-09** |
-| `psi_stem_to_ci` at 1e-13, not taken | 7.16e-13 |
+| `psi_stem_to_ci` at 1e-10 | **~1e-09** |
+| `psi_stem_to_ci` at **1e-13 — where we are now** | **7.16e-13** |
 
-The old four-order gap between rounding and bug briefly collapsed to one, and is
-now back. Two things follow:
+Two things follow:
 
 - **`psi_stem_to_ci`'s tolerance sets what every reported output MEANS**, so it is
-  documented at the call site with the cost/precision curve that chose 1e-10 — the
-  knee, landing 335× closer to a converged solve for **+3.4%** (2.65 → 2.75
-  µs/solve, interleaved ×5). Do not loosen it without re-reading these magnitudes,
-  and do not tighten it without a use that needs it: the plateaus in that curve are
-  TOMS748's discrete iterations, so some tightenings cost without buying anything.
+  documented at the call site with the cost/precision curve behind it. 1e-13 was
+  chosen over the cheaper 1e-10 for consumers that DIFFERENCE the solve (#172):
+  where TOMS748 stops inside its band depends on the state, so at 1e-10 outputs
+  were noisy at up to 3.7e-11 relative along a smooth path through the drivers,
+  and the IFT gradient's own central differences of `dprofit` (step ~1e-6)
+  inherited it, up to 2.3e-3 on `gradient_golden.tsv`. It costs ~5% per solve and
+  per gradient. Do not loosen it without re-reading these magnitudes: the plateaus
+  in that curve are TOMS748's discrete iterations, so some changes cost without
+  buying anything, and 1e-12 still leaves 1.2e-12 at some states.
 
   ⚠️ **A caution about that curve, because it caught me.** Its seven timing points
   were built in one loop in a scratch tree and read ~2× too cheap — they implied
@@ -456,7 +459,7 @@ now back. Two things follow:
   that one reached "the off-path stem-route solvers"; it does not. Grep
   says `ci_abs_tol` is read in exactly one place, `solve_medlyn_ci_numerical` --
   the empirical Medlyn-conductance route. **Both** families of optimality solver
-  reach `ci` through `psi_stem_to_ci`, so both get the 1e-10 and neither is
+  reach `ci` through `psi_stem_to_ci`, so both get its fixed tolerance and neither is
   reachable by the settable control. Tightening it buys no precision anywhere in
   the optimality model, which is a wart worth knowing before someone tries it.
 

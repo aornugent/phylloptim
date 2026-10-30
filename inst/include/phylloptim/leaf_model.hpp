@@ -679,7 +679,7 @@ public:
 
   // Tolerance on the collar potential for the profit-maximising root-find.
   // Hard-coded rather than a control field, for the same reason
-  // find_root_psi's 1e-4 and psi_stem_to_ci's 1e-7 are: it is a property of the
+  // find_root_psi's and psi_stem_to_ci's tolerances are: it is a property of the
   // solve, not a knob. 1e-12 sits ~8 orders below the 1e-4 at which this package
   // calls a difference real, and the cost of going there from GSS_tol_abs's 1e-3
   // is a handful of evaluations, because TOMS748 is superlinear.
@@ -5586,7 +5586,7 @@ inline double Leaf::dprofit_energy_balance_term(
   // That exact move was measured changing results even where the algebra
   // was identical. That risks the gate-off path to buy precision nobody can
   // observe: at h = 1e-3 K the truncation error is ~2e-9 relative against a
-  // model whose own floor (psi_stem_to_ci at 1e-10) is ~1e-9.
+  // model whose own floor is set by psi_stem_to_ci's tolerance.
   //
   // ⚠️ h is FIXED and ABSOLUTE, not relative to T. A relative step would make
   // the estimator itself a function of psi, which is exactly the kind of thing
@@ -6707,49 +6707,44 @@ inline double Leaf::psi_stem_to_ci(double psi_stem, double psi_upstream) {
   // keeps bisection (its target is not smooth -- see the warning on
   // util::uniroot_smooth).
   //
-  // ⚠️ **The 1e-10 is load-bearing and was chosen by measurement, not taste. It
-  // sets the floor of what every reported output of this model MEANS.** It used to
-  // be 1e-7, which was invisible while golden section's GSS_tol_abs (1e-3)
-  // dominated; with that gone, this became the model's dominant
-  // amplifier -- a last-bit change anywhere upstream shifts which point TOMS748
-  // lands on inside its tolerance band, and that surfaces in ci, assim, gc and
-  // profit. Measured by perturbing the model identically at each tolerance and
-  // reading the golden grid:
+  // ⚠️ **The 1e-13 is load-bearing and was chosen by measurement, not taste. It
+  // sets the floor of what every reported output of this model MEANS.** This is
+  // the model's dominant amplifier: a last-bit change anywhere upstream shifts
+  // which point TOMS748 lands on inside its tolerance band, and that surfaces in
+  // ci, assim, gc and profit. Measured by perturbing the model identically at each
+  // tolerance and reading the golden grid:
   //
   //   ci tol   worst diff vs a converged (1e-15) solve   us/solve (indicative)
   //   1e-7                       1.82e-07                      2.655
   //   1e-8                       3.15e-08                      2.640
-  //   1e-10                      5.41e-10                      2.695   <- here
+  //   1e-10                      5.41e-10                      2.695
   //   1e-11                      5.41e-10                      2.768
-  //   1e-13                      7.48e-13                      2.885
+  //   1e-13                      7.48e-13                      2.885   <- here
   //   1e-15                      0                             2.945
   //
-  // 1e-10 is the knee: it lands **335x closer to a converged solve** than 1e-7
-  // did, where going on to 1e-13 buys ~700x more for roughly three times the extra
-  // time. The plateaus (1e-8 = 1e-9, 1e-10 = 1e-11) are TOMS748's discrete
-  // iterations, so tightening *between* them buys nothing and still costs.
+  // The plateaus (1e-8 = 1e-9, 1e-10 = 1e-11) are TOMS748's discrete iterations,
+  // so tightening *between* them buys nothing and still costs. The timing column
+  // is only indicative: those binaries were built in one loop in a scratch tree,
+  // and code-layout luck moves this benchmark by ~2%, the size of the effect. If
+  // you re-derive the curve, build every point from one tree and interleave.
   //
-  // ⚠️ **The precision column is solid; the timing column is only indicative and
-  // reads ~2x too cheap.** Those seven binaries were built in one loop in a
-  // scratch tree, and code-layout luck moves this benchmark by ~2%. The controlled
-  // figure for the step actually taken -- both binaries built from the same tree,
-  // interleaved x5 -- is **+3.4%** (2.65 -> 2.75 us/solve), against the +1.5% the
-  // table implies. Still a good trade next to the root-find's 24.5%, and still
-  // 21.7% faster than the 3.51 us this package ran at before 11a. If you re-derive
-  // the curve, build every point from one tree.
-  //
-  // Do not tighten further without a use that needs it, and do not loosen it back
-  // without re-reading the guide's rounding-versus-bug magnitudes, which this
-  // figure sets.
+  // ⚠️ **What chose 1e-13 over 1e-10 is a consumer that differences the solve
+  // (#172).** Where TOMS748 stops inside its band depends on the state, so at
+  // 1e-10 the reported outputs are noisy along any smooth path through the
+  // drivers -- up to 3.7e-11 relative over a grid of plant heights and light
+  // levels, 1e-15 at others. plant takes finite differences of the leaf at steps
+  // of 1e-7, where that noise is a 1e-4 error. At 1e-13 the worst over the same
+  // grid is 2.3e-14, and 1e-12 still leaves 1.2e-12. Do not loosen it without
+  // re-reading the guide's rounding-versus-bug magnitudes, which this figure sets.
   //
   // ⚠️ Not the same knob as `ci_abs_tol` (the settable control, default 1e-3).
   // `ci_abs_tol` is read in exactly one place,
   // solve_medlyn_ci_numerical, i.e. the empirical Medlyn-conductance route. It
   // reaches NEITHER family of optimality solver -- both go through this function
-  // and so through the 1e-10 above. A caller tightening it gets no extra precision
+  // and so through the 1e-13 above. A caller tightening it gets no extra precision
   // anywhere in the optimality model.
   try {
-    return ci_ = util::uniroot_smooth(target, gamma_ * umol_per_mol_to_Pa_, ca_, 1e-10, ci_niter);
+    return ci_ = util::uniroot_smooth(target, gamma_ * umol_per_mol_to_Pa_, ca_, 1e-13, ci_niter);
   } catch (const std::exception& e) {
     // Assimilation can be negative across the WHOLE [gamma*, ca] bracket -- the
     // leaf is too hot to gain carbon at any internal CO2 -- and then there is no

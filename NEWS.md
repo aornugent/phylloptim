@@ -1,3 +1,11 @@
+# phylloptim 0.16.1
+
+## The ci root-find is solved to 1e-13
+
+`psi_stem_to_ci`'s fixed tolerance goes from 1e-10 to 1e-13 (#172). Where the root-finder stops inside its tolerance band depends on the state, so at 1e-10 every reported output was noisy along a smooth path through the drivers: up to 3.7e-11 relative along plant height, where plant takes finite differences of the leaf at a step of 1e-7 and so read an error of 1e-4. The IFT trait gradient inherited the same noise through its own central differences of `dprofit`, and on `gradient_golden.tsv`'s one-layer interior case it was wrong by up to 2.3e-3 relative; it now matches a Richardson-extrapolated difference of the solve to 1e-8. A solve and a gradient each cost about 5% more.
+
+**What moves:** the three C++ golden files, at most 3.1e-8 absolute in `profit` and 2.1e-9 Pa in `ci`, with no point changing status, kind or branch; in `primitives.tsv` only the iterative tier moves. `gradient_golden.tsv` moves on its one-layer interior case only, by up to 2.3e-3, toward the reference. `ci_abs_tol` is unchanged and still reaches only the Medlyn route.
+
 # phylloptim 0.16.0
 
 ## odelia's reverse-mode names, at 0.10.0

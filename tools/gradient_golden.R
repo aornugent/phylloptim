@@ -21,8 +21,7 @@
 #
 # ⚠️ Only regenerate DELIBERATELY, and say in the commit message what moved and by
 # how much. Running this after an accidental change rubber-stamps it. The guide to
-# magnitudes is in .claude/CLAUDE.md: ~1e-16 is reassociation, ~1e-9 is the
-# solver floor, ~1e-4 is a real difference.
+# magnitudes (reassociation, solver floor, real difference) is in .claude/CLAUDE.md.
 #
 # ⚠️ RUN THIS ON macOS/arm64 AND NOWHERE ELSE. Like tests/cpp/golden/, the file is
 # bit-exact only on the platform that generated it -- libm's exp/pow are not
