@@ -45,36 +45,27 @@ golden_tolerance <- function(field) {
   if (identical(field, "profit")) 1.0e-5 else 1.0e-3
 }
 
-# ⚠️ THE RECORDED GRADIENTS NEED THEIR OWN, LOOSER TOLERANCE, and borrowing the one
-# above was wrong -- it just happened not to fail until #41 added a column.
+# THE RECORDED GRADIENTS HAVE THEIR OWN TOLERANCE, because their floor is not the
+# solved outputs'. Even the IFT route takes its mixed partial and curvature as
+# central differences of `dprofit` (`.gradient_ift`), so a gradient carries the
+# solve's floor DIVIDED BY THE STEP. The step is RELATIVE, so the amplification is
+# set by the differentiated parameter's own magnitude: `R_d_25` (1.44) takes a 67x
+# smaller absolute step than `vcmax_25` (96), and the smallest parameter in the
+# file decides the tolerance for all of it. `profit` is the smallest-magnitude
+# column carrying that floor, so its relative disagreement is the largest.
 #
-# A gradient here is a FINITE DIFFERENCE of the solve, so cross-platform it carries
-# the solve's own ~1e-9 floor DIVIDED BY THE STEP. The step is RELATIVE, so the
-# amplification is set by the differentiated parameter's own magnitude, and the
-# smallest parameter in the file decides the tolerance for all of it.
+# Measured on Linux CI, the whole-file worst: 1.19e-07. 1e-5 leaves ~80x of
+# headroom and still catches what this file exists for: tightening
+# `psi_stem_to_ci` from 1e-10 to 1e-13 moved these cells by up to 2.3e-3 (#172),
+# and #41's reallocation by 16% to 250%.
 #
-# Measured on Linux CI: `dA/dR_d_25` at interior-1layer disagrees by 1.3e-03
-# relative, against 1.3e-04 for every column that was here before. `R_d_25` is 1.44
-# where `vcmax_25` is 96 -- a 67x smaller absolute step at the same relative one --
-# and the arithmetic closes: 1.3e-03 x 0.2487 x 2h = 9.3e-10, i.e. the floor itself.
-#
-# Confirmed independently by the step sweep: at `step = 1e-7` the `R_d_25` column has
-# already moved 1.3% while `vcmax_25` has moved 0.2%. That column goes
-# noise-dominated first, and it is the one that sets this number.
-#
-# ⚠️ THE HEADROOM IS 2.1x, NOT THE ~4x THIS COMMENT USED TO CLAIM, and what halved it
-# was #87 adding the `profit` column. Same mechanism one step further: at a given row
-# `profit` is SMALLER in magnitude than `A` while carrying the same absolute floor, so
-# its relative disagreement is larger. Measured on Linux CI, the whole-file worst:
-#
-#   master (four columns)  1.30e-03
-#   with `profit`          2.34e-03
-#
-# It still cannot hide a real change -- #41's own reallocation moved these cells by 16%
-# to 250%, two orders above this. But the margin is now one order, not two, so read
-# the worst-difference line the test prints on every run; do not assume the headroom
-# is still there, and do not add a sixth column without re-reading it.
-gradient_golden_tolerance <- function() 5.0e-3
+# ⚠️ THE FLOOR IS THE `ci` ROOT-FIND'S TOLERANCE, NOT libm. At 1e-10 this file
+# disagreed across platforms by 2.34e-3 -- the same 2.3e-3 the macOS values were
+# themselves wrong by, measured against a Richardson-extrapolated difference of
+# the solve. Loosen `psi_stem_to_ci` and this tolerance must be re-measured, not
+# widened until it passes. Read the worst-difference line the test prints on every
+# run before adding a column.
+gradient_golden_tolerance <- function() 1.0e-5
 
 # expect_identical where it can hold, expect_equal with the measured per-field
 # tolerance where it cannot. Wrapped in one place so no individual test has to

@@ -966,6 +966,19 @@ void opt_row_values(const OptRow &r, double *out) {
 //
 // Replace the inherited pair with what that run reports, and say in the commit
 // which platform it came from.
+// One class's worst differences, in the same two-line shape as compare()'s
+// summary. A class with no differing cell prints nothing.
+template <typename W>
+void print_optima_worst(FILE *out, const W &w, double tol, const char *label) {
+  if (w.rel_at.empty()) {
+    return;
+  }
+  fprintf(out, "    %s  rel %.3g  (tol %.1g)  at %s\n", label, w.rel, tol,
+          w.rel_at.c_str());
+  fprintf(out, "                               abs %.3g              at %s\n",
+          w.abs, w.abs_at.c_str());
+}
+
 int compare_optima(Tolerance tol) {
   FILE *f = fopen(kOptimaPath, "r");
   if (f == nullptr) {
@@ -986,8 +999,17 @@ int compare_optima(Tolerance tol) {
   const bool exact_mode = tol.maximum < 0.0;
   int failures = 0;
   size_t negligible = 0;
-  double worst_rel = 0.0;
-  std::string worst_desc;
+  // The worst difference per class, relative AND absolute, each naming its cell:
+  // a worst relative cell is usually a near-zero value cancelling, and comparing
+  // the two lines is how that is told from drift.
+  struct Worst {
+    double rel = 0.0, abs = 0.0;
+    std::string rel_at, abs_at;
+    void see(double r, double a, const std::string &at) {
+      if (r > rel) { rel = r; rel_at = at; }
+      if (a > abs) { abs = a; abs_at = at; }
+    }
+  } worst_max, worst_argmax;
 
   size_t i = 0;
   for (; i < rows.size(); ++i) {
@@ -1059,18 +1081,13 @@ int compare_optima(Tolerance tol) {
         continue;
       }
       const double rel = rel_diff(got[j], want[j]);
-      const double limit =
-          is_maximum_field(kOptFieldNames[j]) ? tol.maximum : tol.argmax;
+      const bool is_max = is_maximum_field(kOptFieldNames[j]);
+      const double limit = is_max ? tol.maximum : tol.argmax;
+      (is_max ? worst_max : worst_argmax)
+          .see(rel, std::fabs(got[j] - want[j]),
+               std::string(tag) + " " + kOptFieldNames[j]);
       if (!exact_mode && rel <= limit) {
-        if (rel > worst_rel) {
-          worst_rel = rel;
-          worst_desc = std::string(tag) + " " + kOptFieldNames[j];
-        }
         continue;
-      }
-      if (rel > worst_rel) {
-        worst_rel = rel;
-        worst_desc = std::string(tag) + " " + kOptFieldNames[j];
       }
       if (failures < 20) {
         fprintf(stderr, "FAIL %s: %s got %.17g, expected %.17g (rel %.3g)\n",
@@ -1097,10 +1114,11 @@ int compare_optima(Tolerance tol) {
     // only place that number exists, and a summary that only appears on failure
     // cannot supply it. Reading it off a green run is the cheap way; bisecting a
     // red one is not.
-    if (!exact_mode && !worst_desc.empty()) {
-      printf("  worst relative difference %.3g at %s (tolerances %.1g maximum,"
-             " %.1g argmax -- INHERITED, not measured for this file)\n",
-             worst_rel, worst_desc.c_str(), tol.maximum, tol.argmax);
+    if (!exact_mode) {
+      print_optima_worst(stdout, worst_max, tol.maximum,
+                         "profit  (the maximum)    ");
+      print_optima_worst(stdout, worst_argmax, tol.argmax,
+                         "others  (from the argmax)");
     }
     // Never silent: an exempted cell is a cell nothing checked.
     if (!exact_mode && negligible > 0) {
@@ -1111,10 +1129,10 @@ int compare_optima(Tolerance tol) {
   }
   fprintf(stderr, "\npsi_stem optima: %d mismatches over %zu rows.\n",
           failures, rows.size());
-  if (!worst_desc.empty()) {
-    fprintf(stderr, "  worst relative difference %.3g at %s\n", worst_rel,
-            worst_desc.c_str());
-  }
+  print_optima_worst(stderr, worst_max, tol.maximum,
+                     "profit  (the maximum)    ");
+  print_optima_worst(stderr, worst_argmax, tol.argmax,
+                     "others  (from the argmax)");
   if (exact_mode) {
     fprintf(stderr,
             "If this change was intended, regenerate with `make psi-stem-golden` "

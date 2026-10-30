@@ -29,15 +29,12 @@
 # test-gradient-batch.R compares with `golden_tolerance()` elsewhere. Regenerating
 # on Linux would just move the failure to the platform the file came from.
 #
-# These are derivatives of outputs evaluated at the ARGMAX of a flat maximum, so
-# they inherit that file's sqrt-amplified class -- and, being finite differences,
-# one amplification more. Measured worst cross-platform disagreement 1.3e-3,
-# against 1.4e-4 for the solved outputs themselves. A central difference cancels
-# the systematic part of a libm difference, not all of it, and what is left is
-# divided by the step: the smallest-magnitude parameter in the file therefore sets
-# the tolerance for all of it, which since #41 is `R_d_25` at 1.44 rather than
+# These are derivatives of outputs evaluated at the ARGMAX, and, being built
+# from central differences, they carry the solve's floor divided by the step: the
+# smallest-magnitude parameter in the file therefore sets the cross-platform
+# tolerance for all of it, which since #41 is `R_d_25` at 1.44 rather than
 # `vcmax_25` at 96. `gradient_golden_tolerance()` in tests/testthat/helper-golden.R
-# carries the arithmetic.
+# carries the arithmetic and the measured figure.
 suppressMessages(library(phylloptim))
 
 # ⚠️ AND SAY WHICH BUILD THAT WAS. `library(phylloptim)` resolves against the

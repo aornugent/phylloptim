@@ -162,14 +162,11 @@ tests/testthat/gradient_golden.tsv
                                Regenerate with tools/gradient_golden.R, on
                                macOS/arm64, and only deliberately. ⚠️ Bit-exact
                                on that platform only, like tests/cpp/golden/ --
-                               these are derivatives of argmax-evaluated outputs,
-                               so they inherit its sqrt-amplified class and
-                               disagree cross-platform by up to 2.34e-3 (was
-                               1.3e-3 before #87 added `profit`) -- twenty times
-                               the solved outputs, because a finite difference
-                               divides the solver floor by the step, `R_d_25`'s
-                               step is the smallest here, and `profit` is the
-                               smallest magnitude carrying that same floor
+                               and further apart across platforms than the
+                               solved outputs (1.2e-7), because a finite
+                               difference divides the solver floor by the step,
+                               `R_d_25`'s step is the smallest here, and `profit`
+                               is the smallest magnitude carrying that same floor
 tests/validate/                the SCM regression pair (needs R and a plant
                                build), plus tsv_to_hex.c, which test-golden.R's
                                regeneration recipe pipes through. The two
@@ -468,113 +465,60 @@ Two things follow:
 arm64, and FMA contraction differs too, so cross-platform bit-equality was never
 achievable. CI compares bit-exactly on macOS and with `--cross-platform` elsewhere.
 
-**The size of the cross-platform disagreement is the interesting part, and it is
-not one number.** The nine reported fields split into two classes, and the gap between
-them has narrowed sharply:
+**The size of the cross-platform disagreement**, read off CI's summary line, with gcc
+and clang identical in every column (3808 of 5184 values differ), against tolerances
+of 1e-05 for `profit` and 5e-03 for the eight argmax-evaluated fields:
 
-| field | master (16d2963) | 0.6.0 |
+| class | worst RELATIVE | worst ABSOLUTE |
 |---|---|---|
-| `profit` | 2.13e-09 | **1.86e-07** |
-| the other eight | 9.02e-06 | **9.02e-06** |
+| `profit` | 2.13e-11 | 9.05e-13 µmol C m⁻² s⁻¹ |
+| the other eight | 8.6e-08 (`assim`) | 3.78e-11 Pa (`ci`) |
 
-Read off CI's summary line, gcc and clang identical in every column: 3815 of 5184
-values differ on master, 3626 on 0.6.0, against tolerances of 1e-05 and 5e-03.
+⚠️ **What sets these figures is the loosest tolerance in the solve, not libm.** At
+`psi_stem_to_ci`'s former 1e-10, both classes landed on ~1e-9 absolute, the solver
+floor of the day, and tightening it to 1e-13 (#172) took them down 80× (`ci`) and
+1100× (`profit`) with no change to the platforms. So when a cross-platform figure
+moves, look at the solver tolerances before reaching for a libm explanation.
 
 **Read the baseline off master's CI, not off this table** — `gh run list --branch master --workflow cpp-tests.yml`, then grep the
 g++ job's log for "values differ". Reading the summary line rather than the FAIL
 lines is necessary and not sufficient: it has to be the summary line from the right
 commit.
 
-**So one number moved: `profit`, 2.13e-09 → 1.86e-07, and the cause is not the
-solver.** At an IDENTICAL curve, 0.6.0 and master are **bit-identical on all 576
-golden rows across profit, collar, psi_stem and assim** — measured by handing
-master's arm the exact derived `psi_crit` in place of its shipped literal
-5.870283, which is the curve's P95 rounded to six decimals. Every difference in
-the regenerated file traces to that one default. What plausibly changed the
-cross-platform figure is that `stem_b` and `psi_crit` are DERIVED now, through
-`pow`/`log` of `(P50, c)`, where master had them as decimal literals: the curve
-itself now carries a platform difference that master's could not.
-
-### Both class figures are cancellation artefacts of the metric
-
-The test names the worst row per class. **Both** worst rows are rows where the reported quantity
-is passing through zero:
-
-| class | worst RELATIVE row | the value there | grid median | amplification |
-|---|---|---|---|---|
-| `profit` **1.86e-07** | `psi_soil=0.5 ppfd=100 vpd=2 T=40 layers=5` | 1.05e-03 — the grid **minimum** | 2.47 | **2348×** |
-| argmax **9.02e-06** | `psi_soil=4 ppfd=100 vpd=4 T=25 layers=3`, `assim` | 4.05e-07 | 1.44 | **3.6e+06×** |
+### A worst RELATIVE row is usually a cancellation artefact of the metric
 
 A relative difference divides by the value, so wherever a reported quantity nearly
 cancels — a dim, hot leaf whose assimilation barely clears respiration — the metric
-is amplified by the cancellation and says nothing about the model.
+is amplified by the cancellation and says nothing about the model. The worst
+relative rows have repeatedly been such rows (an `assim` of 4e-7 against a grid
+median of 1.44), and the worst absolute row is usually a different one.
 
-**And the ABSOLUTE figures, which is what the platforms actually disagree by:**
+So the summary reports the worst **absolute** difference per class alongside the
+relative one, each naming its row, and a cancellation row is told from real drift
+by comparing the two lines. **The tolerance stays relative**: a near-zero row is
+exactly where a genuinely broken value would also show up, so the check stays where
+it is and only the reporting distinguishes the cases. The sibling file
+`psi_stem_optima.tsv` handles the same problem the other way, with an absolute floor
+(`kOptNegligible`, 1e-12) below which it declines to compare — worth knowing that
+the two files answer this differently on purpose.
 
-| class | worst ABSOLUTE | where | units |
-|---|---|---|---|
-| `profit` | **1.35e-09** | `psi_soil=1 ppfd=1500 vpd=1 T=25 layers=1` | µmol C m⁻² s⁻¹ |
-| argmax | **3.62e-09** | `psi_soil=0.5 ppfd=100 vpd=2 T=40 layers=5`, `ci` | Pa |
-
-⚠️ **Both land on ~1e-09, which is this guide's own documented solver floor** — and
-note that neither absolute worst is the same row as its relative worst. On the
-relative worst row profit's absolute disagreement is 1.96e-10, an order *below* the
-grid's worst. So the two classes are not three orders apart, or five: **in the units
-the model reports, they are the same size, and that size is the floor.**
-
-So **"profit is well-conditioned and the eight argmax fields are sqrt-amplified", as
-this file has said for a long time, is a statement about the metric at two singular
-rows rather than about the model at an operating point.** The `sqrt` mechanism is
-still real — a flat maximum does displace its argmax by `sqrt(dp/k)` — but these two
-numbers were never evidence for it, and the arithmetic never closing (5× out) was
-the tell.
-
-**What was done about it, and what was not.** The summary reports the worst
-**absolute** difference per class alongside the relative one, each naming its row, so
-a cancellation row is distinguishable from real drift. **The tolerance is unchanged**
-and still relative: a near-zero row is exactly where a genuinely broken value would
-also show up, so the check stays where it is and only the reporting improved. The
-sibling file `psi_stem_optima.tsv` handles the same problem the other way, with an
-absolute floor (`kOptNegligible`, 1e-12) below which it declines to compare — worth
-knowing that the two files answer this differently on purpose.
-
-⚠️ **The remaining hypothesis is NOT confirmed and probably does not matter.** That
-`stem_b`/`psi_crit` being derived through `pow`/`log` makes the curve itself
-platform-dependent has the right shape, but every local single-parameter
-perturbation falls two to three orders short of 1.86e-07 — 1 ULP in `psi_soil` gives
-2.75e-09, 1 ULP in `stem_P50` 7.67e-10, and master's rounded-versus-exact `psi_crit`
-6.14e-07 (an 8× amplification of a 7.8e-08 input). A libm difference perturbs every
-`exp`/`pow` independently, which no single-point perturbation reproduces. Given the
-row it lands on, chasing it further is chasing 2e-10 of a µmol.
-
-⚠️ **`psi_stem_optima.tsv`'s cross-platform tolerances were INHERITED and unmeasured,
-and this is the reading.** Worst relative difference **3.5e-08**, at
-`fresh/collar/multi3 psi_soil=4 ppfd=1500 T=25 eb=1 tc=1 assim`, against the same
-1e-05 / 5e-03 — roughly 285× of headroom, so the inherited tolerances are generous
-rather than wrong. 156 of its values compare as zero on both sides.
+⚠️ **`psi_stem_optima.tsv`'s cross-platform tolerances are INHERITED from
+`operating_points.tsv`, not measured for it.** Its worst relative difference is
+**6.63e-06**, at `fresh/TF/single psi_soil=0.5 ppfd=1500 T=40 eb=1 tc=0 assim`, a
+near-zero `assim`, against the argmax class's 5e-03. 138 of its values compare as
+zero on both sides.
 
 gcc and clang report *identical* figures. They used to differ by 2–3×, and what
-differed was which way a golden-section comparison fell; with that
-search, what is left is libm's `exp`/`pow` — a property of the platform, not the
-compiler. If a compiler-dependent column reappears, something has reintroduced a
-discrete decision into the solve.
-
-**Why the two classes are orders apart:** the maximum is *flat*, with curvature
-k ≈ 1.0 measured directly at the worst points in `profit ≈ p* − k(psi_stem−x*)²`, so
-an error `dp` in the profit **value** displaces its **location** by `sqrt(dp/k)`.
-That is a mechanism, not an identity, and the arithmetic has never quite closed:
-`sqrt(2.13e-09)` ≈ 4.6e-05 against master's 9.02e-06 observed, so it OVER-predicts
-by 5× — the two column maxima fall at different operating points. **Do not expect
-`sqrt(worst profit)` to predict `worst argmax` in either direction.** It is a reason
-the two classes differ, not a formula relating them.
+differed was which way a golden-section comparison fell; with that search gone,
+what is left is the platform's arithmetic, not the compiler. If a
+compiler-dependent column reappears, something has reintroduced a discrete decision
+into the solve.
 
 Two things follow that matter beyond this file:
 
-- **`profit` is still the best-conditioned reported field, but by 48× rather than
-  by orders of magnitude** — 1.86e-07 against the argmax class's 9.02e-06. On master
-  the gap was 4200×. A portable check of the solve should still prefer `profit` over
-  `opt_psi_stem_`; the margin is thinner than it was, so re-read the summary line
-  before leaning on it.
+- **`profit` is the best-conditioned reported field** — 2.13e-11 against the argmax
+  class's 8.6e-08, relative. A portable check of the solve should prefer it over
+  `opt_psi_stem_`; re-read the summary line before leaning on the margin.
 - **The eight argmax-evaluated fields are determined, not just pinned.** The
   collar solve solves `dprofit == 0` rather than searching profit, so on the
   198 interior rows the argmax is determined to solver precision — `|dprofit|` at
@@ -583,13 +527,11 @@ Two things follow that matter beyond this file:
   where the gradient is genuinely non-zero and the answer is determined to the
   step-in scale (~1e-6 of the bracket width) instead.
 
-  So bit-exactness is now a drift detector *and* the numbers are determined. What
-  has not changed: **cross-platform disagreement is still sqrt-amplified** at the
-  argmax, because that comes from the flat maximum rather than from the solver.
+  So bit-exactness is a drift detector *and* the numbers are determined.
 
 ⚠️ **Profit is the wrong instrument for checking a collar-solve change, and this
 cost real time.** It is the maximum, so it is flat, and its own numerical floor is
-set by the nested `ci` root-find's 1e-7 tolerance. When the root-find landed, two of 288 rows
+set by the nested `ci` root-find's tolerance. When the root-find landed, two of 288 rows
 came out ~6e-7 *lower* in profit while their residual improved by ten orders of
 magnitude. **Check the residual `|dprofit|` at the returned point instead** — it
 improved on 240 of 240 feasible rows with none worse, which is a statement profit

@@ -153,6 +153,19 @@ test_that("leaf_model()'s defaults are the C++ default constructor's", {
   )
 })
 
+# The worst difference per class, relative and absolute, printed at the end of the
+# file on every run: on macOS it is zero, and elsewhere it is the only place the
+# R route's own cross-platform figure exists. `golden_tolerance()` is set from it.
+golden_worst <- new.env()
+golden_worst$cells <- list()
+golden_see <- function(got, expected_hex, field, label) {
+  want <- as.numeric(expected_hex)
+  golden_worst$cells[[length(golden_worst$cells) + 1L]] <- data.frame(
+    class = if (identical(field, "profit")) "profit" else "argmax",
+    at = paste(label, field), abs = abs(got - want),
+    rel = if (want == 0) 0 else abs(got - want) / abs(want))
+}
+
 for (row in golden_rows) {
   local({
     inputs <- row$inputs
@@ -167,6 +180,7 @@ for (row in golden_rows) {
         # the same policy tests/cpp/test_golden.cpp applies, and for the same
         # reason. See expect_golden() in helper-golden.R.
         expect_golden(got[[field]], expected[[field]], field, label)
+        golden_see(got[[field]], expected[[field]], field, label)
       }
     })
   })
@@ -225,10 +239,25 @@ for (row in golden_rows_40) {
       got <- do.call(golden_solve, inputs)
       for (field in names(expected)) {
         expect_golden(got[[field]], expected[[field]], field, label)
+        golden_see(got[[field]], expected[[field]], field, label)
       }
     })
   })
 }
+
+test_that("the golden points' worst differences are reported", {
+  d <- do.call(rbind, golden_worst$cells)
+  expect_identical(nrow(d), 54L)
+  for (cl in c("profit", "argmax")) {
+    x <- d[d$class == cl, ]
+    r <- which.max(x$rel)
+    a <- which.max(x$abs)
+    cat(sprintf("\ngolden points, %-6s worst rel %.3g at %s; abs %.3g at %s (tol %g)",
+                cl, x$rel[[r]], x$at[[r]], x$abs[[a]], x$at[[a]],
+                golden_tolerance(if (cl == "profit") "profit" else "assim")))
+  }
+  cat("\n")
+})
 
 # The 40 C rows must not equal the 25 C ones -- otherwise the two blocks above are
 # measuring one temperature twice and the coverage is still missing. Asserted rather
