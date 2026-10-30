@@ -5355,6 +5355,36 @@ phylloptim::Leaf make_single_leaf(const Drivers &d, double psi_soil,
   return l;
 }
 
+// An open leaf that cannot fix carbon at ambient CO2 at its own temperature
+// nets A(ci = ca), as a shut one does, so profit along the stem has no step at
+// zero flow, and its slope there is the difference of the profit it reports.
+void test_stem_route_is_continuous_at_zero_flow_below_compensation() {
+  printf("below compensation the stem route is continuous at zero flow\n");
+  struct At { double ppfd, temp; bool eb; };
+  for (At at : {At{10.0, 25.0, false}, At{10.0, 25.0, true},
+                At{1500.0, 45.0, false}, At{1500.0, 45.0, true}}) {
+    Drivers d;
+    d.PPFD = at.ppfd;
+    d.leaf_temp = at.temp;
+    phylloptim::Leaf l = make_single_leaf(d, 1.0, at.eb);
+    const std::string tag = " at PPFD " + std::to_string(at.ppfd) + ", " +
+                            std::to_string(at.temp) + " C" +
+                            (at.eb ? ", energy balance" : "");
+    const double shut = l.profit_psi_stem_TF(1.0, 1.0);
+    const double open = l.profit_psi_stem_TF(1.0 + 1e-7, 1.0);
+    ok(l.assim_colimited_ < 0.0, "the leaf is below compensation" + tag);
+    ok(std::abs(open - shut) < 1e-5, "no step in profit at zero flow" + tag);
+
+    const double psi = 1.05, h = 1e-6;
+    bool feasible = false;
+    const double slope =
+        l.dprofit_dpsi_stem<phylloptim::Leaf::CostCurve::TF24>(psi, 1.0, &feasible);
+    const double fd = (l.profit_psi_stem_TF(psi + h, 1.0) -
+                       l.profit_psi_stem_TF(psi - h, 1.0)) / (2 * h);
+    near(slope, fd, 1e-4, "dprofit/dpsi_stem is the profit's slope" + tag);
+  }
+}
+
 // ===========================================================================
 // Sperry (2017) ProfitMax
 // ---------------------------------------------------------------------------
@@ -6300,12 +6330,11 @@ void test_transpiration_survives_negative_assim() {
        "and equals the supply function exactly");
   ok(l.stom_cond_CO2_ > 0.0, "so the conductance is positive too");
 
-  // The carbon state is the one the branch used to set by hand, and it now comes
-  // from the ci solver's own compensation-point fallback.
-  near(l.ci_, l.gamma_ * l.umol_per_mol_to_Pa_, 1e-9,
-       "ci sits at the compensation point");
-  near(l.assim_colimited_, -l.R_d_, 1e-9,
-       "and net assimilation is exactly -R_d");
+  // The carbon state comes from the ci solver's fallback: a leaf that cannot fix
+  // carbon even at ambient CO2 sits there and nets A(ca).
+  near(l.ci_, l.ca_, 1e-12, "ci sits at ambient");
+  near(l.assim_colimited_, l.assim_colimited(l.ca_), 1e-12,
+       "and net assimilation is A(ca)");
   printf("    Tleaf %.0f C: assim_max_ %.3f, E %.3e kg m-2 s-1, A %.3f\n",
          d.leaf_temp, l.assim_max_, E, l.assim_colimited_);
 
@@ -8503,6 +8532,7 @@ int main() {
   test_collar_continuous_through_light_compensation();
   test_layered_soil_dries_into_shutdown();
   test_shade_death_is_decided_at_the_shut_leaf_temperature();
+  test_stem_route_is_continuous_at_zero_flow_below_compensation();
   test_signed_potentials_are_rejected();
   test_lambda_equals_dA_dE_single_layer();
   test_cowan_farquhar_equates_dA_dE_to_lambda();

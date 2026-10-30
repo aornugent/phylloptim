@@ -867,23 +867,11 @@ public:
   // cut) so TF24 (via pars.use_energy_balance) and the leaf-level demo can
   // turn PM on; default preserves backward compatibility.
   bool use_energy_balance_ = false;
-  // ci was ASSIGNED rather than solved from the supply == demand residual: the
-  // psi_stem_to_ci fallback puts it at gamma*, and a leaf shut below light
-  // compensation at ca with no conductance. The residual is then not zero, so
-  // the derivative paths drop the assimilation term instead of applying the
-  // implicit-function theorem to a condition the model did not solve.
-  //
-  // ⚠️ DERIVED FROM ci, NOT RECORDED: a flag set at one exit misses the others,
-  // and at gamma* dA/dci is NaN (both limiting rates carry ci - gamma*), which
-  // reaches every trait column of plant's adjoint.
-  //
-  // ⚠️ SEAT THE TEMPERATURE BLOCK BEFORE WRITING ci, never after. `gamma_` comes
-  // out of that block, so a re-seat with no re-solve leaves ci at the previous
-  // temperature's gamma* and this reads false.
-  bool ci_assigned() const {
-    return ci_ == gamma_ * umol_per_mol_to_Pa_ ||
-           (stom_cond_CO2_ == 0.0 && ci_ == ca_);
-  }
+  // ci was ASSIGNED at ca rather than solved from the supply == demand
+  // residual: the leaf, open or shut, cannot fix carbon even at ambient CO2. The
+  // residual is then not zero, so the derivative paths take A(ca)'s own slope
+  // instead of applying the implicit-function theorem to it.
+  bool ci_assigned() const { return ci_ == ca_; }
   // The forward model's no-flow assimilation, at the seated temperature block.
   double no_flow_assim() const {
     return no_flow_assim_at(photo_capacity<double>());
@@ -2257,6 +2245,9 @@ public:
   // gradient evaluation, silently -- the same failure mode `photo_temp_key()`
   // guards for the cache. dprofit_energy_balance_term restores the same eleven.
   double respiration_temp_deriv(double leaf_temp);
+  // d/dTleaf of what `read` takes from the temperature block, by a central
+  // difference of the block; it saves and restores the same eleven members.
+  template <class F> double temp_deriv(double leaf_temp, F read);
   // dVcmax/dTleaf, the same way and with the same save-and-restore. LeastCost's
   // capacity cost reads `vcmax_`, so `lambda_LeastCost` needs this slope with the
   // energy balance on. dprofit_energy_balance_term reads the same two
@@ -4938,10 +4929,9 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   }
 
 
-  // ⚠️ E3: THE COMPENSATION-POINT BRANCH, where the implicit function theorem
-  // below is void. When the leaf is hot enough that assimilation is negative
-  // across the whole [gamma*, ca] bracket, psi_stem_to_ci cannot find a
-  // supply==demand root and places ci AT gamma* instead. The residual g is then
+  // ⚠️ E3: THE ASSIGNED-ci BRANCH, where the implicit function theorem below is
+  // void. When the leaf cannot fix carbon even at ambient CO2, psi_stem_to_ci
+  // finds no supply==demand root and places ci at ca instead. The residual g is then
   // not zero, so differentiating "g = 0" is meaningless -- and worse, it is
   // silently meaningless: at the wet bracket endpoint transpiration is ~0 so
   // gc ~ 0, and at the compensation point A'(ci) ~ 0, which makes
@@ -4950,12 +4940,9 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   // both sign tests are false for NaN, and TOMS748 aborted the whole run with
   // "parameters a and b do not bracket the root". Found exactly that way.
   //
-  // On this branch gross assimilation is identically zero, so A = -R_d(T) and
-  // the only surviving temperature dependence is respiration's:
-  // `dprofit/dpsi = -R_d'(T) * tau - C'(psi_stem) * dpsi_stem/dpsi`.
-  //
-  // R_d' is obtained the same way A_T is, by differencing the model's own
-  // temperature block, so the two cannot drift apart.
+  // On this branch A = A(ca, T), which moves only with temperature:
+  // `dprofit/dpsi = A_T * tau - C'(psi_stem) * dpsi_stem/dpsi`, with A_T taken by
+  // differencing the model's own temperature block.
   if (ci_assigned()) {
     const double C_prime0 = cost_deriv<K>(psi_stem, psi);
     double dprofit = -C_prime0 * dpsistem_dpsi;
@@ -4963,7 +4950,8 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
       dprofit = dprofit - cost_deriv_upstream<K>(psi_stem, psi);
     }
     if (use_energy_balance_ && dT_dE != 0.0) {
-      const double Rd_T = respiration_temp_deriv(Tleaf_here);
+      const double A_T =
+          temp_deriv(Tleaf_here, [&] { return assim_colimited(ca_); });
       // dE/dpsi from the same spline derivatives the main branch uses;
       // recomputed here because the main branch's locals are below this early
       // return. It used to be written as the two gc partials divided back by
@@ -4974,13 +4962,13 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
           (stem_curve_integral_deriv(psi_stem) * dpsistem_dpsi -
            stem_curve_integral_deriv(psi));
       if constexpr (benefit_link<K>() == BenefitLink::Identity) {
-        dprofit += -Rd_T * dT_dE * dE_dpsi;
+        dprofit += A_T * dT_dE * dE_dpsi;
       } else {
-        // The same term under the link, A being exactly -R_d here, and
+        // The same term under the link, A being A(ca) here, and
         // ProfitMax's thermal cost beside it -- see dprofit_energy_balance_term.
         // A log link has no derivative at a negative A; the NaN it returns
         // reaches the sentinel below.
-        dprofit += benefit_link_deriv<K>(-R_d_) * (-Rd_T * dT_dE * dE_dpsi);
+        dprofit += benefit_link_deriv<K>(assim_colimited(ca_)) * (A_T * dT_dE * dE_dpsi);
         if constexpr (K == CostCurve::ProfitMax) {
           dprofit -= thermal_cost_temp_deriv(Tleaf_here) * dT_dE * dE_dpsi;
         }
@@ -5266,24 +5254,25 @@ inline double Leaf::dprofit_dpsi_stem(double psi_stem, double psi_upstream,
 
   const double C_prime = cost_deriv<K>(psi_stem, psi_upstream);
 
-  // ci pinned at the compensation point: the supply==demand residual is not zero
+  // ci assigned at ca: the supply==demand residual is not zero
   // there, so the implicit function theorem below does not hold and the
   // assimilation term is dropped rather than approximated. `feasible` stays
   // false, which is what tells a caller the difference.
   if (ci_assigned()) {
     double dprofit = -C_prime;
     if (use_energy_balance_ && dT_dE != 0.0) {
-      const double Rd_T = respiration_temp_deriv(Tleaf_here);
+      const double A_T =
+          temp_deriv(Tleaf_here, [&] { return assim_colimited(ca_); });
       // dpsi_stem/dpsi is 1 here and the upstream potential is fixed, so the
       // collar version's two-term dE/dpsi collapses to this one.
       const double dE_dpsi =
           leaf_specific_conductance_max_ * stem_curve_integral_deriv(psi_stem);
       if constexpr (benefit_link<K>() == BenefitLink::Identity) {
-        dprofit += -Rd_T * dT_dE * dE_dpsi;
+        dprofit += A_T * dT_dE * dE_dpsi;
       } else {
         // As on the collar route: the link on the respiration term, and
         // ProfitMax's thermal cost beside it.
-        dprofit += benefit_link_deriv<K>(-R_d_) * (-Rd_T * dT_dE * dE_dpsi);
+        dprofit += benefit_link_deriv<K>(assim_colimited(ca_)) * (A_T * dT_dE * dE_dpsi);
         if constexpr (K == CostCurve::ProfitMax) {
           dprofit -= thermal_cost_temp_deriv(Tleaf_here) * dT_dE * dE_dpsi;
         }
@@ -5444,34 +5433,28 @@ inline double Leaf::evaluate_psi_stem(double target_psi_stem) {
 // See the declaration. The step is 1e-3 degrees, matching dprofit_energy_balance_
 // term's dA/dT difference, and the eight-member restore is what makes calling this
 // inside a derivative safe.
-inline double Leaf::respiration_temp_deriv(double leaf_temp) {
+template <class F>
+inline double Leaf::temp_deriv(double leaf_temp, F read) {
   const double h = 1e-3;
   const double vc0 = vcmax_, jm0 = jmax_, ga0 = gamma_, ko0 = ko_,
                kc0 = kc_, rd0 = R_d_, km0 = km_, J0 = electron_transport_;
   const double kimp0 = k_imp_eff_, krec0 = k_rec_eff_, func0 = functional_;
   update_temperature_dependent_params(leaf_temp + h);
-  const double Rd_up = R_d_;
+  const double up = read();
   update_temperature_dependent_params(leaf_temp - h);
-  const double Rd_dn = R_d_;
+  const double dn = read();
   vcmax_ = vc0; jmax_ = jm0; gamma_ = ga0; ko_ = ko0; kc_ = kc0;
   R_d_ = rd0; km_ = km0; electron_transport_ = J0;
   k_imp_eff_ = kimp0; k_rec_eff_ = krec0; functional_ = func0;
-  return (Rd_up - Rd_dn) / (2.0 * h);
+  return (up - dn) / (2.0 * h);
+}
+
+inline double Leaf::respiration_temp_deriv(double leaf_temp) {
+  return temp_deriv(leaf_temp, [&] { return R_d_; });
 }
 
 inline double Leaf::vcmax_temp_deriv(double leaf_temp) {
-  const double h = 1e-3;
-  const double vc0 = vcmax_, jm0 = jmax_, ga0 = gamma_, ko0 = ko_,
-               kc0 = kc_, rd0 = R_d_, km0 = km_, J0 = electron_transport_;
-  const double kimp0 = k_imp_eff_, krec0 = k_rec_eff_, func0 = functional_;
-  update_temperature_dependent_params(leaf_temp + h);
-  const double vc_up = vcmax_;
-  update_temperature_dependent_params(leaf_temp - h);
-  const double vc_dn = vcmax_;
-  vcmax_ = vc0; jmax_ = jm0; gamma_ = ga0; ko_ = ko0; kc_ = kc0;
-  R_d_ = rd0; km_ = km0; electron_transport_ = J0;
-  k_imp_eff_ = kimp0; k_rec_eff_ = krec0; functional_ = func0;
-  return (vc_up - vc_dn) / (2.0 * h);
+  return temp_deriv(leaf_temp, [&] { return vcmax_; });
 }
 
 template <Leaf::CostCurve K>
@@ -6664,10 +6647,9 @@ inline double Leaf::psi_stem_to_ci(double psi_stem, double psi_upstream) {
     return ci_ = util::uniroot_smooth(target, gamma_ * umol_per_mol_to_Pa_, ca_, 1e-10, ci_niter);
   } catch (const std::exception& e) {
     // Assimilation can be negative across the WHOLE [gamma*, ca] bracket -- the
-    // leaf is too hot to gain carbon at any internal CO2 -- and then there is no
-    // supply==demand root at all. That is a physically-meaningful shut-down, not a
-    // solver failure: operate at the compensation point (ci = gamma*, gross A = 0,
-    // net A = -R_d) and let the profit optimiser move away from it.
+    // leaf cannot fix carbon even at ambient CO2 -- and then there is no
+    // supply==demand root at all. The leaf then nets A(ci = ca), as a shut leaf
+    // below compensation does, so the open branch tends to the shut one as E -> 0.
     //
     // ⚠️ THIS USED TO BE GATED ON use_energy_balance_, on the grounds that the
     // prescribed-temperature path "never reaches here". That was true and #41 made
@@ -6689,7 +6671,7 @@ inline double Leaf::psi_stem_to_ci(double psi_stem, double psi_upstream) {
         std::isfinite(t_lo) && std::isfinite(t_hi) &&
         ((t_lo > 0.0 && t_hi > 0.0) || (t_lo < 0.0 && t_hi < 0.0));
     if (use_energy_balance_ || no_root_in_bracket) {
-      return ci_ = lo;
+      return ci_ = ca_;
     }
     util::stop_infeasible("ci_solve", "psi_stem_to_ci failed: " + std::string(e.what()) +
                "; min=" + util::to_string(gamma_ * umol_per_mol_to_Pa_) +
@@ -6714,14 +6696,9 @@ inline void Leaf::set_leaf_states_rates_from_psi_stem(double psi_stem, double ps
   // at the SAME operating point disagree about whether water was moving purely
   // because one of them had respiration switched on, which is how it was found.
   //
-  // Deleting it changes nothing about the shut-down STATE it was reaching for.
-  // Where `assim_max_ < 0` the ci root-find has no supply==demand root anywhere in
+  // Where A(ca) < 0 the ci root-find has no supply==demand root anywhere in
   // [gamma*, ca] -- assimilation is monotone in ci and negative at both ends -- so
-  // psi_stem_to_ci takes its compensation-point fallback and returns ci = gamma*
-  // with gross assimilation zero and net = -R_d, which is exactly what this branch
-  // set by hand. That fallback did not exist when the branch was written; it was
-  // added with the Q10 respiration in #41, which is also what made this regime
-  // reachable at ordinary light.
+  // psi_stem_to_ci falls back to ci = ca, and the leaf nets A(ca).
   //
   // ⚠️ AND IT IS UNREACHABLE FROM THE COLLAR SOLVE, which is why plant is
   // unaffected: prepare_collar_solve has its OWN shade-death exit and returns
