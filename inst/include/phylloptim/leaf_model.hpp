@@ -595,6 +595,9 @@ public:
   // Driest collar potential the supply path can be asked about, positive
   // magnitude. For roots it is the root vulnerability limit; a constant-
   // conductance path has no such limit, so the stem's psi_crit binds instead.
+  // As the soil dries, the root's 5% potential is reached before the stem's
+  // psi_crit, so a shut stem holds there.
+  bool root_limit_binds_first() const { return supply_psi_crit() < psi_crit; }
   double supply_psi_crit() const {
     switch (supply_kind_) {
       case SupplyKind::MultiLayer: return roots_.root_psi_crit;
@@ -4113,15 +4116,8 @@ inline double Leaf::find_psi_stem_from_psi_root(double psi_root, const std::vect
 template <Leaf::CostCurve K>
 inline void Leaf::set_shutdown_state(double root_collar) {
   opt_root_psi_ = root_collar;
-  // ⚠️ THE STEM HOLDS WHERE FLOW STOPPED: at the first critical potential a drying
-  // soil reaches, the root's 5% limit or the stem's psi_crit, whichever is wetter.
-  // That is the E -> 0 limit from the transpiring side whichever limit closes the
-  // interval, and it does not move as the soil dries on past it, since no flow
-  // reaches the stem to move it. Held at psi_crit regardless, the hydraulic cost
-  // jumped on shutting down wherever the root limit binds first -- as it does in
-  // plant (5.870283 against 5.91988), by 0.029 at the leaf of
-  // test_collar_continuous_into_shutdown.
-  opt_psi_stem_ = std::min(psi_crit, supply_psi_crit());
+  // The stem holds where flow stopped, the E -> 0 limit of the transpiring leaf.
+  opt_psi_stem_ = root_limit_binds_first() ? supply_psi_crit() : psi_crit;
   // FIRST, because every number below is read off the temperature block: on the
   // PM path this exit's own leaf temperature is the E = 0 one, and the block
   // arrives holding the Tair baseline set_physiology derived. Forming profit
@@ -7417,17 +7413,12 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
 
   if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown ||
       operating_point_kind_ == OperatingPointKind::ShadeDeath) {
-    // No gas moves, so assimilation is the forward's no-flow value -- zero in
-    // light, minus the dark respiration in shade -- and the cost is the one at
-    // the potential being held. Both follow the branch the forward took: it
-    // wrote assim_colimited_ = no_flow_assim(), and held the stem at the wetter
-    // of the stem's and the supply's critical potentials.
+    // No gas moves: assimilation is the forward's no-flow value, and the cost
+    // is the one at the potential the forward held.
     S held = collar;
     if (operating_point_kind_ == OperatingPointKind::HydraulicShutdown) {
-      held = supply_kind_ == SupplyKind::MultiLayer &&
-                     roots_.root_psi_crit < psi_crit
-                 ? root_psi_crit_at<S>(pars)
-                 : psi_crit_at<S>(pars);
+      held = root_limit_binds_first() ? root_psi_crit_at<S>(pars)
+                                      : psi_crit_at<S>(pars);
     }
     // Below light compensation that value is A(ci = ca), which the traits and
     // the light reach, so it goes on the tape through the same kernel.
