@@ -1,3 +1,13 @@
+# phylloptim 0.16.4
+
+## A reversed gradient is refused, not integrated (#31)
+
+`transpiration(psi_stem, psi_upstream)` now stops when `psi_stem < psi_upstream`. A stem wetter than its upstream end would move water from the leaf to the soil, which the model does not represent, and the integral there was negative: `transpiration()` and `stom_cond_CO2()` returned negative values and `psi_stem_to_ci()` solved on a negative conductance, all as plausible finite numbers. All three now stop with an error naming both potentials. `psi_stem == psi_upstream` is the shut-down state and stays legal, with exactly zero flux.
+
+The operating-point evaluator keeps its rule that `psi_upstream >= psi_stem` is no flow, so `profit_psi_stem_*()` below the boundary is the shut-down state, built on zero flux rather than a negative one. That rule has to stay: a prescribed collar at or clamped to the wet bound (plant's TF24f path) inverts to a stem up to about 1e-9 MPa wetter than the collar. The costs and lambdas that re-read the flux after the evaluator (CF77, TF24_floor, LeastCost, and ProfitMax's thermal term) read it through the new `operating_point_flux()`, which applies the same rule. They used to take a tiny negative flux there; with the guard alone they would have stopped.
+
+**No solve asks `transpiration()` for a reversed pair.** A counter on the branch read zero over all three C++ golden files, the C++ unit suites, the R test suite and every vignette. All three golden files are bit-identical, and `bench_solve` is within 1% on every arm. The refusal's message is built in an out-of-line cold function: inlined into `transpiration()` it cost up to 3.8%.
+
 # phylloptim 0.16.3
 
 ## The model registry: equations, parameters and code links from one YAML (#166)

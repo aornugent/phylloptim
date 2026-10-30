@@ -5282,6 +5282,100 @@ void test_out_of_domain_under_rescale() {
      "past the rescaled table G is the closed form at the perturbed curve");
 }
 
+// A stem wetter than its upstream end is refused, not integrated: transpiration
+// there would be a negative flux, and gc, ci and any cost built on them would be
+// finite numbers describing water moving from the leaf to the soil.
+void test_reversed_gradient_is_refused() {
+  printf("a reversed gradient is refused\n");
+  Drivers d;
+  const double up = 2.0;
+  phylloptim::Leaf l = make_leaf(d, {up}, {1.0});
+
+  const std::string msg = message_of([&] { l.transpiration(up - 0.01, up); });
+  ok(mentions(msg, "Leaf::transpiration"), "the refusal names the function");
+  ok(mentions(msg, "wetter than psi_upstream"), "and says which way round");
+
+  // Everything that builds on the flux inherits the refusal.
+  ok(mentions(message_of([&] { l.stom_cond_CO2(up - 0.01, up); }),
+              "wetter than psi_upstream"),
+     "stom_cond_CO2 refuses");
+  ok(mentions(message_of([&] { l.psi_stem_to_ci(up - 0.01, up); }),
+              "wetter than psi_upstream"),
+     "psi_stem_to_ci refuses");
+
+  // The operating-point evaluator does not ask for the flux on a reversed pair:
+  // it reads psi_upstream >= psi_stem as no flow, because the collar solve's
+  // golden-section fallback can hand it a stem a hair wetter than the collar.
+  // So profit there is the shut-down state, built on zero flux rather than a
+  // negative one.
+  const double profit_reversed = l.profit_psi_stem_TF(up - 0.01, up);
+  ok(std::isfinite(profit_reversed) && l.transpiration_ == 0.0 &&
+         l.stom_cond_CO2_ == 0.0,
+     "profit_psi_stem_TF evaluates the shut-down state, at zero flux");
+  // A cost that reads the flux reads it by the evaluator's rule, so CF77's
+  // profit below the boundary is its shut-down profit exactly.
+  l.CF77_lambda_ = 3e5;
+  double cf77_below = std::nan("");
+  message_of([&] { cf77_below = l.profit_psi_stem_CF77(up - 0.01, up); });
+  ok(cf77_below == l.profit_psi_stem_CF77(up, up),
+     "profit_psi_stem_CF77 below the boundary is its shut-down profit");
+
+  // Equality is the shut-down state, with exactly zero flux.
+  ok(message_of([&] { l.transpiration(up, up); }).empty(),
+     "psi_stem == psi_upstream is legal");
+  ok(l.transpiration(up, up) == 0.0, "and carries exactly zero flux");
+
+  // A refusal must not leave the memo answering for the refused pair, nor
+  // disturb the entry it held.
+  const double E = l.transpiration(up + 0.5, up);
+  message_of([&] { l.transpiration(up - 0.5, up); });
+  ok(l.transpiration(up + 0.5, up) == E, "the memo survives a refusal");
+  ok(!message_of([&] { l.transpiration(up - 0.5, up); }).empty(),
+     "and a repeated reversed pair is refused again, not served from it");
+
+  // Just inside the boundary still answers, and profit there is finite.
+  ok(std::isfinite(l.profit_psi_stem_TF(up + 0.01, up)),
+     "the valid side of the boundary still answers");
+}
+
+// A prescribed collar at the wet bound -- where plant's TF24f lands when its
+// state clamps -- inverts on a multi-layer supply to a stem a hair WETTER than
+// the collar (3e-14 MPa here), so the evaluator sees a reversed pair. Every cost
+// and lambda that re-reads the flux there must read it as no flow rather than
+// refuse. Energy balance and thermal cost on, so LeastCost's and ProfitMax's
+// lambdas take their flux-reading arms.
+template <phylloptim::Leaf::CostCurve K>
+void prescribed_wet_bound_answers(const char *name) {
+  Drivers d;
+  phylloptim::Leaf l = make_pm_leaf(d, {1.0, 1.25, 1.5, 1.75, 2.0},
+                                    {1.0, 2.0, 3.0, 4.0, 5.0}, true, 2.0, 0.05,
+                                    true);
+  l.CF77_lambda_ = 3e5;
+  l.TF24_floor_lambda_o = 3e5;
+  l.LeastCost_beta = 2.0;
+  // ProfitMax's normalisers are seated by the solve, not by the evaluator.
+  if constexpr (K == phylloptim::Leaf::CostCurve::ProfitMax) l.prepare_profitmax();
+  double lo = 0.0, hi = 0.0;
+  ok(l.prepare_collar_solve<K>(lo, hi), std::string(name) + ": the bracket is open");
+  ok(l.find_psi_stem_from_psi_root(lo, l.supply_psi_soil()) < lo,
+     std::string(name) + ": the stem at the wet bound IS wetter than the collar "
+                         "(else this test exercises nothing)");
+  double p = std::nan("");
+  const std::string msg = message_of([&] { p = l.profit_at_collar_psi<K>(lo, lo, hi); });
+  ok(msg.empty() && std::isfinite(p),
+     std::string(name) + ": a prescribed collar at the wet bound answers");
+}
+
+void test_prescribed_wet_bound_reads_no_flow() {
+  printf("a prescribed collar at the wet bound reads no flow\n");
+  using K = phylloptim::Leaf::CostCurve;
+  prescribed_wet_bound_answers<K::TF24>("TF24");
+  prescribed_wet_bound_answers<K::CF77>("CF77");
+  prescribed_wet_bound_answers<K::TF24_floor>("TF24_floor");
+  prescribed_wet_bound_answers<K::LeastCost>("LeastCost");
+  prescribed_wet_bound_answers<K::ProfitMax>("ProfitMax");
+}
+
 // ===========================================================================
 // Leaf-to-air VPD (#7)
 // ---------------------------------------------------------------------------
@@ -8549,6 +8643,8 @@ int main() {
   test_infeasible_is_a_distinct_failure();
   test_out_of_domain_names_the_spline();
   test_out_of_domain_under_rescale();
+  test_reversed_gradient_is_refused();
+  test_prescribed_wet_bound_reads_no_flow();
   test_leaf_to_air_vpd();
   test_profitmax_is_a_constant_lambda_objective();
   test_profitmax_normalisation();
