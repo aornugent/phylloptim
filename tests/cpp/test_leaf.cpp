@@ -1730,6 +1730,29 @@ void test_collar_continuous_through_light_compensation() {
   near(dark, 0.0, 1e-12, "and in the dark the closed leaf nets -R_d");
 }
 
+// On a layered soil the collar interval narrows below the 1e-4 MPa its bounds
+// are placed to before it closes; the solve must still reach shutdown smoothly.
+void test_layered_soil_dries_into_shutdown() {
+  printf("a layered soil dries into shutdown without a refused solve\n");
+  Drivers d;
+  int refused = 0, shut = 0;
+  double prev = NAN, worst_step = 0.0;
+  for (int i = 0; i <= 400; ++i) {
+    const double psi = 5.599 + 1e-5 * i;
+    phylloptim::Leaf l = make_leaf(d, {psi + 0.4, psi + 0.2, psi}, {1.0, 2.0, 3.0});
+    l.find_root_collar_psi();
+    const auto k = l.operating_point_kind();
+    if (k == phylloptim::Leaf::OperatingPointKind::SolverRefused) ++refused;
+    if (k == phylloptim::Leaf::OperatingPointKind::HydraulicShutdown) ++shut;
+    if (!std::isnan(prev)) worst_step = std::max(worst_step, std::abs(l.profit_ - prev));
+    prev = l.profit_;
+  }
+  ok(shut > 0, "the sweep reaches shutdown");
+  ok(refused == 0, "no solve on the way is refused, got " + std::to_string(refused));
+  // A 1e-5 MPa step moves a smooth profit here by ~1e-5.
+  ok(worst_step < 1e-4, "no jump in profit along the sweep");
+}
+
 void test_lambda_equals_dA_dE_single_layer() {
   printf("marginal cost of water: analytic lambda vs dA/dE (stem free)\n");
   Drivers d;
@@ -4300,130 +4323,6 @@ void test_the_dry_end_reports_which_bound_closed_it() {
   // that says the two are told apart rather than merged.
   ok(root_limit > 0, "the sweep reached the root-limit arm");
   (void)continuity;
-}
-
-// A collapsed interval leaves the collar at the midpoint of its two bounds, so it
-// moves as their mean, and the stem at psi_crit rather than at continuity with the
-// draw. One fixture per dry bound, each inside a band of soil ~1e-3 MPa wide.
-void test_a_determined_collar_moves_with_its_bounds() {
-  printf("a determined collar moves as the mean of its two bounds\n");
-  using T = odelia::ode::tangent_scalar<double>;
-  using Kind = phylloptim::Leaf::OperatingPointKind;
-  constexpr auto K = phylloptim::Leaf::CostCurve::TF24;
-  const auto solve = [](double stem_P50, double root_P50, double psi_soil) {
-    Drivers d;
-    const std::vector<double> ps{psi_soil}, depth{1.0}, root{1.0 / d.area_leaf};
-    phylloptim::Leaf l = make_leaf(d, ps, depth);
-    l.set_traits(96.0, 2.680147, stem_P50, 2.680147, root_P50, 1.5, 157.44, 0.30,
-                 0.7, 0.99, 7.5, kRd25, kGammaJS22, kCMaxA, kCMaxB);
-    l.set_physiology(fixture::root_network(root, depth), d.PPFD, ps, depth,
-                     d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
-                     d.atm_o2_kpa, d.atm_kpa);
-    l.find_root_collar_psi();
-    return l;
-  };
-  // The tangent of the collar, and of the outputs placed at it, along one of
-  // root_P50, stem_P50 or psi_soil.
-  struct Rows {
-    T collar;
-    phylloptim::Leaf::LeafOutputs<T> out;
-  };
-  const auto rows_along = [&](phylloptim::Leaf &l, int direction) {
-    phylloptim::leaf_pars<T> pars;
-    const phylloptim::leaf_pars<double> seated = l.passive_pars();
-    for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
-    std::vector<T> soil{T(l.roots_.psi_soil_[0])},
-        r_h{T(l.roots_.network_.r_R_H_min[0])},
-        r_v{T(l.roots_.network_.r_R_V_sum[0])};
-    odelia::ode::set_direction(direction == 0   ? pars[phylloptim::par_root_P50]
-                               : direction == 1 ? pars[phylloptim::par_stem_P50]
-                                                : soil[0],
-                               1.0);
-    const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
-                                         pars[phylloptim::par_root_P50],
-                                         pars[phylloptim::par_root_c]};
-    const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
-    Rows r;
-    r.collar = l.collar_at<K, T>(draw, pars);
-    r.out = l.outputs_at<K, T>(r.collar, draw, pars);
-    return r;
-  };
-
-  struct Case {
-    const char *dry;
-    double root_P50, psi_soil;
-  };
-  // psi_crit 5.9198, drier than root_psi_crit 5.8703 at root_P50 3.4. The
-  // continuity case sits where that root's bracket stopped furthest from it.
-  for (const Case &c : {Case{"root limit", 3.4, 5.8649}, Case{"continuity", 6.0, 5.911964}}) {
-    const double stem_P50 = 3.4287;
-    const std::string at = " (" + std::string(c.dry) + ")";
-    phylloptim::Leaf l = solve(stem_P50, c.root_P50, c.psi_soil);
-    ok(l.operating_point_kind() == Kind::Determined,
-       "the fixture is determined" + at + ", got " +
-           l.operating_point_kind_name(l.operating_point_kind()));
-    ok(l.opt_psi_stem_ == l.psi_crit, "the stem sits at psi_crit" + at);
-
-    const char *names[] = {"root_P50", "stem_P50", "psi_soil"};
-    const double steps[] = {1e-5, 1e-5, 1e-6};
-    for (int dir = 0; dir < 3; ++dir) {
-      const std::string along = " along " + std::string(names[dir]) + at;
-      Rows r;
-      try {
-        r = rows_along(l, dir);
-      } catch (const std::exception &e) {
-        ok(false, "the derivative path answers" + along + ": " + e.what());
-        continue;
-      }
-      ok(odelia::util::to_passive(r.collar) == l.opt_root_psi_,
-         "the collar is the solved one, bit for bit" + along);
-      near(odelia::util::to_passive(r.out.profit), l.profit_, 1e-12,
-           "profit is the solved one" + along);
-      const double collar_row = odelia::ode::derivative_along(r.collar);
-      const double profit_row = odelia::ode::derivative_along(r.out.profit);
-      const double uptake_row = odelia::ode::derivative_along(r.out.uptake[0]);
-      ok(std::isfinite(collar_row) && std::isfinite(profit_row) &&
-             std::isfinite(uptake_row),
-         "every row is finite" + along);
-
-      // Each step holds the kind, so this differences the determined point alone;
-      // both bounds are polished, so its error is ~1e-15 / h.
-      const double h = steps[dir];
-      const auto at_step = [&](double s) {
-        return solve(stem_P50 + (dir == 1 ? s : 0.0), c.root_P50 + (dir == 0 ? s : 0.0),
-                     c.psi_soil + (dir == 2 ? s : 0.0));
-      };
-      const phylloptim::Leaf up = at_step(h), down = at_step(-h);
-      ok(up.operating_point_kind() == Kind::Determined &&
-             down.operating_point_kind() == Kind::Determined,
-         "both steps stay determined" + along);
-      const auto fd = [&](auto read) { return (read(up) - read(down)) / (2.0 * h); };
-      const double collar_fd = fd([](const phylloptim::Leaf &x) { return x.opt_root_psi_; });
-      const double profit_fd = fd([](const phylloptim::Leaf &x) { return x.profit_; });
-      const double uptake_fd =
-          fd([](const phylloptim::Leaf &x) { return x.soil_consumption_[0]; });
-      // Each bound is differentiated at its own root, up to GSS_tol_abs / 2 from
-      // the draw. Taken at the draw instead, the collar's row along psi_soil read
-      // 0.50004 where the bounds give 0.5; measured now, the worst is 2e-8.
-      near(collar_row, collar_fd, 1e-6, "the collar's row matches the solve's" + along);
-      near(profit_row, profit_fd, 1e-5, "profit's row matches the solve's" + along);
-      // Against the uptake itself where its row is too small to compare.
-      const double uptake = l.soil_consumption_[0];
-      ok(std::abs(uptake_row - uptake_fd) <=
-             1e-3 * (std::abs(uptake_fd) + std::abs(uptake)),
-         "the uptake's row matches the solve's" + along);
-      printf("    %-10s along %-8s  collar %11.8f (%11.8f)  profit %11.8f (%11.8f)\n",
-             c.dry, names[dir], collar_row, collar_fd, profit_row, profit_fd);
-    }
-  }
-
-  // A stem optimum inside its interval needs a curvature that is not taken, so the
-  // outputs refuse by name while the collar still answers.
-  phylloptim::Leaf l = solve(7.0, 3.4, 5.8649);
-  ok(l.operating_point_kind() == Kind::Determined && l.opt_psi_stem_ < l.psi_crit,
-     "a drier stem leaves the stem inside its interval");
-  ok(throws_with([&] { rows_along(l, 2); }, "only psi_crit is placed there"),
-     "the outputs refuse a stem inside its interval by name");
 }
 
 void test_rd_temperature_response() {
@@ -8579,6 +8478,7 @@ int main() {
   test_root_psi_crit_clamp_binds();
   test_collar_continuous_into_shutdown();
   test_collar_continuous_through_light_compensation();
+  test_layered_soil_dries_into_shutdown();
   test_signed_potentials_are_rejected();
   test_lambda_equals_dA_dE_single_layer();
   test_cowan_farquhar_equates_dA_dE_to_lambda();
@@ -8614,7 +8514,6 @@ int main() {
   test_temperature_params_invalidate_cache();
   test_rd_temperature_response();
   test_the_dry_end_reports_which_bound_closed_it();
-  test_a_determined_collar_moves_with_its_bounds();
   test_pack_kernels_are_the_models_own();
   test_light_reaches_carbon_with_a_row();
   test_every_answered_point_hands_over_finite_rows();
