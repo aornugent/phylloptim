@@ -4046,10 +4046,20 @@ inline double Leaf::polish_bracket_bound(double x0,
   // is tried first and the other only if it holds no sign change. The first width
   // is the bracket's own tolerance at x0, which holds the
   // root it was placed around, so one probe usually suffices.
+  //
+  // ⚠️ THE CONTINUITY ROOT'S PROBES STOP AT psi_crit, as find_root_psi's bracket
+  // does: past it the collar is drier than the stem held there, and
+  // transpiration() refuses a reversed gradient. Near the stem/root tie the
+  // root sits within one probe width of psi_crit, so an unclamped probe lands there.
+  const double hi = find_root_crit == 1 ? psi_crit
+                                        : std::numeric_limits<double>::infinity();
   const double sign = f0 > 0.0 ? -1.0 : 1.0;
   for (double d = bracket_tol_at(x0); d <= 0.1; d *= 4.0) {
     for (double side : {sign, -sign}) {
-      const double x = x0 + side * d;
+      const double x = std::min(x0 + side * d, hi);
+      if (x == x0) {
+        continue;
+      }
       const double fx = target(x);
       if (std::isfinite(fx) && fx * f0 <= 0.0) {
         return side < 0.0
