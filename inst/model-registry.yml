@@ -1875,7 +1875,7 @@ equations:
     writes: []
     kind: closed_form
     cite: Sperry-2017
-    note: 'kg m⁻² s⁻¹. $\psi_\mathrm{up}$ is the collar on the collar route and $\psi_\mathrm{soil}$ on the stem route; a reversed pair gives a negative flux. A one-entry memo keyed on the two potentials (invalidated by set_physiology and perturb_stem_P50) returns the same value bit for bit.'
+    note: 'kg m⁻² s⁻¹. $\psi_\mathrm{up}$ is the collar on the collar route and $\psi_\mathrm{soil}$ on the stem route; a reversed pair ($\psi_\mathrm{stem} < \psi_\mathrm{up}$) is refused, and equality gives exactly zero (#31). A one-entry memo keyed on the two potentials (invalidated by set_physiology and perturb_stem_P50) returns the same value bit for bit.'
   stem_transpiration_quadrature:
     section: supply
     title: Stem supply by direct quadrature

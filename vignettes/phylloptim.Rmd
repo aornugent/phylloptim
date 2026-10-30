@@ -310,10 +310,9 @@ tibble(psi = seq(0, 6, length.out = 200)) |>
 
 The profit function is not defined everywhere. Water flows from the soil to the
 leaf, so `psi_stem` must be at least the upstream potential. Below it the leaf
-would be wetter than the soil, and `transpiration()` and `stom_cond_CO2()` duly
-return negative values. Evaluating profit there returns a number, but the number
-is built on a negative conductance and means nothing. Plot the domain the solve
-actually searches:
+would be wetter than the soil, so `transpiration()`, `stom_cond_CO2()` and
+`psi_stem_to_ci()` stop with an error rather than return a negative flux. Plot
+the domain the solve actually searches:
 
 ```{r, fig.height = 3.4}
 psi_upstream <- 2.0

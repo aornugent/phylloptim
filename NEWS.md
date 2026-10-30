@@ -14,6 +14,16 @@ A leaf moving no gas now nets `min(0, A(ci = ca))` at its own temperature: zero 
 
 **What moves:** `operating_points.tsv`, the 96 no-flow rows of 576 (`ci`, `assim`, `profit`), and none of the 480 open rows. `psi_stem_optima.tsv`, 2994 of 5760 rows: 1756 dark rows move `ci` to `ca` with `A` unchanged to 4e-16; 190 shut rows in light go from `A = -R_d` to 0; 904 too-hot rows take `A(ca)`; 106 energy-balance rows on the stem routes move their optimum, by up to 2.6e-6 MPa in the dark, where the refine is now exact (no row loses profit), and by up to 1.85 MPa, with profit up to 1.49 higher, for hot, bright leaves at 40 °C, where the stem optimisers now climb a continuous objective; 30 hot, bright energy-balance rows go from `solver-refused` to `shade-death`; and 8 `TF24_floor` stem-route optima now choose closure, which earns 0 rather than `-R_d`. `gradient_golden.tsv`, 3 cells, all on the shut-down case: `R_d_25`'s `A` and `profit` rows go to zero, and `stem_c`'s `profit` row picks up `-1.7e-10` of rounding. `primitives.tsv` is bit-identical. `test-golden.R`'s shut-down row moves in `ci`, `assim` and `profit`.
 
+# phylloptim 0.16.4
+
+## A reversed gradient is refused, not integrated (#31)
+
+`transpiration(psi_stem, psi_upstream)` now stops when `psi_stem < psi_upstream`. A stem wetter than its upstream end would move water from the leaf to the soil, which the model does not represent, and the integral there was negative: `transpiration()` and `stom_cond_CO2()` returned negative values and `psi_stem_to_ci()` solved on a negative conductance, all as plausible finite numbers. All three now stop with an error naming both potentials. `psi_stem == psi_upstream` is the shut-down state and stays legal, with exactly zero flux.
+
+The operating-point evaluator keeps its rule that `psi_upstream >= psi_stem` is no flow, so `profit_psi_stem_*()` below the boundary is the shut-down state, built on zero flux rather than a negative one. That rule has to stay: a prescribed collar at or clamped to the wet bound (plant's TF24f path) inverts to a stem up to about 1e-9 MPa wetter than the collar. The costs and lambdas that re-read the flux after the evaluator (CF77, TF24_floor, LeastCost, and ProfitMax's thermal term) read it through the new `operating_point_flux()`, which applies the same rule. They used to take a tiny negative flux there; with the guard alone they would have stopped.
+
+**No solve asks `transpiration()` for a reversed pair.** A counter on the branch read zero over all three C++ golden files, the C++ unit suites, the R test suite and every vignette. All three golden files are bit-identical, and `bench_solve` is within 1% on every arm. The refusal's message is built in an out-of-line cold function: inlined into `transpiration()` it cost up to 3.8%.
+
 # phylloptim 0.16.3
 
 ## The model registry: equations, parameters and code links from one YAML (#166)

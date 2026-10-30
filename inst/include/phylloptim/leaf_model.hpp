@@ -2399,7 +2399,15 @@ public:
   // supply-side transpiration for a given water potential gradient between leaves and soil, 
   // references setup_transpiraiton for values (return: kg h20 s^-1 m^-2 LA)
   // should be renamed to reflect supply-side
+  // Stops on psi_stem < psi_upstream, a flow from the leaf to the soil.
   double transpiration(double psi_stem, double psi_upstream);
+  // The flux an OPERATING-POINT evaluation uses: zero where psi_upstream >=
+  // psi_stem, the same no-flow rule set_leaf_states_rates_from_psi_stem applies,
+  // and transpiration() otherwise. A cost or lambda that re-reads the flux after
+  // that call must use this, or it refuses a point the evaluator accepted: a
+  // prescribed collar at or clamped to the wet bound puts the stem up to ~1e-9
+  // MPa wetter.
+  double operating_point_flux(double psi_stem, double psi_upstream);
   // supply-side transpiration for a given water potential gradient between leaves and soil, integrated internally (return: kg h20 s^-1 m^-2 LA)
   // should be renamed to reflect supply-side
   double transpiration_full_integration(double psi_stem, double psi_upstream);                    
@@ -4862,10 +4870,8 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   // magnitudes here, so psi >= psi_stem is the no-flow / reversed-gradient case --
   // the same condition set_leaf_states_rates_from_psi_stem treats as zero
   // transpiration. It has to be caught *here* because psi_stem_to_ci does not
-  // return non-finite in that state, it throws: gc = const * transpiration goes
-  // negative, which flips the sign of the supply term so the residual no longer
-  // crosses zero over (gamma*, ca] and the bracketing root-find reports that its
-  // endpoints do not bracket a root. The isfinite check below was written to cover
+  // return non-finite on a reversed pair, it throws: transpiration() refuses one
+  // (#31). The isfinite check below was written to cover
   // shut-down but cannot see a thrown exception, so a dry patch killed a whole
   // plant run: reproduced on TF24f at 5 layers, theta = 0.005-0.03 with 1 m/yr
   // rainfall, at psi_stem = 1.23 against psi_upstream = 5.92 MPa.
@@ -6417,6 +6423,18 @@ inline double Leaf::transpiration_full_integration(double psi_stem, double psi_u
                                       integration_tol_);
 }
 
+// transpiration()'s refusal, kept out of line: the string building inlined into
+// that hot path cost the solve measurably, where a call to a cold function does
+// not.
+[[noreturn, gnu::cold, gnu::noinline]] inline void
+stop_reversed_flow(double psi_stem, double psi_upstream) {
+  util::stop("Leaf::transpiration: psi_stem = " + util::format_double(psi_stem) +
+             " MPa is wetter than psi_upstream = " +
+             util::format_double(psi_upstream) +
+             " MPa, which would move water from the leaf to the soil; "
+             "psi_stem must be at least psi_upstream");
+}
+
 //calculates supply-side transpiration from psi_stem and opt_root_psi_, returns kg h20 s^-1 m^-2 LA
 // SIGN: psi_stem and psi_upstream are POSITIVE magnitudes here (passed straight
 // to the spline). Contrast transpiration_to_psi_stem below. See the sign-
@@ -6438,11 +6456,29 @@ inline double Leaf::transpiration(double psi_stem, double psi_upstream) {
      stem_curve_integral(psi_upstream, "Leaf::transpiration, at psi_upstream"));
   // return (transpiration_full_integration(psi_stem));
 
+  // A stem wetter than its upstream end would move water from the leaf to the
+  // soil. The integral above is then negative, and stom_cond_CO2 and
+  // psi_stem_to_ci would hand back a negative conductance and a ci solved on it,
+  // as finite numbers. No solve asks for this flux (#31): the operating-point
+  // evaluator reads psi_upstream >= psi_stem as no flow without calling here, and
+  // a cost that re-reads the flux goes through operating_point_flux. So a reversed
+  // pair here is a caller error. Equality is the shut-down state and stays legal;
+  // NaN falls through to a non-finite E. Tested after the lookups so a negative
+  // potential still gets the spline's domain message, and before the memo is
+  // written so the memo never holds a reversed pair.
+  if (psi_stem < psi_upstream) [[unlikely]] {
+    stop_reversed_flow(psi_stem, psi_upstream);
+  }
+
   transpiration_cache_psi_stem_ = psi_stem;
   transpiration_cache_psi_upstream_ = psi_upstream;
   transpiration_cache_value_ = E;
   transpiration_cached_ = true;
   return E;
+}
+
+inline double Leaf::operating_point_flux(double psi_stem, double psi_upstream) {
+  return psi_upstream >= psi_stem ? 0.0 : transpiration(psi_stem, psi_upstream);
 }
 
 // converts a known transpiration to its corresponding psi_stem, returns -MPa
@@ -6904,7 +6940,7 @@ inline double Leaf::lambda_ProfitMax(double psi_stem) {
 
   double thermal = 0.0;
   if (use_thermal_cost_ && use_energy_balance_) {
-    const double E = transpiration(psi_stem, supply_psi_soil_scalar());
+    const double E = operating_point_flux(psi_stem, supply_psi_soil_scalar());
     double dT_dE = 0.0;
     const double Tleaf = leaf_temp_from_E(E, &dT_dE);
     // The same slope dprofit_energy_balance_term subtracts from dJ/dpsi, so the
@@ -7683,14 +7719,13 @@ double benefit_ = assim_colimited_;
 // Sperry one, because this product IS a carbon flux: `CF77_lambda_` is umol C per kg of
 // water and E is kg m^-2 s^-1.
 //
-// `transpiration()` is memoised on (psi_stem, psi_upstream), so calling it here
+// `operating_point_flux()` reads the memoised `transpiration()`, so calling it here
 // straight after set_leaf_states_rates_from_psi_stem costs nothing and returns
 // exactly the E of the operating point that call established -- including the
-// no-flow case, where the two potentials are equal and the integral difference is
-// exactly zero.
+// no-flow case, which both read as zero by the same rule.
 inline double Leaf::hydraulic_cost_CF77(double psi_stem,
                                                 double psi_upstream) {
-  hydraulic_cost_ = cf77_price() * transpiration(psi_stem, psi_upstream);
+  hydraulic_cost_ = cf77_price() * operating_point_flux(psi_stem, psi_upstream);
   return hydraulic_cost_;
 }
 
@@ -7813,13 +7848,13 @@ inline double Leaf::profit_psi_stem_CMax(double psi_stem,
 // well as under `off`. Reassociating would break that, so `test_tf24_floor_reduces`
 // is what to re-run after touching this line.
 //
-// `transpiration()` is memoised on (psi_stem, psi_upstream), so calling it here
-// straight after set_leaf_states_rates_from_psi_stem costs nothing -- see
+// `operating_point_flux()` reads the memoised `transpiration()`, so calling it
+// here straight after set_leaf_states_rates_from_psi_stem costs nothing -- see
 // hydraulic_cost_CF77, which relies on the same thing.
 inline double Leaf::hydraulic_cost_TF24_floor(double psi_stem,
                                            double psi_upstream) {
   hydraulic_cost_ = hydraulic_cost_TF_kernel(psi_stem) +
-                    TF24_floor_lambda_o * transpiration(psi_stem, psi_upstream);
+                    TF24_floor_lambda_o * operating_point_flux(psi_stem, psi_upstream);
   return hydraulic_cost_;
 }
 
@@ -7973,7 +8008,7 @@ inline double Leaf::profit_psi_stem_JW26(double psi_stem,
 // the capacity term's own motion with that temperature, which `cost_deriv` leaves
 // out.
 inline double Leaf::leastcost_flux(double psi_stem, double psi_upstream) {
-  return transpiration(psi_stem, psi_upstream) * kg_to_mol_h2o +
+  return operating_point_flux(psi_stem, psi_upstream) * kg_to_mol_h2o +
          LeastCost_beta * vcmax_ * umol_to_mol;
 }
 
@@ -8005,7 +8040,7 @@ inline double Leaf::lambda_LeastCost(double psi_stem, double psi_upstream) {
   // its thermal term. Zero on the leaf-temperature clamp, where dT/dE is.
   double dT_dE = 0.0;
   const double Tleaf =
-      leaf_temp_from_E(transpiration(psi_stem, psi_upstream), &dT_dE);
+      leaf_temp_from_E(operating_point_flux(psi_stem, psi_upstream), &dT_dE);
   double dW_dE = kg_to_mol_h2o;
   if (dT_dE != 0.0) {
     dW_dE += LeastCost_beta * umol_to_mol * vcmax_temp_deriv(Tleaf) * dT_dE;
@@ -8601,7 +8636,7 @@ inline double Leaf::lambda_collar_for() {
       if (use_thermal_cost_ && use_energy_balance_) {
         double dT_dE = 0.0;
         const double Tleaf = leaf_temp_from_E(
-            transpiration(opt_psi_stem_, opt_root_psi_), &dT_dE);
+            operating_point_flux(opt_psi_stem_, opt_root_psi_), &dT_dE);
         thermal = thermal_cost_temp_deriv(Tleaf) * dT_dE;
       }
       return profitmax_A_max_ *

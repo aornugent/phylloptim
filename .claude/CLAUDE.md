@@ -724,6 +724,14 @@ fixed four curves for this). A new topology is a bracket and a chain
 factor. A configuration that needs a basin scan passes `n > 0`; one that does not
 passes `0`, which makes the same function the endpoints-plus-root-find method.
 
+A cost or lambda that reads the flux E reads it through `operating_point_flux()`,
+never `transpiration()`. `transpiration()` stops on `psi_stem < psi_upstream`
+(#31), while the evaluator reads that pair as no flow, and the collar solve
+hands it one: a prescribed collar at the multi-layer wet bound inverts to a stem
+~1e-14 MPa wetter. A cost calling `transpiration()` there throws on a point the
+evaluator accepted. `test_prescribed_wet_bound_reads_no_flow` covers the curves
+that read E today, and a new one belongs in its list.
+
 **Four things that are arguments, not reasons for a new function:**
 
 | you might think you need | you need |
