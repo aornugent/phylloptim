@@ -499,8 +499,8 @@ void test_shutdown_when_soil_is_drier_than_psi_crit() {
 
 // The shutdown path used to leak the previous solve's fluxes (plant #578/#577).
 // set_shutdown_state now writes them, so this asserts the fixed behaviour: a
-// shut-down leaf moves no water, respires at R_d, and sits at the CO2
-// compensation point -- and, critically, none of that depends on what ran before.
+// shut-down leaf moves no water, nets the no-flow assimilation at the no-flow ci,
+// and none of that depends on what ran before.
 void test_shutdown_writes_its_own_fluxes() {
   printf("shutdown writes its own fluxes (plant #578 fixed)\n");
   Drivers d;
@@ -532,7 +532,7 @@ void test_shutdown_writes_its_own_fluxes() {
   near(l.assim_colimited_, 0.0, 1e-300, "assimilation is the no-flow value (zero)");
   near(l.assim_colimited_, l.profit_ + l.hydraulic_cost_TF(l.opt_psi_stem_), 1e-12,
        "assimilation is consistent with profit and the hydraulic cost");
-  ok(std::isfinite(l.ci_), "ci is set to the compensation point, not left stale");
+  ok(std::isfinite(l.ci_), "ci is set to the no-flow ci, not left stale");
 
   // Order independence is the property that was actually broken: a fresh leaf
   // taken straight to dry must report exactly the same thing.
@@ -4430,7 +4430,10 @@ void test_rd_temperature_response() {
     l.find_root_collar_psi();
     printf("    T = %4.1f C   R_d %6.3f   A %8.4f%s\n", T, l.R_d_,
            l.assim_colimited_,
-           l.ci_assigned() ? "   <-- shut down" : "");
+           l.operating_point_kind() ==
+                   phylloptim::Leaf::OperatingPointKind::ShadeDeath
+               ? "   <-- shut down"
+               : "");
   }
 
   // ⚠️ AND IT MUST SHUT DOWN RATHER THAN THROW. A leaf too hot to gain carbon at
@@ -4447,8 +4450,6 @@ void test_rd_temperature_response() {
       threw = true;
     }
     ok(!threw, "a leaf too hot to gain carbon shuts down instead of throwing");
-    ok(hot.ci_assigned(),
-       "and says so, rather than reporting an ordinary operating point");
     ok(hot.operating_point_kind() ==
            phylloptim::Leaf::OperatingPointKind::ShadeDeath,
        "it is shut, since even at ambient CO2 it cannot fix carbon");
@@ -4462,7 +4463,9 @@ void test_rd_temperature_response() {
   {
     phylloptim::Leaf ok_leaf = make_leaf(d, {2.0}, {1.0});
     ok_leaf.find_root_collar_psi();
-    ok(!ok_leaf.ci_assigned(),
+    ok(ok_leaf.operating_point_kind() !=
+               phylloptim::Leaf::OperatingPointKind::ShadeDeath &&
+           !ok_leaf.ci_assigned(),
        "an ordinary leaf is not flagged as shut down");
   }
 }
@@ -5586,8 +5589,8 @@ void test_profitmax_thermal_cost() {
 
 // Thresholds that put the thermal cost on its steep flank at 25 C air. At the
 // class defaults (Sicangco's heatwave pair, T50 50.4) the cost is ~1e-5 wherever
-// assimilation is positive under these drivers -- every hotter row sits at the
-// compensation point -- so the term would be compiled and never exercised.
+// assimilation is positive under these drivers -- every hotter row has ci
+// assigned at ca -- so the term would be compiled and never exercised.
 const double kLiveT50 = 32.0, kLiveTcrit = 28.0;
 
 // A single-potential leaf with the energy balance and the wind model configured
@@ -5648,7 +5651,7 @@ bool seed_linked_curve(phylloptim::Leaf &l) {
 template <phylloptim::Leaf::CostCurve K>
 int check_linked_eb_derivative_fd(const Drivers &d, bool tc, double psi_soil,
                                   double &worst, int &thermal_rows,
-                                  int &compensation_rows, bool print_v) {
+                                  int &assigned_rows, bool print_v) {
   const std::string name =
       phylloptim::Leaf::curve_name(static_cast<int>(K)) + (tc ? "+TC" : "") +
       " at Tair " + std::to_string(static_cast<int>(d.leaf_temp));
@@ -5674,14 +5677,14 @@ int check_linked_eb_derivative_fd(const Drivers &d, bool tc, double psi_soil,
     const double psi = psi_soil + frac * (l.psi_crit - psi_soil);
     bool feasible = false;
     const double an = l.template dprofit_dpsi_stem<K>(psi, psi_soil, &feasible);
-    // An infeasible row is the compensation-point branch, where the derivative
+    // An infeasible row is the assigned-ci branch, where the derivative
     // is still a number (ProfitMax's scaled link) or the 0.0 sentinel (a log
     // link has none at A < 0). Only the number is comparable.
     if (!std::isfinite(an) || (!feasible && an == 0.0)) {
       continue;
     }
     if (!feasible) {
-      ++compensation_rows;
+      ++assigned_rows;
     }
     // ⚠️ THE STEP IS SWEPT, NOT PICKED (hazard 15). The differenced objective
     // runs through the ci root-find AND the leaf-temperature balance, so its
@@ -5728,9 +5731,9 @@ void test_linked_dprofit_with_energy_balance_matches_a_finite_difference() {
          "swept-step difference of the objective\n");
   using CC = phylloptim::Leaf::CostCurve;
   double worst = 0.0;
-  int rows = 0, thermal_rows = 0, compensation_rows = 0;
+  int rows = 0, thermal_rows = 0, assigned_rows = 0;
   // 25 and 30 C air give interior rows; at 45 C every row under these drivers
-  // is at the compensation point, which is the other branch the link reaches.
+  // has ci assigned at ca, which is the other branch the link reaches.
   for (double tair : {25.0, 30.0, 45.0}) {
     Drivers d;
     d.PPFD = 1500.0;
@@ -5738,20 +5741,20 @@ void test_linked_dprofit_with_energy_balance_matches_a_finite_difference() {
     for (bool tc : {false, true}) {
       const bool print_v = (tair == 25.0 && tc);
       rows += check_linked_eb_derivative_fd<CC::SOX>(
-          d, tc, 1.0, worst, thermal_rows, compensation_rows, print_v);
+          d, tc, 1.0, worst, thermal_rows, assigned_rows, print_v);
       rows += check_linked_eb_derivative_fd<CC::JW26>(
-          d, tc, 1.0, worst, thermal_rows, compensation_rows, false);
+          d, tc, 1.0, worst, thermal_rows, assigned_rows, false);
       rows += check_linked_eb_derivative_fd<CC::ProfitMax>(
-          d, tc, 1.0, worst, thermal_rows, compensation_rows, print_v);
+          d, tc, 1.0, worst, thermal_rows, assigned_rows, print_v);
       rows += check_linked_eb_derivative_fd<CC::LeastCost>(
-          d, tc, 1.0, worst, thermal_rows, compensation_rows, print_v);
+          d, tc, 1.0, worst, thermal_rows, assigned_rows, print_v);
     }
   }
   printf("    %d rows (%d on the compensation branch) | worst error/scale at "
          "the floor %.3e | %d rows with a live thermal cost\n",
-         rows, compensation_rows, worst, thermal_rows);
-  ok(rows - compensation_rows >= 36, "enough interior rows were compared");
-  ok(compensation_rows >= 4,
+         rows, assigned_rows, worst, thermal_rows);
+  ok(rows - assigned_rows >= 36, "enough interior rows were compared");
+  ok(assigned_rows >= 4,
      "the compensation-point branch was compared too (hazard 16)");
   ok(thermal_rows >= 12,
      "the thermal-cost term was exercised, not only compiled (hazard 16)");
@@ -8128,9 +8131,10 @@ void reseat_thermal_leaf(phylloptim::Leaf &l, const Drivers &d,
 }
 
 // The block update_temperature_dependent_params writes, as one comparable value.
-std::array<double, 11> thermal_block(const phylloptim::Leaf &l) {
+std::array<double, 12> thermal_block(const phylloptim::Leaf &l) {
   return {l.vcmax_, l.jmax_, l.gamma_, l.ko_, l.kc_, l.R_d_, l.km_,
-          l.electron_transport_, l.k_imp_eff_, l.k_rec_eff_, l.functional_};
+          l.electron_transport_, l.k_imp_eff_, l.k_rec_eff_, l.functional_,
+          l.photo_temp_};
 }
 
 // NaN in every input, gate off, against a leaf that never had them: bit-identical
@@ -8311,7 +8315,7 @@ void test_thermal_damage_dprofit_is_the_solves_own() {
      "the sweep compared enough rows of each kind");
 }
 
-// respiration_temp_deriv and dprofit_energy_balance_term perturb the block by
+// temp_deriv and dprofit_energy_balance_term perturb the block by
 // 1e-3 degrees and put it back by assignment. The layer adds three outputs to
 // the block, so each must put back eleven numbers, not eight.
 void test_thermal_damage_fd_helpers_restore_the_block() {
@@ -8323,20 +8327,20 @@ void test_thermal_damage_fd_helpers_restore_the_block() {
   l.find_root_collar_psi();
   ok(l.operating_point_kind() == phylloptim::Leaf::OperatingPointKind::Interior,
      "the fixture is an interior point");
-  const std::array<double, 11> before = thermal_block(l);
+  const std::array<double, 12> before = thermal_block(l);
   ok(before[8] > 0.0 && before[9] > 0.0 && before[10] > 0.0,
      "the fixture has non-zero k_imp_eff, k_rec_eff and functional to lose");
 
-  const double dRd = l.respiration_temp_deriv(l.Tleaf_ + 2.0);
-  ok(thermal_block(l) == before, "respiration_temp_deriv restores all eleven");
-  ok(std::isfinite(dRd), "respiration_temp_deriv is finite");
+  const double dRd = l.temp_deriv(l.Tleaf_ + 2.0, [&] { return l.R_d_; });
+  ok(thermal_block(l) == before, "temp_deriv restores the whole block");
+  ok(std::isfinite(dRd), "temp_deriv is finite");
 
   using CC = phylloptim::Leaf::CostCurve;
   const double term = l.dprofit_energy_balance_term<CC::TF24>(
       l.ci_, l.stom_cond_CO2_, 1.0, 1e-5, 1.0, 0.1, 0.1, 0.1, 1.0, -1e3,
       l.Tleaf_ + 2.0);
   ok(std::isfinite(term), "dprofit_energy_balance_term is finite");
-  ok(thermal_block(l) == before, "dprofit_energy_balance_term restores all eleven");
+  ok(thermal_block(l) == before, "dprofit_energy_balance_term restores the whole block");
   // The linked arm evaluates A after the restore, so it must leave the same
   // eleven in place too.
   const double linked = l.dprofit_energy_balance_term<CC::SOX>(
@@ -8344,15 +8348,15 @@ void test_thermal_damage_fd_helpers_restore_the_block() {
       l.Tleaf_ + 2.0);
   ok(std::isfinite(linked), "the linked dprofit_energy_balance_term is finite");
   ok(thermal_block(l) == before,
-     "and the linked arm restores all eleven as well");
+     "and the linked arm restores the whole block as well");
 
   // The repair-flux cost reads k_rec_eff(T), so it reaches dR_d/dT: the
   // derivative moves with that coefficient, at a temperature where repair is
   // switching off.
   phylloptim::Leaf no_flux = l;
   no_flux.c_repair_flux_ = 0.0;
-  ok(no_flux.respiration_temp_deriv(l.t_rep_cut_) !=
-         l.respiration_temp_deriv(l.t_rep_cut_),
+  ok(no_flux.temp_deriv(l.t_rep_cut_, [&] { return no_flux.R_d_; }) !=
+         l.temp_deriv(l.t_rep_cut_, [&] { return l.R_d_; }),
      "the repair-flux cost's temperature response reaches dR_d/dT");
 }
 
