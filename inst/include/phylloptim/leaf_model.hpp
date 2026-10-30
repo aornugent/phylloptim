@@ -685,8 +685,12 @@ public:
   // calls a difference real, and the cost of going there from GSS_tol_abs's 1e-3
   // is a handful of evaluations, because TOMS748 is superlinear.
   static constexpr double collar_root_tol = 1e-12;
-  // Tolerance to which find_root_psi places the collar interval's two bounds.
+  // Tolerance to which find_root_psi places the collar interval's two bounds,
+  // and the width around x within which its answer holds the root.
   static constexpr double bracket_tol = 1e-4;
+  static double bracket_width(double x) {
+    return 1.5 * bracket_tol * (1.0 + std::abs(x));
+  }
 
 
   double ci_;
@@ -863,63 +867,36 @@ public:
   // cut) so TF24 (via pars.use_energy_balance) and the leaf-level demo can
   // turn PM on; default preserves backward compatibility.
   bool use_energy_balance_ = false;
-  // ci is AT the CO2 compensation point, which means the model ASSIGNED it rather
-  // than solving a supply == demand residual for it. The residual is then not
-  // zero, which voids the implicit-function theorem the derivative paths are
-  // built on -- so they drop the assimilation term instead of approximating it.
+  // ci was ASSIGNED rather than solved from the supply == demand residual: the
+  // psi_stem_to_ci fallback puts it at gamma*, and a leaf shut below light
+  // compensation at ca with no conductance. The residual is then not zero, so
+  // the derivative paths drop the assimilation term instead of applying the
+  // implicit-function theorem to a condition the model did not solve.
   //
-  // ⚠️ DERIVED, NOT RECORDED, AND THAT IS THE WHOLE POINT. FOUR exits place ci
-  // here -- hydraulic shutdown, shade death, and both zero-transpiration branches
-  // of set_leaf_states_rates_from_psi_stem -- and while this was a flag, only the
-  // psi_stem_to_ci fallback set it. Every one of 450 hydraulic-shutdown and 396
-  // shade-death points in a 1440-point sweep therefore ran the theorem on a
-  // condition the model never solved, and dA/dci at exactly this ci is NaN: both
-  // limiting rates carry the factor (ci - gamma*), so the colimitation
-  // discriminant is exactly zero and the derivative of its square root is
-  // infinite. One NaN reaches every trait column that shares plant's adjoint
-  // accumulator.
+  // ⚠️ DERIVED FROM ci, NOT RECORDED: a flag set at one exit misses the others,
+  // and at gamma* dA/dci is NaN (both limiting rates carry ci - gamma*), which
+  // reaches every trait column of plant's adjoint.
   //
   // ⚠️ SEAT THE TEMPERATURE BLOCK BEFORE WRITING ci, never after. `gamma_` comes
-  // out of that block, so a re-seat with no re-solve leaves ci at the PREVIOUS
-  // temperature's compensation point and this reads false. All four exits above
-  // already write in that order.
-  //
-  // The closed leaf below light compensation is the other assigned ci: ci = ca
-  // with no conductance (see no_flow_assim), where the residual is A(ca) < 0,
-  // not zero. It is caught by the same test so that every path which drops the
-  // theorem at an assigned ci drops it there too.
-  bool ci_at_compensation_point() const {
+  // out of that block, so a re-seat with no re-solve leaves ci at the previous
+  // temperature's gamma* and this reads false.
+  bool ci_assigned() const {
     return ci_ == gamma_ * umol_per_mol_to_Pa_ ||
            (stom_cond_CO2_ == 0.0 && ci_ == ca_);
   }
-  // Net assimilation and ci of a leaf moving no gas, read off the temperature
-  // block as it stands. With gc = 0 the supply == demand condition gc (ca - ci) =
-  // A says A = 0, at the ci where net assimilation is zero -- and that is where
-  // the transpiring branch goes as E -> 0, so the shut leaf is that limit rather
-  // than a jump from it. This used to be A = -R_d at ci = gamma*, which no
-  // transpiring point approaches: profit fell by R_d on reaching shutdown (and at
-  // the wet bound, the "#31" jump of exactly 1.44 noted in
-  // maximise_profit_over_collar). Respiration is still paid: the closed leaf
-  // refixes it, and the whole plant's maintenance respiration is the consumer's.
-  //
-  // Below the light-compensation point no ci up to ca nets zero: even at ambient
-  // CO2 the light fixes less than R_d. The closed leaf then nets A(ci = ca), what
-  // it fixes from the air it can still exchange, so the no-flow value is
-  // min(0, A(ca)): zero at compensation, -R_d in the dark, and continuous across
-  // the light edge. It used to be -R_d at ci = gamma* there too, as if a leaf in
-  // dim light fixed nothing -- a jump of R_d at compensation
-  // (test_collar_continuous_through_light_compensation).
-  double no_flow_assim() {
-    const double at_ca = assim_colimited(ca_);
-    return at_ca >= 0.0 ? 0.0 : at_ca;
+  // The forward model's no-flow assimilation, at the seated temperature block.
+  double no_flow_assim() const {
+    return no_flow_assim_at(photo_capacity<double>());
   }
+  // ci of a leaf moving no gas: where net assimilation is zero, or ca below
+  // light compensation. A root-find, so callers take it once per shut state.
   double ci_no_flow() {
-    const double lo = gamma_ * umol_per_mol_to_Pa_;
-    if (!(assim_colimited(ca_) >= 0.0)) {
+    if (no_flow_assim() < 0.0) {
       return ca_;
     }
     return util::uniroot_smooth([&](double x) { return assim_colimited(x); },
-                                lo, ca_, 1e-10, static_cast<size_t>(ci_niter));
+                                gamma_ * umol_per_mol_to_Pa_, ca_, 1e-10,
+                                static_cast<size_t>(ci_niter));
   }
   // Boundary-layer inputs for ra = C_ra*sqrt(d/U0) (doc 4.1). d is a per-strategy
   // trait (set from pars.d in prepare_strategy); wind_speed_ is the per-timestep
@@ -2554,6 +2531,10 @@ public:
   // The one place that says which pack slots each kernel reads.
   template <typename T> PhotoCapacity<T> photo_capacity_at(const leaf_pars<T>& pars) const;
   template <typename T> PhotoCapacity<T> photo_capacity() const;
+  // Net assimilation of a leaf moving no gas, min(0, A(ci = ca)), at the
+  // temperature `cap` was read at: zero in light, where the transpiring leaf
+  // tends to A = 0 as E -> 0, and falling to -R_d in the dark.
+  template <typename T> T no_flow_assim_at(const PhotoCapacity<T>& cap) const;
   template <typename T>
   T hydraulic_cost_TF_kernel(const T& psi_stem, const leaf_pars<T>& pars) const;
 
@@ -3245,14 +3226,14 @@ public:
     // has to lower it deliberately rather than wait for one.
     BoundaryRootCrit,
     // Shutdown on water: no collar potential both moves water and stays inside
-    // the stem's and the root's critical potentials. The stem holds at psi_crit,
-    // transpiration is zero, and the leaf pays respiration plus the hydraulic
-    // cost there. 48 of the 288 golden grid points at every temperature, since it is
+    // the stem's and the root's critical potentials. The stem holds at whichever
+    // of the two the drying soil reached first, transpiration is zero, and the
+    // leaf earns no_flow_assim() less the hydraulic cost there. 48 of the 288 golden grid points at every temperature, since it is
     // hydraulics rather than heat that forbids transpiration. The water response is zero;
     // the carbon response is not.
     HydraulicShutdown,
-    // Shutdown on light: assim_max_ < 0, so gross assimilation at ci = ca cannot
-    // cover dark respiration. Governed by PPFD and temperature, not by water, so
+    // Shutdown on light or heat: at its own shut temperature the leaf cannot fix
+    // carbon even at ci = ca, so no_flow_assim() < 0. Governed by PPFD and temperature, not by water, so
     // no rainfall sweep reaches it -- and the golden grid does not either (its
     // minimum assim_max_ is 3.71).
     ShadeDeath,
@@ -4074,10 +4055,10 @@ inline double Leaf::polish_bracket_bound(double x0,
   }
   // Both targets rise with the collar, so f0 > 0 puts the root below x0; that side
   // is tried first and the other only if it holds no sign change. The first width
-  // is the bracket's own tolerance (1e-4 absolute plus relative), which holds the
+  // is the bracket's own width, which holds the
   // root it was placed around, so one probe usually suffices.
   const double sign = f0 > 0.0 ? -1.0 : 1.0;
-  for (double d = 1.5 * bracket_tol * (1.0 + std::abs(x0)); d <= 0.1; d *= 4.0) {
+  for (double d = bracket_width(x0); d <= 0.1; d *= 4.0) {
     for (double side : {sign, -sign}) {
       const double x = x0 + side * d;
       const double fx = target(x);
@@ -4301,11 +4282,9 @@ if (shade_death) {
     set_leaf_vpd(Tleaf_);
 
     profit_ = no_flow_profit<K>(opt_root_psi_);
-    // As on the shut-down exits: the leaf moves no gas, so the reported net rate
-    // is no_flow_assim(), here A(ci = ca) < 0. Set it explicitly -- this branch does not go through profit_psi_stem_TF, so
-    // assim_colimited_ would otherwise keep whatever the last probe wrote,
-    // and it is reported. Keeps profit_ == assim_colimited_ -
-    // hydraulic_cost_TF() in every branch.
+    // Written here because this exit bypasses profit_psi_stem_TF, so
+    // assim_colimited_ would keep the last probe's value; profit_ ==
+    // assim_colimited_ - hydraulic_cost_TF() holds in every branch.
     assim_colimited_ = no_flow_assim();
     // Shutdown on LIGHT, not on water: gross assimilation at ci = ca cannot
     // cover dark respiration. Tagged separately from the hydraulic exits
@@ -4321,8 +4300,8 @@ if (shade_death) {
     stom_cond_CO2_ = 0.0;
     // And `ci_`, which this exit never wrote at all -- so it reported the last
     // solve's internal CO2 beside a state that moves no gas, or the NA sentinel
-    // on a cold object. The compensation point, matching `set_shutdown_state` and
-    // both zero-transpiration branches of set_leaf_states_rates_from_psi_stem.
+    // on a cold object. The no-flow ci, as `set_shutdown_state` and the
+    // zero-transpiration branch of set_leaf_states_rates_from_psi_stem write.
     ci_ = ci_no_flow();
     // And the emergent lambda, for the same reason and by the same argument as in
     // set_shutdown_state: no water moves here, so there is no marginal cost of
@@ -4366,7 +4345,7 @@ if (shade_death) {
 
     // An interval narrower than bracket_tol has ends that cannot be trusted, so
     // they are solved to collar precision before anything is decided on it.
-    if (bound_b - bound_a < 1.5 * bracket_tol * (1.0 + bound_b)) {
+    if (bound_b - bound_a < bracket_width(bound_b)) {
       bound_a = polish_bracket_bound(bound_a, supply_psi_soil(), 0);
       if (!dry_bound_is_root_limit_) {
         bound_b = std::min(polish_bracket_bound(bound_b, supply_psi_soil(), 1),
@@ -5003,7 +4982,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   //
   // R_d' is obtained the same way A_T is, by differencing the model's own
   // temperature block, so the two cannot drift apart.
-  if (ci_at_compensation_point()) {
+  if (ci_assigned()) {
     const double C_prime0 = cost_deriv<K>(psi_stem, psi);
     double dprofit = -C_prime0 * dpsistem_dpsi;
     if constexpr (cost_reads_upstream<K>()) {
@@ -5317,7 +5296,7 @@ inline double Leaf::dprofit_dpsi_stem(double psi_stem, double psi_upstream,
   // there, so the implicit function theorem below does not hold and the
   // assimilation term is dropped rather than approximated. `feasible` stays
   // false, which is what tells a caller the difference.
-  if (ci_at_compensation_point()) {
+  if (ci_assigned()) {
     double dprofit = -C_prime;
     if (use_energy_balance_ && dT_dE != 0.0) {
       const double Rd_T = respiration_temp_deriv(Tleaf_here);
@@ -6598,6 +6577,12 @@ inline T Leaf::assim_colimited_kernel(const T& ci,
 }
 
 template <typename T>
+inline T Leaf::no_flow_assim_at(const PhotoCapacity<T>& cap) const {
+  const T at_ca = assim_colimited_kernel<T, T>(T(ca_), cap);
+  return odelia::util::to_passive(at_ca) >= 0.0 ? T(0.0) : at_ca;
+}
+
+template <typename T>
 inline T Leaf::assim_colimited_kernel(T ci) const {
   return assim_colimited_kernel<T, double>(ci, photo_capacity<double>());
 }
@@ -6760,7 +6745,7 @@ inline void Leaf::set_leaf_states_rates_from_psi_stem(double psi_stem, double ps
   // reachable at ordinary light.
   //
   // ⚠️ AND IT IS UNREACHABLE FROM THE COLLAR SOLVE, which is why plant is
-  // unaffected: prepare_collar_solve has its OWN `assim_max_ < 0` exit and returns
+  // unaffected: prepare_collar_solve has its OWN shade-death exit and returns
   // false before any candidate potential is evaluated. The golden grid's minimum
   // assim_max_ is 3.71, so the file never reaches this branch either and is
   // bit-identical across the change -- which is a statement about the grid, not
@@ -7188,8 +7173,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   using odelia::util::to_passive;
   check_draw(to_passive(collar), draw);
   // ⚠️ THERE IS NO OPERATING POINT TO PLACE AT A SHUTDOWN. The stem is held at
-  // psi_crit, no water moves, and ci is the compensation point rather than a
-  // root of T2 -- so both residuals are conditions the model did not solve, and
+  // where flow stopped, no water moves, and ci is no root of T2 -- so both residuals are conditions the model did not solve, and
   // dT2/dci is a cancellation of two vanishing terms. Refused here, by name,
   // rather than left to implicit_value's non-finite-denominator guard, which
   // reports a fold in a caller that never asked for one. outputs_at has the
@@ -7246,9 +7230,8 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   const S stem_flux = transpiration_at<S>(sigma_h, held, pars);
 
   // ⚠️ FOLLOW THE BRANCH THE FORWARD MODEL TOOK. Where the leaf is not moving
-  // water it does not place ci by the residual at all -- it assigns the CO2
-  // compensation point, which is a function of temperature and which no carbon
-  // input reaches. Applying the theorem to a condition the model did not solve
+  // water it does not place ci by the residual at all -- it assigns it, as a
+  // function of temperature and light that no carbon input reaches. Applying the theorem to a condition the model did not solve
   // returns a number rather than an error, and the number is a cancellation of
   // two vanishing terms.
   //
@@ -7257,7 +7240,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // second definition of one function, free to disagree with it while staying
   // finite.
   double dT2_dci = 0.0;
-  if (!ci_at_compensation_point()) {
+  if (!ci_assigned()) {
     const PhotoCapacity<double> at_cap{
         to_passive(cap.vcmax), to_passive(cap.transport),
         to_passive(cap.curvature), to_passive(cap.respiration)};
@@ -7267,7 +7250,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // The capacity and stem_flux are the active things the residual reads, so they
   // are the list; ca_, gc_per_flux and inv_atm are double.
   const S ci_h =
-      ci_at_compensation_point()
+      ci_assigned()
           ? S(ci_star)
           : odelia::implicit_value<S>(
                 ci_star, dT2_dci,
@@ -7335,14 +7318,14 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   const S dgc_dp = -gc_const * kmax * f_p;
 
   // ⚠️ THE SAME CONDITION AGAIN, AND IT GOVERNS THE SLOPE AS WELL AS THE VALUE.
-  // Where ci was assigned the compensation point there is no residual to invert,
+  // Where ci was assigned there is no residual to invert,
   // so the theorem below has nothing to divide -- and dA/dci is NaN at exactly
   // that ci, because both limiting rates carry the factor (ci - gamma*), leaving
   // the colimitation discriminant zero and the derivative of its square root
   // infinite. ci is then a function of temperature alone, which no input reaches:
   // the slope is zero, not small.
   S dci_dp = S(0.0);
-  if (!ci_at_compensation_point()) {
+  if (!ci_assigned()) {
     const S A_prime = assim_slope_at<S>(ci_h, cap);
     const S g_ci = A_prime * umol_to_mol + gc * inv;
     const S ca_minus_ci = S(ca_) - ci_h;
@@ -7441,11 +7424,7 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
       held = root_limit_binds_first() ? root_psi_crit_at<S>(pars)
                                       : psi_crit_at<S>(pars);
     }
-    // Below light compensation that value is A(ci = ca), which the traits and
-    // the light reach, so it goes on the tape through the same kernel.
-    const S assim = assim_colimited_ == 0.0
-                        ? S(0.0)
-                        : assim_colimited_kernel<S, S>(S(ca_), photo_capacity_at<S>(pars));
+    const S assim = no_flow_assim_at<S>(photo_capacity_at<S>(pars));
     // No water moves here, so the floor's linear-in-flux term is exactly zero
     // and the two curves agree at this kind by construction.
     out.profit = assim - hydraulic_cost_TF_kernel<S>(held, pars);

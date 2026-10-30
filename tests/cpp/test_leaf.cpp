@@ -628,7 +628,7 @@ void test_negative_assim_exit_writes_its_own_rates() {
   near(l.transpiration_, 0.0, 1e-300, "transpiration is zero, not stale");
   near(l.stom_cond_CO2_, 0.0, 1e-300, "conductance is zero, not stale");
   // The closed leaf nets what the dim light still fixes at ambient CO2, which is
-  // negative here and above -R_d (test_collar_continuous_through_light_compensation).
+  // negative here and above -R_d.
   near(l.assim_colimited_, l.assim_colimited(l.ca_), 1e-12,
        "net assimilation is A(ci = ca), not the bright solve's");
   ok(l.assim_colimited_ < 0.0 && l.assim_colimited_ > -l.R_d_,
@@ -1641,7 +1641,7 @@ void test_root_psi_crit_clamp_binds() {
          "past the window the collar sits at root_psi_crit");
     near(l.transpiration_, 0.0, 1e-300, "and the leaf is shut down, not optimising");
     // Held where flow stopped: the root limit, which this soil reaches before
-    // the stem's psi_crit (test_collar_continuous_into_shutdown).
+    // the stem's psi_crit.
     near(l.opt_psi_stem_, l.roots_.root_psi_crit, 1e-12,
          "with the stem held at the root limit, where flow stopped");
     ok(l.opt_root_psi_ <= l.roots_.root_psi_crit,
@@ -1649,17 +1649,9 @@ void test_root_psi_crit_clamp_binds() {
   }
 }
 
-// As the soil dries through the end of the collar interval, the operating point
-// must move continuously into shutdown: the interval narrows, transpiration goes
-// to zero, and the shut leaf is that limit. Three things broke it, each a jump
-// in profit along a psi_soil sweep (scratch/collar/band_sweep.R in autoplant):
-//   * an interval narrower than GSS_tol_abs was `Determined`: collar pinned at its
-//     midpoint, stem optimised freely, so the leaf transpired more than its roots
-//     supplied -- 2.2x across 0.57 MPa of soil at plant's GSS_tol_abs of 0.1;
-//   * the shut leaf's assimilation was -R_d, where the transpiring branch tends to
-//     zero as E -> 0 (gc (ca - ci) = A with gc = 0 forces A = 0);
-//   * the shut leaf's stem sat at psi_crit, where flow stopped at the root limit.
-// Swept at both GSS_tol_abs a caller uses, since the first was a function of it.
+// As the soil dries through the end of the collar interval, transpiration,
+// profit and the held stem move continuously into shutdown, and every open leaf
+// transpires what its roots supply. Swept at both GSS_tol_abs a caller uses.
 void test_collar_continuous_into_shutdown() {
   printf("the collar solve is continuous through collapse into shutdown\n");
   Drivers d;
@@ -1704,11 +1696,8 @@ void test_collar_continuous_into_shutdown() {
   }
 }
 
-// The same continuity across the light-compensation point. Just above it the
-// leaf barely opens and nets ~0; just below, the shade-death exit used to report
-// A = -R_d, a jump of R_d (1.44 at the fixture's 25 C). A closed leaf below
-// compensation nets what light still fixes at ambient CO2, A(ci = ca) -- zero
-// at compensation and -R_d in the dark -- so the light edge is continuous too.
+// The same continuity across the light-compensation point, where a closed leaf
+// nets A(ci = ca): zero at compensation and -R_d in the dark.
 void test_collar_continuous_through_light_compensation() {
   printf("the collar solve is continuous through the light-compensation point\n");
   Drivers d;
@@ -2321,9 +2310,8 @@ phylloptim::Leaf make_pm_leaf(const Drivers &d, std::vector<double> psi_soil,
 }
 
 // With the energy balance on, a shut leaf is warmer than the air and an open one
-// cooler, so shade death is decided at the shut leaf's own temperature, where its
-// value is taken. Decided at the air's, the light edge jumped by 0.17 at 25 C,
-// and at 40 C every open point near zero flow was infeasible and the solve refused.
+// cooler; shade death is decided at the shut leaf's own temperature, where its
+// value is taken, so the light edge is continuous and a hot leaf is not refused.
 void test_shade_death_is_decided_at_the_shut_leaf_temperature() {
   printf("shade death is decided at the shut leaf's own temperature\n");
   using Kind = phylloptim::Leaf::OperatingPointKind;
@@ -4442,7 +4430,7 @@ void test_rd_temperature_response() {
     l.find_root_collar_psi();
     printf("    T = %4.1f C   R_d %6.3f   A %8.4f%s\n", T, l.R_d_,
            l.assim_colimited_,
-           l.ci_at_compensation_point() ? "   <-- shut down" : "");
+           l.ci_assigned() ? "   <-- shut down" : "");
   }
 
   // ⚠️ AND IT MUST SHUT DOWN RATHER THAN THROW. A leaf too hot to gain carbon at
@@ -4459,7 +4447,7 @@ void test_rd_temperature_response() {
       threw = true;
     }
     ok(!threw, "a leaf too hot to gain carbon shuts down instead of throwing");
-    ok(hot.ci_at_compensation_point(),
+    ok(hot.ci_assigned(),
        "and says so, rather than reporting an ordinary operating point");
     ok(hot.operating_point_kind() ==
            phylloptim::Leaf::OperatingPointKind::ShadeDeath,
@@ -4474,7 +4462,7 @@ void test_rd_temperature_response() {
   {
     phylloptim::Leaf ok_leaf = make_leaf(d, {2.0}, {1.0});
     ok_leaf.find_root_collar_psi();
-    ok(!ok_leaf.ci_at_compensation_point(),
+    ok(!ok_leaf.ci_assigned(),
        "an ordinary leaf is not flagged as shut down");
   }
 }
