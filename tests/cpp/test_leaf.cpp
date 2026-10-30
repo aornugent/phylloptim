@@ -2320,6 +2320,39 @@ phylloptim::Leaf make_pm_leaf(const Drivers &d, std::vector<double> psi_soil,
   return l;
 }
 
+// With the energy balance on, a shut leaf is warmer than the air and an open one
+// cooler, so shade death is decided at the shut leaf's own temperature, where its
+// value is taken. Decided at the air's, the light edge jumped by 0.17 at 25 C,
+// and at 40 C every open point near zero flow was infeasible and the solve refused.
+void test_shade_death_is_decided_at_the_shut_leaf_temperature() {
+  printf("shade death is decided at the shut leaf's own temperature\n");
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  double prev = NAN, worst_step = 0.0;
+  int shade = 0, open = 0;
+  for (int i = 0; i <= 1000; ++i) {
+    Drivers d;
+    d.PPFD = 20.0 + 0.01 * i;
+    phylloptim::Leaf l = make_pm_leaf(d, {1.0}, {1.0}, true);
+    l.find_root_collar_psi();
+    if (l.operating_point_kind() == Kind::ShadeDeath) ++shade; else ++open;
+    if (!std::isnan(prev)) worst_step = std::max(worst_step, std::abs(l.profit_ - prev));
+    prev = l.profit_;
+  }
+  ok(shade > 0 && open > 0, "the sweep crosses the compensation point");
+  // A 0.01 step in PPFD moves a smooth profit here by ~5e-4.
+  ok(worst_step < 5e-3, "no jump in profit across compensation");
+
+  Drivers hot;
+  hot.leaf_temp = 40.0;
+  phylloptim::Leaf l = make_pm_leaf(hot, {1.0}, {1.0}, true);
+  l.find_root_collar_psi();
+  ok(l.operating_point_kind() == Kind::ShadeDeath,
+     "a hot leaf that cannot fix carbon at its shut temperature is shut");
+  ok(l.Tleaf_ > hot.leaf_temp && l.assim_colimited_ < 0.0,
+     "and nets what it fixes there at ambient CO2");
+}
+
+
 // Tleaf as a reported OUTPUT, on both paths and out of every exit.
 //
 // The gap this closes: on the PM path the leaf's temperature is solved per
@@ -4428,8 +4461,10 @@ void test_rd_temperature_response() {
     ok(!threw, "a leaf too hot to gain carbon shuts down instead of throwing");
     ok(hot.ci_at_compensation_point(),
        "and says so, rather than reporting an ordinary operating point");
-    near(hot.ci_, hot.gamma_ * hot.umol_per_mol_to_Pa_, 1e-12,
-         "ci sits at the compensation point");
+    ok(hot.operating_point_kind() ==
+           phylloptim::Leaf::OperatingPointKind::ShadeDeath,
+       "it is shut, since even at ambient CO2 it cannot fix carbon");
+    near(hot.ci_, hot.ca_, 1e-12, "ci sits at ambient");
     ok(hot.assim_colimited_ <= 0.0, "with no net carbon gain");
   }
 
@@ -8479,6 +8514,7 @@ int main() {
   test_collar_continuous_into_shutdown();
   test_collar_continuous_through_light_compensation();
   test_layered_soil_dries_into_shutdown();
+  test_shade_death_is_decided_at_the_shut_leaf_temperature();
   test_signed_potentials_are_rejected();
   test_lambda_equals_dA_dE_single_layer();
   test_cowan_farquhar_equates_dA_dE_to_lambda();
