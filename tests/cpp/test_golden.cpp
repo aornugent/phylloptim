@@ -16,7 +16,7 @@
 // results, regenerate deliberately and say so in the commit.
 //
 // Bit-exactness holds on the platform that generated the file (macOS/arm64) and
-// cannot hold on any other -- `--rtol` is for those. See the comment above main().
+// cannot hold on any other -- `--cross-platform` is for those. See the comment above main().
 //
 // Note: a fresh Leaf is constructed for every grid point. That is not for tidiness
 // -- it WAS required, because the shutdown-state leak made a
@@ -327,23 +327,26 @@ double rel_diff(double a, double b) {
   return std::abs(a - b) / scale;
 }
 
-// Cross-platform tolerances, per field. The two classes are three orders of
-// magnitude apart and the reason is structural, not arbitrary -- see the comment
-// above main(). Negative means bit-exact.
+// Cross-platform tolerances, per class: `profit` is the maximum itself and every
+// other field is evaluated at its location, and the two classes disagree across
+// platforms by amounts orders apart. Negative means bit-exact.
 struct Tolerance {
   double maximum; // profit: the value AT the optimum
   double argmax;  // everything else: evaluated at the optimum's LOCATION
 };
 const Tolerance kExact{-1.0, -1.0};
-// Measured over the full grid on Linux (gcc worst; clang is smaller): profit
-// 1.85e-6, argmax-derived 5.53e-4. That leaves 5.4x and 9.0x headroom.
-//
-// The profit tolerance is deliberately not loosened further despite the modest
-// headroom: 1e-4 is the scale at which a real behavioural change shows, so a
-// profit tolerance approaching it would gate nothing. If a future
-// toolchain pushes profit past 1e-5, that is worth looking at rather than
-// auto-passing.
-const Tolerance kCrossPlatform{1e-5, 5e-3};
+// Measured over the full grid on Linux, gcc and clang identical: profit 2.13e-11,
+// the argmax class 8.6e-08 (an `assim` of 5.4e-06, cancelling). Each tolerance is
+// the decade ~50-100x above that. What sets these figures is the loosest tolerance
+// inside the solve, not libm: with `psi_stem_to_ci` at 1e-10 they were 6.95e-10
+// and 2.44e-06 (#172). So a tolerance that starts failing after a solver change is
+// a measurement to redo, not a number to widen until it passes.
+const Tolerance kCrossPlatform{1e-9, 1e-5};
+
+// psi_stem_optima.tsv's own pair, measured the same way: profit 2.01e-12, the
+// argmax class 6.63e-06, at an `assim` of ~2e-6 on a hot leaf -- a cancellation
+// cell, which is why that class needs the wider decade here.
+const Tolerance kOptimaCrossPlatform{1e-9, 1e-3};
 
 // `profit` is the only reported field that is the maximum itself; every other
 // field is evaluated at the argmax and so inherits its displacement.
@@ -948,23 +951,16 @@ void opt_row_values(const OptRow &r, double *out) {
   out[13] = r.thermal_cost_out;
 }
 
-// ⚠️ THE CROSS-PLATFORM TOLERANCES HERE ARE INHERITED, NOT MEASURED. `kExact` is
-// right on the generating platform and needs no justification. The `--cross-platform`
-// arm reuses the collar grid's per-field pair, which was measured for THAT grid's
-// nine fields; this file has thirteen, three of which (`lambda`, `carbon_gain`,
-// `thermal_cost`) have no counterpart there and so no measured magnitude at all.
-// The pair is therefore a starting guess. Two things follow:
+// `kExact` on the generating platform; `kOptimaCrossPlatform`, measured for this
+// file's fields, elsewhere. Two things hold in every mode:
 //
-//   * the two NON-numeric columns -- `status` and `kind` -- are compared exactly
-//     in every mode, because a refusal that stopped refusing or a branch that
-//     changed is never a rounding difference, and those are the changes this file
-//     most needs to catch;
-//   * the worst observed relative difference is printed even when the comparison
-//     PASSES, so the real magnitude can be read off the first non-macOS CI run
-//     rather than bisected out of a red one.
-//
-// Replace the inherited pair with what that run reports, and say in the commit
-// which platform it came from.
+//   * the two NON-numeric columns -- `status` and `kind` -- are compared exactly,
+//     because a refusal that stopped refusing or a branch that changed is never a
+//     rounding difference, and those are the changes this file most needs to
+//     catch;
+//   * the worst difference per class is printed even when the comparison PASSES,
+//     so the real magnitude is read off a green run rather than bisected out of a
+//     red one.
 // One class's worst differences, in the same two-line shape as compare()'s
 // summary. A class with no differing cell prints nothing.
 template <typename W>
@@ -1106,13 +1102,9 @@ int compare_optima(Tolerance tol) {
     printf("psi_stem optima: %zu rows, all %s\n", rows.size(),
            exact_mode ? "bit-identical"
                       : "within cross-platform tolerance");
-    // ⚠️ PRINTED ON SUCCESS TOO, AND ON PURPOSE. The tolerances this file is
-    // compared with off the generating platform are INHERITED from the collar
-    // grid, not measured here -- see the note above `compare_optima`. Until
-    // someone reads a real number off a non-macOS/arm64 run, this line is the
-    // only place that number exists, and a summary that only appears on failure
-    // cannot supply it. Reading it off a green run is the cheap way; bisecting a
-    // red one is not.
+    // ⚠️ PRINTED ON SUCCESS TOO, AND ON PURPOSE: this is where the figures
+    // `kOptimaCrossPlatform` is set from come from, and a summary that only
+    // appeared on failure could not supply them.
     if (!exact_mode) {
       print_optima_worst(stdout, worst_max, tol.maximum,
                          "profit  (the maximum)    ");
@@ -1195,48 +1187,19 @@ void report_optima_shape(const std::vector<OptRow> &rows) {
 // arm64, and FMA contraction differs too. Regenerating the file on a second
 // platform is NOT the fix -- it just moves the failure to the first one.
 //
-// The interesting part is the SIZE of the disagreement, because it is not one
-// number. Read off this program's own summary line on Linux CI, the nine reported
-// fields split into two classes five orders of magnitude apart, and gcc and clang
-// agree exactly:
+// The SIZE of the disagreement is per class, because `profit` is the maximum itself
+// and the other fields are evaluated at its location, and the two classes differ
+// by orders. The figures live at the tolerances' definitions, and this program
+// prints the worst per class, relative and absolute, on every run. **If you need a
+// magnitude, read that summary line, not a comment and not the FAIL lines**: the
+// failure list is truncated at 20 and biased toward whichever rows come first.
 //
-//                                   gcc        clang
-//     profit                        2.14e-09   2.14e-09
-//     psi_stem, collar, ci, assim,
-//     transpiration, gc, e_up,
-//     uptake                        1.4e-04    1.4e-04
-//
-// ⚠️ NOTHING ASSERTS THAT BLOCK, so it rots in silence -- it has been wrong three
-// times. **If you need a magnitude, read the summary line, not this comment and not
-// the FAIL lines**: the failure list is truncated at 20 and biased toward whichever
-// rows come first.
-//
-// That split is structural, not luck. `find_root_collar_psi` maximises profit
-// over the collar potential, and the maximum is FLAT: curvature k measured
-// directly at the two worst operating points gives k = 1.0 and 0.9 in
-// profit ~ p* - k(psi_stem - x*)^2. For a flat maximum, an error dp in the
-// profit VALUE displaces the ARGMAX by sqrt(dp/k), which is why a
-// well-conditioned profit sits three orders below an ill-conditioned argmax.
-//
-// The relation was checked pointwise, not as a global identity: at the two worst
-// points the residuals imply k = 1.01 and 1.70, against the 1.0 and 0.9 measured
-// from the curvature directly. Do NOT expect sqrt(worst profit) to equal the
-// worst argmax difference -- the two maxima occur at different operating points.
-//
-// Two consequences worth keeping in mind beyond this file:
-//
-//   * profit is the only reported field that is well-conditioned across
-//     platforms, because it is the maximum itself rather than its location.
-//   * 8 of the 9 fields are pinned to 17 digits but only *determined* to about
-//     GSS_tol_abs (1e-3). Bit-exactness on one platform still works as a drift
-//     detector -- any code change moves the arbitrary choice within that window,
-//     and that shows up -- but it is reproducibility, not determinacy.
-//
-// So the tolerances below are per class, with the measured worst case and
-// headroom noted at their definition. Both are far below the ~1e-4-and-up scale
-// at which a real behavioural change shows, except that for the
-// argmax fields the noise floor IS that scale -- which is exactly why the mode
-// reports the worst value per class on every run rather than only on failure.
+// The figures are set by the loosest tolerance inside the solve, not by libm. A
+// last-bit platform difference shifts where each bracketing solver stops inside
+// its band, so the disagreement is that band, amplified: with the ci root-find at
+// 1e-10 both classes sat at ~1e-9 absolute, and at 1e-13 they are 9e-13 (profit)
+// and 4e-11 (ci). A tolerance failing after a solver change is a measurement to
+// redo, not a number to widen until it passes.
 int main(int argc, char **argv) {
   if (argc > 1 && std::strcmp(argv[1], "--generate") == 0) {
     return generate();
@@ -1245,9 +1208,11 @@ int main(int argc, char **argv) {
     return generate_optima();
   }
   Tolerance tol = kExact;
+  Tolerance optima_tol = kExact;
   if (argc > 1) {
     if (std::strcmp(argv[1], "--cross-platform") == 0) {
       tol = kCrossPlatform;
+      optima_tol = kOptimaCrossPlatform;
     } else {
       fprintf(stderr,
               "unknown argument '%s'\n"
@@ -1269,7 +1234,7 @@ int main(int argc, char **argv) {
   // even when the two above fail: the collar grid and the optimiser grid have
   // disjoint causes, so seeing only one of them is how a mixed diff gets
   // misread. See the block above kOptimaPath for what this file is and is not.
-  const int optima_status = compare_optima(tol);
+  const int optima_status = compare_optima(optima_tol);
   report_optima_shape(run_optima_grid());
   return (golden_status != 0 || kind_status != 0 || optima_status != 0) ? 1 : 0;
 }

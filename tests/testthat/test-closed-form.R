@@ -189,6 +189,39 @@ test_that("CF77 is the n = 0 arm, so its lambda is the price exactly", {
   expect_lt(m$opt_psi_stem_, l$opt_psi_stem_)
 })
 
+test_that("CF77's potential carries the transpiration the USO collapse gives at its price", {
+  # The n = 0 arm has no iteration, so its potential is a function of the price
+  # through the collapse alone, and that chain is an identity to state rather
+  # than an accuracy to measure:
+  #   xi = sqrt(Q / lambda),  Q = 3 Gstar kg_to_mol / (ratio 1e-3)
+  #   ci = ca xi / (xi + sqrt(D)),  A = A(ci)
+  #   E  = ratio 1e-3 A D / ((ca - ci) kg_to_mol)
+  # and the reported potential is the one whose supply carries that E. The
+  # accuracy tests above compare the closed form with the exact solve at
+  # percent tolerances, so they cannot see a slip in this arithmetic; this
+  # can (a 3.1 for the 3 moves E by about 1%).
+  kg_to_mol <- 1 / 0.018015
+  g <- expand.grid(psi_soil = c(0.3, 1, 2, 3), lambda = c(1e5, 1.5e5, 3e5),
+                   T = c(10, 25, 40), D = c(0.5, 1, 2))
+  served <- 0L
+  for (i in seq_len(nrow(g))) {
+    l <- cf_leaf(curve = "CF77", psi_soil = g$psi_soil[i], lambda = g$lambda[i],
+                 leaf_temp = g$T[i], atm_vpd = g$D[i])
+    l$optimise()
+    if (l$last_solve_fell_back_) next
+    served <- served + 1L
+    ratio <- l$H2O_CO2_stom_diff_ratio_
+    gstar_Pa <- l$gamma_ * l$atm_kpa_ * 1e-3
+    xi <- sqrt(3 * gstar_Pa * kg_to_mol / (ratio * 1e-3) / g$lambda[i])
+    ci <- l$ca_ * xi / (xi + sqrt(l$vpd_leaf_))
+    E <- ratio * 1e-3 * l$assim_colimited(ci) * l$vpd_leaf_ / ((l$ca_ - ci) * kg_to_mol)
+    expect_equal(l$transpiration(l$opt_psi_stem_, g$psi_soil[i]), E, tolerance = 1e-9,
+                 info = paste(names(g), g[i, ], collapse = " "))
+  }
+  # Hazard 16: the identity was reached.
+  expect_gt(served, 20)
+})
+
 test_that("the reported potential is the one whose supply carries its E", {
   # The supply inversion, checked as a round trip rather than restated. ⚠️ It is
   # `psi = G^-1(E/kmax + G(psi_up))` and NOT `E/kmax`: the supply here is the

@@ -1,3 +1,15 @@
+# phylloptim 0.16.3
+
+## The model registry: equations, parameters and code links from one YAML (#166)
+
+`inst/model-registry.yml` holds the leaf as one record: 114 equations, each with its LaTeX, the C++ symbol that evaluates it, the parameters it reads and the bound fields it writes; and 132 parameters, each with symbol, units, class, meaning, source and a placeholder flag. Fourteen sections run from the drivers to the thermal-damage layer. Documents are generated from it rather than written beside it.
+
+It stores no line number and no default value. `registry_resolve()` reads each symbol's file, line, body span and API anchor from Doxygen's XML, which the `Doxyfile` now emits with the references relation. `registry_values()` reads each value off a live `Leaf`, off `set_drivers()`'s defaults, or off a constexpr's initializer in that XML. `model_registry()` returns the registry as data frames.
+
+CI checks it two ways. `tests/testthat/test-registry.R` asserts that every symbol and field the registry names exists and that every bound field of the `Leaf` is accounted for. `docs.yml` resolves every symbol in the XML through `tools/registry_symbols.R`, checks that what each equation reads is what its function references and that every literal is written in its function, and writes the resolved registry into the site as `model-registry.yml`.
+
+The registry records the model and does not test it: there is no second implementation of the equations. Two tests cover what one would have caught and the suites did not: the closed form's CF77 arm is checked as the identity its USO collapse defines, and `lambda_molar` against its units. No numerics change; the golden baselines are bit-identical. The comment explaining Medlyn's closed state now sits on `set_medlyn_shutdown_if_closed()`, not on `medlyn_beta()`.
+
 # phylloptim 0.16.2
 
 ## The Medlyn route reports a CO2-basis conductance (#129)

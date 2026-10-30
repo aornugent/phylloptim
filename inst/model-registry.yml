@@ -1,0 +1,2730 @@
+# The model registry (#166): the equations of phylloptim's leaf,
+# the parameters they read, and the C++ symbol that evaluates each, in one file
+# that documents are generated FROM rather than written beside.
+#
+# Three rules, so it does not rot:
+#
+#   1. Nothing here stores a line number or a default value. A symbol's file and
+#      line come from Doxygen's XML at render time (registry_locations(),
+#      registry_resolve()), and a parameter's value is read off a live Leaf, off
+#      set_drivers()'s formals, or off the constexpr's initializer in that XML
+#      (registry_values()). A `literal:` is the one exception: a number that IS
+#      part of an equation's form (Tetens' 17.27) rather than a default, and
+#      docs.yml checks that it is written in the function its `code` names.
+#   2. CI checks it. tests/testthat/test-registry.R asserts every symbol and bound
+#      field named here exists and that every bound field of the Leaf is
+#      accounted for (a parameter, an equation's `writes`, or a diagnostic);
+#      docs.yml resolves every `code` in Doxygen's XML, checks each equation's
+#      `reads` against what its function references, and checks every literal.
+#   3. One registry per package. plant's covers its strategies and points at these
+#      ids rather than copying them.
+#
+# Schema. `sections` is id: title, in document order. `parameters` is keyed by
+# the name in code; each has section, symbol (LaTeX, no $), units, class (trait |
+# hyperparameter | constant | driver), meaning, source (free text), placeholder
+# (true where the value is an uncalibrated default or no source is recorded),
+# code (the qualified C++ symbol that holds it), and optionally cite (a Zotero
+# key, Surname-Year), default_code (the constexpr the member's default is copied
+# from), driver (the set_drivers() argument), literal (see rule 1), aliases
+# (other symbols the same quantity is read through, for the references check)
+# and field (the R binding's name, where it is not the member name of a
+# phylloptim::Leaf code, as for a field bound through a nested path such as
+# roots_.root_c).
+# `equations` is keyed by id; each has section, title, latex, code (the symbol
+# that evaluates it, or ~ for an identity with none), reads (parameter ids),
+# writes (bound fields it seats), kind (closed_form | identity | derivative |
+# integrator: what sort of statement the LaTeX is), and optionally also (further
+# symbols involved), cite and note. An optional `diagnostics` map, keyed by
+# bound field, holds any bound field that is neither a parameter nor written by
+# an equation, each with a meaning and a code symbol, so every bound field is
+# accounted for somewhere; none is needed today.
+#
+# The registry records the model; the golden files and the test suites check
+# it. It holds no second implementation of the equations, so a change to an
+# equation's code needs its entry here re-read by hand: see "The model
+# registry" in .claude/CLAUDE.md.
+#
+# YAML 1.1 reads `1e-3` as a string: write floats with a point and a signed
+# exponent (1.0e-3, 2.45e+6).
+
+package: phylloptim
+
+sections:
+  drivers: Drivers
+  vulnerability: Vulnerability curves
+  supply: Water supply
+  biochemistry: Photosynthetic biochemistry
+  respiration: Respiration
+  vapour: Water vapour and the leaf-to-air deficit
+  energy_balance: Energy balance
+  solve: Solving for the operating point
+  costs: Cost curves and the objective
+  marginal_cost: The marginal cost of water
+  soil_moisture: Soil-moisture factor
+  medlyn: Empirical Medlyn conductance
+  closed_form: The closed-form method
+  damage: Damage, repair and acclimation
+
+parameters:
+  # --- drivers ---------------------------------------------------------------
+  leaf_temp:
+    section: drivers
+    symbol: 'T_\mathrm{air} \text{ or } T_\mathrm{leaf}'
+    units: '°C'
+    class: driver
+    meaning: 'the leaf temperature with the energy balance off, the air temperature with it on'
+    source: set_drivers() default
+    placeholder: false
+    code: phylloptim::Leaf::leaf_temp_
+    driver: leaf_temp
+  PPFD:
+    section: drivers
+    symbol: 'Q'
+    units: 'µmol m⁻² s⁻¹'
+    class: driver
+    meaning: 'intercepted photosynthetic photon flux per unit leaf area, before absorptance'
+    source: set_drivers() default
+    placeholder: false
+    code: phylloptim::Leaf::PPFD_
+    driver: PPFD
+  NIR_int_:
+    section: drivers
+    symbol: 'Q_\mathrm{NIR}'
+    units: 'W m⁻²'
+    class: driver
+    meaning: 'intercepted near-infrared; no default, set on the leaf before set_drivers() (about PPFD / 4.57 in daylight, 0 under an LED); read only with the energy balance on'
+    source: 0.13.0, no default by design
+    placeholder: false
+    code: phylloptim::Leaf::NIR_int_
+  atm_vpd:
+    section: drivers
+    symbol: 'D_\mathrm{air}'
+    units: 'kPa'
+    class: driver
+    meaning: 'air vapour pressure deficit'
+    source: set_drivers() default
+    placeholder: false
+    code: phylloptim::Leaf::atm_vpd_
+    driver: atm_vpd
+  ca:
+    section: drivers
+    symbol: 'c_a'
+    units: 'Pa'
+    class: driver
+    meaning: 'atmospheric CO₂ partial pressure'
+    source: set_drivers() default
+    placeholder: false
+    code: phylloptim::Leaf::ca_
+    driver: ca
+  atm_o2_kpa:
+    section: drivers
+    symbol: 'O'
+    units: 'kPa'
+    class: driver
+    meaning: 'O₂ partial pressure'
+    source: set_drivers() default
+    placeholder: false
+    code: phylloptim::Leaf::atm_o2_kpa_
+    driver: atm_o2_kpa
+  atm_kpa:
+    section: drivers
+    symbol: 'P'
+    units: 'kPa'
+    class: driver
+    meaning: 'atmospheric pressure; the mixing-ratio to partial-pressure factor $c_P = P \times 10^{3} \times 10^{-6}$ is derived from it'
+    source: set_drivers() default
+    placeholder: false
+    code: phylloptim::Leaf::atm_kpa_
+    driver: atm_kpa
+    aliases: [phylloptim::Leaf::umol_per_mol_to_Pa_]
+  wind_speed_:
+    section: drivers
+    symbol: 'U'
+    units: 'm s⁻¹'
+    class: driver
+    meaning: 'wind speed at the leaf (plant: the wind_speed driver); read only with the energy balance on'
+    source: code default
+    placeholder: true
+    code: phylloptim::Leaf::wind_speed_
+
+  # --- biochemistry ------------------------------------------------------------
+  vcmax_25:
+    section: biochemistry
+    symbol: 'V_{c,25}'
+    units: 'µmol m⁻² s⁻¹'
+    class: trait
+    meaning: 'maximum carboxylation rate at 25 °C'
+    source: E. saligna default
+    placeholder: false
+    code: phylloptim::Leaf::vcmax_25
+  jmax_25:
+    section: biochemistry
+    symbol: 'J_{25}'
+    units: 'µmol m⁻² s⁻¹'
+    class: trait
+    meaning: 'maximum electron transport rate at 25 °C (plant: $1.64\,V_{c,25}$)'
+    source: E. saligna default
+    placeholder: false
+    code: phylloptim::Leaf::jmax_25
+  vcmax_ha_:
+    section: biochemistry
+    symbol: 'E_{a,V}'
+    units: 'J mol⁻¹'
+    class: hyperparameter
+    meaning: 'activation energy of $V_{cmax}$'
+    source: 'Medlyn-2002 range; the constants.hpp comment says kJ'
+    cite: Medlyn-2002
+    placeholder: true
+    code: phylloptim::Leaf::vcmax_ha_
+    default_code: phylloptim::vcmax_ha
+  vcmax_H_d_:
+    section: biochemistry
+    symbol: 'H_{d,V}'
+    units: 'J mol⁻¹'
+    class: hyperparameter
+    meaning: 'deactivation energy of $V_{cmax}$'
+    source: Medlyn-2002 (fixed at 200 kJ)
+    cite: Medlyn-2002
+    placeholder: true
+    code: phylloptim::Leaf::vcmax_H_d_
+    default_code: phylloptim::vcmax_H_d
+  vcmax_d_S_:
+    section: biochemistry
+    symbol: '\Delta S_V'
+    units: 'J mol⁻¹ K⁻¹'
+    class: hyperparameter
+    meaning: 'entropy term of $V_{cmax}$'
+    source: Medlyn-2002 range
+    cite: Medlyn-2002
+    placeholder: true
+    code: phylloptim::Leaf::vcmax_d_S_
+    default_code: phylloptim::vcmax_d_S
+  jmax_ha_:
+    section: biochemistry
+    symbol: 'E_{a,J}'
+    units: 'J mol⁻¹'
+    class: hyperparameter
+    meaning: 'activation energy of $J_{max}$'
+    source: Medlyn-2002 range
+    cite: Medlyn-2002
+    placeholder: true
+    code: phylloptim::Leaf::jmax_ha_
+    default_code: phylloptim::jmax_ha
+  jmax_H_d_:
+    section: biochemistry
+    symbol: 'H_{d,J}'
+    units: 'J mol⁻¹'
+    class: hyperparameter
+    meaning: 'deactivation energy of $J_{max}$'
+    source: Medlyn-2002 (fixed at 200 kJ)
+    cite: Medlyn-2002
+    placeholder: true
+    code: phylloptim::Leaf::jmax_H_d_
+    default_code: phylloptim::jmax_H_d
+  jmax_d_S_:
+    section: biochemistry
+    symbol: '\Delta S_J'
+    units: 'J mol⁻¹ K⁻¹'
+    class: hyperparameter
+    meaning: 'entropy term of $J_{max}$'
+    source: Medlyn-2002 range
+    cite: Medlyn-2002
+    placeholder: true
+    code: phylloptim::Leaf::jmax_d_S_
+    default_code: phylloptim::jmax_d_S
+  gamma_25_:
+    section: biochemistry
+    symbol: '\Gamma^*_{25}'
+    units: 'µmol mol⁻¹'
+    class: constant
+    meaning: 'CO₂ compensation point at 25 °C'
+    source: Bernacchi-2001 Table 1
+    cite: Bernacchi-2001
+    placeholder: false
+    code: phylloptim::Leaf::gamma_25_
+    default_code: phylloptim::gamma_25
+  gamma_ha_:
+    section: biochemistry
+    symbol: 'E_{a,\Gamma}'
+    units: 'J mol⁻¹'
+    class: constant
+    meaning: 'activation energy of $\Gamma^*$'
+    source: Bernacchi-2001 Table 1
+    cite: Bernacchi-2001
+    placeholder: false
+    code: phylloptim::Leaf::gamma_ha_
+    default_code: phylloptim::gamma_ha
+  kc_25_:
+    section: biochemistry
+    symbol: 'K_{c,25}'
+    units: 'µmol mol⁻¹'
+    class: constant
+    meaning: 'Rubisco Michaelis constant for CO₂ at 25 °C'
+    source: Bernacchi-2001 Table 1
+    cite: Bernacchi-2001
+    placeholder: false
+    code: phylloptim::Leaf::kc_25_
+    default_code: phylloptim::kc_25
+  kc_ha_:
+    section: biochemistry
+    symbol: 'E_{a,K_c}'
+    units: 'J mol⁻¹'
+    class: constant
+    meaning: 'activation energy of $K_c$'
+    source: Bernacchi-2001 Table 1
+    cite: Bernacchi-2001
+    placeholder: false
+    code: phylloptim::Leaf::kc_ha_
+    default_code: phylloptim::kc_ha
+  ko_25_:
+    section: biochemistry
+    symbol: 'K_{o,25}'
+    units: 'µmol mol⁻¹'
+    class: constant
+    meaning: 'Rubisco Michaelis constant for O₂ at 25 °C (converted from mmol mol⁻¹)'
+    source: Bernacchi-2001 Table 1
+    cite: Bernacchi-2001
+    placeholder: false
+    code: phylloptim::Leaf::ko_25_
+    default_code: phylloptim::ko_25
+  ko_ha_:
+    section: biochemistry
+    symbol: 'E_{a,K_o}'
+    units: 'J mol⁻¹'
+    class: constant
+    meaning: 'activation energy of $K_o$'
+    source: Bernacchi-2001 Table 1
+    cite: Bernacchi-2001
+    placeholder: false
+    code: phylloptim::Leaf::ko_ha_
+    default_code: phylloptim::ko_ha
+  phi_J:
+    section: biochemistry
+    symbol: '\phi_J'
+    units: 'mol e⁻ (mol absorbed photon)⁻¹'
+    class: trait
+    meaning: 'quantum yield of electron transport per absorbed photon; no temperature dependence (was $a$, per incident photon, before 0.13.0; only $\phi_J \alpha_\mathrm{PAR}$ is identified by a gas-exchange fit)'
+    source: E. saligna default, 0.30 / 0.85
+    placeholder: false
+    code: phylloptim::Leaf::phi_J
+  alpha_PAR_:
+    section: biochemistry
+    symbol: '\alpha_\mathrm{PAR}'
+    units: '–'
+    class: hyperparameter
+    meaning: 'PAR absorptance: the leaf absorbs $\alpha_\mathrm{PAR}$ of the intercepted PPFD, in both photosynthesis and the energy balance; a leaf property, not a fitted trait'
+    source: code default; no citation recorded
+    placeholder: true
+    code: phylloptim::Leaf::alpha_PAR_
+  curv_fact_elec_trans:
+    section: biochemistry
+    symbol: '\theta_J'
+    units: '–'
+    class: trait
+    meaning: 'curvature of the light response of $J$; no temperature dependence'
+    source: 'code comment: Smith & Keenan (2020), not in Zotero'
+    placeholder: false
+    code: phylloptim::Leaf::curv_fact_elec_trans
+  curv_fact_colim:
+    section: biochemistry
+    symbol: '\theta'
+    units: '–'
+    class: trait
+    meaning: 'curvature of the colimitation of $W_c$ and $W_j$; no temperature dependence'
+    source: default
+    placeholder: false
+    code: phylloptim::Leaf::curv_fact_colim
+  gas_constant:
+    section: biochemistry
+    symbol: 'R'
+    units: 'J mol⁻¹ K⁻¹'
+    class: constant
+    meaning: 'universal gas constant, exact since the 2019 SI redefinition'
+    source: SI 2019
+    placeholder: false
+    code: phylloptim::gas_constant
+  C_to_K:
+    section: biochemistry
+    symbol: 'T_0'
+    units: 'K'
+    class: constant
+    meaning: 'Celsius to kelvin offset'
+    source: SI
+    placeholder: false
+    code: phylloptim::C_to_K
+  ref_temp:
+    section: biochemistry
+    symbol: 'T_{25}'
+    units: '°C'
+    class: constant
+    meaning: 'reference temperature of every response, 25 °C = 298.15 K, written `25 + C_to_K` (Medlyn-2002 write 298 K)'
+    source: code
+    placeholder: false
+    literal: 25
+    code: phylloptim::Leaf::arrh_curve
+  umol_to_mol:
+    section: biochemistry
+    symbol: '10^{-6}'
+    units: 'mol µmol⁻¹'
+    class: constant
+    meaning: 'unit conversion in the mixing-ratio to partial-pressure factor $c_P$'
+    source: definition
+    placeholder: false
+    code: phylloptim::umol_to_mol
+  kPa_to_Pa:
+    section: biochemistry
+    symbol: '10^{3}'
+    units: 'Pa kPa⁻¹'
+    class: constant
+    meaning: 'unit conversion in $c_P$ and in the O₂ term of $K_m$'
+    source: definition
+    placeholder: false
+    code: phylloptim::kPa_to_Pa
+  use_thermal_cost_:
+    section: biochemistry
+    symbol: 'g_\mathrm{TC}'
+    units: '–'
+    class: hyperparameter
+    meaning: 'gate: the Sicangco instantaneous thermal cost, which scales $J_{max}$ by $1 - TC$'
+    source: default off
+    placeholder: false
+    code: phylloptim::Leaf::use_thermal_cost_
+  T50_:
+    section: biochemistry
+    symbol: 'T_{50}'
+    units: '°C'
+    class: hyperparameter
+    meaning: 'half-damage temperature of the sigmoid thermal cost'
+    source: Sicangco-2026 Table 2, heatwave treatment
+    cite: Sicangco-2026
+    placeholder: false
+    code: phylloptim::Leaf::T50_
+  Tcrit_:
+    section: biochemistry
+    symbol: 'T_\mathrm{crit}'
+    units: '°C'
+    class: hyperparameter
+    meaning: 'onset temperature of the thermal cost; $r = 2/(T_{50} - T_\mathrm{crit})$, as the authors'' code computes it and not as their Eqn 8 prints it'
+    source: Sicangco-2026 Table 2
+    cite: Sicangco-2026
+    placeholder: false
+    code: phylloptim::Leaf::Tcrit_
+
+  # --- respiration ------------------------------------------------------------
+  R_d_25:
+    section: respiration
+    symbol: 'R_{d,25}'
+    units: 'µmol m⁻² s⁻¹'
+    class: trait
+    meaning: 'leaf dark respiration at 25 °C ($0.015 \times 96$, the value the old $V_{cmax}$-derived form gave)'
+    source: derived default
+    placeholder: true
+    code: phylloptim::Leaf::R_d_25
+  rd_q10_intercept_:
+    section: respiration
+    symbol: 'q_0'
+    units: '–'
+    class: hyperparameter
+    meaning: 'intercept of the declining $Q_{10}$'
+    source: 'Atkin-2003 Fig. 2 (foliar: 3.090); the code cites Tjoelker-2001'
+    cite: Atkin-2003
+    placeholder: false
+    code: phylloptim::Leaf::rd_q10_intercept_
+  rd_q10_slope_:
+    section: respiration
+    symbol: 'q_1'
+    units: 'K⁻¹'
+    class: hyperparameter
+    meaning: 'slope of the declining $Q_{10}$; zero makes $Q_{10} = q_0$ constant'
+    source: 'Atkin-2003 Fig. 2 (foliar: 0.043); the code cites Tjoelker-2001'
+    cite: Atkin-2003
+    placeholder: false
+    code: phylloptim::Leaf::rd_q10_slope_
+
+  # --- water vapour -----------------------------------------------------------
+  tetens_a:
+    section: vapour
+    symbol: '0.6108'
+    units: 'kPa'
+    class: constant
+    meaning: 'Tetens coefficient of $e_s(T)$'
+    source: FAO-56 form (Allen et al. 1998, not in Zotero)
+    placeholder: false
+    literal: 0.6108
+    code: phylloptim::Leaf::saturation_vapour_pressure
+  tetens_b:
+    section: vapour
+    symbol: '17.27'
+    units: '–'
+    class: constant
+    meaning: 'Tetens coefficient of $e_s(T)$'
+    source: FAO-56 form
+    placeholder: false
+    literal: 17.27
+    code: phylloptim::Leaf::saturation_vapour_pressure
+  tetens_c:
+    section: vapour
+    symbol: '237.3'
+    units: '°C'
+    class: constant
+    meaning: 'Tetens coefficient of $e_s(T)$'
+    source: FAO-56 form
+    placeholder: false
+    literal: 237.3
+    code: phylloptim::Leaf::saturation_vapour_pressure
+  vpd_leaf_min:
+    section: vapour
+    symbol: 'D_\min'
+    units: 'kPa'
+    class: constant
+    meaning: 'floor on the leaf-to-air deficit, so a leaf cooled below the dew point cannot report a negative conductance'
+    source: code
+    placeholder: true
+    code: phylloptim::vpd_leaf_min
+  H2O_CO2_stom_diff_ratio_:
+    section: vapour
+    symbol: '1.67'
+    units: '–'
+    class: constant
+    meaning: 'H₂O:CO₂ diffusivity ratio in $g_c$ (1.6 in Medlyn-2011 and the $g_1$ literature); a convention, settable'
+    source: code (#50)
+    cite: Medlyn-2011
+    placeholder: false
+    code: phylloptim::Leaf::H2O_CO2_stom_diff_ratio_
+    default_code: phylloptim::H2O_CO2_stom_diff_ratio
+  kg_to_mol_h2o:
+    section: vapour
+    symbol: '1/M_w'
+    units: 'mol kg⁻¹'
+    class: constant
+    meaning: 'moles of water per kilogram, the reciprocal of the molar mass 0.018015 kg mol⁻¹'
+    source: standard atomic weights
+    placeholder: false
+    code: phylloptim::kg_to_mol_h2o
+  bl_vapour_heat_ratio:
+    section: vapour
+    symbol: '1.075'
+    units: '–'
+    class: constant
+    meaning: 'boundary-layer conductance to water vapour over that to heat, for a hypostomatous leaf; read only by the reported boundary-layer and stomatal conductances, never by the solve'
+    source: 'plantecophys convention (Gbw = 1.075 Gbh in LeafEnergyBalance, at StomatalRatio 1)'
+    cite: Duursma-2015
+    placeholder: false
+    code: phylloptim::bl_vapour_heat_ratio
+
+  # --- energy balance ----------------------------------------------------------
+  use_energy_balance_:
+    section: energy_balance
+    symbol: 'g_\mathrm{EB}'
+    units: '–'
+    class: hyperparameter
+    meaning: 'gate: energy balance on or off (plant: `use_energy_balance != 0`)'
+    source: default off
+    placeholder: false
+    code: phylloptim::Leaf::use_energy_balance_
+  d_:
+    section: energy_balance
+    symbol: 'd'
+    units: 'm'
+    class: trait
+    meaning: 'characteristic leaf dimension (plant: pars.d)'
+    source: plant default
+    placeholder: true
+    code: phylloptim::Leaf::d_
+  alpha_NIR_:
+    section: energy_balance
+    symbol: '\alpha_\mathrm{NIR}'
+    units: '–'
+    class: hyperparameter
+    meaning: 'near-infrared absorptance; a leaf property, not a fitted trait'
+    source: code default; no citation recorded
+    placeholder: true
+    code: phylloptim::Leaf::alpha_NIR_
+  umol_par_per_joule:
+    section: energy_balance
+    symbol: 'c_Q'
+    units: 'µmol J⁻¹'
+    class: constant
+    meaning: 'PAR photons per joule of PAR energy, for sunlight (an LED is 5–5.5); read on the energy-balance path only'
+    source: code
+    placeholder: true
+    code: phylloptim::umol_par_per_joule
+  stefan_boltzmann:
+    section: energy_balance
+    symbol: '\sigma'
+    units: 'W m⁻² K⁻⁴'
+    class: constant
+    meaning: 'Stefan–Boltzmann constant'
+    source: SI
+    placeholder: false
+    code: phylloptim::stefan_boltzmann
+  leaf_emissivity:
+    section: energy_balance
+    symbol: '\varepsilon_l'
+    units: '–'
+    class: constant
+    meaning: 'leaf longwave emissivity'
+    source: code (0.94–0.99 measured)
+    placeholder: true
+    code: phylloptim::leaf_emissivity
+  atmos_emissivity_coef:
+    section: energy_balance
+    symbol: 'c_\varepsilon'
+    units: '–'
+    class: constant
+    meaning: 'Brutsaert clear-sky emissivity coefficient, with $e_a$ in Pa (the same relation reads $1.24\,(e_a/T)^{1/7}$ with $e_a$ in hPa)'
+    source: Brutsaert (1975), not in Zotero
+    placeholder: false
+    code: phylloptim::atmos_emissivity_coef
+  atmos_emissivity_exponent:
+    section: energy_balance
+    symbol: '1/7'
+    units: '–'
+    class: constant
+    meaning: 'Brutsaert clear-sky emissivity exponent'
+    source: Brutsaert (1975), not in Zotero
+    placeholder: false
+    code: phylloptim::atmos_emissivity_exponent
+  vapour_pressure_min:
+    section: energy_balance
+    symbol: 'e_{a,\min}'
+    units: 'Pa'
+    class: constant
+    meaning: 'floor on the actual vapour pressure in the emissivity, where a deficit larger than saturation would otherwise give a negative base'
+    source: code
+    placeholder: false
+    code: phylloptim::vapour_pressure_min
+  aerodynamic_resistance_coef:
+    section: energy_balance
+    symbol: 'C_{ra}'
+    units: 's^{1/2} m⁻¹'
+    class: constant
+    meaning: 'laminar boundary-layer coefficient in $r_a = C_{ra}\sqrt{d/U}$'
+    source: PM note §4.1 (standard formulation)
+    placeholder: true
+    code: phylloptim::aerodynamic_resistance_coef
+  aerodynamic_resistance_fixed:
+    section: energy_balance
+    symbol: 'r_{a,\mathrm{fixed}}'
+    units: 's m⁻¹'
+    class: constant
+    meaning: '$r_a$ fallback when $d$ or $U$ is zero'
+    source: code
+    placeholder: true
+    code: phylloptim::aerodynamic_resistance_fixed
+  latent_heat_vap:
+    section: energy_balance
+    symbol: '\lambda_v'
+    units: 'J kg⁻¹'
+    class: constant
+    meaning: 'latent heat of vaporisation, fixed (a value for about 21.5 °C, not 25 °C; #28)'
+    source: code
+    placeholder: true
+    code: phylloptim::latent_heat_vap
+  vol_heat_cap_air:
+    section: energy_balance
+    symbol: '\rho c_p'
+    units: 'J m⁻³ K⁻¹'
+    class: constant
+    meaning: 'volumetric heat capacity of air, fixed; air density is never computed from pressure or temperature'
+    source: code
+    placeholder: true
+    code: phylloptim::vol_heat_cap_air
+  leaf_temp_min:
+    section: energy_balance
+    symbol: 'T_\min'
+    units: '°C'
+    class: constant
+    meaning: 'lower clamp on the solved leaf temperature, so an extreme non-equilibrium $E$ cannot make the Arrhenius block non-finite'
+    source: code
+    placeholder: false
+    code: phylloptim::leaf_temp_min
+  leaf_temp_max:
+    section: energy_balance
+    symbol: 'T_\max'
+    units: '°C'
+    class: constant
+    meaning: 'upper clamp on the solved leaf temperature'
+    source: code
+    placeholder: false
+    code: phylloptim::leaf_temp_max
+  fd_step:
+    section: energy_balance
+    symbol: 'h'
+    units: 'K'
+    class: constant
+    meaning: 'fixed, absolute step of the central difference for $\partial A/\partial T_\mathrm{leaf}$ inside the optimiser'
+    source: code
+    placeholder: false
+    literal: 1.0e-3
+    code: phylloptim::Leaf::dprofit_energy_balance_term
+  boundary_scan_n_:
+    section: energy_balance
+    symbol: 'n_\mathrm{scan}'
+    units: '–'
+    class: constant
+    meaning: 'basin-scan cells on the stem routes, used only with the energy balance on, where the objective can be two-humped'
+    source: measured (64)
+    placeholder: false
+    code: phylloptim::Leaf::boundary_scan_n_
+    read_by: the stem-route solve (basin_scan_cells), not an equation printed here
+
+  # --- damage, repair and acclimation ---------------------------------------------
+  use_thermal_damage_:
+    section: damage
+    symbol: 'g_\mathrm{TD}'
+    units: '–'
+    class: hyperparameter
+    meaning: 'gate: the thermal-damage layer (TF24t forces it on, with the energy balance)'
+    source: default off
+    placeholder: false
+    code: phylloptim::Leaf::use_thermal_damage_
+  topt_offset_:
+    section: damage
+    symbol: '\delta_0'
+    units: '°C'
+    class: trait
+    meaning: 'constitutive shift of both $T_\mathrm{opt}$ and the switch midpoint'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::topt_offset_
+    aliases: [phylloptim::damage::dp_topt_offset]
+  impair_H_:
+    section: damage
+    symbol: 'H_\mathrm{imp}'
+    units: 'J mol⁻¹'
+    class: trait
+    meaning: 'enthalpy of the impairment switch: how sharply it turns on'
+    source: placeholder (copies the Jmax curve $H_d$)
+    placeholder: true
+    code: phylloptim::Leaf::impair_H_
+    default_code: phylloptim::jmax_H_d
+    aliases: [phylloptim::damage::dp_impair_H]
+  impair_Tmid_:
+    section: damage
+    symbol: 'T_\mathrm{mid}'
+    units: '°C'
+    class: trait
+    meaning: 'midpoint of the impairment switch before shifts'
+    source: placeholder (copies $H_d/\Delta S$ of Jmax)
+    placeholder: true
+    code: phylloptim::Leaf::impair_Tmid_
+    aliases: [phylloptim::damage::dp_impair_Tmid]
+  k_i_:
+    section: damage
+    symbol: 'k_i'
+    units: 'day⁻¹'
+    class: trait
+    meaning: 'impairment rate $F \to I$ at $T_\mathrm{ref}$ with the switch on'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::k_i_
+    aliases: [phylloptim::damage::dp_k_i]
+  k_i_Ea_:
+    section: damage
+    symbol: 'E_{a,i}'
+    units: 'J mol⁻¹'
+    class: trait
+    meaning: 'activation energy of $k_i$; 0 is constant'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::k_i_Ea_
+    aliases: [phylloptim::damage::dp_k_i_Ea]
+  k_i_Tref_:
+    section: damage
+    symbol: 'T_\mathrm{ref}'
+    units: '°C'
+    class: hyperparameter
+    meaning: 'reference temperature of the Arrhenius scale of $k_i$'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::k_i_Tref_
+    aliases: [phylloptim::damage::dp_k_i_Tref]
+  k_i_baseline_:
+    section: damage
+    symbol: 'k_{i,\mathrm{base}}'
+    units: 'day⁻¹'
+    class: hyperparameter
+    meaning: 'no-extra-protection baseline for the protection cost; a rate, not a reference temperature'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::k_i_baseline_
+  k_rec_:
+    section: damage
+    symbol: 'k_\mathrm{rec}'
+    units: 'day⁻¹'
+    class: trait
+    meaning: 'repair rate $I \to F$ when cool'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::k_rec_
+    aliases: [phylloptim::damage::dp_k_rec]
+  m_rep_:
+    section: damage
+    symbol: 'm_\mathrm{rep}'
+    units: '°C⁻¹'
+    class: trait
+    meaning: 'slope of the repair shut-off logistic'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::m_rep_
+    aliases: [phylloptim::damage::dp_m_rep]
+  t_rep_cut_:
+    section: damage
+    symbol: 'T_\mathrm{rep,cut}'
+    units: '°C'
+    class: trait
+    meaning: 'midpoint of the repair shut-off'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::t_rep_cut_
+    aliases: [phylloptim::damage::dp_t_rep_cut]
+  k_mat_:
+    section: damage
+    symbol: 'k_\mathrm{mat}'
+    units: 'day⁻¹'
+    class: trait
+    meaning: 'maturation $I \to D$, constant in temperature'
+    source: placeholder (July runs used 0.00125)
+    placeholder: true
+    code: phylloptim::Leaf::k_mat_
+    aliases: [phylloptim::damage::dp_k_mat]
+  acclim_alpha_:
+    section: damage
+    symbol: '\alpha_A'
+    units: 'day⁻¹ °C⁻¹'
+    class: trait
+    meaning: 'gain of the acclimation forcing'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::acclim_alpha_
+    aliases: [phylloptim::damage::dp_acclim_alpha]
+  acclim_beta_:
+    section: damage
+    symbol: '\beta_A'
+    units: 'day⁻¹'
+    class: trait
+    meaning: 'decay of the acclimation state; $1/\beta_A$ is its timescale'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::acclim_beta_
+    aliases: [phylloptim::damage::dp_acclim_beta]
+  acclim_T_:
+    section: damage
+    symbol: 'T_\mathrm{accl}'
+    units: '°C'
+    class: trait
+    meaning: 'leaf temperature above which acclimation is forced'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::acclim_T_
+    aliases: [phylloptim::damage::dp_acclim_T]
+  acclim_s_:
+    section: damage
+    symbol: 's'
+    units: '°C⁻¹'
+    class: hyperparameter
+    meaning: 'sharpness of the softplus forcing'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::acclim_s_
+    aliases: [phylloptim::damage::dp_acclim_s]
+  dTopt_max_:
+    section: damage
+    symbol: '\Delta T_{\max}'
+    units: '°C'
+    class: trait
+    meaning: 'acclimated rise in $T_\mathrm{opt}$ as $A \to \infty$; a parameter, not a hard cap'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::dTopt_max_
+  dTimpair_max_:
+    section: damage
+    symbol: '\Delta T_{\mathrm{imp},\max}'
+    units: '°C'
+    class: trait
+    meaning: 'acclimated rise in the switch midpoint as $A \to \infty$'
+    source: placeholder (= $\Delta T_{\max}$)
+    placeholder: true
+    code: phylloptim::Leaf::dTimpair_max_
+    aliases: [phylloptim::damage::dp_dTimpair_max]
+  K_A_:
+    section: damage
+    symbol: 'K_A'
+    units: '–'
+    class: trait
+    meaning: 'half-saturation of both rises in the acclimation state $A$'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::K_A_
+    aliases: [phylloptim::damage::dp_K_A]
+  A_:
+    section: damage
+    symbol: 'A'
+    units: '–'
+    class: driver
+    meaning: 'acclimation state, seated by the caller before each solve; negative is read as zero'
+    source: state
+    placeholder: false
+    code: phylloptim::Leaf::A_
+  I_:
+    section: damage
+    symbol: 'I'
+    units: '–'
+    class: driver
+    meaning: 'impaired fraction of leaf area, seated by the caller before each solve'
+    source: state
+    placeholder: false
+    code: phylloptim::Leaf::I_
+  D_:
+    section: damage
+    symbol: 'D'
+    units: '–'
+    class: driver
+    meaning: 'damaged fraction of leaf area, seated by the caller before each solve'
+    source: state
+    placeholder: false
+    code: phylloptim::Leaf::D_
+  c_acclim_maint_:
+    section: damage
+    symbol: 'c_A'
+    units: 'µmol m⁻² s⁻¹ per unit $A$'
+    class: trait
+    meaning: 'maintenance cost of acclimation, added to $R_d$ (leaf default 0; priced by TF24t)'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::c_acclim_maint_
+  c_repair_maint_:
+    section: damage
+    symbol: 'c_\mathrm{rep}'
+    units: 'µmol m⁻² s⁻¹ per day⁻¹'
+    class: trait
+    meaning: 'maintenance cost of the repair capacity $k_\mathrm{rec}$ (leaf default 0)'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::c_repair_maint_
+  c_protect_maint_:
+    section: damage
+    symbol: 'c_\mathrm{prot}'
+    units: 'µmol m⁻² s⁻¹ per day⁻¹'
+    class: trait
+    meaning: 'maintenance cost of protection $\max(0, k_{i,\mathrm{base}} - k_i)$ (leaf default 0)'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::c_protect_maint_
+  c_repair_flux_:
+    section: damage
+    symbol: 'c_\mathrm{flux}'
+    units: 'µmol m⁻² s⁻¹ per day⁻¹'
+    class: trait
+    meaning: 'activity cost of the realised repair flux $k_\mathrm{rec,eff}\, I$ (leaf default 0)'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::c_repair_flux_
+  damage_surv_floor:
+    section: damage
+    symbol: 'F_\min'
+    units: '–'
+    class: constant
+    meaning: 'floor on the functional fraction $F = 1 - I - D$ where it scales capacity'
+    source: code
+    placeholder: false
+    code: phylloptim::Leaf::damage_surv_floor
+  exp_clamp:
+    section: damage
+    symbol: '\pm 30'
+    units: '–'
+    class: constant
+    meaning: 'clamp on every exponent argument in the layer (the logistic, the softplus, the switch and the Arrhenius scale), so an extreme temperature stays finite'
+    source: code
+    placeholder: false
+    literal: 30
+    code: phylloptim::damage::logistic
+  topt_clamp_min:
+    section: damage
+    symbol: '250'
+    units: 'K'
+    class: constant
+    meaning: 'lower clamp on a shifted optimum or switch midpoint'
+    source: code
+    placeholder: false
+    literal: 250
+    code: phylloptim::damage::impair_switch
+  topt_clamp_max:
+    section: damage
+    symbol: '350'
+    units: 'K'
+    class: constant
+    meaning: 'upper clamp on a shifted optimum or switch midpoint'
+    source: code
+    placeholder: false
+    literal: 350
+    code: phylloptim::damage::impair_switch
+  rk_rate_step:
+    section: damage
+    symbol: '0.1'
+    units: '–'
+    class: constant
+    meaning: 'the fastest rate times the RK4 sub-step is kept below this'
+    source: code
+    placeholder: false
+    literal: 0.1
+    code: phylloptim::damage::trajectory
+  rk_temp_step:
+    section: damage
+    symbol: '0.25'
+    units: 'K'
+    class: constant
+    meaning: 'the leaf temperature moves at most this far per RK4 sub-step'
+    source: code
+    placeholder: false
+    literal: 0.25
+    code: phylloptim::damage::trajectory
+
+  # --- vulnerability and supply --------------------------------------------------
+  # --- vulnerability -----------------------------------------------------------
+  stem_P50:
+    section: vulnerability
+    symbol: 'P_{50}'
+    units: 'MPa'
+    class: trait
+    meaning: 'stem potential at 50% loss of conductivity, a positive magnitude; one of the stem curve''s two settable numbers (hazard 1), moved only through set_traits()'
+    source: 'E. saligna default (leaf_traits())'
+    placeholder: false
+    code: phylloptim::Leaf::stem_P50
+  stem_c:
+    section: vulnerability
+    symbol: 'c'
+    units: '–'
+    class: trait
+    meaning: 'shape (steepness) of the stem Weibull curve; the other settable number'
+    source: 'E. saligna default (leaf_traits())'
+    placeholder: false
+    code: phylloptim::Leaf::stem_c
+  stem_b:
+    section: vulnerability
+    symbol: 'b'
+    units: 'MPa'
+    class: trait
+    meaning: 'stem Weibull scale, the 63% loss point; DERIVED from $(P_{50}, c)$ and read-only, never settable (hazard 1)'
+    source: derived (weibull_scale)
+    placeholder: false
+    code: phylloptim::Leaf::stem_b
+  psi_crit:
+    section: vulnerability
+    symbol: '\psi_\mathrm{crit}'
+    units: 'MPa'
+    class: trait
+    meaning: 'the stem curve''s P95, where $f = f_\mathrm{crit}$; DERIVED and read-only. The dry bound of every stem-route solve and Sperry''s reference potential'
+    source: derived (critical_potential)
+    placeholder: false
+    code: phylloptim::Leaf::psi_crit
+  root_P50:
+    section: vulnerability
+    symbol: 'P_{50,r}'
+    units: 'MPa'
+    class: trait
+    meaning: 'root potential at 50% loss of conductivity; NOT the stem''s (hazard 1)'
+    source: 'E. saligna default (leaf_traits()), equal to the stem''s'
+    placeholder: false
+    code: phylloptim::MultiLayerRoots::root_P50
+    field: root_P50
+  root_c:
+    section: vulnerability
+    symbol: 'c_r'
+    units: '–'
+    class: trait
+    meaning: 'shape of the root Weibull curve'
+    source: 'E. saligna default (leaf_traits()), equal to the stem''s'
+    placeholder: false
+    code: phylloptim::MultiLayerRoots::root_c
+    field: root_c
+  root_b:
+    section: vulnerability
+    symbol: 'b_r'
+    units: 'MPa'
+    class: trait
+    meaning: 'root Weibull scale; DERIVED from $(P_{50,r}, c_r)$, read-only'
+    source: derived (weibull_scale)
+    placeholder: false
+    code: phylloptim::MultiLayerRoots::root_b
+    field: root_b
+  root_psi_crit:
+    section: vulnerability
+    symbol: '\psi_{\mathrm{crit},r}'
+    units: 'MPa'
+    class: trait
+    meaning: 'the root curve''s P95; DERIVED, read-only. The dry bound of the collar bracket on the multi-layer path'
+    source: derived (critical_potential)
+    placeholder: false
+    code: phylloptim::MultiLayerRoots::root_psi_crit
+    field: root_psi_crit
+  k_crit_fraction:
+    section: vulnerability
+    symbol: 'f_\mathrm{crit}'
+    units: '–'
+    class: constant
+    meaning: 'fraction of maximum conductivity left at the critical potential (0.05 gives P95); also Sperry''s $k_\mathrm{crit} = f_\mathrm{crit} k_{max}$, SOX''s and JW26''s costs and ProfitMax''s normaliser read it, so moving it reshapes three cost curves'
+    source: 'convention across the family; Sperry-2017 use the same 0.05'
+    cite: Sperry-2017
+    placeholder: false
+    code: phylloptim::Leaf::k_crit_fraction
+  vulnerability_conductivity_floor:
+    section: vulnerability
+    symbol: 'f_\mathrm{floor}'
+    units: '–'
+    class: constant
+    meaning: 'conductivity fraction left at the dry end of both knot grids (0.01, so the grids stop at P99)'
+    source: code
+    placeholder: false
+    code: phylloptim::vulnerability_conductivity_floor
+  vulnerability_curve_ncontrol:
+    section: vulnerability
+    symbol: 'n'
+    units: '–'
+    class: hyperparameter
+    meaning: 'knot intervals in each pre-integrated vulnerability curve (n + 1 knots); recorded on the leaf and re-used by every set_traits() rebuild. Set through leaf_control(), which must equal Leaf::ncontrol_default'
+    source: 'code: chosen from the measured water-row residue (400 knots; 100 sat outside plant''s 1e-05 budget)'
+    placeholder: false
+    code: phylloptim::Leaf::vulnerability_curve_ncontrol
+    default_code: phylloptim::Leaf::ncontrol_default
+
+  # --- supply ------------------------------------------------------------------
+  leaf_specific_conductance_max:
+    section: supply
+    symbol: 'k_{max}'
+    units: 'kg m⁻² s⁻¹ MPa⁻¹'
+    class: driver
+    meaning: 'maximum leaf-specific stem conductance, per unit leaf area; plant hands it over already reduced from its conductance-versus-height model (hazard 4)'
+    source: set_drivers() default
+    placeholder: false
+    code: phylloptim::Leaf::leaf_specific_conductance_max_
+    field: leaf_specific_conductance_max_
+    driver: leaf_specific_conductance_max
+  psi_soil:
+    section: supply
+    symbol: '\psi_{s,i}'
+    units: 'MPa'
+    class: driver
+    meaning: 'soil water potential of each layer, a positive magnitude (set_physiology refuses a negative one); one value on the single-potential path'
+    source: 'set_drivers() argument, no default'
+    placeholder: false
+    code: phylloptim::MultiLayerRoots::psi_soil_
+    field: psi_soil_
+    aliases: [phylloptim::SinglePotential::psi_soil_]
+  soil_depth:
+    section: supply
+    symbol: 'd_i'
+    units: 'm'
+    class: driver
+    meaning: 'cumulative depth to the bottom of each soil layer, strictly increasing; layers need not be equal. Multi-layer path only (set_drivers() default: 1 m layers)'
+    source: set_drivers() default
+    placeholder: false
+    code: phylloptim::MultiLayerRoots::soil_depth_
+    field: soil_depth_
+  gravity_head:
+    section: supply
+    symbol: '\rho_w g'
+    units: 'MPa m⁻¹'
+    class: constant
+    meaning: 'gravitational head per metre of depth (9.8e-3, 6.8e-4 relative below $1000 \times 9.80665 \times 10^{-6}$; deliberately not corrected until a water-density convention is chosen). Multi-layer path only'
+    source: code
+    placeholder: false
+    code: phylloptim::gravity_head
+  kg_per_mol_h2o:
+    section: supply
+    symbol: 'M_w'
+    units: 'kg mol⁻¹'
+    class: constant
+    meaning: 'molar mass of water; converts the summed molar uptake to kg. The per-layer draws stay in mol'
+    source: standard atomic weights
+    placeholder: false
+    code: phylloptim::kg_per_mol_h2o
+  r_R_H_min:
+    section: supply
+    symbol: 'r_{H,\min,i}'
+    units: 'MPa s m² mol⁻¹'
+    class: driver
+    meaning: 'minimum (fully hydrated) horizontal soil-to-root resistance of each rooted layer, per unit leaf area; divided by the mean root conductivity over the layer''s potential span'
+    source: 'set_drivers(root_network =); default from root_network_from_carbon()'
+    placeholder: false
+    code: phylloptim::RootNetwork::r_R_H_min
+    field: r_R_H_min
+  r_R_V_sum:
+    section: supply
+    symbol: 'r_{V,\Sigma,i}'
+    units: 'MPa s m² mol⁻¹'
+    class: driver
+    meaning: 'cumulative vertical root resistance from the surface down to each rooted layer, per unit leaf area; element 1 is the series resistance on the single-potential path'
+    source: 'set_drivers(root_network =); default from root_network_from_carbon()'
+    placeholder: false
+    code: phylloptim::RootNetwork::r_R_V_sum
+    field: r_R_V_sum
+  beta_R_H:
+    section: supply
+    symbol: '\beta_{R,H}'
+    units: 'MPa s mol C mol⁻¹ H₂O'
+    class: hyperparameter
+    meaning: 'horizontal root resistance per reciprocal horizontal root carbon; an argument of the root-architecture model, not a leaf trait since #33 (default 340)'
+    source: 'root_network_from_carbon() default; calibrated in plant''s TF24 strategy for E. saligna, no citation recorded'
+    placeholder: true
+    code: phylloptim::root_network_from_carbon
+  beta_R_V:
+    section: supply
+    symbol: '\beta_{R,V}'
+    units: 'MPa s mol C mol⁻¹ H₂O m⁻²'
+    class: hyperparameter
+    meaning: 'vertical root resistance per $\Delta z^2$ over vertical root carbon (default 9400)'
+    source: 'root_network_from_carbon() default; calibrated in plant''s TF24 strategy for E. saligna, no citation recorded'
+    placeholder: true
+    code: phylloptim::root_network_from_carbon
+  single_resistance:
+    section: supply
+    symbol: 'r'
+    units: 'MPa s m² mol⁻¹'
+    class: driver
+    meaning: 'series soil-to-collar resistance of the single-potential path, per unit leaf area; read from r_R_V_sum[1] of the network set_drivers() is given, which must carry no horizontal term (default series_resistance(1e3), a stand-in)'
+    source: 'set_drivers(root_network = series_resistance()); default 1e3, no citation recorded'
+    placeholder: true
+    code: phylloptim::SinglePotential::resistance_
+    field: single_resistance_
+  single_gravity_head:
+    section: supply
+    symbol: 'h'
+    units: 'MPa'
+    class: hyperparameter
+    meaning: 'head to lift water to the collar on the single-potential path; configuration, set by leaf_supply_singlelayer(gravity_head), default 0 (no depth profile to derive one from, hazard 6)'
+    source: leaf_supply_singlelayer() default
+    placeholder: false
+    code: phylloptim::SinglePotential::grav_head_
+    field: single_gravity_head_
+
+  # --- the solve -----------------------------------------------------------------
+  GSS_tol_abs:
+    section: solve
+    symbol: '\epsilon_\mathrm{GSS}'
+    units: 'MPa'
+    class: hyperparameter
+    meaning: 'width below which the feasible collar interval counts as collapsed, so the collar is held at its midpoint and only the stem potential is optimised (kind `determined`); also the golden-section fallback''s tolerance. Not bound: set through leaf_control()'
+    source: leaf_control() default
+    placeholder: false
+    code: phylloptim::Leaf::GSS_tol_abs
+  collar_root_tol:
+    section: solve
+    symbol: '\epsilon_\mathrm{collar}'
+    units: 'MPa'
+    class: constant
+    meaning: 'tolerance of the root-find of the collar first-order condition, and so of an interior collar optimum'
+    source: code
+    placeholder: false
+    code: phylloptim::Leaf::collar_root_tol
+
+  # --- cost curves and the marginal cost of water --------------------------------
+  # --- cost-curve parameters ---------------------------------------------------
+  TF24_cost_scale:
+    section: costs
+    symbol: '\gamma'
+    units: 'µmol C m⁻² s⁻¹'
+    class: trait
+    meaning: 'scale of the TF24 hydraulic cost, the carbon cost of losing all conductance; also the hydraulic half of TF24_floor'
+    source: 'leaf_traits() default; the cost form is Towers-2024''s, the value carries no citation in the code'
+    cite: Towers-2024
+    placeholder: true
+    code: phylloptim::Leaf::TF24_cost_scale
+  TF24_beta2:
+    section: costs
+    symbol: '\beta'
+    units: '–'
+    class: trait
+    meaning: 'exponent of the TF24 cost on the fractional conductance loss $1 - f$; below 1 the marginal cost diverges at the wet end'
+    source: 'leaf_traits() default; the cost form is Towers-2024''s, the value carries no citation in the code'
+    cite: Towers-2024
+    placeholder: true
+    code: phylloptim::Leaf::TF24_beta2
+  CF77_lambda_:
+    section: costs
+    symbol: '\lambda_\mathrm{CF}'
+    units: 'µmol C (kg H₂O)⁻¹'
+    class: hyperparameter
+    meaning: 'the prescribed marginal value of water of the CF77 curve; an input with no default (NA until set, refused unset), never assigned by model code'
+    source: 'caller input; no default by design'
+    cite: Cowan-1977
+    placeholder: false
+    code: phylloptim::Leaf::CF77_lambda_
+  CF77_soil_beta_:
+    section: costs
+    symbol: 'g_\beta'
+    units: '–'
+    class: hyperparameter
+    meaning: 'gate: divides the CF77 price by the Medlyn soil-moisture factor $\beta$ (cf77_soil_price), clamped at 1, giving CF77 the soil-moisture shutdown it otherwise lacks; off is bit-identical to the bare constant'
+    source: default off
+    placeholder: false
+    code: phylloptim::Leaf::CF77_soil_beta_
+  JS22_gamma:
+    section: costs
+    symbol: '\gamma_J'
+    units: 'µmol C m⁻² s⁻¹ MPa⁻²'
+    class: trait
+    meaning: 'unit cost of the soil-to-leaf drop in the JS22 hydraulic term; Joshi-2022''s capacity term $\alpha J_{max}$ is not implemented'
+    source: 'code default, "not a literature value": order-of-magnitude matched to TF24 at the package defaults (the matching value runs 0.287–1.761 over psi_soil 0.5–3 MPa)'
+    cite: Joshi-2022
+    placeholder: true
+    code: phylloptim::Leaf::JS22_gamma
+  CMax_a:
+    section: costs
+    symbol: 'a'
+    units: 'µmol C m⁻² s⁻¹ MPa⁻²'
+    class: trait
+    meaning: 'slope of the CMax marginal cost, linear in the absolute potential'
+    source: 'code default, "neither default is a literature value": mid-range of the 0.406–0.807 that reproduces TF24''s cost at its optimum; the form is Anderegg-2018''s as TractLSM implements it'
+    cite: Anderegg-2018
+    placeholder: true
+    code: phylloptim::Leaf::CMax_a
+  CMax_b:
+    section: costs
+    symbol: 'b'
+    units: 'µmol C m⁻² s⁻¹ MPa⁻¹'
+    class: trait
+    meaning: 'intercept of the CMax marginal cost; SIGNED (negative in the paper''s convention), so not range-checked'
+    source: 'code default, not a literature value'
+    cite: Anderegg-2018
+    placeholder: true
+    code: phylloptim::Leaf::CMax_b
+  TF24_floor_lambda_o:
+    section: costs
+    symbol: '\lambda_o'
+    units: 'µmol C (kg H₂O)⁻¹'
+    class: hyperparameter
+    meaning: 'the price of water as transpiration goes to zero, the only parameter of TF24_floor; an input with no default, because at 0 the curve is TF24'
+    source: 'caller input; no default by design'
+    placeholder: false
+    code: phylloptim::Leaf::TF24_floor_lambda_o
+  LeastCost_beta:
+    section: costs
+    symbol: '\beta_\mathrm{LC}'
+    units: '–'
+    class: hyperparameter
+    meaning: 'unit-cost ratio $c_V/c_E$ of least-cost theory, dimensionless because both fluxes are weighed in mol m⁻² s⁻¹; an input with no default, strictly positive'
+    source: 'caller input; Prentice-2014 report 146'
+    cite: Prentice-2014
+    placeholder: false
+    code: phylloptim::Leaf::LeastCost_beta
+
+  # --- Medlyn route, soil moisture and the closed form ---------------------------
+  # --- medlyn -------------------------------------------------------------------
+  g0:
+    section: medlyn
+    symbol: 'g_0'
+    units: 'mol m⁻² s⁻¹'
+    class: trait
+    meaning: 'residual conductance of the Medlyn form; the code comment says µmol m⁻² s⁻¹, but it is added to $1.6\,A/(c_a/c_P)$, which is mol m⁻² s⁻¹; read only by the standalone Medlyn route'
+    source: 'code default ("the published values", develop #450); no source recorded'
+    placeholder: true
+    code: phylloptim::Leaf::g0
+  g1:
+    section: medlyn
+    symbol: 'g_1'
+    units: 'kPa^{0.5}'
+    class: trait
+    meaning: 'slope of the Medlyn form; multiplied by the soil-moisture factor $\beta$ in the code; read only by the standalone Medlyn route (not the g1_eff diagnostic, which is derived from an operating point)'
+    source: 'code default ("the published values", develop #450); no source recorded'
+    placeholder: true
+    code: phylloptim::Leaf::g1
+  medlyn_ratio:
+    section: medlyn
+    symbol: '1.6'
+    units: '–'
+    class: constant
+    meaning: 'H₂O:CO₂ diffusivity ratio of the Medlyn route: in the USO form, in its residual, and in converting the result to the CO₂ basis; deliberately not the settable H2O_CO2_stom_diff_ratio_ (1.67), because published g1 values are fitted with 1.6'
+    source: Medlyn-2011 eq. 11
+    cite: Medlyn-2011
+    placeholder: false
+    code: phylloptim::Leaf::medlyn_H2O_CO2_ratio
+  theta:
+    section: soil_moisture
+    symbol: '\theta'
+    units: 'm³ m⁻³'
+    class: driver
+    meaning: 'volumetric soil water content; the input, copied into the working copy `theta_` by every set_physiology (set this one, not `theta_`)'
+    source: 'code default (the fixed value develop''s TF24 caller passed); no source recorded'
+    placeholder: true
+    code: phylloptim::Leaf::theta
+    aliases: [phylloptim::Leaf::theta_]
+  theta_fc:
+    section: soil_moisture
+    symbol: '\theta_{fc}'
+    units: 'm³ m⁻³'
+    class: driver
+    meaning: 'soil water content at field capacity; the input, copied into `theta_fc_` by every set_physiology'
+    source: 'code default (the fixed value develop''s TF24 caller passed); no source recorded'
+    placeholder: true
+    code: phylloptim::Leaf::theta_fc
+    aliases: [phylloptim::Leaf::theta_fc_]
+  theta_w:
+    section: soil_moisture
+    symbol: '\theta_w'
+    units: 'm³ m⁻³'
+    class: driver
+    meaning: 'soil water content at the wilting point; the input, copied into `theta_w_` by every set_physiology'
+    source: 'code default (the fixed value develop''s TF24 caller passed); no source recorded'
+    placeholder: true
+    code: phylloptim::Leaf::theta_w
+    aliases: [phylloptim::Leaf::theta_w_]
+
+equations:
+  # --- biochemistry ------------------------------------------------------------
+  arrhenius:
+    section: biochemistry
+    title: Arrhenius
+    latex: |
+      X(T) = X_{25}\, \exp\!\left[\frac{E_a\,(T_K - T_{25})}{T_{25}\, R\, T_K}\right], \qquad T_K = T + T_0
+    code: phylloptim::Leaf::arrh_curve
+    reads: [gas_constant, C_to_K, ref_temp]
+    writes: [gamma_, kc_, ko_]
+    kind: closed_form
+    cite: Bernacchi-2001
+    note: 'The plain form, normalised to 25 °C; $\Gamma^*$, $K_c$ and $K_o$ take it with the Bernacchi-2001 values, fitted to 10–40 °C, so above 40 °C it is extrapolation.'
+  peaked_arrhenius:
+    section: biochemistry
+    title: Peaked Arrhenius
+    latex: |
+      X(T) = X_{25}\, \exp\!\left[\frac{E_a\,(T_K - T_{25})}{T_{25}\, R\, T_K}\right]
+      \frac{1 + \exp\!\big[(\Delta S\, T_{25} - H_d)/(R\, T_{25})\big]}
+           {1 + \exp\!\big[(\Delta S\, T_K - H_d)/(R\, T_K)\big]}
+    code: phylloptim::Leaf::peak_arrh_curve
+    reads: [gas_constant, C_to_K, ref_temp]
+    writes: [vcmax_, jmax_]
+    kind: closed_form
+    cite: Medlyn-2002
+    note: 'Medlyn-2002 eq. 17 at 298.15 K and the exact $R$ where the paper writes 298 K and 8.314; $V_{cmax}$ and $J_{max}$ take it with the six settable response parameters.'
+  thermal_optimum:
+    section: biochemistry
+    title: Thermal optimum of the peaked form
+    latex: |
+      T_\mathrm{opt} = \frac{H_d}{\Delta S - R \ln\!\big[E_a/(H_d - E_a)\big]} - T_0
+    code: ~
+    also: [phylloptim::Leaf::d_S_shifted]
+    reads: [gas_constant, C_to_K]
+    writes: []
+    kind: identity
+    cite: Medlyn-2002
+    note: 'Medlyn-2002 eq. 19. No binding reports it; the damage layer inverts it (entropy_shift).'
+  temperature_block:
+    section: biochemistry
+    title: The temperature block
+    latex: |
+      V_{cmax}(T),\ J_{max}(T) \text{ by the peaked form};\qquad \Gamma^*(T),\ K_c(T),\ K_o(T) \text{ by the plain form}
+    code: phylloptim::Leaf::update_temperature_dependent_params
+    reads: [vcmax_25, vcmax_ha_, vcmax_H_d_, vcmax_d_S_, jmax_25, jmax_ha_, jmax_H_d_, jmax_d_S_, gamma_25_, gamma_ha_, kc_25_, kc_ha_, ko_25_, ko_ha_]
+    writes: [vcmax_, jmax_, gamma_, kc_, ko_]
+    kind: closed_form
+    note: 'Seated once per set_physiology at the driver temperature and, with the energy balance on, per candidate operating point at the solved leaf temperature. A cache keyed on every scalar it reads (photo_temp_key) serves repeat calls.'
+  michaelis_constant:
+    section: biochemistry
+    title: Michaelis constant in pascals
+    latex: |
+      K_m = K_c\, c_P \left(1 + \frac{1000\, O}{K_o\, c_P}\right), \qquad c_P = P \times 10^{3} \times 10^{-6}
+    code: phylloptim::Leaf::update_temperature_dependent_params
+    also: [phylloptim::Leaf::set_physiology]
+    reads: [atm_o2_kpa, atm_kpa, umol_to_mol, kPa_to_Pa]
+    writes: [km_]
+    kind: closed_form
+  electron_transport:
+    section: biochemistry
+    title: Electron transport
+    latex: |
+      J = \frac{I + J_{max} - \sqrt{(I + J_{max})^2 - 4\,\theta_J\, I\, J_{max}}}{2\,\theta_J}, \qquad I = \phi_J\, \alpha_\mathrm{PAR}\, Q
+    code: phylloptim::Leaf::electron_transport
+    reads: [phi_J, alpha_PAR_, PPFD, curv_fact_elec_trans]
+    writes: [electron_transport_]
+    kind: closed_form
+    cite: Farquhar-1980
+    note: 'Depends on temperature only through $J_{max}$.'
+  assimilation:
+    section: biochemistry
+    title: Net assimilation
+    latex: |
+      W_c = \frac{V_{cmax}\,(c_i - \Gamma^* c_P)}{c_i + K_m}, \qquad
+      W_j = \frac{J}{4}\,\frac{c_i - \Gamma^* c_P}{c_i + 2\,\Gamma^* c_P}, \qquad
+      A = \frac{W_c + W_j - \sqrt{(W_c + W_j)^2 - 4\,\theta\, W_c W_j}}{2\,\theta} - R_d
+    code: phylloptim::Leaf::assim_colimited
+    also: [phylloptim::Leaf::assim_colimited_kernel, phylloptim::Leaf::assim_rubisco_limited_kernel, phylloptim::Leaf::assim_electron_limited_kernel, phylloptim::Leaf::photo_capacity]
+    reads: [curv_fact_colim, atm_kpa]
+    writes: [assim_colimited_]
+    kind: closed_form
+    cite: Farquhar-1980
+    note: 'Net of dark respiration; $c_i$ in Pa.'
+  thermal_cost:
+    section: biochemistry
+    title: Instantaneous thermal cost
+    latex: |
+      TC(T) = \frac{1}{1 + \exp\!\big[-r\,(T - T_{50})\big]}, \qquad r = \frac{2}{T_{50} - T_\mathrm{crit}}, \qquad J_{max} \leftarrow J_{max}\,(1 - TC)
+    code: phylloptim::Leaf::thermal_cost_at
+    also: [phylloptim::Leaf::update_temperature_dependent_params]
+    reads: [use_thermal_cost_, T50_, Tcrit_]
+    writes: [jmax_]
+    kind: closed_form
+    cite: Sicangco-2026
+    note: 'Off by default; exactly zero with the gate off. Instantaneous, with no memory: not the damage layer.'
+
+  # --- respiration ------------------------------------------------------------
+  q10_respiration:
+    section: respiration
+    title: Leaf dark respiration
+    latex: |
+      R_d(T) = R_{d,25}\, Q_{10}(T)^{(T - 25)/10}, \qquad Q_{10}(T) = q_0 - q_1\, \frac{T + 25}{2}
+    code: phylloptim::Leaf::update_temperature_dependent_params
+    reads: [R_d_25, rd_q10_intercept_, rd_q10_slope_, ref_temp]
+    writes: [R_d_]
+    kind: closed_form
+    cite: Tjoelker-2001
+    note: 'Temperature in °C throughout. The $Q_{10}$ is evaluated at the midpoint of the measurement and reference temperatures, the code''s convention and neither paper''s.'
+
+  # --- water vapour -----------------------------------------------------------
+  saturation_vapour_pressure:
+    section: vapour
+    title: Saturation vapour pressure
+    latex: |
+      e_s(T) = 0.6108\, \exp\!\left(\frac{17.27\, T}{T + 237.3}\right)
+    code: phylloptim::Leaf::saturation_vapour_pressure
+    reads: [tetens_a, tetens_b, tetens_c]
+    writes: []
+    kind: closed_form
+    note: 'Tetens, kPa, $T$ in °C.'
+  saturation_vapour_pressure_slope:
+    section: vapour
+    title: Slope of the saturation curve
+    latex: |
+      \Delta(T) = \frac{17.27 \times 237.3\; e_s(T)}{(T + 237.3)^2}
+    code: phylloptim::Leaf::saturation_vapour_pressure_slope
+    reads: [tetens_b, tetens_c]
+    writes: []
+    kind: closed_form
+    note: 'kPa K⁻¹, the exact derivative of the Tetens form. Reaches no reported output; it enters the energy-balance derivative only, through $\partial g_c/\partial T$, which is why FAO-56''s rounded 4098 (4.2e-5 low) put a 2e-5 error into that first-order condition until 0.15.4.'
+  leaf_vpd:
+    section: vapour
+    title: Leaf-to-air deficit
+    latex: |
+      D_\mathrm{leaf} = \begin{cases} D_\mathrm{air} & g_\mathrm{EB} = 0 \\
+      \max\!\big(D_\mathrm{air} + [e_s(T_\mathrm{leaf}) - e_s(T_\mathrm{air})],\; D_\min\big) & g_\mathrm{EB} = 1 \end{cases}
+    code: phylloptim::Leaf::set_leaf_vpd
+    reads: [use_energy_balance_, atm_vpd, vpd_leaf_min]
+    writes: [vpd_leaf_]
+    kind: closed_form
+    note: 'The bracketing is deliberate: at $T_\mathrm{leaf} = T_\mathrm{air}$ it is an exact zero and the prescribed path is bit-identical.'
+  stomatal_conductance:
+    section: vapour
+    title: Stomatal conductance to CO₂ from the transpiration
+    latex: |
+      g_c = \frac{P\, E / M_w}{D_\mathrm{leaf}\; \times 1.67}
+    code: phylloptim::Leaf::stom_cond_CO2
+    also: [phylloptim::Leaf::set_leaf_states_rates_from_psi_stem]
+    reads: [atm_kpa, kg_to_mol_h2o, H2O_CO2_stom_diff_ratio_]
+    writes: [stom_cond_CO2_]
+    kind: closed_form
+    note: 'Fick''s law with $E$ in kg m⁻² s⁻¹, $P$ and $D_\mathrm{leaf}$ in kPa; mol CO₂ m⁻² s⁻¹. No boundary-layer term (#122): $r_a$ resists heat only.'
+
+  boundary_layer_conductance:
+    section: vapour
+    title: Boundary-layer conductance to water vapour
+    latex: |
+      g_{bw} = \frac{1.075\, P / (R\, T_{\mathrm{air},K})}{r_a} \ \text{with the energy balance on}, \qquad g_{bw} = \infty \ \text{off it}
+    code: phylloptim::Leaf::boundary_layer_cond_H2O
+    reads: [use_energy_balance_, bl_vapour_heat_ratio, atm_kpa, kPa_to_Pa, gas_constant, C_to_K]
+    writes: []
+    kind: closed_form
+    cite: Duursma-2015
+    note: 'mol m⁻² s⁻¹; bound as `gb_H2O`. The molar density of air at air temperature over the aerodynamic resistance to heat, scaled to vapour for a hypostomatous leaf. Reported only: the diffusion in the solve has no boundary-layer term (#122).'
+  stomatal_conductance_stomatal:
+    section: vapour
+    title: Stomatal conductance with the boundary layer removed
+    latex: |
+      g_{sw} = \left(\frac{1}{g_w} - \frac{1}{g_{bw}}\right)^{-1}, \qquad g_w = 1.67\, g_c \ \text{(the total leaf-to-air conductance, bound as gs\_H2O)}
+    code: phylloptim::Leaf::stom_cond_stomatal_H2O
+    also: [phylloptim::Leaf::stom_cond_H2O, phylloptim::Leaf::boundary_layer_cond_H2O]
+    reads: [use_energy_balance_]
+    writes: []
+    kind: closed_form
+    note: 'mol m⁻² s⁻¹; bound as `gs_stomatal_H2O`. Equal to the total, bit for bit, with the gate off or a shut leaf. Refused where $g_w \ge g_{bw}$: the transpiration is then more than the boundary layer can carry at that deficit and no finite stomatal conductance exists.'
+
+  # --- energy balance ----------------------------------------------------------
+  atmospheric_emissivity:
+    section: energy_balance
+    title: Clear-sky emissivity
+    latex: |
+      e_a = \max\!\big(1000\,[e_s(T_\mathrm{air}) - D_\mathrm{air}],\; e_{a,\min}\big) \ \text{Pa}, \qquad
+      \varepsilon_a = \min\!\Big(c_\varepsilon\, (e_a / T_{\mathrm{air},K})^{1/7},\; 1\Big)
+    code: phylloptim::Leaf::set_physiology
+    reads: [atm_vpd, atmos_emissivity_coef, atmos_emissivity_exponent, vapour_pressure_min, C_to_K]
+    writes: []
+    kind: closed_form
+    note: 'Brutsaert (1975) as Campbell & Norman write it, $e_a$ in pascals. Clamped at 1, above which the longwave term is exactly zero: above 43.9 °C at a 2 kPa deficit.'
+  net_radiation:
+    section: energy_balance
+    title: Isothermal net radiation
+    latex: |
+      R_{n,\mathrm{iso}} = \alpha_\mathrm{PAR}\, \frac{Q}{c_Q} + \alpha_\mathrm{NIR}\, Q_\mathrm{NIR} - (1 - \varepsilon_a)\, \sigma\, T_{\mathrm{air},K}^4
+    code: phylloptim::Leaf::set_physiology
+    reads: [alpha_PAR_, PPFD, umol_par_per_joule, alpha_NIR_, NIR_int_, stefan_boltzmann, C_to_K]
+    writes: [Rn_, Tair_]
+    kind: closed_form
+    cite: Duursma-2015
+    note: 'The net radiation a leaf at air temperature would exchange; seated once per set_physiology from the drivers, which also stores the leaf_temp driver as the air temperature `Tair_`. The leaf''s own departure from air temperature is carried by the radiative conductance.'
+  radiative_conductance:
+    section: energy_balance
+    title: Radiative conductance
+    latex: |
+      g_\mathrm{rad} = 4\, \varepsilon_l\, \sigma\, T_{\mathrm{air},K}^3
+    code: phylloptim::Leaf::set_physiology
+    reads: [leaf_emissivity, stefan_boltzmann, C_to_K]
+    writes: [g_rad_]
+    kind: closed_form
+    cite: Duursma-2015
+    note: 'The Stefan–Boltzmann emission linearised about $T_\mathrm{air}$, which keeps the balance explicit; the error is of order $(T_\mathrm{leaf} - T_\mathrm{air})/T_{\mathrm{air},K}$.'
+  aerodynamic_resistance:
+    section: energy_balance
+    title: Aerodynamic resistance to heat
+    latex: |
+      r_a = C_{ra} \sqrt{d / U}, \qquad r_a = r_{a,\mathrm{fixed}} \text{ if } d \le 0 \text{ or } U \le 0
+    code: phylloptim::Leaf::set_physiology
+    reads: [aerodynamic_resistance_coef, aerodynamic_resistance_fixed, d_, wind_speed_]
+    writes: [ra_]
+    kind: closed_form
+    note: 'Laminar boundary layer; no free-convection term and no within-canopy wind profile (#7). A non-finite $d$ or $U$ with the gate on is refused.'
+  leaf_temperature:
+    section: energy_balance
+    title: Leaf temperature at a prescribed transpiration
+    latex: |
+      T_\mathrm{leaf}(E) = \mathrm{clamp}_{[T_\min,\,T_\max]}\!\left[T_\mathrm{air} + \frac{R_{n,\mathrm{iso}} - \lambda_v E}{\rho c_p / r_a + g_\mathrm{rad}}\right], \qquad
+      \frac{dT_\mathrm{leaf}}{dE} = \begin{cases} -\lambda_v / (\rho c_p / r_a + g_\mathrm{rad}) & \text{inside the clamp} \\ 0 & \text{on it} \end{cases}
+    code: phylloptim::Leaf::leaf_temp_from_E
+    reads: [latent_heat_vap, vol_heat_cap_air, leaf_temp_min, leaf_temp_max]
+    writes: [Tleaf_]
+    kind: closed_form
+    note: 'Explicit, not iterated: $E$ is fixed by the hydraulic supply at the candidate potential and the balance gives the temperature at which the leaf sheds the rest as sensible heat and extra longwave. The one place $T_\mathrm{leaf}$ and $dT_\mathrm{leaf}/dE$ are computed.'
+  energy_balance_foc:
+    section: energy_balance
+    title: The energy-balance term of the first-order condition
+    latex: |
+      \Delta_\mathrm{EB} = \tau\, \frac{A_T\, g_c / P \;+\; A'\, (\partial g_c/\partial T)\,(c_a - c_i)/P}{g_{ci}}, \qquad
+      \tau = \frac{dT_\mathrm{leaf}}{dE}\, \frac{dE}{d\psi}, \qquad
+      \frac{\partial g_c}{\partial T} = -\, g_c\, \frac{\Delta(T_\mathrm{leaf})}{D_\mathrm{leaf}} \quad (0 \text{ on the floor } D_\min)
+    code: phylloptim::Leaf::dprofit_energy_balance_term
+    also: [phylloptim::Leaf::respiration_temp_deriv, phylloptim::Leaf::vcmax_temp_deriv, phylloptim::Leaf::thermal_cost_temp_deriv]
+    reads: [fd_step, ca, vpd_leaf_min, use_energy_balance_]
+    writes: []
+    kind: derivative
+    note: '$A_T = \partial A/\partial T_\mathrm{leaf}$ at fixed $c_i$ is a central difference of the temperature block with the fixed step $h$. The term is not observable on its own: it reaches the outputs only through the stem-route derivative.'
+
+  # --- damage, repair and acclimation ---------------------------------------------
+  acclimation_shift:
+    section: damage
+    title: Acclimation shift of the photosynthetic optimum
+    latex: |
+      \delta = \delta_0 + \Delta T_{\max}\, \frac{A}{A + K_A}, \qquad A \ge 0
+    code: phylloptim::Leaf::update_temperature_dependent_params
+    reads: [use_thermal_damage_, topt_offset_, dTopt_max_, K_A_, A_]
+    writes: []
+    kind: closed_form
+    note: 'The same shift moves both peaked-Arrhenius optima; negative $A$ is read as zero.'
+  entropy_shift:
+    section: damage
+    title: Entropy term that moves the optimum
+    latex: |
+      \Delta S'(\delta) = \frac{H_d}{\mathrm{clamp}_{[250,\,350]}(T_{\mathrm{opt},0} + \delta)} + R \ln\frac{E_a}{H_d - E_a}, \qquad
+      T_{\mathrm{opt},0} = \frac{H_d}{\Delta S - R \ln[E_a/(H_d - E_a)]}
+    code: phylloptim::Leaf::d_S_shifted
+    reads: [gas_constant, topt_clamp_min, topt_clamp_max]
+    writes: [vcmax_, jmax_]
+    kind: closed_form
+    note: 'The thermal optimum inverted for the entropy term that puts it $\delta$ K higher; refuses $E_a \le 0$ or $H_d \le E_a$, where no optimum exists.'
+  functional_fraction:
+    section: damage
+    title: Functional fraction
+    latex: |
+      F = \min\!\big(\max(1 - I - D,\; F_\min),\; 1\big), \qquad V_{cmax} \leftarrow F\, V_{cmax}, \qquad J_{max} \leftarrow F\, J_{max}
+    code: phylloptim::Leaf::update_temperature_dependent_params
+    reads: [use_thermal_damage_, I_, D_, damage_surv_floor]
+    writes: [functional_, vcmax_, jmax_]
+    kind: closed_form
+    note: 'The states enter the benefit through capacity and never the hydraulic cost; $R_d$ is not scaled.'
+  respiration_costs:
+    section: damage
+    title: Maintenance costs added to respiration
+    latex: |
+      R_d \leftarrow R_d + c_A\, A + c_\mathrm{rep}\, k_\mathrm{rec} + c_\mathrm{prot}\, \max(0, k_{i,\mathrm{base}} - k_i) + c_\mathrm{flux}\, k_\mathrm{rec,eff}\, \max(0, I)
+    code: phylloptim::Leaf::update_temperature_dependent_params
+    reads: [use_thermal_damage_, c_acclim_maint_, c_repair_maint_, c_protect_maint_, c_repair_flux_, k_i_baseline_, k_i_, k_rec_, A_, I_]
+    writes: [R_d_]
+    kind: closed_form
+    note: 'Added after the $Q_{10}$ response, so the gate-off arithmetic is untouched; all four prices default to zero on the leaf.'
+  logistic:
+    section: damage
+    title: Guarded logistic
+    latex: |
+      \mathrm{logistic}(x) = \frac{1}{1 + e^{-x}}, \qquad x \text{ clamped to } \pm 30
+    code: phylloptim::damage::logistic
+    reads: [exp_clamp]
+    writes: []
+    kind: closed_form
+  softplus:
+    section: damage
+    title: Guarded softplus
+    latex: |
+      \mathrm{softplus}(x; s) = \frac{\ln(1 + e^{s x})}{s}, \qquad s x \text{ clamped to } \pm 30
+    code: phylloptim::damage::softplus
+    reads: [exp_clamp]
+    writes: []
+    kind: closed_form
+    note: 'Softplus only for $x < 30/s$ and constant at $30/s$ above.'
+  delta_impair:
+    section: damage
+    title: Acclimation shift of the switch midpoint
+    latex: |
+      \delta_\mathrm{imp} = \delta_0 + \Delta T_{\mathrm{imp},\max}\, \frac{A}{A + K_A}, \qquad A \ge 0
+    code: phylloptim::damage::delta_impair
+    also: [phylloptim::Leaf::delta_impair_at, phylloptim::Leaf::update_temperature_dependent_params]
+    reads: [topt_offset_, dTimpair_max_, K_A_, A_]
+    writes: []
+    kind: closed_form
+  impair_switch:
+    section: damage
+    title: Impairment switch
+    latex: |
+      \frac{K}{1 + K}, \qquad K = \exp\!\left[\frac{H_\mathrm{imp}}{R}\left(\frac{1}{T'_{\mathrm{mid},K}} - \frac{1}{T_K}\right)\right]_{[-30,\,30]}, \qquad
+      T'_{\mathrm{mid},K} = \mathrm{clamp}_{[250,\,350]}(T_\mathrm{mid} + T_0 + \delta_\mathrm{imp})
+    code: phylloptim::damage::impair_switch
+    reads: [impair_H_, impair_Tmid_, gas_constant, C_to_K, topt_clamp_min, topt_clamp_max, exp_clamp]
+    writes: []
+    kind: closed_form
+    note: 'Exactly ½ at the shifted midpoint; its own parameters, and nothing of the $J_{max}$ curve, though the defaults copy that curve''s $H_d$ and $H_d/\Delta S$.'
+  k_i_eff:
+    section: damage
+    title: Arrhenius scale of the impairment rate
+    latex: |
+      k_{i,\mathrm{eff}}(T) = k_i\, \exp\!\left[\frac{E_{a,i}}{R}\left(\frac{1}{T_{\mathrm{ref},K}} - \frac{1}{T_K}\right)\right]_{[-30,\,30]}
+    code: phylloptim::damage::k_i_eff
+    reads: [k_i_, k_i_Ea_, k_i_Tref_, gas_constant, C_to_K, exp_clamp]
+    writes: []
+    kind: closed_form
+    note: 'At $E_{a,i} = 0$ the argument is an exact zero and the scale is exactly $k_i$.'
+  impairment_rate:
+    section: damage
+    title: Impairment rate
+    latex: |
+      k_\mathrm{imp}(T) = k_{i,\mathrm{eff}}(T)\, \frac{K}{1 + K}
+    code: phylloptim::Leaf::k_imp_eff
+    reads: []
+    writes: [k_imp_eff_]
+    kind: closed_form
+    note: 'Reported at the temperature the block is seated at; enters no objective.'
+  k_rec_eff:
+    section: damage
+    title: Repair rate, gated off when hot
+    latex: |
+      k_\mathrm{rec,eff}(T) = k_\mathrm{rec}\, \mathrm{logistic}\!\big(-m_\mathrm{rep}\,(T - T_\mathrm{rep,cut})\big)
+    code: phylloptim::damage::k_rec_eff
+    reads: [k_rec_, m_rep_, t_rep_cut_]
+    writes: [k_rec_eff_]
+    kind: closed_form
+  damage_rates:
+    section: damage
+    title: The dynamics
+    latex: |
+      \frac{dA}{dt} = \alpha_A\, \mathrm{softplus}(T - T_\mathrm{accl};\, s) - \beta_A\, A, \qquad
+      \frac{dI}{dt} = k_\mathrm{imp}(T)\, F - \big(k_\mathrm{rec,eff}(T) + k_\mathrm{mat}\big)\, I, \qquad
+      \frac{dD}{dt} = k_\mathrm{mat}\, I, \qquad F = 1 - I - D
+    code: phylloptim::damage::rates
+    also: [phylloptim::Leaf::damage_rates]
+    reads: [acclim_alpha_, acclim_beta_, acclim_T_, acclim_s_, k_mat_]
+    writes: []
+    kind: closed_form
+    note: 'Per day, $T$ the leaf temperature. $F$ confines fresh impairment to functional leaf, so $I + D \le 1$ without a clamp. A detached leaf has no sink for $D$; TF24t adds one.'
+  damage_trajectory:
+    section: damage
+    title: The integrator
+    latex: |
+      \text{RK4 on a piecewise-linear } T(t),\ \text{each interval cut into } m = \max\!\Big(1,\ \Big\lceil \frac{\Delta t\, k_\mathrm{fastest}}{0.1} \Big\rceil,\ \Big\lceil \frac{|\Delta T|}{0.25} \Big\rceil\Big) \text{ sub-steps}
+    code: phylloptim::damage::trajectory
+    also: [phylloptim::Leaf::damage_trajectory]
+    reads: [rk_rate_step, rk_temp_step, acclim_beta_, k_mat_]
+    writes: []
+    kind: integrator
+    note: '$k_\mathrm{fastest}$ is the largest of $k_{i,\mathrm{eff}} + k_\mathrm{rec,eff} + k_\mathrm{mat} + \beta_A$ at the two ends of the interval. The sub-step count is chosen from values, so a gradient through it is the derivative of the discrete map.'
+
+  # --- vulnerability and supply --------------------------------------------------
+  # --- vulnerability -----------------------------------------------------------
+  weibull_scale:
+    section: vulnerability
+    title: Weibull scale from P50
+    latex: |
+      b = \frac{P_{50}}{(\ln 2)^{1/c}}, \qquad b_r = \frac{P_{50,r}}{(\ln 2)^{1/c_r}}
+    code: phylloptim::Leaf::derive_vulnerability_curves_from_P50
+    also: [phylloptim::weibull_b_from_P50, phylloptim::Leaf::weibull_b_from_P50]
+    reads: [stem_P50, stem_c, root_P50, root_c]
+    writes: [stem_b, root_b]
+    kind: closed_form
+    note: 'Seated by the constructor (derive_vulnerability_curves_from_P50) and by set_traits() through the same weibull_b_from_P50. With it $\exp[-(\psi/b)^c] = 2^{-(\psi/P_{50})^c}$ identically (vignette Appendix A).'
+  critical_potential:
+    section: vulnerability
+    title: Critical potential (P95)
+    latex: |
+      \psi_\mathrm{crit} = b\,\big[\ln(1/f_\mathrm{crit})\big]^{1/c}, \qquad
+      \psi_{\mathrm{crit},r} = b_r\,\big[\ln(1/f_\mathrm{crit})\big]^{1/c_r}, \qquad f_\mathrm{crit} = 0.05
+    code: phylloptim::Leaf::derive_vulnerability_curves_from_P50
+    also: [phylloptim::Leaf::weibull_psi_at_fraction]
+    reads: [stem_b, stem_c, root_b, root_c, k_crit_fraction]
+    writes: [psi_crit, root_psi_crit]
+    kind: closed_form
+    cite: Sperry-2017
+    note: 'A quantile of the curve, not a trait. Being P95 it lies inside the P99 grid for every $c > 0$.'
+  weibull_vulnerability:
+    section: vulnerability
+    title: Stem vulnerability curve
+    latex: |
+      f(\psi) = \exp\!\big[-(\psi/b)^{c}\big] = 2^{-(\psi/P_{50})^{c}}
+    code: phylloptim::Leaf::proportion_of_conductivity
+    also: [phylloptim::Leaf::proportion_of_conductivity_kernel]
+    reads: [stem_b, stem_c]
+    writes: []
+    kind: closed_form
+    note: 'The fraction of maximum conductivity left at $\psi$, evaluated in closed form at every potential (no spline, no clamp); it also supplies the stem integral''s knot slopes and its value past the grid.'
+  vulnerability_psi_max:
+    section: vulnerability
+    title: Dry end of the knot grid (P99)
+    latex: |
+      \psi_{\max} = b\,\big[\ln(1/f_\mathrm{floor})\big]^{1/c}, \qquad f_\mathrm{floor} = 0.01
+    code: phylloptim::vulnerability_psi_max
+    also: [phylloptim::vulnerability_x_max, phylloptim::cumulative_vulnerability_integral]
+    reads: [vulnerability_conductivity_floor]
+    writes: []
+    kind: closed_form
+    note: 'Both curves'' grids stop here, and the last knot is written as $\psi_{\max}$ itself (#92). No binding reports it; root_vuln_at clamps its argument to the last knot, and the stem grid is built by the same function.'
+  cumulative_vulnerability_integral:
+    section: vulnerability
+    title: Cumulative vulnerability integral
+    latex: |
+      F(\psi) = \int_0^{\psi} f(s)\,ds = \frac{b}{c}\,\gamma\!\big(1/c,\ (\psi/b)^{c}\big),\quad F(\psi \le 0) = 0, \qquad
+      F(\infty) = \frac{b}{c}\,\Gamma(1/c)
+    code: phylloptim::cumulative_vulnerability_integral_at
+    also: [phylloptim::cumulative_vulnerability_integral_limit, phylloptim::cumulative_vulnerability_integral, phylloptim::Leaf::eval_stem_curve]
+    reads: []
+    writes: []
+    kind: closed_form
+    note: '$\gamma$ is the lower incomplete gamma (boost in the code). The code reads it where it is exact: to seed every knot, and in place of the stem spline past the grid (#157).'
+  vulnerability_spline:
+    section: vulnerability
+    title: The pre-integrated curves
+    latex: |
+      \psi_i = \psi_{\max}\, i/n,\ i = 0..n; \quad \text{on } [\psi_i, \psi_{i+1}],\ h = \psi_{i+1} - \psi_i,\ t = (\psi - \psi_i)/h: \\
+      \hat y(\psi) = y_i + t\Big(h m_i + t\big(3(y_{i+1} - y_i) - 2h m_i - h m_{i+1} + t\,[\,2(y_i - y_{i+1}) + h m_i + h m_{i+1}\,]\big)\Big) \\
+      (y, m) = (F, f) \text{ for an integral},\quad (f, f') \text{ for the root conductivity}; \quad
+      \text{past either end: } \hat y = y_\mathrm{end} + m_\mathrm{end}(\psi - \psi_\mathrm{end})
+    code: phylloptim::cumulative_vulnerability_integral
+    also: [phylloptim::vulnerability_x_max, phylloptim::Leaf::setup_transpiration, phylloptim::MultiLayerRoots::setup_vulnerability]
+    reads: [vulnerability_curve_ncontrol, vulnerability_conductivity_floor]
+    writes: []
+    kind: closed_form
+    note: 'A cubic Hermite interpolant whose knot values AND slopes are exact (odelia hermite_spline), so the code''s in-grid integral is not the closed form: measured, $|\hat F - F|$ reaches 8.7e-11 between knots at the defaults ($k_{max} = 1$), and is exact at the knots. Letting the interpolant choose slopes instead was a measured regression (setup_transpiration).'
+  stem_vulnerability_integral:
+    section: vulnerability
+    title: The stem integral as the code reads it
+    latex: |
+      \tilde F(\psi) = \begin{cases} s\,\hat F_{b_0}(\psi/s) & \psi/s \le \psi_{\max}(b_0) \\
+      F(\psi) & \psi/s > \psi_{\max}(b_0) \end{cases}, \qquad s = b / b_0
+    code: phylloptim::Leaf::stem_curve_integral
+    also: [phylloptim::Leaf::eval_stem_curve, phylloptim::Leaf::setup_transpiration, phylloptim::Leaf::perturb_stem_P50]
+    reads: [stem_b, stem_c, vulnerability_curve_ncontrol]
+    writes: []
+    kind: closed_form
+    note: '$b_0$ is the scale the spline was built at: $s = 1$ except after perturb_stem_P50(), which moves $b$ by the homogeneity identity $F_b(\psi) = s F_{b_0}(\psi/s)$ rather than rebuilding (derivative work only; set_traits() is the way back). Past the grid it reads the closed form at the current $(b, c)$, continuous in value and slope at the join (#157); a negative potential is a stem_curve_domain error.'
+  root_vulnerability:
+    section: vulnerability
+    title: Root conductivity as the code reads it
+    latex: |
+      \hat f_r(\psi) = \hat y_{(f_r, f_r')}\big(\min(\max(\psi, 0),\ \psi_{\max,r})\big), \qquad
+      f_r(\psi) = \exp\!\big[-(\psi/b_r)^{c_r}\big]
+    code: phylloptim::MultiLayerRoots::root_vuln_at
+    also: [phylloptim::MultiLayerRoots::setup_vulnerability, phylloptim::Leaf::setup_root_vulnerability]
+    reads: [root_b, root_c, vulnerability_curve_ncontrol]
+    writes: []
+    kind: closed_form
+    note: 'The conductivity spline (values and slopes exact at the knots) read at an argument clamped into the grid (#77), so past P99 it reports the floor conductivity, 0.01, however dry the layer: #85''s question. Not bound.'
+  root_vulnerability_integral:
+    section: vulnerability
+    title: Root integral as the code reads it
+    latex: |
+      \hat F_r(\psi) = \min\!\Big(\hat y_{(F_r, f_r)}(\psi),\ \frac{b_r}{c_r}\Gamma(1/c_r)\Big)
+    code: phylloptim::MultiLayerRoots::root_vuln_integral_at
+    also: [phylloptim::MultiLayerRoots::setup_vulnerability, phylloptim::Leaf::setup_root_vulnerability, phylloptim::cumulative_vulnerability_integral_limit]
+    reads: [root_b, root_c, vulnerability_curve_ncontrol]
+    writes: []
+    kind: closed_form
+    note: 'Unlike the stem, past the grid the root integral is the spline''s LINEAR extension from the last knot, capped at its limit $F_r(\infty)$ (binds past 7.3132 MPa at the defaults), not the closed form: 3.46212 against 3.46176 at 7 MPa. Uncapped, a drier layer would conduct more (#1). No binding: read through E_from_Soil_to_Root_Collar on the general branch, where the layer flux is $(\psi_c - \psi_s - \rho_w g z)\,\hat F/(r_{H,\min}\,\Delta\psi)$ at $r_{V,\Sigma} = 0$.'
+
+  # --- supply ------------------------------------------------------------------
+  stem_transpiration:
+    section: supply
+    title: Stem supply
+    latex: |
+      E(\psi_\mathrm{stem}; \psi_\mathrm{up}) = k_{max}\big[\tilde F(\psi_\mathrm{stem}) - \tilde F(\psi_\mathrm{up})\big]
+      \;\approx\; k_{max}\!\int_{\psi_\mathrm{up}}^{\psi_\mathrm{stem}} f(u)\,du
+    code: phylloptim::Leaf::transpiration
+    also: [phylloptim::Leaf::stem_curve_integral]
+    reads: [leaf_specific_conductance_max, stem_b, stem_c]
+    writes: []
+    kind: closed_form
+    cite: Sperry-2017
+    note: 'kg m⁻² s⁻¹. $\psi_\mathrm{up}$ is the collar on the collar route and $\psi_\mathrm{soil}$ on the stem route; a reversed pair gives a negative flux. A one-entry memo keyed on the two potentials (invalidated by set_physiology and perturb_stem_P50) returns the same value bit for bit.'
+  stem_transpiration_quadrature:
+    section: supply
+    title: Stem supply by direct quadrature
+    latex: |
+      E_\mathrm{quad} = k_{max}\,\mathrm{Simpson}_{\epsilon}\!\int_{\psi_\mathrm{up}}^{\psi_\mathrm{stem}} f(u)\,du \;\to\; k_{max}\big[F(\psi_\mathrm{stem}) - F(\psi_\mathrm{up})\big]
+    code: phylloptim::Leaf::transpiration_full_integration
+    also: [phylloptim::Leaf::proportion_of_conductivity, phylloptim::Leaf::proportion_of_conductivity_kernel]
+    reads: [leaf_specific_conductance_max, stem_b, stem_c]
+    writes: []
+    kind: integrator
+    note: 'An independent check on the spline, not on the production path: adaptive Simpson at absolute tolerance $\epsilon$ = integration_tol (initialize_integrator(), default 1e-8), against the closed form. It converges to it: measured max |error| at $k_{max} = 1$ and three stem curves is 2.7e-06 at $\epsilon$ = 1e-6, 1.7e-08 at 1e-8 (the default; 1.7x the requested tolerance at $c = 5$, the local Simpson criterion not being a global bound), 4.2e-11 at 1e-10, 4.4e-13 at 1e-12 and 2.7e-15 at 1e-14, the rounding floor.'
+  stem_transpiration_inverse:
+    section: supply
+    title: Stem potential from a transpiration
+    latex: |
+      \psi_\mathrm{stem} = \tilde F^{-1}\!\big(E/k_{max} + \tilde F(\psi_\mathrm{up})\big), \qquad
+      \psi_\mathrm{stem} = \psi_\mathrm{up} \ \text{if } E = 0 \text{ and } \psi_\mathrm{up} > \psi_{\max}
+    code: phylloptim::Leaf::transpiration_to_psi_stem
+    also: [phylloptim::Leaf::stem_curve_integral, phylloptim::Leaf::stem_curve_integral_inverse, phylloptim::Leaf::invert_stem_curve, phylloptim::Leaf::invert_stem_curve_past_grid]
+    reads: [leaf_specific_conductance_max, stem_b, stem_c]
+    writes: []
+    kind: closed_form
+    note: 'The forward table inverted (a quintic start plus Newton inside one knot span), not a fitted inverse; past the table, Newton on the closed form. Infeasible (stem_curve_domain) where the target is negative or at or past $F(\infty)$: no stem potential carries that flow. Past P99 the curve is flat to rounding, so a zero flux returns the upstream potential rather than inverting.'
+  layer_midpoints:
+    section: supply
+    title: Layer midpoints and gravity head
+    latex: |
+      z_i = \tfrac{1}{2}(d_{i-1} + d_i),\ d_0 = 0, \qquad h_i = \rho_w g\, z_i
+    code: phylloptim::MultiLayerRoots::set_soil_state
+    reads: [soil_depth, gravity_head]
+    writes: [soil_depth_, z_soil_mid_, soil_number_of_depths_]
+    kind: closed_form
+    note: 'Correct at any layer spacing (#626). The head $h_i$ is not bound; it enters through multilayer_uptake. Plant may supply precomputed midpoints instead (use_precomputed_z_soil_mid_), a path not reachable from R.'
+  root_network_from_carbon:
+    section: supply
+    title: Root resistances from root carbon
+    latex: |
+      \Delta z_i = d_i - d_{i-1}, \quad c_{V,i} = C_i/3, \quad c_{H,i} = 2C_i/3, \quad
+      r_{H,\min,i} = \frac{\beta_{R,H}}{c_{H,i}}, \quad r_{V,i} = \frac{\beta_{R,V}\,\Delta z_i^2}{c_{V,i}}, \quad
+      r_{V,\Sigma,i} = \sum_{j \le i} r_{V,j}
+    code: phylloptim::root_network_from_carbon
+    also: [phylloptim::layer_thicknesses]
+    reads: [beta_R_H, beta_R_V]
+    writes: [c_r_V_, c_r_H_, r_R_H_min, r_R_V, r_R_V_sum, max_soil_layer]
+    kind: closed_form
+    cite: Potkay-2021
+    note: '$C_i$ is root carbon per unit leaf area, kg C m⁻² (hazard 4: absolute carbon gives resistances wrong by the leaf area, silently). The network is truncated at the deepest layer with carbon, which set_physiology stores as max_soil_layer; an interior zero-carbon layer gets $r_{H,\min} = 0$ (infinite conductance, backwards, preserved) and passes the running sum through. A helper the caller runs, not part of the solve (#33): the leaf reads only $r_{H,\min}$ and $r_{V,\Sigma}$. $\Delta z_i^2$ per layer is what makes $\sum r_V$ independent of the slicing (#626).'
+  multilayer_uptake:
+    section: supply
+    title: Multi-layer root uptake
+    latex: |
+      E_i = \frac{\psi_c - \psi_{s,i} - \rho_w g z_i}{r_{H,\min,i}\,\Delta\psi_i / I_i + r_{V,\Sigma,i}}, \qquad
+      E_\mathrm{up} = M_w \sum_{i \le L} E_i \\
+      \Delta\psi_i = |\psi_c - \psi_{s,i}|,\quad
+      I_i = \hat F_r(\psi_\mathrm{hi}) - \hat F_r(\max(\psi_\mathrm{lo}, 0)) + \max(0, -\psi_\mathrm{lo}) \\
+      E_i = \frac{-\rho_w g z_i}{r_{H,\min,i}/\hat f_r(\psi_c) + r_{V,\Sigma,i}} \ \text{if } |\psi_c - \psi_{s,i}| < 10^{-8}, \qquad
+      E_i = 0 \ \text{if } |\psi_c - \psi_{s,i} - \rho_w g z_i| < 10^{-8}
+    code: phylloptim::MultiLayerRoots::uptake_impl
+    also: [phylloptim::MultiLayerRoots::uptake_at, phylloptim::MultiLayerRoots::supply_over, phylloptim::MultiLayerRoots::held_supply, phylloptim::MultiLayerRoots::set_soil_state, phylloptim::MultiLayerRoots::set_root_network, phylloptim::Leaf::E_from_Soil_to_Root_Collar]
+    reads: [psi_soil, gravity_head, kg_per_mol_h2o, r_R_H_min, r_R_V_sum]
+    writes: [E_up_, soil_consumption_]
+    kind: closed_form
+    cite: Potkay-2021
+    note: 'Per rooted layer ($i \le L$ = max_soil_layer) in parallel to the collar: the horizontal resistance is $r_{H,\min}$ over the MEAN root conductivity across the span between the collar and the layer ($\psi_\mathrm{lo}, \psi_\mathrm{hi}$ its ends), from two reads of the root integral; conductivity is 1 at negative (positive-pressure) potentials. $E_i < 0$ is a layer gaining water (hydraulic redistribution). soil_consumption_ keeps $E_i$ in mol m⁻² s⁻¹ and E_up_ is in kg (the unit split is deliberate); unrooted layers stay 0.'
+  single_series_supply:
+    section: supply
+    title: Single-potential supply
+    latex: |
+      E_\mathrm{up} = M_w\,\frac{\psi_c - \psi_s - h}{r}
+    code: phylloptim::SinglePotential::uptake_from
+    also: [phylloptim::SinglePotential::set_soil_state, phylloptim::SinglePotential::set_supply_resistances, phylloptim::Leaf::set_supply_single, phylloptim::Leaf::E_from_Soil_to_Root_Collar]
+    reads: [psi_soil, single_resistance, single_gravity_head, kg_per_mol_h2o]
+    writes: [E_up_, soil_consumption_, single_psi_soil_]
+    kind: closed_form
+    note: 'Ohm''s law through one series resistance, with no vulnerability term and no kinks (so its collar derivative never asks for the finite-difference fallback). The one-entry soil_consumption_ holds the molar flux. single_psi_soil_ is the psi_soil driver as this path holds it, seated by set_physiology. The head $h$ is configuration, not derived from a depth (hazard 6); the multi-layer rule for one layer of thickness $d$ is $h = \rho_w g\, d/2$. A zero or non-finite resistance, or a non-zero $r_{H,\min}$, is refused.'
+
+  # --- the solve -----------------------------------------------------------------
+  intercellular_co2:
+    section: solve
+    title: Intercellular CO₂, where diffusive supply meets demand
+    latex: |
+      g(c_i) = 10^{-6}\, A(c_i) - \frac{g_c\,(c_a - c_i)}{10^{3}\, P} = 0, \qquad c_i \in [\Gamma^* c_P,\; c_a];
+      \qquad c_i = \Gamma^* c_P \ \text{ if } g(\Gamma^* c_P)\, g(c_a) > 0
+    code: phylloptim::Leaf::psi_stem_to_ci
+    also: [phylloptim::Leaf::assim_minus_stom_cond_CO2, phylloptim::Leaf::ci_at_compensation_point]
+    reads: [ca, atm_kpa, umol_to_mol, kPa_to_Pa]
+    writes: [ci_]
+    kind: closed_form
+    note: '$A$ in µmol m⁻² s⁻¹ (net, the assimilation entry), $g_c$ in mol m⁻² s⁻¹ (the stomatal_conductance entry), $c_i$, $c_a$ in Pa, $P$ in kPa. TOMS748 to 1e-13 absolute plus relative in $c_i$. $g$ is negative at $\Gamma^* c_P$, so a root exists exactly when $A(c_a) > 0$; otherwise (no root in the bracket, or any solver failure with the energy balance on) $c_i$ is put at the compensation point, where gross assimilation is zero and net is $-R_d$.'
+
+  assim_max:
+    section: solve
+    title: Assimilation with the stomata wide open
+    latex: |
+      A_\max = A(c_a)
+    code: phylloptim::Leaf::set_physiology
+    also: [phylloptim::Leaf::prepare_collar_solve]
+    reads: [ca]
+    writes: [assim_max_]
+    kind: closed_form
+    note: 'Seated once per set_physiology at the DRIVER temperature, with the energy balance on as well as off (the air-temperature baseline): it asks whether any open, transpiring operating point can pay for respiration. $A_\max < 0$ is the collar solve''s light shut-down (kind `shade-death`). It is also, by the sign argument in intercellular_co2, the condition for the $c_i$ root to exist at that temperature.'
+
+  leaf_state_chain:
+    section: solve
+    title: The operating point at a candidate stem potential
+    latex: |
+      \psi_\mathrm{stem} \;\to\; E = E(\psi_\mathrm{stem};\psi_\mathrm{up}) \;\to\; T_\mathrm{leaf}(E),\ D_\mathrm{leaf} \;\to\; g_c \;\to\; c_i \;\to\; A(c_i)
+      \quad (\psi_\mathrm{up} < \psi_\mathrm{stem});
+      \qquad E = g_c = 0,\ c_i = \Gamma^* c_P,\ A = A(\Gamma^* c_P) = -R_d \quad (\psi_\mathrm{up} \ge \psi_\mathrm{stem})
+    code: phylloptim::Leaf::set_leaf_states_rates_from_psi_stem
+    reads: [atm_kpa, use_energy_balance_]
+    writes: [transpiration_, stom_cond_CO2_, ci_, assim_colimited_]
+    kind: closed_form
+    note: 'One forward pass, no iteration: $E$ is the hydraulic supply at the candidate potential whatever photosynthesis is doing; with the energy balance on, the temperature block and the deficit are re-seated at $T_\mathrm{leaf}(E)$ before $c_i$ is solved, and at $T_\mathrm{leaf}(0)$ on the zero-flow branch. Potentials are positive magnitudes, so $\psi_\mathrm{up} \ge \psi_\mathrm{stem}$ is no flow or a reversed gradient.'
+
+  no_flow_state:
+    section: solve
+    title: The no-flow exits of the collar solve
+    latex: |
+      \psi_\mathrm{stem}^* = \begin{cases} \psi_\mathrm{crit} & \text{hydraulic shut-down} \\ \psi_r^* & \text{shade death} \end{cases},
+      \qquad E = g_c = E_\mathrm{up} = 0,\quad c_i = \Gamma^* c_P,\quad A = -R_d,\quad J = -R_d - C(\psi_\mathrm{stem}^*)
+    code: phylloptim::Leaf::set_shutdown_state
+    also: [phylloptim::Leaf::prepare_collar_solve, phylloptim::Leaf::no_flow_profit, phylloptim::Leaf::polish_bracket_bound]
+    reads: [psi_crit]
+    writes: [opt_psi_stem_, opt_root_psi_, profit_, transpiration_, stom_cond_CO2_, ci_, assim_colimited_, E_up_]
+    kind: closed_form
+    note: 'Hydraulic shut-down: no collar potential both moves water and stays inside the critical potentials (wettest layer at or past $\psi_\mathrm{crit}$; uptake negative even at $\psi_\mathrm{crit}$; continuity root at or past $\psi_\mathrm{crit}$; inverted bracket). The recorded collar $\psi_r^*$ is $\psi_\mathrm{crit}$, the supply''s critical potential, the continuity root and the supply''s critical potential respectively. Shade death ($A_\max < 0$): both potentials sit at the zero-uptake collar, polished to 1e-15, and the leaf respires. With the energy balance on, $R_d$ and $\Gamma^*$ are taken at $T_\mathrm{leaf}(0)$, the hottest the leaf gets. $C$ is the seated curve''s cost (TF24 here), read through its binding. The stem route''s no-flow point is in profit.'
+
+  profit:
+    section: solve
+    title: The objective at a prescribed potential
+    latex: |
+      J = h(A) - C(\psi_\mathrm{stem}, \psi_\mathrm{up}), \quad h(A) = A \text{ for a difference curve};
+      \qquad \psi_\mathrm{stem} = \mathrm{clamp}_{[\psi_\mathrm{soil},\,\psi_\mathrm{crit}]}(\psi) \ \text{(stem route)}, \qquad
+      \psi_r = \mathrm{clamp}_{[\psi_a,\,\psi_b]}(\psi) \ \text{(collar route)}
+    code: phylloptim::Leaf::profit_psi_stem_for
+    also: [phylloptim::Leaf::profit_psi_stem_TF, phylloptim::Leaf::evaluate_psi_stem, phylloptim::Leaf::evaluate_psi_stem_at, phylloptim::Leaf::evaluate_root_collar_psi, phylloptim::Leaf::evaluate_root_collar_psi_for, phylloptim::Leaf::profit_at_collar_psi]
+    reads: [psi_crit]
+    writes: [profit_, opt_psi_stem_, opt_root_psi_]
+    kind: closed_form
+    cite: Wolf-2016
+    note: '$A$ is the net assimilation of leaf_state_chain at the operating point and $C$ the seated curve''s cost (the costs section), so $J$ is in µmol m⁻² s⁻¹ for the five difference curves (TF24, CF77, JS22, CMax, TF24_floor). SOX and JW26 report the product $A\,g(\psi)$ (their first-order condition is the log link, $h = \log$) and ProfitMax a normalised profit; those are the costs section''s. Stem route: the upstream potential is $\psi_\mathrm{soil}$, and soil drier than $\psi_\mathrm{crit}$ has the one feasible point $\psi_\mathrm{soil}$. Collar route: $[\psi_a, \psi_b]$ is the collar_bracket and $\psi_\mathrm{stem}$ follows by stem_from_collar. Not an optimum: the kind is `prescribed`.'
+
+  foc_stem:
+    section: solve
+    title: The first-order condition on the stem route
+    latex: |
+      \frac{dJ}{d\psi_\mathrm{stem}} = h'(A)\, A'(c_i)\, \frac{dc_i}{d\psi_\mathrm{stem}} - \frac{\partial C}{\partial \psi_\mathrm{stem}}, \qquad
+      \frac{dc_i}{d\psi_\mathrm{stem}} = \frac{(\partial g_c/\partial \psi_\mathrm{stem})\,(c_a - c_i)/(10^{3} P)}{10^{-6} A'(c_i) + g_c/(10^{3} P)}, \qquad
+      \frac{\partial g_c}{\partial \psi_\mathrm{stem}} = \frac{g_c}{E}\, k_{\max} f(\psi_\mathrm{stem});
+      \qquad \frac{dJ}{d\psi_\mathrm{stem}} = -\frac{\partial C}{\partial \psi_\mathrm{stem}} \ \text{at } c_i = \Gamma^* c_P
+    code: phylloptim::Leaf::dprofit_dpsi_stem
+    also: [phylloptim::Leaf::dprofit_dpsi_stem_checked]
+    reads: [ca, atm_kpa, umol_to_mol, kPa_to_Pa, leaf_specific_conductance_max, use_energy_balance_]
+    writes: []
+    kind: derivative
+    note: '$dc_i/d\psi$ by the implicit function theorem on the residual of intercellular_co2, so the derivative never passes through the $c_i$ iteration; $A''$ by forward AD of the assimilation kernel. Upstream potential fixed at $\psi_\mathrm{soil}$. Returns (value, feasible): feasible is 0 on the no-flow exit ($\psi_\mathrm{up} \ge \psi_\mathrm{stem}$, a 0.0 sentinel) and on the compensation-point branch, where the residual is not zero and only the cost term survives. The energy-balance term is energy_balance_foc.'
+
+  foc_collar:
+    section: solve
+    title: The first-order condition on the collar route
+    latex: |
+      \frac{dJ}{d\psi_r} = h'(A)\, A'(c_i)\, \frac{dc_i}{d\psi_r} - \frac{\partial C}{\partial \psi_\mathrm{stem}} \frac{d\psi_\mathrm{stem}}{d\psi_r} - \frac{\partial C}{\partial \psi_r}, \qquad
+      \frac{dc_i}{d\psi_r} = \frac{\big[\frac{\partial g_c}{\partial \psi_\mathrm{stem}} \frac{d\psi_\mathrm{stem}}{d\psi_r} + \frac{\partial g_c}{\partial \psi_r}\big](c_a - c_i)/(10^{3} P)}{10^{-6} A'(c_i) + g_c/(10^{3} P)},
+      \qquad \frac{d\psi_\mathrm{stem}}{d\psi_r} = \frac{E_\mathrm{up}'(\psi_r)/k_{\max} + f(\psi_r)}{f(\psi_\mathrm{stem})}, \qquad
+      \frac{\partial g_c}{\partial \psi_r} = -\frac{g_c}{E}\, k_{\max} f(\psi_r)
+    code: phylloptim::Leaf::dprofit_at_collar_psi
+    also: [phylloptim::Leaf::dprofit_droot_collar_psi, phylloptim::Leaf::dprofit_droot_collar_psi_checked]
+    reads: [ca, atm_kpa, umol_to_mol, kPa_to_Pa, leaf_specific_conductance_max, use_energy_balance_]
+    writes: []
+    kind: derivative
+    note: 'The collar potential is the decision variable and $\psi_\mathrm{stem}$ follows by continuity (stem_from_collar), whose slope is the second fraction: $E_\mathrm{up}''$ is the soil-to-collar conductance (analytic, with a 1e-6 central difference of the transport at a layer kink). $\partial C/\partial \psi_r$ is non-zero only for a curve whose cost reads the upstream potential (JS22). The same two sentinels as the stem route: no flow ($\psi_r \ge \psi_\mathrm{stem}$) returns 0.0 with feasible 0, and the compensation-point branch drops the assimilation term.'
+
+  continuity_root:
+    section: solve
+    title: Continuity between soil and stem at the collar
+    latex: |
+      E_\mathrm{col}(\psi_r) = E_\mathrm{up}(\psi_r) - E(\psi_\mathrm{crit};\psi_r) = 0 \ \Rightarrow\ \psi_{r,\mathrm{crit}}, \qquad
+      E_\mathrm{up}(\psi_r) = 0 \ \Rightarrow\ \psi_{r,0}, \qquad \psi_r \in [\min_i \psi_{\mathrm{soil},i},\; \psi_\mathrm{crit}]
+    code: phylloptim::Leaf::find_root_psi
+    also: [phylloptim::Leaf::E_column, phylloptim::Leaf::E_column_zero]
+    reads: [psi_crit]
+    writes: []
+    kind: identity
+    note: '$\psi_{r,\mathrm{crit}}$ (root_crit) is the collar at which the soil supplies what the stem carries with the stem at its critical potential, the dry end of the bracket; $\psi_{r,0}$ (root_zero_E) the collar at which uptake is zero, the wet end. $E_\mathrm{up}$ and $E$ are the hydraulics section''s, read through their bindings. TOMS748 stops at 1e-4 absolute plus relative: plenty for a bracket, and a bound that turns out to BE the answer is re-solved to 1e-15 first (polish_bracket_bound).'
+
+  stem_from_collar:
+    section: solve
+    title: The stem potential a collar potential carries
+    latex: |
+      \psi_\mathrm{stem} = G^{-1}\!\big(E_\mathrm{up}(\psi_r)/k_{\max} + G(\psi_r)\big), \quad G(\psi) = \int_0^{\psi} f(u)\,du
+      \quad\Longleftrightarrow\quad E(\psi_\mathrm{stem};\psi_r) = E_\mathrm{up}(\psi_r)
+    code: phylloptim::Leaf::find_psi_stem_from_psi_root
+    reads: [leaf_specific_conductance_max]
+    also: [phylloptim::Leaf::transpiration_to_psi_stem]
+    writes: []
+    kind: closed_form
+    note: 'What the soil delivers to the collar the stem carries to the leaf. $G$ is the stem vulnerability curve''s cumulative integral and $G^{-1}$ its inverse, both the hydraulics section''s; a zero flux past the knot grid returns the upstream potential.'
+
+  collar_bracket:
+    section: solve
+    title: The feasible collar interval
+    latex: |
+      [\psi_a, \psi_b] = \big[\psi_{r,0},\ \min(\psi_{r,\mathrm{crit}},\ \psi_{\mathrm{crit},\mathrm{supply}})\big];
+      \quad \text{shut down if } \min_i \psi_{\mathrm{soil},i} \ge \psi_\mathrm{crit},\ E_\mathrm{col}(\psi_\mathrm{crit}) < 0,\ \psi_{r,\mathrm{crit}} \ge \psi_\mathrm{crit} \text{ or } \psi_b < \psi_a;
+      \quad \psi_r = \tfrac{1}{2}(\psi_a + \psi_b) \text{ if } \psi_b - \psi_a \le \epsilon_\mathrm{GSS}
+    code: phylloptim::Leaf::prepare_collar_solve
+    also: [phylloptim::Leaf::supply_psi_crit, phylloptim::Leaf::set_shutdown_state]
+    reads: [psi_crit, root_psi_crit, GSS_tol_abs]
+    writes: []
+    kind: closed_form
+    note: '$\psi_{\mathrm{crit},\mathrm{supply}}$ is the root''s own 5%-conductivity potential on the multi-layer supply and $\psi_\mathrm{crit}$ on the single one. The dry end is whichever limit binds first: the continuity root (kind `boundary-crit` if the optimum pins there) or the root limit (`boundary-root-crit`); the clamp can invert the interval, which is a shut-down, not an optimisation over an empty set. A collapsed interval holds the collar at its midpoint and optimises only $\psi_\mathrm{stem}$ (kind `determined`). Shade death ($A_\max < 0$) is no_flow_state.'
+
+  operating_point_kind:
+    section: solve
+    title: Which condition placed the optimum
+    latex: |
+      \text{hydraulic-shutdown or shade-death or determined at the bracket (collar\_bracket, no\_flow\_state); otherwise}\quad
+      \text{interior if } J'(\psi_a^+) > 0 > J'(\psi_b), \text{ with } J'(\psi^*) = 0;\quad
+      \text{boundary-soil if } J'(\psi_a^+) \le 0;\quad
+      \text{boundary-crit or boundary-root-crit if } J'(\psi_b) \ge 0;\quad
+      \text{solver-refused if both}
+    code: phylloptim::Leaf::maximise_profit_over_collar
+    also: [phylloptim::Leaf::OperatingPointKind, phylloptim::Leaf::prepare_collar_solve, phylloptim::Leaf::find_root_collar_psi_for]
+    reads: [collar_root_tol, GSS_tol_abs]
+    writes: [opt_root_psi_, opt_psi_stem_, profit_]
+    kind: identity
+    note: 'The collar solve root-finds $J'' = 0$ (foc_collar) to collar_root_tol inside the bracket rather than searching $J$, so a bound that binds has to be detected by the sign of $J''$ at each end: $\psi_a^+$ is the wet end stepped in by 1e-6 of the width (the wet end itself is the no-flow sentinel), $\psi_b$ the dry end. A pinned bound is polished to 1e-15 before it is returned. Codes follow the enum: 1 interior, 2 boundary-soil, 3 boundary-crit, 4 boundary-root-crit, 5 determined, 6 hydraulic-shutdown, 7 shade-death, 9 solver-refused. The kind is not bound: operating_point_kind() is C++ only.'
+
+  # --- cost curves and the marginal cost of water --------------------------------
+  # --- the cost curves ---------------------------------------------------------
+  cost_TF24:
+    section: costs
+    title: TF24 hydraulic cost
+    latex: |
+      C_\mathrm{TF24}(\psi) = \gamma\,\big[1 - f(\psi)\big]^{\beta}, \qquad f(\psi) = \exp\!\big[-(\psi/b)^{c}\big]
+    code: phylloptim::Leaf::hydraulic_cost_TF
+    also: [phylloptim::Leaf::hydraulic_cost_TF_kernel]
+    reads: [TF24_cost_scale, TF24_beta2, stem_b, stem_c]
+    writes: [hydraulic_cost_]
+    kind: closed_form
+    cite: Towers-2024
+    note: 'Carbon units, a function of the absolute stem potential. Written into `hydraulic_cost_` by the double entry point; the kernel itself is pure so the AD pass of `cost_deriv` cannot write state.'
+  cost_CF77:
+    section: costs
+    title: Cowan–Farquhar cost
+    latex: |
+      C_\mathrm{CF77} = p\,E, \qquad p = \begin{cases} \lambda_\mathrm{CF} & g_\beta = 0 \\ \lambda_\mathrm{CF} / \min(\beta, 1) & g_\beta = 1 \end{cases}, \qquad \beta = \frac{\theta - \theta_w}{\theta_{fc} - \theta_w}
+    code: phylloptim::Leaf::hydraulic_cost_CF77
+    also: [phylloptim::Leaf::cf77_price]
+    reads: [CF77_lambda_, CF77_soil_beta_]
+    writes: [hydraulic_cost_]
+    kind: closed_form
+    cite: Cowan-1977
+    note: '$E$ is the transpiration the supply gives between the two potentials (the hydraulics section). The price $p$ is cf77_soil_price (the soil-moisture section): the bare $\lambda_\mathrm{CF}$ with the gate off, divided by the clamped Medlyn-2011 factor with it on.'
+  cost_JS22:
+    section: costs
+    title: Joshi–Stocker hydraulic term
+    latex: |
+      C_\mathrm{JS22}(\psi; \psi_u) = \gamma_J\,(\psi - \psi_u)^2
+    code: phylloptim::Leaf::hydraulic_cost_JS22
+    reads: [JS22_gamma]
+    writes: [hydraulic_cost_]
+    kind: closed_form
+    cite: Joshi-2022
+    note: 'Quadratic in the soil-to-leaf DROP, the one cost that reads it rather than the absolute potential; $\psi_u$ is the upstream potential (psi_soil on the stem route, the collar on the collar route). Joshi-2022''s capacity term $\alpha J_{max}$ is not implemented, so this is their hydraulic cost and not their model.'
+  cost_CMax:
+    section: costs
+    title: CMax cost
+    latex: |
+      C_\mathrm{CMax}(\psi; \psi_u) = \int_{\psi_u}^{\psi} (a\,x + b)\,dx = (\psi - \psi_u)\Big[\tfrac{a}{2}(\psi + \psi_u) + b\Big]
+    code: phylloptim::Leaf::hydraulic_cost_CMax
+    reads: [CMax_a, CMax_b]
+    writes: [hydraulic_cost_]
+    kind: closed_form
+    cite: Wolf-2016
+    note: 'The marginal form $a\psi + b$ is Anderegg-2018''s (as TractLSM implements it); Wolf-2016 asked only for a concave-up cost. Evaluated FACTORED: the difference-of-squares form the vignette table prints is the same function but cancels as the drop closes (1.2e-4 wrong at a 1e-12 drop).'
+  cost_TF24_floor:
+    section: costs
+    title: TF24 with a price floor
+    latex: |
+      C_\mathrm{TF24f}(\psi; \psi_u) = \gamma\,\big[1 - f(\psi)\big]^{\beta} + \lambda_o\,E
+    code: phylloptim::Leaf::hydraulic_cost_TF24_floor
+    also: [phylloptim::Leaf::hydraulic_cost_TF_kernel]
+    reads: [TF24_cost_scale, TF24_beta2, TF24_floor_lambda_o]
+    writes: [hydraulic_cost_]
+    kind: closed_form
+    note: 'TF24''s own cost at TF24''s own parameters plus a CF77 price, each the parent''s expression in its operand order, so $\lambda_o = 0$ is TF24 and $\gamma = 0$ is CF77 bit for bit.'
+  shadow_cost:
+    section: costs
+    title: The shadow part of the cost
+    latex: |
+      C_\mathrm{shadow} = \begin{cases} \lambda_o\,E & \text{TF24\_floor} \\ 0 & \text{every other curve} \end{cases}
+    code: phylloptim::Leaf::shadow_cost
+    reads: [TF24_floor_lambda_o]
+    writes: []
+    kind: closed_form
+    note: 'The part of the cost that is a price rather than a realised carbon loss, at the reported $E$. Zero on the other curves means the curve does not separate the two, not that its cost is all realised carbon (CF77''s whole cost could be read either way).'
+  sox_reduction:
+    section: costs
+    title: SOX reduction factor
+    latex: |
+      g_\mathrm{SOX}(\psi) = \max\!\left(\frac{f(\psi) - k_\mathrm{crit}}{1 - k_\mathrm{crit}},\; 0\right)
+    code: phylloptim::Leaf::sox_reduction
+    reads: [k_crit_fraction]
+    writes: []
+    kind: closed_form
+    cite: Eller-2020
+    note: '1 at zero tension and exactly 0 at $\psi_\mathrm{crit}$, where $f = k_\mathrm{crit} = 0.05$ by construction, so it takes no parameter. Clamped at zero (Eller-2020 do not): without it a shut-down leaf ($A = -R_d$) past $\psi_\mathrm{crit}$ reports a positive product. Written so a NaN propagates.'
+  sox_reduction_deriv:
+    section: costs
+    title: Slope of the SOX reduction factor
+    latex: |
+      g_\mathrm{SOX}'(\psi) = -\frac{\lvert f'(\psi)\rvert}{1 - k_\mathrm{crit}}, \qquad \lvert f'\rvert = f\,\frac{c}{b}\Big(\frac{\psi}{b}\Big)^{c-1}
+    code: phylloptim::Leaf::sox_reduction_deriv
+    reads: [k_crit_fraction, stem_b, stem_c]
+    writes: []
+    kind: closed_form
+    cite: Eller-2020
+    note: 'Analytic. Not bound: read through `lambda_SOX` $= -A\,(g''/g)/(k_{max} f)$, inverted with the package''s own $g$, $f$ and $A$ at the same point. Not zeroed past $\psi_\mathrm{crit}$ where $g$ is, which no caller reaches (the objective is zero there).'
+  jw26_reduction:
+    section: costs
+    title: Jones reduction factor
+    latex: |
+      g_\mathrm{JW}(\psi) = \max\!\left(1 - \frac{\psi}{\psi_\mathrm{crit}},\; 0\right)
+    code: phylloptim::Leaf::jw26_reduction
+    reads: [psi_crit]
+    writes: []
+    kind: closed_form
+    cite: Jones-2026
+    note: 'Linear between the same two anchors as SOX. $\psi_\mathrm{crit}$ is DERIVED (the 95% quantile of the stem curve), where Jones-2026 supply their own $P_\mathrm{crit}$. Clamped at zero past it.'
+  jw26_reduction_deriv:
+    section: costs
+    title: Slope of the Jones reduction factor
+    latex: |
+      g_\mathrm{JW}'(\psi) = \begin{cases} -1/\psi_\mathrm{crit} & \psi \le \psi_\mathrm{crit} \\ 0 & \psi > \psi_\mathrm{crit} \end{cases}
+    code: phylloptim::Leaf::jw26_reduction_deriv
+    reads: [psi_crit]
+    writes: []
+    kind: identity
+    cite: Jones-2026
+    note: 'Not bound and called by nothing in the solve (only tests/cpp/test_leaf.cpp): `cost_deriv<JW26>` writes the collapsed $-g''/g = 1/(\psi_\mathrm{crit} - \psi)$ directly.'
+  leastcost_flux:
+    section: costs
+    title: Least-cost weighted resource use
+    latex: |
+      W = \frac{E}{M_w} + \beta_\mathrm{LC}\, V_{cmax} \times 10^{-6}, \qquad C_\mathrm{LC} = \log W
+    code: phylloptim::Leaf::leastcost_flux
+    reads: [LeastCost_beta, kg_to_mol_h2o, umol_to_mol]
+    writes: []
+    kind: closed_form
+    cite: Prentice-2014
+    note: 'mol m⁻² s⁻¹, so $\beta_\mathrm{LC}$ is the published dimensionless $c_V/c_E$. Weighs `vcmax_`, the capacity at the leaf''s temperature, not $V_{c,25}$; Prentice-2014''s $\beta$ carries a viscosity term this package does not model, so this is $\beta/\eta^*$, equal at 25 °C. Not bound: read back from the LeastCost objective, $W = A/J$.'
+  profitmax_A_max:
+    section: costs
+    title: ProfitMax carbon normaliser
+    latex: |
+      \lvert A\rvert_{\max} = \begin{cases} \max_{\psi \in (\psi_s, \psi_\mathrm{crit}]} A(\psi) & \text{if positive} \\ \max_{\psi} \big[-A(\psi)\big] & \text{otherwise} \end{cases}
+    code: phylloptim::Leaf::prepare_profitmax
+    also: [phylloptim::Leaf::profitmax_reference_psi]
+    reads: [psi_crit]
+    writes: []
+    kind: identity
+    cite: Sperry-2017
+    note: 'Found by maximisation (endpoints plus a root-find of $dA/d\psi$), not by Sperry-2017''s scan; the closure point $\psi_s$ itself, where $A = -R_d$, is excluded. The maximum can sit at the dry bound (energy balance off, where $A$ rises monotonically) or inside the stream (energy balance on in cold air, where transpiration cooling turns $A$ over). Held constant in the gradient (a partial at fixed normaliser).'
+  profitmax_normalisers:
+    section: costs
+    title: ProfitMax conductance normaliser
+    latex: |
+      k_s = k_{max}\, f(\psi_s), \qquad k_\mathrm{span} = k_s - k_\mathrm{crit}, \qquad k_\mathrm{crit} = k_{max}\, f(\psi_\mathrm{crit}) = k_\mathrm{crit\,fraction}\; k_{max}
+    code: phylloptim::Leaf::prepare_profitmax_norms
+    also: [phylloptim::Leaf::profitmax_reference_psi]
+    reads: [leaf_specific_conductance_max, psi_crit]
+    writes: []
+    kind: closed_form
+    cite: Sperry-2017
+    note: '$k_\mathrm{crit} = 0.05\,k_{max}$ as Sperry-2017 set it, which is the same 0.05 $\psi_\mathrm{crit}$ is derived from. $\psi_s$ is psi_soil on a single soil potential; on a layered profile it is the collar potential at which uptake is zero (the collar bracket''s wet end, not bound). Read through the `profitmax_k_span` accessor.'
+  profitmax_objective:
+    section: costs
+    title: ProfitMax objective
+    latex: |
+      CG = \frac{A}{\lvert A\rvert_{\max}}, \qquad HC = \frac{k_s - k_{max} f(\psi)}{k_\mathrm{span}}, \qquad TC = \begin{cases} TC(T_\mathrm{leaf}(E)) & g_\mathrm{EB} = 1 \\ TC(T) & g_\mathrm{EB} = 0 \end{cases}, \qquad J = CG - (HC + TC)
+    code: phylloptim::Leaf::profit_psi_stem_ProfitMax
+    reads: [leaf_specific_conductance_max, use_energy_balance_]
+    writes: [carbon_gain_, hydraulic_cost_norm_, thermal_cost_]
+    kind: closed_form
+    cite: Sperry-2017
+    note: 'Sperry-2017''s normalised profit with Sicangco-2026''s thermal cost (zero with use_thermal_cost_ off, constant across the stream with the energy balance off). $CG = 0$ when $|A|_{\max} \le 0$. All three are dimensionless, so `hydraulic_cost_` is not reused.'
+  objective:
+    section: costs
+    title: The objective each curve maximises
+    latex: |
+      J_K(\psi) = h_K(A) - C_K(\psi) \;\text{in the form}\;
+      \begin{cases} A - C_K & \text{TF24, CF77, JS22, CMax, TF24\_floor} \\ A\, g_K(\psi) & \text{SOX, JW26} \;(h = \log,\ C = -\log g) \\ A / W & \text{LeastCost} \;(h = \log,\ C = \log W) \\ CG - (HC + TC) & \text{ProfitMax} \;(h = A/\lvert A\rvert_{\max}) \end{cases}
+    code: phylloptim::Leaf::profit_psi_stem_for
+    also: [phylloptim::Leaf::benefit_link, phylloptim::Leaf::profit_psi_stem_TF, phylloptim::Leaf::profit_psi_stem_CF77, phylloptim::Leaf::profit_psi_stem_JS22, phylloptim::Leaf::profit_psi_stem_CMax, phylloptim::Leaf::profit_psi_stem_SOX, phylloptim::Leaf::profit_psi_stem_JW26, phylloptim::Leaf::profit_psi_stem_TF24_floor, phylloptim::Leaf::profit_psi_stem_LeastCost, phylloptim::Leaf::profit_psi_stem_ProfitMax]
+    reads: []
+    writes: []
+    kind: closed_form
+    note: 'The value `profit_` reports. The product and ratio curves are evaluated in that form, not as $\log A \pm \log(\cdot)$, because at closure $A = -R_d < 0$ and the endpoint must stay a candidate; `log` is monotone so the argmax is shared. Only the five difference curves are carbon fluxes; the product, ratio and normalised values must not be compared with them. The product and ratio curves set `hydraulic_cost_` to NA.'
+  benefit_link_deriv:
+    section: costs
+    title: Slope of the benefit link
+    latex: |
+      h_K'(A) = \begin{cases} 1 & \text{identity: TF24, CF77, JS22, CMax, TF24\_floor} \\ 1/A & \text{log: SOX, JW26, LeastCost} \;(\text{NA if } A \le 0) \\ 1/\lvert A\rvert_{\max} & \text{scaled: ProfitMax} \end{cases}
+    code: phylloptim::Leaf::benefit_link_deriv
+    also: [phylloptim::Leaf::benefit_link]
+    reads: []
+    writes: []
+    kind: identity
+    note: 'The only part of the first-order condition $h''(A)\,A'' - C'' = 0$ that varies by link. Not bound.'
+  cost_deriv:
+    section: costs
+    title: The marginal cost dC/dψ
+    latex: |
+      C_K'(\psi) = \begin{cases}
+      \gamma\beta(1-f)^{\beta-1}\lvert f'\rvert & \text{TF24} \\
+      p\, k_{max} f & \text{CF77} \\
+      2\gamma_J(\psi - \psi_u) & \text{JS22} \\
+      a\psi + b & \text{CMax} \\
+      \gamma\beta(1-f)^{\beta-1}\lvert f'\rvert + \lambda_o k_{max} f & \text{TF24\_floor} \\
+      -g_\mathrm{SOX}'/g_\mathrm{SOX} & \text{SOX} \\
+      1/(\psi_\mathrm{crit} - \psi) & \text{JW26} \\
+      k_{max} f / (M_w W) & \text{LeastCost} \\
+      k_{max}\lvert f'\rvert / k_\mathrm{span} & \text{ProfitMax}
+      \end{cases}
+    code: phylloptim::Leaf::cost_deriv
+    also: [phylloptim::Leaf::cf77_price, phylloptim::Leaf::hydraulic_cost_TF_kernel, phylloptim::Leaf::leastcost_flux]
+    reads: [TF24_cost_scale, TF24_beta2, CF77_lambda_, JS22_gamma, CMax_a, CMax_b, TF24_floor_lambda_o, LeastCost_beta, kg_to_mol_h2o, leaf_specific_conductance_max, stem_b, stem_c, psi_crit]
+    writes: []
+    kind: identity
+    note: 'The one place the cost enters a derivative, shared by both routes. TF24 by forward AD of the cost kernel, the rest analytic. CF77, TF24_floor and LeastCost multiply by $G''(\psi)$, the slope of the integral TABLE the solve runs on, where the printed form has $f$: the two differ by up to 5e-8 relative, the interpolation error of the table, not a defect; the other curves agree to rounding. Off the energy balance; with it on ProfitMax adds $(dTC/dT)(dT/dE)(dE/d\psi)$ in dprofit_energy_balance_term, not here.'
+  cost_deriv_upstream:
+    section: costs
+    title: The marginal cost in the upstream potential
+    latex: |
+      \frac{\partial C_K}{\partial \psi_u} = \begin{cases}
+      -p\, k_{max} f(\psi_u) & \text{CF77} \\
+      -2\gamma_J(\psi - \psi_u) & \text{JS22} \\
+      -(a\psi_u + b) & \text{CMax} \\
+      -\lambda_o k_{max} f(\psi_u) & \text{TF24\_floor} \\
+      -k_{max} f(\psi_u) / (M_w W) & \text{LeastCost} \\
+      0 & \text{TF24, SOX, JW26, ProfitMax}
+      \end{cases}
+    code: phylloptim::Leaf::cost_deriv_upstream
+    also: [phylloptim::Leaf::cost_reads_upstream, phylloptim::Leaf::cf77_price, phylloptim::Leaf::leastcost_flux]
+    reads: [CF77_lambda_, JS22_gamma, CMax_a, CMax_b, TF24_floor_lambda_o, kg_to_mol_h2o, leaf_specific_conductance_max]
+    writes: []
+    kind: identity
+    note: 'On the collar route the upstream potential IS the decision variable, so a cost that reads it moves with the collar directly; a curve missing its row solves the wrong first-order condition silently (#141). The integrand at the lower limit, with $f(\psi_u)$ read through the table slope $G''$ as in cost_deriv. Read off the collar derivative as $h_K'' d_0 - C_K'' s - \partial J_K/\partial\psi_r$, with $s = d\psi/d\psi_r$ recovered from TF24 (which has no upstream term), single-layer and three-layer; the zero rows are the four curves that do not read upstream. Same table-slope floor as cost_deriv.'
+
+  # --- the marginal cost of water -----------------------------------------------
+  lambda_TF24:
+    section: marginal_cost
+    title: TF24 marginal cost of water
+    latex: |
+      \lambda_\mathrm{TF24}(\psi) = \frac{C'}{E'} = \frac{\gamma\beta\,(c/b)(\psi/b)^{c-1}\,(1-f)^{\beta-1}}{k_{max}}
+    code: phylloptim::Leaf::lambda_TF24
+    reads: [TF24_cost_scale, TF24_beta2, stem_b, stem_c, leaf_specific_conductance_max]
+    writes: []
+    kind: closed_form
+    cite: Towers-2024
+    note: 'µmol C (kg H₂O)⁻¹. The $f$ in $|f''|$ cancels against $dE/d\psi = k_{max} f$ analytically, so it stays finite at $\psi_\mathrm{crit}$; with $\beta < 1$ it diverges as $\psi \to 0$, a property of the cost.'
+  lambda_JS22:
+    section: marginal_cost
+    title: JS22 marginal cost of water
+    latex: |
+      \lambda_\mathrm{JS22} = \frac{2\gamma_J(\psi - \psi_u)}{k_{max} f(\psi)}
+    code: phylloptim::Leaf::lambda_JS22
+    reads: [JS22_gamma, leaf_specific_conductance_max]
+    writes: []
+    kind: closed_form
+    cite: Joshi-2022
+    note: 'No $f$ cancels, so it divides by $f$, which stays above 0.05 inside the bracket.'
+  lambda_CMax:
+    section: marginal_cost
+    title: CMax marginal cost of water
+    latex: |
+      \lambda_\mathrm{CMax} = \frac{a\psi + b}{k_{max} f(\psi)}
+    code: phylloptim::Leaf::lambda_CMax
+    reads: [CMax_a, CMax_b, leaf_specific_conductance_max]
+    writes: []
+    kind: closed_form
+    cite: Anderegg-2018
+    note: 'Non-zero at the wet end unless $b = 0$. The upstream potential enters only through $E$, so it is not read.'
+  lambda_TF24_floor:
+    section: marginal_cost
+    title: TF24_floor marginal cost of water
+    latex: |
+      \lambda_\mathrm{TF24f}(\psi) = \lambda_\mathrm{TF24}(\psi) + \lambda_o
+    code: phylloptim::Leaf::lambda_TF24_floor
+    also: [phylloptim::Leaf::lambda_TF24]
+    reads: [TF24_floor_lambda_o, TF24_cost_scale, TF24_beta2, leaf_specific_conductance_max]
+    writes: []
+    kind: closed_form
+    note: 'The one difference-curve lambda that does not vanish at the wet end. Bit-identical to lambda_TF24 at $\lambda_o = 0$.'
+  lambda_SOX:
+    section: marginal_cost
+    title: SOX marginal cost of water
+    latex: |
+      \lambda_\mathrm{SOX} = \frac{-A\,(g'/g)}{k_{max} f(\psi)}
+    code: phylloptim::Leaf::lambda_SOX
+    also: [phylloptim::Leaf::sox_reduction, phylloptim::Leaf::sox_reduction_deriv]
+    reads: [leaf_specific_conductance_max]
+    writes: []
+    kind: closed_form
+    cite: Eller-2020
+    note: 'Carries a factor of $A$ (a product objective prices water as a share of assimilation) and diverges at $\psi_\mathrm{crit}$. Reads the leaf''s current `assim_colimited_`, so it means what it says only at the potential last evaluated.'
+  lambda_JW26:
+    section: marginal_cost
+    title: JW26 marginal cost of water
+    latex: |
+      \lambda_\mathrm{JW26} = \frac{A}{(\psi_\mathrm{crit} - \psi)\, k_{max} f(\psi)}
+    code: phylloptim::Leaf::lambda_JW26
+    reads: [psi_crit, leaf_specific_conductance_max]
+    writes: []
+    kind: closed_form
+    cite: Jones-2026
+    note: 'Reads the current `assim_colimited_`, as lambda_SOX does.'
+  lambda_ProfitMax:
+    section: marginal_cost
+    title: ProfitMax marginal cost of water
+    latex: |
+      \lambda_\mathrm{PM} = \lvert A\rvert_{\max} \left[\frac{\lvert f'\rvert}{f\, k_\mathrm{span}} + \frac{dTC}{dT}\,\frac{dT_\mathrm{leaf}}{dE}\right], \qquad
+      \frac{dTC}{dT} = r\,TC\,(1 - TC), \qquad \frac{dT_\mathrm{leaf}}{dE} = -\frac{\lambda_v}{\rho c_p / r_a + g_\mathrm{rad}}
+    code: phylloptim::Leaf::lambda_ProfitMax
+    also: [phylloptim::Leaf::thermal_cost_temp_deriv]
+    reads: [stem_b, stem_c, use_thermal_cost_, use_energy_balance_]
+    writes: []
+    kind: closed_form
+    cite: Sperry-2017
+    note: 'Multiplying the normalised objective by $|A|_{\max}$ restores carbon units. The thermal term needs both gates on and is the slope dprofit_energy_balance_term subtracts. NA where $f$, $k_\mathrm{span}$ or $|A|_{\max}$ is not positive. Not bound: read through `lambda_emergent` after a stem-route ProfitMax solve, gates off and both on (a leaf inside the temperature clamp).'
+  lambda_LeastCost:
+    section: marginal_cost
+    title: LeastCost marginal cost of water
+    latex: |
+      \lambda_\mathrm{LC} = h'(A)^{-1}\,\frac{d\log W}{dE} = \frac{A}{M_w\, W}
+    code: phylloptim::Leaf::lambda_LeastCost
+    also: [phylloptim::Leaf::leastcost_flux]
+    reads: [kg_to_mol_h2o]
+    writes: []
+    kind: closed_form
+    cite: Prentice-2014
+    note: 'Eq. S1.4 of the theory manuscript, $c_E A/(c_E E + c_V V_{cmax})$ with $c_E$ cancelled and the kg-to-mol factor supplied. Finite at the wet end, set by the capacity term. Not bound: read through `lambda_emergent` after a stem-route LeastCost solve.'
+  lambda_ratio:
+    section: marginal_cost
+    title: λ is the marginal cost over the marginal water use
+    latex: |
+      \lambda_K(\psi) = \frac{dC_K/d\psi}{h_K'(A)\; dE/d\psi}
+    code: ~
+    also: [phylloptim::Leaf::lambda_for]
+    reads: []
+    writes: []
+    kind: derivative
+    note: 'The definition every closed form above implements. A lambda read through $E$ agrees with its closed form only to 1.4e-8 to 2.6e-8 relative: $E$ is the integral table, whose slope differs from the closed forms'' $k_{max} f$ by that much (the same table-slope gap as cost_deriv).'
+  marginal_cost_water:
+    section: marginal_cost
+    title: The reported λ
+    latex: |
+      \lambda = \lambda_\mathrm{TF24}(\psi^*)
+    code: phylloptim::Leaf::marginal_cost_water
+    also: [phylloptim::Leaf::lambda_TF24]
+    reads: []
+    writes: []
+    kind: closed_form
+    note: 'Bound as `lambda`. TF24''s marginal cost at whatever optimum the last solve found, WHICHEVER curve ran, on either route; the seated curve''s own is `lambda_emergent`. Single-layer: on the collar route it omits the series-resistance correction (marginal_cost_water_multilayer).'
+  marginal_cost_water_molar:
+    section: marginal_cost
+    title: λ in molar units
+    latex: |
+      \lambda_\mathrm{mol} = \lambda \times 10^{-6}\, M_w
+    code: phylloptim::Leaf::marginal_cost_water_molar
+    reads: [umol_to_mol, kg_to_mol_h2o]
+    writes: []
+    kind: closed_form
+    note: 'mol CO₂ (mol H₂O)⁻¹, the convention the optimality literature states λ in. Bound as `lambda_molar`.'
+  marginal_cost_water_multilayer:
+    section: marginal_cost
+    title: λ with the root-network resistance
+    latex: |
+      \lambda_\mathrm{multi} = \lambda_\mathrm{TF24}(\psi^*)\left[1 + \frac{k_{max} f(\psi_r)}{S}\right], \qquad S = \frac{dE_\mathrm{up}}{d\psi_r}
+    code: phylloptim::Leaf::marginal_cost_water_multilayer
+    also: [phylloptim::Leaf::lambda_TF24]
+    reads: [leaf_specific_conductance_max]
+    writes: []
+    kind: derivative
+    note: 'TF24''s λ on the collar route: the bracket is $\ge 1$, so the single-layer λ understates the marginal cost. NA where $S$ is unavailable or not positive. Bound as `lambda_multilayer`; it is lambda_emergent on the collar route for TF24 only (lambda_collar).'
+  lambda_collar:
+    section: marginal_cost
+    title: The seated curve's λ on the collar route
+    latex: |
+      \lambda_{\mathrm{collar},K} = \lambda_{\psi,K}(\psi_s, \psi_r)\left[1 + \frac{k_{max} f(\psi_r)}{S}\right] + \lambda_{E,K} + \frac{1}{S}\frac{\partial C_K}{\partial \psi_r}, \qquad S = \frac{dE_\mathrm{up}}{d\psi_r}
+    code: phylloptim::Leaf::lambda_collar_for
+    also: [phylloptim::Leaf::marginal_cost_water_multilayer, phylloptim::Leaf::find_root_collar_psi_for, phylloptim::Leaf::profit_at_collar_psi]
+    reads: [leaf_specific_conductance_max]
+    writes: []
+    kind: identity
+    note: 'dC/dE along the collar path. $\lambda_\psi$ is the part of a cost that reads $\psi_\mathrm{stem}$ alone (TF24, SOX, JW26, ProfitMax''s conductance term), which takes the series factor; $\lambda_E$ the part that reads the potentials only through E (CF77''s price, LeastCost, the floor''s $\lambda_o$, ProfitMax''s thermal term), which carries over; the last term is the explicit collar read of JS22 and CMax. At an interior optimum the first-order condition makes λ equal $dA/dE$ along the collar path for every link; test_collar_lambda_emergent_is_dA_dE (tests/cpp) asserts it.'
+  lambda_emergent:
+    section: marginal_cost
+    title: The seated curve's λ at its operating point
+    latex: |
+      \lambda_\mathrm{emergent} = \begin{cases} \lambda_K(\psi^*, \psi_s) & \text{stem route} \\ \lambda_{\mathrm{collar},K} & \text{collar route (lambda\_collar)} \end{cases}, \qquad \lambda_\mathrm{CF77} = p
+    code: phylloptim::Leaf::lambda_emergent
+    also: [phylloptim::Leaf::lambda_for, phylloptim::Leaf::optimise_psi_stem_single, phylloptim::Leaf::find_root_collar_psi_for]
+    reads: []
+    writes: []
+    kind: closed_form
+    note: 'Written by the optimiser that ran; NA before. On the stem route it is the seated curve''s λ (CF77''s is its price, exactly); on the collar route, the same curve''s λ along the collar path (lambda_collar). Until 0.15.4 the collar route reported TF24''s multilayer λ whatever curve was seated.'
+  g1_eff:
+    section: marginal_cost
+    title: Equivalent Medlyn slope
+    latex: |
+      g_{1,\mathrm{eff}} = \frac{\chi\sqrt{D_\mathrm{leaf}}}{1 - \chi}, \qquad \chi = c_i / c_a
+    code: phylloptim::Leaf::g1_eff
+    reads: [ca]
+    writes: []
+    kind: closed_form
+    cite: Medlyn-2011
+    note: 'kPa^0.5, by inverting the USO relation $\chi = g_1/(g_1 + \sqrt{D})$ at the solved $\chi$: operational, not predicted from λ. Comparable with Lin-2015''s fitted values, which use a diffusion ratio of 1.6 where this package uses 1.67. NA for $\chi \ge 1$ or non-finite. Reads the leaf deficit, so it moves with the energy balance.'
+  stom_cond_H2O:
+    section: marginal_cost
+    title: Stomatal conductance to water vapour
+    latex: |
+      g_{s,\mathrm{H_2O}} = 1.67\, g_c
+    code: phylloptim::Leaf::stom_cond_H2O
+    reads: [H2O_CO2_stom_diff_ratio_]
+    writes: []
+    kind: closed_form
+    note: 'mol H₂O m⁻² s⁻¹ (#56); bound as `gs_H2O`. The ratio is the settable diffusion ratio.'
+
+  # --- Medlyn route, soil moisture and the closed form ---------------------------
+  # --- medlyn -------------------------------------------------------------------
+  medlyn_beta:
+    section: medlyn
+    title: Medlyn soil-moisture factor
+    latex: |
+      \beta = \mathrm{clamp}_{[0,\,1]}\!\left(\frac{\theta - \theta_w}{\theta_{fc} - \theta_w}\right)
+    code: phylloptim::Leaf::medlyn_beta
+    reads: [theta, theta_fc, theta_w]
+    writes: []
+    kind: closed_form
+    note: 'Both Medlyn routes multiply g1 by it. Clamped, so a soil wetter than field capacity is field capacity and one drier than the wilting point is the wilting point. Not bound: read back through medlyn_model_gs at g0 = 0.'
+  medlyn_gs:
+    section: medlyn
+    title: Medlyn stomatal conductance, on the CO₂ basis
+    latex: |
+      g_s = \frac{1}{1.6}\left[g_0 + 1.6\left(1 + \frac{g_1\,\beta}{\sqrt{D_\mathrm{air}}}\right)\frac{A}{c_a / c_P}\right], \qquad g_s = g_0/1.6 \text{ at } D_\mathrm{air} = 0
+    code: phylloptim::Leaf::medlyn_model_gs
+    also: [phylloptim::Leaf::medlyn_beta]
+    reads: [g0, g1, medlyn_ratio, atm_vpd, ca, atm_kpa]
+    writes: [medlyn_model_gs_]
+    kind: closed_form
+    cite: Medlyn-2011
+    note: 'Medlyn-2011 eq. 11, the USO form, which is a water-vapour conductance; divided by its 1.6 to the CO₂ basis every other conductance in the leaf is on (#129), so that $A = g_s (c_a - c_i)$ holds for this route too. $c_a$ converted from Pa to µmol mol⁻¹, and $\beta$ on $g_1$, which is the code''s and not the paper''s.'
+  medlyn_ci_numerical:
+    section: medlyn
+    title: Medlyn operating point by root-finding
+    latex: |
+      r(c_i) = g_s\big(A(c_i)\big)\,(c_a - c_i) - A(c_i)\,\frac{10^{3} P}{10^{6}}, \qquad
+      c_i:\ r(c_i) = 0 \text{ on } [\arg\max r,\ c_a]; \qquad g_s < 0 \Rightarrow g_s = 0,\ c_i = \Gamma^* c_P,\ A = -R_d
+    code: phylloptim::Leaf::solve_medlyn_ci_numerical
+    also: [phylloptim::Leaf::medlyn_stom_cond_minus_coupled_stom_cond, phylloptim::Leaf::set_medlyn_shutdown_if_closed]
+    reads: [atm_kpa, ca, kPa_to_Pa]
+    writes: [ci_, assim_colimited_, stom_cond_CO2_]
+    kind: identity
+    note: 'Supply equals demand on the CO₂ basis, with both sides multiplied by $(c_a - c_i)$ so the residual stays finite at $c_a$. Brent maximisation of $r$ on $[\Gamma^* c_P, c_a]$, then a root-find from the maximum. Where no root exists ($r \le 0$ everywhere) the closest approach is taken, and a negative conductance there collapses to the closed state, as the optimality routes'' shutdown exits do.'
+  medlyn_ci_analytical:
+    section: medlyn
+    title: Medlyn operating point, closed form
+    latex: |
+      c_i = c_a\,\frac{g_1 \beta}{g_1 \beta + \sqrt{D_\mathrm{air}}}
+    code: phylloptim::Leaf::solve_medlyn_ci_analytical
+    also: [phylloptim::Leaf::medlyn_beta, phylloptim::Leaf::set_medlyn_shutdown_if_closed]
+    reads: [g1, atm_vpd, ca]
+    writes: [ci_, assim_colimited_, stom_cond_CO2_]
+    kind: closed_form
+    cite: Medlyn-2011
+    note: 'Medlyn-2011 eq. 13 with $\beta$ on $g_1$. The same model as the numerical route in the limit $g_0 \to 0$, where it is that route''s root exactly; at the default $g_0$ it drops the $g_0$ term, so its $g_s$ and $c_i$ are mutually consistent only in that limit. Its conductance is the USO form at this $c_i$, on the CO₂ basis.'
+  soil_moisture_state:
+    section: soil_moisture
+    title: Soil-moisture working copies
+    latex: |
+      \tilde\theta \leftarrow \theta, \qquad \tilde\theta_{fc} \leftarrow \theta_{fc}, \qquad \tilde\theta_w \leftarrow \theta_w
+    code: phylloptim::Leaf::set_physiology
+    reads: [theta, theta_fc, theta_w]
+    writes: [theta_, theta_fc_, theta_w_]
+    kind: closed_form
+    note: 'The tilde marks the working copies `theta_`, `theta_fc_`, `theta_w_`. Every set_physiology overwrites the trailing-underscore working copies from the inputs, so a working copy written directly is undone by the next set_drivers(). Both readers, medlyn_model_gs and cf77_price, read the working copies only; the root-water compute path reads none of them.'
+  cf77_soil_price:
+    section: soil_moisture
+    title: CF77 price of water with the soil-moisture factor
+    latex: |
+      \lambda_\mathrm{eff} = \begin{cases} \lambda & g_\beta = 0 \\
+      \lambda / \min(\beta, 1) & g_\beta = 1,\ \beta > 0 \end{cases}, \qquad
+      \beta = \frac{\theta - \theta_w}{\theta_{fc} - \theta_w}
+    code: phylloptim::Leaf::cf77_price
+    also: [phylloptim::Leaf::check_cost_parameters]
+    reads: [CF77_soil_beta_, CF77_lambda_, theta, theta_fc, theta_w]
+    writes: []
+    kind: closed_form
+    note: 'The same $\beta$ as medlyn_gs but CLAMPED at 1, so at and above field capacity the price is plain CF77 exactly and $\lambda$ is a floor. With the gate on, a solve refuses $\theta_{fc} \le \theta_w$ and $\beta \le 0$ (a price at infinity or below zero). Readable as `lambda_emergent` after an exact CF77 stem solve, which is `lambda_for<CF77>` = this price.'
+
+  # --- closed form ----------------------------------------------------------------
+  uso_group:
+    section: closed_form
+    title: The USO group
+    latex: |
+      Q = \frac{3\,\Gamma^* c_P / M_w}{r_{wc} \times 10^{-3}}, \qquad \xi = \sqrt{Q/\lambda}, \qquad
+      \frac{c_i}{c_a} = \frac{\xi}{\xi + \sqrt{D_\mathrm{leaf}}}
+    code: phylloptim::closed_form::uso_group
+    also: [phylloptim::closed_form::evaluate_at_lambda]
+    reads: [atm_kpa, kg_to_mol_h2o, H2O_CO2_stom_diff_ratio_]
+    writes: []
+    kind: closed_form
+    cite: Medlyn-2011
+    note: 'Converts a marginal cost of water (µmol C per kg H₂O) into the USO slope $\xi$. The $3\Gamma^*$ is the electron-transport-limited $dA/dc_i$, so the collapse is an approximation under Rubisco-bound colimitation, at high temperature or low $c_i$. Not bound and its result is never reported.'
+  transpiration_from_assim:
+    section: closed_form
+    title: Demand-side transpiration
+    latex: |
+      E = \frac{r_{wc} \times 10^{-3}\, A\, D_\mathrm{leaf}}{(c_a - c_i)/M_w}
+    code: phylloptim::closed_form::transpiration_from_assim
+    reads: [kg_to_mol_h2o, H2O_CO2_stom_diff_ratio_]
+    writes: []
+    kind: closed_form
+    note: 'Fick''s law inverted for $E$ (kg m⁻² s⁻¹) given $A$ and $c_i$; the 1e-3 carries $P$ = $10^{3}$ Pa per kPa against $c_a$ in Pa, so it is exact only with $P$ cancelling, which it does on this path. Not bound.'
+  stom_cond_from_E:
+    section: closed_form
+    title: Conductance from transpiration
+    latex: |
+      g_c = \frac{P\, E / M_w}{D_\mathrm{leaf}\, r_{wc}}
+    code: phylloptim::closed_form::stom_cond_from_E
+    also: [phylloptim::Leaf::stom_cond_CO2]
+    reads: [atm_kpa, kg_to_mol_h2o, H2O_CO2_stom_diff_ratio_]
+    writes: []
+    kind: closed_form
+    note: 'UNREACHABLE from R: optimise_into keeps only the solution''s $\psi$, so this value is dropped. It is the same expression as Leaf::stom_cond_CO2 (stomatal_conductance).'
+  dassim_dci:
+    section: closed_form
+    title: Slope of the colimited assimilation
+    latex: |
+      \frac{dA}{dc_i} = \frac{1}{2\theta}\left[s' - \frac{2 s s' - 4\theta (W_c' W_j + W_c W_j')}{2\sqrt{s^2 - 4\theta W_c W_j}}\right],\quad
+      s = W_c + W_j,\ W_c' = \frac{V_{cmax}(K_m + \Gamma^* c_P)}{(c_i + K_m)^2},\ W_j' = \frac{J}{4}\frac{3\,\Gamma^* c_P}{(c_i + 2\Gamma^* c_P)^2}
+    code: phylloptim::closed_form::dassim_dci
+    reads: [curv_fact_colim, atm_kpa]
+    writes: []
+    kind: derivative
+    note: 'Analytic derivative of the assimilation quadratic, used by the Newton step. Not bound.'
+  dlambda_TF24:
+    section: closed_form
+    title: Slope of TF24's marginal cost
+    latex: |
+      \frac{d\lambda}{d\psi} = \frac{K}{b}\,p^{c-2}\Big[(\beta_2 - 1)(1 - f)^{\beta_2 - 2} f\, c\, p^{c} + (1 - f)^{\beta_2 - 1}(c - 1)\Big],\quad
+      K = \frac{s\,\beta_2\,c}{b\,k_{max}},\ p = \psi/b,\ f = e^{-p^c}
+    code: phylloptim::closed_form::dlambda_TF24
+    reads: [TF24_cost_scale, TF24_beta2, stem_c, stem_b, leaf_specific_conductance_max]
+    writes: []
+    kind: derivative
+    note: 'Analytic $d\lambda/d\psi$ of Leaf::lambda_TF24, used by the TF24 and TF24_floor Newton steps (the floor''s constant differentiates away). Not bound.'
+  psi_from_supply:
+    section: closed_form
+    title: Stem potential from a demanded transpiration
+    latex: |
+      \psi^* = \begin{cases} \psi_\mathrm{up} & E \le 0 \\ \psi_\mathrm{crit} & E \ge E(\psi_\mathrm{crit}) \\
+      G^{-1}\!\big(E/k_{max} + G(\psi_\mathrm{up})\big) & \text{otherwise} \end{cases}
+    code: phylloptim::closed_form::psi_from_supply
+    reads: [psi_crit]
+    writes: []
+    kind: closed_form
+    note: 'NOT $E/k_{max}$: $G$ is the cumulative vulnerability integral, so the inversion is the supply spline''s (transpiration_to_psi_stem and transpiration). On the stem route $\psi_\mathrm{up}$ is $\psi_\mathrm{soil}$. Not bound. Both clamped branches return a bound potential, which within_guard always rejects (dark leaf, $E < 0$; a low price, $E \ge E(\psi_\mathrm{crit})$).'
+  evaluate_at_lambda:
+    section: closed_form
+    title: Operating point at a marginal cost
+    latex: |
+      \xi = \sqrt{Q/\lambda}, \quad c_i = \frac{c_a\,\xi}{\xi + \sqrt{D_\mathrm{leaf}}}, \quad A = A(c_i), \quad E = E(A, c_i), \quad g_c = g_c(E)
+    code: phylloptim::closed_form::evaluate_at_lambda
+    also: [phylloptim::closed_form::evaluate_at]
+    reads: []
+    writes: []
+    kind: closed_form
+    note: 'Assembles the closed form''s solution at the final potential (TF24 and TF24_floor arms; CF77 inlines the same lines). Its $\psi$ is passed through and its $c_i$, $A$ reach only within_guard; the reported `ci_`, `assim_colimited_` and `transpiration_` are the EXACT state at $\psi^*$, not these USO estimates.'
+  wet_end_p:
+    section: closed_form
+    title: Wet-end starting potential
+    latex: |
+      (p - p_\mathrm{up})\,p^{n/2} = C, \quad n = c\,\beta_2 - 1, \quad
+      p_0 = C^{2/(n+2)}\ \text{at}\ p_\mathrm{up} = 0, \text{ else four Newton steps from } p_\mathrm{up} + p_0
+    code: phylloptim::closed_form::wet_end_p
+    reads: []
+    writes: []
+    kind: closed_form
+    note: 'A dark leaf gives $C < 0$ and a NaN start, which the guard then rejects. Power-law demand against a supply linearised at the wet end, in units of $b$; each step is clamped strictly inside $(p_\mathrm{up}, p_\mathrm{crit})$. Pure arithmetic on its arguments, so it references no parameter. Not bound.'
+  closed_form_TF24:
+    section: closed_form
+    title: Closed form for TF24
+    latex: |
+      \psi_0 = b\,p(C),\ C = \frac{\kappa \sqrt{D}\,\Xi}{k_{max} b},\ \kappa = \frac{r_{wc} 10^{-3} A(c_a)}{c_a / M_w},\ \Xi = \sqrt{Q b k_{max} / (s \beta_2 c)};\quad
+      \psi_1 = \psi_0 - \frac{E_\mathrm{supply}(\psi_0) - E(\psi_0)}{k_{max} f(\psi_0) - dE/d\psi};\quad
+      \beta_2 = 1/c:\ \xi = \Xi,\ \psi^* = \psi(E)
+    code: phylloptim::closed_form::solve
+    also: [phylloptim::closed_form::solve_exact_beta2, phylloptim::closed_form::beta2_is_exact]
+    reads: [TF24_cost_scale, TF24_beta2, stem_c, stem_b, leaf_specific_conductance_max, psi_crit, H2O_CO2_stom_diff_ratio_, kg_to_mol_h2o]
+    writes: []
+    kind: closed_form
+    note: 'Leading order from the wet-end power law, then ONE Newton step on supply minus demand (two are worse in the tail); at $\beta_2 = 1/c$ (to 1e-12) $\lambda$ is constant and only the supply inversion remains. $\lambda(\psi)$ and the supply are lambda_TF24, transpiration and transpiration_to_psi_stem. Prescribed temperature only (#121).'
+  closed_form_CF77:
+    section: closed_form
+    title: Closed form for CF77
+    latex: |
+      \xi = \sqrt{Q/\lambda_\mathrm{eff}}, \quad c_i = \frac{c_a\,\xi}{\xi + \sqrt{D_\mathrm{leaf}}}, \quad
+      E = E\big(A(c_i), c_i\big), \quad \psi^* = \psi(E)
+    code: phylloptim::closed_form::solve_CF77
+    also: [phylloptim::Leaf::cf77_price]
+    reads: [CF77_lambda_, CF77_soil_beta_]
+    writes: []
+    kind: closed_form
+    cite: Cowan-1977
+    note: 'The $n = 0$ case: $\lambda$ is the CF77 price (with the soil factor when gated), so there is no iteration. "No iteration" is not "exact": the USO collapse''s $3\Gamma^*$ remains, and the guard serves rows with $\psi^*$ off the exact optimum by up to 24% (header table).'
+  closed_form_TF24_floor:
+    section: closed_form
+    title: Closed form for TF24_floor
+    latex: |
+      \psi_0 = \min\!\big(\psi(E)|_{\lambda = \lambda_o},\ \psi_\mathrm{crit}(1 - 10^{-9})\big), \quad
+      \psi_1 = \psi_0 - \frac{E_\mathrm{supply}(\psi_0) - E(\psi_0)}{k_{max} f(\psi_0) - dE/d\psi}, \quad \lambda = \lambda_\mathrm{TF24} + \lambda_o
+    code: phylloptim::closed_form::solve_TF24_floor
+    reads: [TF24_floor_lambda_o, psi_crit, leaf_specific_conductance_max, H2O_CO2_stom_diff_ratio_, kg_to_mol_h2o]
+    writes: []
+    kind: closed_form
+    note: 'Leading order is CF77''s at the price $\lambda_o$ (the lowest this curve charges, so the start is too dry), then one Newton step restoring the TF24 term; $d\lambda/d\psi$ is TF24''s. At the default cost scale the guard serves rows up to 52% off the exact $\psi^*$ (header table). $\lambda(\psi)$, $f(\psi)$ and the supply are lambda_TF24_floor, proportion_of_conductivity, transpiration and transpiration_to_psi_stem.'
+  within_guard:
+    section: closed_form
+    title: The validity guard
+    latex: |
+      \text{serve} \iff \text{finite}(\psi^*, c_i, A) \ \wedge\ c_i/c_a > 0.5 \ \wedge\ \psi_\mathrm{soil} < \psi^* < \psi_\mathrm{crit}
+    code: phylloptim::closed_form::within_guard
+    reads: [psi_crit, ca]
+    writes: []
+    kind: closed_form
+    note: 'Tests the closed form''s OWN output (its USO $c_i$, not the reported `ci_`), so it is applied after solving, with a fall-back to the whole exact solve that `closed_form_fallbacks_` counts. It guards the expansion, not the model: true never means "right". Its verdict is reported as `last_solve_fell_back_`.'
+  optimise_closed:
+    section: closed_form
+    title: Dispatch and refusals of the closed form
+    latex: |
+      \text{refuse if collar route} \vee n_\mathrm{layers} > 1 \vee g_\mathrm{EB} \vee g_\mathrm{TD} \vee \text{curve} \notin \{\mathrm{TF24}, \mathrm{CF77}, \mathrm{TF24\_floor}\} \vee (\mathrm{TF24\_floor} \wedge \lambda_o \le 0);\quad
+      \psi_\mathrm{soil} > \psi_\mathrm{crit} \Rightarrow \psi^* = \psi_\mathrm{soil}
+    code: phylloptim::Leaf::optimise_closed
+    also: [phylloptim::closed_form::optimise_into, phylloptim::closed_form::require_prescribed_temperature]
+    reads: [use_energy_balance_, use_thermal_damage_, TF24_floor_lambda_o]
+    writes: [opt_psi_stem_, last_solve_fell_back_, closed_form_calls_, closed_form_fallbacks_]
+    kind: closed_form
+    note: 'Reached with set_model(curve, "stem", "closed") then optimise(). Every refusal is a stop at solve time, never a NaN (a NaN would read as "fall back" and hide the cause). Only $\psi^*$ comes from the closed form; every other output is written by the exact solve''s own assembly at that $\psi^*$. JS22, CMax and ProfitMax are refused as unimplemented (the inversion exists), SOX, JW26 and LeastCost as impossible (log benefit link).'

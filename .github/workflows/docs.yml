@@ -122,6 +122,26 @@ jobs:
         run: |
           { cat Doxyfile; echo "WARN_AS_ERROR = FAIL_ON_WARNINGS"; } | doxygen -
 
+      # The model registry (inst/model-registry.yml) names C++ symbols and never
+      # a line. This resolves every one of them in the XML just rendered, maps
+      # the filtered line numbers back to the source, checks what each equation
+      # reads against what its function references and that every literal is
+      # written in its function, and writes the resolved
+      # registry into the site so a document can link to the API without a
+      # Doxygen run of its own. R is installed for that alone: the two packages
+      # are RSPM binaries and nothing is compiled.
+      #
+      # ⚠️ setup-r, not setup-r-dependencies: the latter reads DESCRIPTION and
+      # would pull Rcpp, BH and odelia into a job that builds nothing.
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: Resolve the model registry against the XML
+        run: |
+          Rscript -e 'install.packages(c("yaml", "xml2"))'
+          Rscript tools/registry_symbols.R docs/xml docs/html/model-registry.yml
+
       - uses: actions/upload-artifact@v4
         with:
           name: api-docs

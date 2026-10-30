@@ -619,6 +619,20 @@ Doxygen for the C++ API and roxygen for the R one. The headers' comments are the
 substantive documentation here, and `tools/doxygen_filter.awk` presents them to
 Doxygen without modifying a single source file.
 
+The leaf's equations, the parameters each reads and the symbol that evaluates
+it are one record, `inst/model-registry.yml`, which documents are
+generated from rather than written beside. It stores no line number and no
+default: `registry_resolve()` reads each symbol's file, line and page from the
+Doxygen render, and `registry_values()` reads each value off a live leaf. CI
+checks that every symbol it names exists and that every bound field of the leaf
+is in it.
+
+```r
+reg <- model_registry()
+reg
+subset(reg$equations, section == "respiration", c(id, title, code))
+```
+
 ## How this compares to other leaf models
 
 See [COMPARISON.md](COMPARISON.md) for a feature-by-feature comparison against
