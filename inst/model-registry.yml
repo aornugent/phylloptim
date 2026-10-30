@@ -1205,7 +1205,7 @@ parameters:
     symbol: '\epsilon_\mathrm{GSS}'
     units: 'MPa'
     class: hyperparameter
-    meaning: 'width below which the feasible collar interval counts as collapsed, so the collar is held at its midpoint and only the stem potential is optimised (kind `determined`); also the golden-section fallback''s tolerance. Not bound: set through leaf_control()'
+    meaning: 'the golden-section fallback''s tolerance. It no longer decides whether the feasible collar interval has collapsed: a narrow interval has both ends polished and is shut only when no wider than collar_root_tol. Not bound: set through leaf_control()'
     source: leaf_control() default
     placeholder: false
     code: phylloptim::Leaf::GSS_tol_abs
@@ -1610,7 +1610,7 @@ equations:
       \tau = \frac{dT_\mathrm{leaf}}{dE}\, \frac{dE}{d\psi}, \qquad
       \frac{\partial g_c}{\partial T} = -\, g_c\, \frac{\Delta(T_\mathrm{leaf})}{D_\mathrm{leaf}} \quad (0 \text{ on the floor } D_\min)
     code: phylloptim::Leaf::dprofit_energy_balance_term
-    also: [phylloptim::Leaf::respiration_temp_deriv, phylloptim::Leaf::vcmax_temp_deriv, phylloptim::Leaf::thermal_cost_temp_deriv]
+    also: [phylloptim::Leaf::temp_deriv, phylloptim::Leaf::vcmax_temp_deriv, phylloptim::Leaf::thermal_cost_temp_deriv]
     reads: [fd_step, ca, vpd_leaf_min, use_energy_balance_]
     writes: []
     kind: derivative
@@ -1958,13 +1958,13 @@ equations:
     title: Intercellular CO₂, where diffusive supply meets demand
     latex: |
       g(c_i) = 10^{-6}\, A(c_i) - \frac{g_c\,(c_a - c_i)}{10^{3}\, P} = 0, \qquad c_i \in [\Gamma^* c_P,\; c_a];
-      \qquad c_i = \Gamma^* c_P \ \text{ if } g(\Gamma^* c_P)\, g(c_a) > 0
+      \qquad c_i = c_a \ \text{ if } g(\Gamma^* c_P)\, g(c_a) > 0
     code: phylloptim::Leaf::psi_stem_to_ci
-    also: [phylloptim::Leaf::assim_minus_stom_cond_CO2, phylloptim::Leaf::ci_at_compensation_point]
+    also: [phylloptim::Leaf::assim_minus_stom_cond_CO2, phylloptim::Leaf::ci_assigned]
     reads: [ca, atm_kpa, umol_to_mol, kPa_to_Pa]
     writes: [ci_]
     kind: closed_form
-    note: '$A$ in µmol m⁻² s⁻¹ (net, the assimilation entry), $g_c$ in mol m⁻² s⁻¹ (the stomatal_conductance entry), $c_i$, $c_a$ in Pa, $P$ in kPa. TOMS748 to 1e-13 absolute plus relative in $c_i$. $g$ is negative at $\Gamma^* c_P$, so a root exists exactly when $A(c_a) > 0$; otherwise (no root in the bracket, or any solver failure with the energy balance on) $c_i$ is put at the compensation point, where gross assimilation is zero and net is $-R_d$.'
+    note: '$A$ in µmol m⁻² s⁻¹ (net, the assimilation entry), $g_c$ in mol m⁻² s⁻¹ (the stomatal_conductance entry), $c_i$, $c_a$ in Pa, $P$ in kPa. TOMS748 to 1e-13 absolute plus relative in $c_i$. $g$ is negative at $\Gamma^* c_P$, so a root exists exactly when $A(c_a) > 0$; otherwise $c_i$ is put at $c_a$ and the leaf nets $A(c_a)$, as a leaf moving no gas does, so the open branch tends to the shut one as $E \to 0$. Only a genuine absence of a root reaches that fallback, on either temperature path; a solver failure stops instead, since $c_a$ would net the largest $A$ on offer.'
 
   assim_max:
     section: solve
@@ -1976,7 +1976,7 @@ equations:
     reads: [ca]
     writes: [assim_max_]
     kind: closed_form
-    note: 'Seated once per set_physiology at the DRIVER temperature, with the energy balance on as well as off (the air-temperature baseline): it asks whether any open, transpiring operating point can pay for respiration. $A_\max < 0$ is the collar solve''s light shut-down (kind `shade-death`). It is also, by the sign argument in intercellular_co2, the condition for the $c_i$ root to exist at that temperature.'
+    note: 'Seated once per set_physiology at the DRIVER temperature, with the energy balance on as well as off (the air-temperature baseline): it is the condition, by the sign argument in intercellular_co2, for the $c_i$ root to exist at that temperature. The collar solve''s light and heat shut-down (kind `shade-death`) is decided separately, by $A(c_a) < 0$ at the shut leaf''s own temperature $T_\mathrm{leaf}(0)$ (no_flow_assim), which is the driver temperature with the energy balance off.'
 
   leaf_state_chain:
     section: solve
@@ -1984,7 +1984,7 @@ equations:
     latex: |
       \psi_\mathrm{stem} \;\to\; E = E(\psi_\mathrm{stem};\psi_\mathrm{up}) \;\to\; T_\mathrm{leaf}(E),\ D_\mathrm{leaf} \;\to\; g_c \;\to\; c_i \;\to\; A(c_i)
       \quad (\psi_\mathrm{up} < \psi_\mathrm{stem});
-      \qquad E = g_c = 0,\ c_i = \Gamma^* c_P,\ A = A(\Gamma^* c_P) = -R_d \quad (\psi_\mathrm{up} \ge \psi_\mathrm{stem})
+      \qquad E = g_c = 0,\ A = \min(0,\, A(c_a)),\ c_i = c_a \text{ if } A(c_a) < 0 \text{ else the root of } A(c_i) = 0 \quad (\psi_\mathrm{up} \ge \psi_\mathrm{stem})
     code: phylloptim::Leaf::set_leaf_states_rates_from_psi_stem
     reads: [atm_kpa, use_energy_balance_]
     writes: [transpiration_, stom_cond_CO2_, ci_, assim_colimited_]
@@ -1995,14 +1995,14 @@ equations:
     section: solve
     title: The no-flow exits of the collar solve
     latex: |
-      \psi_\mathrm{stem}^* = \begin{cases} \psi_\mathrm{crit} & \text{hydraulic shut-down} \\ \psi_r^* & \text{shade death} \end{cases},
-      \qquad E = g_c = E_\mathrm{up} = 0,\quad c_i = \Gamma^* c_P,\quad A = -R_d,\quad J = -R_d - C(\psi_\mathrm{stem}^*)
+      \psi_\mathrm{stem}^* = \begin{cases} \min(\psi_\mathrm{crit},\, \psi_{\mathrm{crit},\mathrm{supply}}) & \text{hydraulic shut-down} \\ \psi_r^* & \text{shade death} \end{cases},
+      \qquad E = g_c = E_\mathrm{up} = 0,\quad A = \min(0,\, A(c_a)),\quad J = A - C(\psi_\mathrm{stem}^*)
     code: phylloptim::Leaf::set_shutdown_state
-    also: [phylloptim::Leaf::prepare_collar_solve, phylloptim::Leaf::no_flow_profit, phylloptim::Leaf::polish_bracket_bound]
+    also: [phylloptim::Leaf::prepare_collar_solve, phylloptim::Leaf::no_flow_profit, phylloptim::Leaf::polish_bracket_bound, phylloptim::Leaf::no_flow_assim_at, phylloptim::Leaf::ci_no_flow, phylloptim::Leaf::root_limit_binds_first]
     reads: [psi_crit]
     writes: [opt_psi_stem_, opt_root_psi_, profit_, transpiration_, stom_cond_CO2_, ci_, assim_colimited_, E_up_]
     kind: closed_form
-    note: 'Hydraulic shut-down: no collar potential both moves water and stays inside the critical potentials (wettest layer at or past $\psi_\mathrm{crit}$; uptake negative even at $\psi_\mathrm{crit}$; continuity root at or past $\psi_\mathrm{crit}$; inverted bracket). The recorded collar $\psi_r^*$ is $\psi_\mathrm{crit}$, the supply''s critical potential, the continuity root and the supply''s critical potential respectively. Shade death ($A_\max < 0$): both potentials sit at the zero-uptake collar, polished to 1e-15, and the leaf respires. With the energy balance on, $R_d$ and $\Gamma^*$ are taken at $T_\mathrm{leaf}(0)$, the hottest the leaf gets. $C$ is the seated curve''s cost (TF24 here), read through its binding. The stem route''s no-flow point is in profit.'
+    note: 'Hydraulic shut-down: no collar potential both moves water and stays inside the critical potentials (wettest layer at or past $\psi_\mathrm{crit}$; uptake negative even at $\psi_\mathrm{crit}$; continuity root at or past $\psi_\mathrm{crit}$; inverted bracket). The recorded collar $\psi_r^*$ is $\psi_\mathrm{crit}$, the supply''s critical potential, the continuity root and the supply''s critical potential respectively. The shut stem holds at the root''s critical potential when the drying soil reaches it before the stem''s $\psi_\mathrm{crit}$, and at $\psi_\mathrm{crit}$ otherwise; with the default traits the two are equal, so the held stem has a kink in the stem and root traits there. Shade death ($A(c_a) < 0$ at $T_\mathrm{leaf}(0)$): both potentials sit at the zero-uptake collar, polished to 1e-15, and the leaf respires. A leaf moving no gas nets $\min(0, A(c_a))$: zero in light, where the transpiring leaf tends to $A = 0$ as $E \to 0$, and $A(c_a) < 0$ in the dark or too hot to fix carbon; $c_i$ is where $A$ is zero, or $c_a$ when it is negative there. With the energy balance on, everything is taken at $T_\mathrm{leaf}(0)$, the hottest the leaf gets. $C$ is the seated curve''s cost (TF24 here), read through its binding. The stem route''s no-flow point is in profit.'
 
   profit:
     section: solve
@@ -2087,13 +2087,13 @@ equations:
     reads: [psi_crit, root_psi_crit, GSS_tol_abs]
     writes: []
     kind: closed_form
-    note: '$\psi_{\mathrm{crit},\mathrm{supply}}$ is the root''s own 5%-conductivity potential on the multi-layer supply and $\psi_\mathrm{crit}$ on the single one. The dry end is whichever limit binds first: the continuity root (kind `boundary-crit` if the optimum pins there) or the root limit (`boundary-root-crit`); the clamp can invert the interval, which is a shut-down, not an optimisation over an empty set. A collapsed interval holds the collar at its midpoint and optimises only $\psi_\mathrm{stem}$ (kind `determined`). Shade death ($A_\max < 0$) is no_flow_state.'
+    note: '$\psi_{\mathrm{crit},\mathrm{supply}}$ is the root''s own 5%-conductivity potential on the multi-layer supply and $\psi_\mathrm{crit}$ on the single one. The dry end is whichever limit binds first: the continuity root (kind `boundary-crit` if the optimum pins there) or the root limit (`boundary-root-crit`); the clamp can invert the interval, which is a shut-down, not an optimisation over an empty set. An interval narrower than bracket_tol_at(bound_b) has both ends polished to collar precision, and one no wider than collar_root_tol is a shut-down too. Shade death ($A_\max < 0$) is no_flow_state.'
 
   operating_point_kind:
     section: solve
     title: Which condition placed the optimum
     latex: |
-      \text{hydraulic-shutdown or shade-death or determined at the bracket (collar\_bracket, no\_flow\_state); otherwise}\quad
+      \text{hydraulic-shutdown or shade-death at the bracket (collar\_bracket, no\_flow\_state); otherwise}\quad
       \text{interior if } J'(\psi_a^+) > 0 > J'(\psi_b), \text{ with } J'(\psi^*) = 0;\quad
       \text{boundary-soil if } J'(\psi_a^+) \le 0;\quad
       \text{boundary-crit or boundary-root-crit if } J'(\psi_b) \ge 0;\quad
@@ -2103,7 +2103,7 @@ equations:
     reads: [collar_root_tol, GSS_tol_abs]
     writes: [opt_root_psi_, opt_psi_stem_, profit_]
     kind: identity
-    note: 'The collar solve root-finds $J'' = 0$ (foc_collar) to collar_root_tol inside the bracket rather than searching $J$, so a bound that binds has to be detected by the sign of $J''$ at each end: $\psi_a^+$ is the wet end stepped in by 1e-6 of the width (the wet end itself is the no-flow sentinel), $\psi_b$ the dry end. A pinned bound is polished to 1e-15 before it is returned. Codes follow the enum: 1 interior, 2 boundary-soil, 3 boundary-crit, 4 boundary-root-crit, 5 determined, 6 hydraulic-shutdown, 7 shade-death, 9 solver-refused. The kind is not bound: operating_point_kind() is C++ only.'
+    note: 'The collar solve root-finds $J'' = 0$ (foc_collar) to collar_root_tol inside the bracket rather than searching $J$, so a bound that binds has to be detected by the sign of $J''$ at each end: $\psi_a^+$ is the wet end stepped in by 1e-6 of the width (the wet end itself is the no-flow sentinel), $\psi_b$ the dry end. A pinned bound is polished to 1e-15 before it is returned. Codes follow the enum: 1 interior, 2 boundary-soil, 3 boundary-crit, 4 boundary-root-crit, 5 hydraulic-shutdown, 6 shade-death, 8 solver-refused. The kind is not bound: operating_point_kind() is C++ only.'
 
   # --- cost curves and the marginal cost of water --------------------------------
   # --- the cost curves ---------------------------------------------------------
@@ -2184,7 +2184,7 @@ equations:
     writes: []
     kind: closed_form
     cite: Eller-2020
-    note: '1 at zero tension and exactly 0 at $\psi_\mathrm{crit}$, where $f = k_\mathrm{crit} = 0.05$ by construction, so it takes no parameter. Clamped at zero (Eller-2020 do not): without it a shut-down leaf ($A = -R_d$) past $\psi_\mathrm{crit}$ reports a positive product. Written so a NaN propagates.'
+    note: '1 at zero tension and exactly 0 at $\psi_\mathrm{crit}$, where $f = k_\mathrm{crit} = 0.05$ by construction, so it takes no parameter. Clamped at zero (Eller-2020 do not): without it a shut-down leaf in the dark ($A = A(c_a) < 0$) past $\psi_\mathrm{crit}$ reports a positive product. Written so a NaN propagates.'
   sox_reduction_deriv:
     section: costs
     title: Slope of the SOX reduction factor
@@ -2240,7 +2240,7 @@ equations:
     writes: []
     kind: identity
     cite: Sperry-2017
-    note: 'Found by maximisation (endpoints plus a root-find of $dA/d\psi$), not by Sperry-2017''s scan; the closure point $\psi_s$ itself, where $A = -R_d$, is excluded. The maximum can sit at the dry bound (energy balance off, where $A$ rises monotonically) or inside the stream (energy balance on in cold air, where transpiration cooling turns $A$ over). Held constant in the gradient (a partial at fixed normaliser).'
+    note: 'Found by maximisation (endpoints plus a root-find of $dA/d\psi$), not by Sperry-2017''s scan; the closure point $\psi_s$ itself, where no gas moves and $A = \min(0, A(c_a))$, is excluded. The maximum can sit at the dry bound (energy balance off, where $A$ rises monotonically) or inside the stream (energy balance on in cold air, where transpiration cooling turns $A$ over). Held constant in the gradient (a partial at fixed normaliser).'
   profitmax_normalisers:
     section: costs
     title: ProfitMax conductance normaliser
@@ -2275,7 +2275,7 @@ equations:
     reads: []
     writes: []
     kind: closed_form
-    note: 'The value `profit_` reports. The product and ratio curves are evaluated in that form, not as $\log A \pm \log(\cdot)$, because at closure $A = -R_d < 0$ and the endpoint must stay a candidate; `log` is monotone so the argmax is shared. Only the five difference curves are carbon fluxes; the product, ratio and normalised values must not be compared with them. The product and ratio curves set `hydraulic_cost_` to NA.'
+    note: 'The value `profit_` reports. The product and ratio curves are evaluated in that form, not as $\log A \pm \log(\cdot)$, because at closure $A = \min(0, A(c_a)) \le 0$ and the endpoint must stay a candidate; `log` is monotone so the argmax is shared. Only the five difference curves are carbon fluxes; the product, ratio and normalised values must not be compared with them. The product and ratio curves set `hydraulic_cost_` to NA.'
   benefit_link_deriv:
     section: costs
     title: Slope of the benefit link

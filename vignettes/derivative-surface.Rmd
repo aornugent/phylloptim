@@ -32,7 +32,7 @@ The two classifications are decided differently and are not interchangeable: a s
 
 - **row**: one output's derivatives against a list of inputs.
 - **supplied row**: a row computed here and handed to the caller as data, with nothing recorded behind it. The caller's tape gets one statement per output, however long the leaf's arithmetic is.
-- **kind**: `Leaf::OperatingPointKind`, which condition placed the operating point. There are eleven.
+- **kind**: `Leaf::OperatingPointKind`, which condition placed the operating point. There are ten.
 - **draw**: `SupplyDraw<S>`, the soil's water draw at one collar potential: the total flux and its slope in the collar, and each layer's uptake. It records the collar it was taken at.
 - **the three scalars**: the leaf's derivative surface is a set of member templates on a scalar `S`. At `double` they are an ordinary evaluation; at `odelia::ode::tangent_scalar<double>` they carry a directional derivative; at `odelia::ode::adjoint_scalar<double>` they record onto the caller's reverse tape. One source, not three copies.
 - **the pack**: `leaf_pars<S>`, the twenty differentiable parameters as one array indexed by `par_*`. The first nineteen are what a calibration fits (`gradient::n_theta`); the twentieth, `par_PPFD`, is the light the leaf stands in, seated per observation.
@@ -64,7 +64,7 @@ The calls assume, and mostly do not check:
 - `pars` and `supply` hold, in value, the leaf's seated traits (`passive_pars()`) and its seated soil state and root network;
 - the supply path is multi-layer.
 
-## The solve path, and the eleven kinds
+## The solve path, and the ten kinds
 
 The solve runs at `double` and is never differentiated. It brackets the collar between the wet bound, where uptake from the soil is zero, and the dry bound, where the stem reaches its critical potential or the root reaches its own; then it root-finds the first-order condition `dprofit/dcollar = 0` inside the bracket, or reports that a bound binds.
 
@@ -72,7 +72,7 @@ The solve runs at `double` and is never differentiated. It brackets the collar b
   prepare_collar_solve()               kind := unsolved
         |
         +-- no interval, or no carbon to gain ---> hydraulic-shutdown, shade-death
-        +-- interval narrower than GSS_tol_abs --> determined
+        +-- interval closed or inverted ---------> hydraulic-shutdown
         v
   root-find on dprofit/dcollar = 0      plain double, off any tape
         |
@@ -95,11 +95,12 @@ What `collar_at` does at each kind:
 | `shade-death` | the same wet bound | yes |
 | `boundary-crit` | the stem reaching its critical potential | yes |
 | `boundary-root-crit` | the root's critical potential | yes |
-| `determined` | the midpoint of the two bounds | the mean of the bounds' rows; the stem holds at its critical potential |
 | `hydraulic-shutdown` | nothing; the collar is held | uptake rows exactly zero, profit carries rows |
 | `unsolved`, `prescribed`, `solver-refused`, `non-finite-gradient` | refused | none; `collar_at` throws |
 
-`determined` deserves a warning. When the feasible interval is narrower than `GSS_tol_abs`, the collar is held at its midpoint and only the stem potential is optimised; continuity between collar and stem is not re-imposed, so the point is not a solution of the full problem. Both bounds are solved to collar precision first, so the midpoint moves with them. The stem's optimum there is placed only where it is the critical potential; one inside its interval is refused by name. At the package's default tolerance no interval on the reference grid collapses; a consumer that loosens `GSS_tol_abs` reaches it more often, and a dry stage of a long drought reaches it at plant's tolerances.
+A narrow interval is polished, and a closed one is shut. When the feasible interval is narrower than `bracket_tol_at(bound_b)`, both of its ends are solved to collar precision before anything is decided on it; one no wider than `collar_root_tol`, or inverted by the root-limit clamp, is `hydraulic-shutdown`. Every open leaf therefore takes its stem from continuity. The collar route loses precision as the root resistance goes to zero (#176).
+
+A leaf moving no gas, at either no-flow kind, nets `min(0, A(ci = ca))` at its own temperature: zero in light, where the transpiring leaf tends to `A = 0` as `E -> 0`, and negative in the dark or when too hot to fix carbon. The solve and `outputs_at` read the same function, so the rows differentiate the value the solve reports. The shut stem holds at the root's critical potential when the drying soil reaches it before the stem's own, and at the stem's otherwise. With the default traits the two potentials are equal, so the held stem has a kink in the stem and root traits there: the rows take the stem's side, and a central difference across it takes the average.
 
 ## Why the implicit function theorem
 
@@ -145,7 +146,7 @@ A consumer branches on `operating_point_kind()` and never on a returned value. A
 
 - `test_supplied_rows`: each layer's supplied collar slope against a central difference of the uptake.
 - `test_transpose`: a forward tangent against the reverse sweep through the same rows, at 72 operating points. It cannot see a row that is wrong both ways.
-- `test_leaf`: finite rows at every answered kind on a grid; a replay hands over its solve's rows bit for bit; TF24_floor's collar and profit rows against a re-solve; `determined`'s collar, profit and uptake rows against a difference of the solve at both dry bounds; the root curve's rows past its dry end against the table.
+- `test_leaf`: finite rows at every answered kind on a grid; a replay hands over its solve's rows bit for bit; TF24_floor's collar and profit rows against a re-solve; profit continuous, and every open leaf transpiring what its roots supply, across hydraulic shutdown, the light-compensation point and shade death decided at the shut leaf's temperature; the root curve's rows past its dry end against the table.
 
 Not yet tested: the supplied trait rows at the pinned kinds against a finite difference of the solve (that referee exists outside the repository); `boundary-crit` and `boundary-root-crit` driven through `collar_at` on a tape.
 

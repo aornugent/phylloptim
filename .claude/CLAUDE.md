@@ -822,7 +822,7 @@ the definition now, and both were re-proposed during review before they did:
   mathematically, not TEXTUALLY, and the Identity arm's exact operation sequence is
   what keeps all four golden baselines bit-identical. Everything carrying no such
   constraint is already shared: `cost_deriv<K>`, `benefit_link_deriv<K>`,
-  `respiration_temp_deriv`, `dprofit_energy_balance_term`.
+  `temp_deriv`, `dprofit_energy_balance_term`.
 
 So the shape to look for is not a function duplicating the solver's *algebra* --
 that can be load-bearing -- but one duplicating its *structure* with a piece
@@ -878,7 +878,8 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    carries. The in-grid path is untouched: the forward read's branch sits inside
    its out-of-range test and `stem_curve_integral_deriv` pays one comparison. The
    collar route never reads past the grid: it shuts down holding the stem at
-   `psi_crit`. Only the single-potential stem routes, where the stem's upstream
+   `psi_crit` or, when the root limit binds first, the root's own critical
+   potential. Only the single-potential stem routes, where the stem's upstream
    end is pinned at `psi_soil`, read `G(psi_soil)`.
 
    ⚠️ **So the two tables differ past their grids, and the rows follow the
@@ -1254,7 +1255,7 @@ satisfies `-Werror=switch` and so removes the check they exist for.
    solve on 20 of 30 driver rows, and the gap does **not** close as the root
    resistance goes to zero (1.67 MPa at r = 1e-2): as that resistance vanishes the
    collar loses its freedom, `[root_zero_E, root_crit]` collapses, and the collar
-   solve correctly reports `determined` rather than optimising.
+   solve loses precision and finally reports hydraulic shutdown (#176).
 
 12. **`n_theta` is a compile-time constant, and a short aggregate initialiser is
    legal C++.** Several places fill `theta` with a literal list sized by
