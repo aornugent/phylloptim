@@ -1,3 +1,19 @@
+# phylloptim 0.17.0
+
+## A leaf's profit is continuous where it shuts (#175)
+
+A leaf's profit jumped wherever it stopped moving water or gas: down by `R_d` at hydraulic shutdown, up by `R_d` across the light-compensation point, and on entering the narrow-interval `Determined` state, where the stem drew up to 194x what the roots supplied. Hot, bright leaves under the energy balance were refused outright.
+
+A leaf moving no gas now nets `min(0, A(ci = ca))` at its own temperature: zero in light, which is what a transpiring leaf tends to as `E -> 0`, and `A(ca) < 0` in the dark or when too hot to fix carbon. One function, `no_flow_assim_at<T>()`, supplies it to the shutdown and shade-death exits, the zero-transpiration branch and `outputs_at`, so the tape differentiates the value the solve reports. When `psi_stem_to_ci` finds no root in `[gamma*, ca]` an open leaf also sits at `ci = ca`; only a genuine absence of a root reaches that fallback, and a solver failure stops instead. The derivative there is `A(ca)`'s own slope in temperature, which is exact, so `dprofit_dpsi_stem` and `dprofit_at_collar_psi` now report it as feasible and the optimisers refine on it rather than falling back to a bracketing search. Shade death is decided at the shut leaf's temperature, `leaf_temp_from_E(0)`. A narrow collar interval has both ends polished before anything is decided on it, and one that has closed is hydraulic shutdown, so every open leaf takes its stem from continuity. The shut stem holds at the root's critical potential when the drying soil reaches it before the stem's, and at `psi_crit` otherwise.
+
+⚠️ **At the default traits the stem's and the root's critical potentials are equal**, so the held stem has a kink in the stem and root traits exactly there. The rows take the stem's side; a central difference across it records the average of the two. `gradient_golden.tsv`'s shut-down case now sets `root_P50 = 4` to stay off it.
+
+**C++ API:** `OperatingPointKind::Determined` and the kind name `determined` are removed, so the later kinds' integer codes drop by one. `ci_at_compensation_point()` is `ci_assigned()` and `respiration_temp_deriv()` is `temp_deriv()`.
+
+**Not changed:** the Medlyn route, whose closed state still nets `-R_d`, so in light it still steps as it shuts. It is the only route with a residual conductance `g0`, and its output is byte-identical to 0.16.3 at `g0 = 0` and `0.022`.
+
+**What moves:** `operating_points.tsv`, the 96 no-flow rows of 576 (`ci`, `assim`, `profit`), and none of the 480 open rows. `psi_stem_optima.tsv`, 2994 of 5760 rows: 1756 dark rows move `ci` to `ca` with `A` unchanged to 4e-16; 190 shut rows in light go from `A = -R_d` to 0; 904 too-hot rows take `A(ca)`; 106 energy-balance rows on the stem routes move their optimum, by up to 2.6e-6 MPa in the dark, where the refine is now exact (no row loses profit), and by up to 1.85 MPa, with profit up to 1.49 higher, for hot, bright leaves at 40 °C, where the stem optimisers now climb a continuous objective; 30 hot, bright energy-balance rows go from `solver-refused` to `shade-death`; and 8 `TF24_floor` stem-route optima now choose closure, which earns 0 rather than `-R_d`. `gradient_golden.tsv`, 3 cells, all on the shut-down case: `R_d_25`'s `A` and `profit` rows go to zero, and `stem_c`'s `profit` row picks up `-1.7e-10` of rounding. `primitives.tsv` is bit-identical. `test-golden.R`'s shut-down row moves in `ci`, `assim` and `profit`.
+
 # phylloptim 0.16.3
 
 ## The model registry: equations, parameters and code links from one YAML (#166)
