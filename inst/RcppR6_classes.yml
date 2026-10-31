@@ -167,7 +167,7 @@ Leaf:
     # a downstream replication study carried a hard-coded 5.870283 for it.
     #
     # ⚠️ READ-ONLY, and that is hazard 10 rather than caution: changing a trait
-    # means rebuilding up to two vulnerability splines and clearing the solved
+    # means rebuilding up to two vulnerability tables and clearing the solved
     # operating point, so `set_traits()` is still the only way to move one. These
     # exist so a caller can read back what they set. RcppR6 makes an
     # `access: field` binding read-only exactly when `readonly: true` is given --
@@ -307,7 +307,7 @@ Leaf:
     # caller actually takes.
     #
     # ⚠️ `set_traits()` is STILL the right way to change a TRAIT (`vcmax_25`,
-    # `jmax_25`, ...): the vulnerability splines and the solved operating point need
+    # `jmax_25`, ...): the vulnerability tables and the solved operating point need
     # clearing too, and the cache key does not do that.
     vcmax_ha_: {type: double, access: field}
     vcmax_H_d_: {type: double, access: field}
@@ -580,8 +580,8 @@ Leaf:
     #
     # A METHOD, NOT SIXTEEN SETTABLE FIELDS. The traits are public doubles, so
     # `access: field` entries would have worked and would have been wrong: a bare
-    # field write bypasses the #25 invariant checks, leaves the two pre-integrated
-    # vulnerability splines describing the previous curve, and leaves the solved
+    # field write bypasses the #25 invariant checks, leaves the two vulnerability
+    # tables describing the previous curve, and leaves the solved
     # operating point describing the old traits (hazard 8).
     #
     # This used to carry a third reason -- that vcmax_/jmax_/R_d_ would go stale
@@ -600,14 +600,11 @@ Leaf:
     # R object: measured, constructing a Leaf from R costs ~204 us against ~4 us to
     # re-trait and re-drive an existing one, and that ratio -- not the choice of
     # gradient formula -- is what dominates a finite-difference gradient in R.
-    # Move stem_b without rebuilding the stem vulnerability spline, for a gradient
-    # in it (PLAN 11f). The curve is homogeneous of degree 1 in stem_b, so the
-    # spline for another stem_b is this one with its argument rescaled -- measured
-    # to reproduce a rebuilt spline to 0-3e-16. There is no such identity for
-    # stem_c, which is why only one parameter is here.
+    # Move stem_P50, and with it stem_b and psi_crit, for a gradient in it (PLAN
+    # 11f). The stem table depends on stem_c alone, so nothing is rebuilt; what
+    # this saves over set_traits() is clearing the solved physiology.
     #
-    # ⚠️ Leaves the splines built at a different stem_b on purpose, and does not
-    # clear the solved outputs; set_traits() is the way back. Bound because
+    # ⚠️ Does not clear the solved outputs; set_traits() is the way back. Bound because
     # leaf_gradient() is in R -- not because a user should reach for it, which is
     # why its documentation is on leaf_gradient() rather than here.
     perturb_stem_P50:
@@ -993,12 +990,10 @@ Leaf:
       args: []
 
     # --- setup ---------------------------------------------------------------
-    # Exposed because the default constructor builds both vulnerability splines
-    # at Leaf::ncontrol_default control points and a caller who changes
-    # vulnerability_curve_ncontrol
-    # through the constructor gets them rebuilt there -- but a caller reaching in
-    # to change stem_b/root_b afterwards does not, and would otherwise be stuck
-    # with splines for the old curve. See the note in setup_transpiration.
+    # Exposed because the default constructor builds both vulnerability tables
+    # at Leaf::ncontrol_default knot intervals, and a caller who wants another
+    # resolution afterwards rebuilds them here. See the note in
+    # setup_transpiration.
     # --- choosing the supply path (issue #32) --------------------------------
     #
     # Two entry points rather than a settable tag. Each leaves the object in a

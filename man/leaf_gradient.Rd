@@ -138,13 +138,12 @@ checking one against the other. Forcing \code{"ift"} at a pinned optimum returns
 a confidently wrong number -- that is the whole reason \code{"auto"} exists --
 and \code{status} still reports the truth about the point.}
 
-\item{fast_stem_curve}{perturb \code{stem_b} without rebuilding the stem
-vulnerability spline (\code{TRUE}, the default). The curve is homogeneous of
-degree 1 in \code{stem_b}, so the spline for a perturbed \code{stem_b} is the existing
-one with its argument rescaled — which makes the rebuild, otherwise most of
-the cost of that gradient, unnecessary. \code{FALSE} rebuilds, and exists so the
-equivalence is checkable rather than assumed; the package's tests require
-the two routes to agree. \code{stem_c} has no such identity and always rebuilds.}
+\item{fast_stem_curve}{perturb \code{stem_P50} through \code{perturb_stem_P50()}, which
+moves \code{stem_b} and leaves the seated physiology alone (\code{TRUE}, the
+default), rather than through \code{set_traits()}. Neither route rebuilds the
+stem's vulnerability table, which depends on \code{stem_c} alone; \code{FALSE} exists
+so the equivalence is checkable rather than assumed, and the package's tests
+require the two routes to agree.}
 
 \item{model}{which optimality model to differentiate: \code{"collar"} (the
 default, the production path) or any name from \code{\link[=cost_curve_names]{cost_curve_names()}}, which
@@ -373,11 +372,11 @@ of the whole solve, which respects the constraint by construction because it
 differences the constrained answer. That is the one thing the crude method does
 better, and \code{method} in the result says which was used.
 
-It is better in a second way, which is sharper than accuracy. \code{psi_crit} does
-not appear in the profit function at all -- it only sets the dry end of the
-feasible collar interval -- so the composite necessarily returns \strong{exactly
-zero} for it. At an interior optimum that is correct. At a boundary-crit optimum
-\code{psi_crit} \emph{is} the binding constraint, the true \code{dA/dθ} is about \code{1.26}, and a
+It is better in a second way, which is sharper than accuracy. The dry end of
+the feasible collar interval -- \code{psi_crit} for the curves it bounds, the end of
+the stem curve for the rest -- does not appear in the profit function at all,
+so the composite necessarily returns \strong{exactly zero} for it. At an interior
+optimum that is correct. At a dry pin it \emph{is} the binding constraint, and a
 zero is arguably a worse answer than a wildly wrong one: it tells an optimiser
 the parameter does nothing, and nothing about it looks suspicious. The
 difference of the solve gets it for free.

@@ -1,3 +1,15 @@
+# phylloptim 0.21.0
+
+## The stem may run past psi_crit, and G is a C2 table (#183, #85)
+
+`psi_crit` no longer bounds the solve for TF24, TF24_floor, ProfitMax, JS22 and CMax, whose costs are defined past it: for these the dry end is the end of the stem curve, where it carries G(inf) to within e^-40. SOX, JW26, CF77 and LeastCost keep `psi_crit` as the end of their own domain (`cost_domain_ends_at_psi_crit<K>()`; the per-curve table is new and is the place to change that). A leaf pinned at the dry end is `BoundaryDry` (`"boundary-dry"`), which replaces `BoundaryCrit`; `BoundaryRootCrit` is gone, because nothing bounds the root either, and the enum after it is renumbered. A diverging curve's leaf shuts when the stem's remaining capacity from the wettest layer falls to `stem_capacity_floor` (1e-11 of G(inf), about 12.4 MPa at the defaults), a resolution floor rather than a modelled bound.
+
+The vulnerability integral G is now a quintic Hermite table in `u = psi/b` with exact value, slope and curvature at every knot, so G is C2 and the slope the solve reads is the derivative of the value it reads. The cubic splines it replaces were C1 and erred by up to 8.7e-11 of G(inf); the table errs by 2e-15 at the default `c` and 2.7e-12 at `c = 1.2`. Because the table depends on `c` alone, a P50 change rebuilds nothing, tables are shared between copies of a `Leaf` and between stem and root when their `c` agree, and `ncontrol_default` is 800 knot intervals (the two tables hold about the doubles the 400-knot splines did). The root's conductivity is its closed form with no clamp (#85), and a fully embolised layer draws nothing. A closed-form G through Boost's incomplete gamma was measured and rejected: plant's TF24 stands ran 3.3-3.9x slower.
+
+Cost: the collar solve is 1-4% slower on rows comparable in both builds (TF24_floor 6.8%), and plant's TF24 stands about 11-12%; a `stem_c` rebuild costs about 17 solves, a P50 change nothing. The goldens are regenerated; what moved, by cause, is in the PR. `operating_points.tsv` gains a 17 MPa soil (672 rows), where every curve shuts.
+
+Migration for plant: `"boundary-crit"` and `"boundary-root-crit"` become `"boundary-dry"`; `supply_psi_crit`, `root_psi_crit_at`, `invert_stem_curve*`, `eval_stem_curve` and `closed_form::PastLastKnot` are removed; `MultiLayerRoots::setup_vulnerability` takes an optional table to share. `Control`'s default follows `ncontrol_default` and needs no change.
+
 # phylloptim 0.20.0
 
 ## `collar_at` can hand its coordinates to `outputs_at` (#161)

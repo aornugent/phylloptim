@@ -80,8 +80,8 @@
 //   Interior            stationarity of profit in the collar
 //   BoundarySoil        uptake equal to the residual flux at the wet bound
 //                       (polished root)
-//   BoundaryCrit        the stem reaching psi_crit at the dry bound
-//   BoundaryRootCrit    the root's own critical potential at the dry bound
+//   BoundaryDry         the stem reaching its dry end: psi_crit for the curves
+//                       bounded there, the end of the stem curve for the rest
 //   HydraulicShutdown   the same wet bound, reached with no interval to
 //                       optimise over
 //   Unsolved, Prescribed, SolverRefused, NonFiniteGradient: refused
@@ -453,78 +453,24 @@ public:
        double ci_niter,
       double TF24_cost_scale);
 
-  odelia::interpolator::hermite_spline<double> transpiration_from_psi;
-  // The knots that interpolant was built on: the potential at each, and G there.
-  //
-  // ⚠️ THERE IS NO SECOND TABULATION, AND THAT IS THE POINT. G^-1 is this same
-  // table inverted -- a segment located here, then Newton on the interpolant
-  // `transpiration()` itself reads -- so the two directions are exact mutual
-  // inverses by construction rather than to a fit's own error. Tabulated
-  // separately, on these same knots with the axes swapped, they agreed only to
-  // O(h^3) in the slope: `P'(G(psi)) * G'(psi) - 1` measured 3.8e-05 at the
-  // shipped 100 knots, 5.5e-06 at 200, 6.7e-07 at 400. That reached the census
-  // gradient's water rows, which disagreed with a difference of the model by
-  // 1.8e-04 and fell 535x across a 16x resolution increase.
-  std::vector<double> stem_curve_psi_;
-  std::vector<double> stem_curve_at_psi_;
-  // G^-1's span lookup in O(1): cell j of an even grid over G's range holds the
-  // first knot index whose G is >= the cell's left edge, so a query starts there
-  // and steps at most a knot or two. It returns exactly the index
-  // std::lower_bound would.
-  std::vector<std::size_t> stem_curve_inverse_cell_;
-  double stem_curve_inverse_scale_ = 0.0;
-  // G'' at each knot, the closed-form slope of the surviving conductivity. With
-  // G' (the table's own slopes) it gives the inverse curve's second derivative,
-  // -G''/G'^3, which is what lets the span inverse below be quintic.
-  std::vector<double> stem_curve_curvature_;
-
-  // The `stem_b` the two splines above were built at, which is normally just
-  // `stem_b` -- and is not, while a gradient is perturbing it.
-  //
-  // ⚠️ THIS IS A HOMOGENEITY RESULT, AND IT IS WHAT MAKES A GRADIENT IN stem_b
-  // FREE. The cumulative integral obeys
-  //
-  //     G(psi; s*b, c) = s * G(psi/s; b, c)
-  //
-  // because G(psi; b, c) = b * g(psi/b; c) for g(u; c) = integral of
-  // exp(-u^c) -- b enters only as a scale on both axes. The knot grid scales
-  // with it too (psi_max = b*log(100)^(1/c)), so the identity holds for the
-  // SPLINE and not merely for the integral it approximates: measured, the
-  // rescaled spline reproduces a rebuilt one to 0-3e-16.
-  //
-  // So moving stem_b needs no rebuild at all -- just the existing spline
-  // evaluated at a rescaled argument. That matters because a rebuild is 11.9 us
-  // of incomplete gammas plus 3.1 us per interpolator, which is the entire cost
-  // of a gradient in stem_b.
-  //
-  // ⚠️ There is NO SUCH IDENTITY FOR stem_c, and the obvious substitute -- read
-  // G from its closed form instead of the spline -- was built, measured and
-  // rejected: it differentiates a slightly different model and disagrees with the
-  // spline's own derivative by 3e-4. stem_c rebuilds.
-  //
-  // Two rules keep this from becoming a stale-state bug of the kind hazard 8
-  // records: ONLY the four stem_curve_* accessors may read the splines, so one
-  // scale factor is sufficient; and `setup_transpiration()` resets it, with
-  // `set_traits()` forcing a rebuild while it is displaced, so no route out of
-  // the perturbed state leaves it set.
-  double stem_b_spline_ = 0.0;
-  // G(inf) at the pair the splines were built at, (b/c) Gamma(1/c): the
-  // ceiling of the stem's flux, cached here because the incomplete gamma it
-  // comes from is not something to evaluate per candidate. Rescales with
-  // stem_b by the same homogeneity as the table.
-  double stem_curve_G_inf_ = 0.0;
+  // The stem's cumulative vulnerability integral G, as a table of H(x) at
+  // stem_c -- see VulnerabilityTable for why the table is in x and why it is C2.
+  // It depends on stem_c alone, so moving stem_P50 (and with it stem_b) rebuilds
+  // nothing; and it is immutable and shared, so copying a Leaf copies a pointer.
+  // Read only through the four stem_curve_* accessors below.
+  std::shared_ptr<const VulnerabilityTable> stem_curve_;
+  InverseScale stem_inv_b_;
 
   // INSTRUMENTATION, not state: how many times the stem curve has been built.
   // Nothing in the model reads it, and `set_traits()` deliberately does NOT reset
   // it -- it counts events over an object's whole life, so a caller takes
   // differences.
   //
-  // It exists because a rebuild is invisible to every other instrument. The spline
-  // is a pure function of (stem_b, stem_c), so a rebuild at an unchanged pair is
-  // bit-identical to not rebuilding: the only thing it costs is 11.9 us, and a
-  // timing assertion for one rebuild per observation would drift with the machine
-  // and still pass on a fast day. This is the countable form (#74), which is what
-  // the cost rules in the developer guide ask for wherever one exists.
+  // It exists because a rebuild is invisible to every other instrument: the table
+  // is a pure function of (stem_c, knot count), so a rebuild at an unchanged pair
+  // is bit-identical to not rebuilding, and the only thing it costs is time. This
+  // is the countable form (#74), which is what the cost rules in the developer
+  // guide ask for wherever one exists.
   long stem_curve_builds_ = 0;
 
   // The soil -> root-collar water supply (issue #2). Everything the leaf needs
@@ -662,15 +608,6 @@ public:
       default:                     return single_.psi_soil_ + single_.grav_head_;
     }
   }
-  // Driest collar potential the supply path can be asked about, positive
-  // magnitude. For roots it is the root vulnerability limit; a constant-
-  // conductance path has no such limit, so the stem's psi_crit binds instead.
-  double supply_psi_crit() const {
-    switch (supply_kind_) {
-      case SupplyKind::MultiLayer: return roots_.root_psi_crit;
-      default:                     return psi_crit;
-    }
-  }
   // The single soil potential the psi_soil_[0]-style solvers (optimise_psi_stem_*)
   // work against, positive magnitude. Those solvers already require exactly one
   // layer, so this is the same value either way -- it just stops them reaching
@@ -725,7 +662,7 @@ public:
   // vulnerability curves are fitted on a Px and the slope at Px rather than (b, c).
   double stem_P50;
   // DERIVED, and read-only from R. Kept as members because every internal use is
-  // in terms of them: the splines, the brackets, the cost kernels.
+  // in terms of them: the curve reads, the brackets, the cost kernels.
   double stem_b;
   double psi_crit;
   double TF24_beta2;
@@ -1648,11 +1585,11 @@ public:
   double theta_;            // current soil water content (m^3 m^-3)
 
   // 1-entry memo for transpiration(). Within a single root-collar/profit solve
-  // leaf_specific_conductance_max_ and the transpiration spline are fixed, so
+  // leaf_specific_conductance_max_ and the stem curve are fixed, so
   // supply-side transpiration depends only on (psi_stem, psi_upstream). That
   // pair is queried repeatedly with identical values per profit evaluation
   // (psi_stem_to_ci -> stom_cond_CO2 -> transpiration, then transpiration again
-  // for transpiration_). Caching the last result avoids the redundant spline
+  // for transpiration_). Caching the last result avoids the redundant table
   // lookups; it is invalidated in set_physiology when conductance/soil change.
   bool   transpiration_cached_ = false;
   double transpiration_cache_psi_stem_ = 0.0;
@@ -1693,7 +1630,7 @@ public:
   //   * it also covers `vcmax_25` and `jmax_25`, which closes the third and least
   //     visible half of hazard 10 -- a bare `l$vcmax_25 <- x` write no longer
   //     leaves `vcmax_`/`jmax_`/`R_d_` describing the old value. `set_traits()` is
-  //     still the right way to change a trait (the vulnerability splines and the
+  //     still the right way to change a trait (the vulnerability tables and the
   //     solved point need clearing too), but the silent-wrong-number failure mode
   //     is gone.
   //   * the cost is 17 double comparisons per set_physiology() call, i.e. per
@@ -1772,11 +1709,11 @@ public:
   // public plain doubles, so assigning one *compiles* -- and three separate pieces
   // of derived state go stale when it does:
   //
-  //   * the two vulnerability SPLINES. stem_b/stem_c build transpiration_from_psi;
-  //     root_b/root_c build the root curve. Both are
-  //     pre-integrated at construction, so a bare `l.stem_b = x` leaves the hot
-  //     path reading the previous curve's integral while proportion_of_conductivity
-  //     reports the new one -- two answers to the same question.
+  //   * the two vulnerability CURVES. Each c owns a pre-integrated table and each
+  //     P50 sets the scale (b, and the memoised 1/b) it is read at, so a bare
+  //     `l.stem_c = x` leaves the hot path reading the previous curve's integral
+  //     while proportion_of_conductivity reports the new one -- two answers to
+  //     the same question.
   //   * the solved OPERATING POINT, which is hazard 8: an output that no code path
   //     rewrites goes on reading as though it belonged to the new traits.
   //   * vcmax_, jmax_ and R_d_, which are derived from vcmax_25/jmax_25 inside
@@ -1793,8 +1730,8 @@ public:
   // A fourth, which is not derived state but is the same argument: a bare write
   // bypasses the #25 positive-magnitude checks below entirely.
   //
-  // So: the invariant checks run, the splines
-  // are rebuilt only when the curve that owns them actually moved, and
+  // So: the invariant checks run, the tables
+  // are rebuilt only when the c that owns them actually moved, and
   // setup_clean_leaf() puts the object back in its just-constructed state -- which
   // resets both caches and requires set_physiology() before the next solve, exactly
   // as a fresh Leaf would. That last part is not conservatism: the derived
@@ -1827,36 +1764,40 @@ public:
   //   * ProfitMax's normaliser, `k_span = k(psi_soil) - 0.05*kmax`, so its lambda
   //   * the P50 chain rule, through `dpsi_crit/dP50`
   //
-  // So three of the eight cost curves change shape, not just a bound that seldom
-  // binds. And there is a ceiling: the vulnerability splines are built out to P99
-  // (`vulnerability_conductivity_floor`), and the collar path recovers psi_stem by
-  // INVERTING the stem integral, whose range ends there -- measured, asking 0.03%
-  // past it throws `stem_curve_domain`. A threshold at P99 leaves that inversion no
-  // headroom, and past P99 the spline domain has to move too, which redistributes
-  // every knot and therefore every number the model reports.
+  //   * the dry end of the four curves whose own domain ends at psi_crit
+  //     (cost_domain_ends_at_psi_crit)
   //
-  // Smoothness is the wrong reason to reach for this in any case: moving a bound
-  // moves the kink rather than removing it. What removes it is a cost that DIVERGES
-  // at the bound, which is exactly why no product objective can be boundary-crit.
+  // So three of the nine cost curves change shape, not just a bound. For the
+  // others psi_crit is a labelled point on a curve that continues past it (#183):
+  // it bounds nothing, because their marginal cost of water diverges as the stem
+  // dries, and that, not a bound, is what keeps their optimum inside.
   static constexpr double k_crit_fraction = 0.05;
-  // Knots in each pre-integrated vulnerability curve. Named because a CONSUMER
-  // has to seat the same number -- plant's Control carries it -- and a literal
-  // repeated there would drift from this one silently, changing which curve the
-  // solve ran on while every number stayed plausible.
+  // Knot intervals in each vulnerability table (VulnerabilityTable), over
+  // x = (psi/b)^c in [0, vulnerability_x_end]. Named because a CONSUMER has to
+  // seat the same number -- plant's Control carries it -- and a literal repeated
+  // there would drift from this one silently.
   //
-  // ⚠️ THIS NUMBER SETS WHAT THE WATER ROWS MEAN, and 400 was chosen from the
-  // measured curve rather than for caution. The supplied `uptake x psi_soil`
-  // block against a difference of the double path scales with it -- 7.966e-06 at
-  // 100 knots, 5.217e-06 at 200, 1.406e-06 at 400, 1.046e-07 at 800 -- and
-  // plant's factorisation rung asks for 1e-05 in two AMPLIFIED directions, where
-  // the residue is divided by a cancellation the fixture measures at 16.3x. At
-  // 100 those two sat at 1.24x and 1.40x of budget; 200 leaves the worse of them
-  // at 0.92x, which is inside the budget by too little to hold.
+  // 800 puts the table within 1.1e-14 of G(inf) of the closed form for every c
+  // from 1 to 12 (1600: 1.3e-15, at boost's own accuracy). That is two orders
+  // below the solve's own floor, set by psi_stem_to_ci's 1e-13, and the table's
+  // derivatives are not read at all -- G' and G'' are closed forms. At 800 a
+  // Leaf's two tables hold the same number of doubles the cubic splines did at
+  // 400, and they are shared between copies.
+  static constexpr double ncontrol_default = 800.0;
+
+  // The least share of G(inf) the stem must still be able to carry from the
+  // wettest layer for the collar solve to have an interval. G is read to
+  // ~2e-16 of G(inf), so a stem whose remaining capacity G(inf) - G(psi) is
+  // 1e-11 of it carries a flux resolved to ~2e-5 of itself; below ~1e-13 every
+  // gradient is rounding, and the solve was measured refusing there (soil
+  // 13.4-14 MPa at the defaults, where x = (psi/b)^c > 27). The leaf shuts
+  // instead, at a soil of ~12.4 MPa at the defaults (x ~ 22), giving up a flux
+  // below 1e-11 of the stem's capacity: continuous to that order.
   //
-  // ⚠️ IT MOVES EVERY NUMBER THE LEAF REPORTS, because the knots redistribute.
-  // All three golden files are built at 100 and none can be re-blessed except on
-  // the platform that owns them.
-  static constexpr double ncontrol_default = 400.0;
+  // ⚠️ A RESOLUTION FLOOR, NOT A MODELLED BOUND, and it binds only where psi_crit
+  // does not (the curves cost_domain_ends_at_psi_crit names leave ~1e-2 there).
+  // Carrying the curve's tail as G(inf) - G would resolve it and remove this.
+  static constexpr double stem_capacity_floor = 1e-11;
 
   // The two derivations, one place each, so a caller cannot get them
   // inconsistent. `f` is the remaining-conductivity fraction.
@@ -1872,7 +1813,7 @@ public:
   // Seats both curves' derived scale and critical potential from the traits
   // already in place. For the CONSTRUCTORS only: set_traits has to compute the
   // same four values BEFORE it assigns anything, because it decides which
-  // splines to rebuild by comparing them against the ones standing.
+  // tables to rebuild by comparing them against the ones standing.
   void derive_vulnerability_curves_from_P50() {
     stem_b = weibull_b_from_P50(stem_P50, stem_c);
     psi_crit = weibull_psi_at_fraction(stem_b, stem_c, k_crit_fraction);
@@ -1886,106 +1827,37 @@ public:
   static void check_psi_magnitudes(double stem_P50, double stem_c,
                                    double root_P50, double root_c);
 
-  // The #38 boundary, and the STRONGER of the two: `psi_crit` must lie inside the
-  // stem vulnerability spline's domain, which `stem_b`/`stem_c` set and `psi_crit`
-  // does not enter. The knot grid stops at P99 =
-  // vulnerability_psi_max(stem_b, stem_c) and setup_transpiration disables
-  // extrapolation, while every solve evaluates the stem curve AT `psi_crit` -- the
-  // dry bracket bound, the shutdown exit's cost, and E_column's feasibility test
-  // all do. So `psi_crit > P99` is not a configuration that sometimes works: it
-  // throws, out of the interpolator, in a message naming neither trait.
-  //
-  // ⚠️ A caller is much more likely to violate this than the positivity checks,
-  // because `psi_crit` LOOKS independent of the curve and is not. What the
-  // defaults actually say is that it is P95:
-  //
-  //   stem_b = 3.898245, stem_c = 2.680147  ->  P95 = 5.870283 = psi_crit
-  //
-  // to six decimal places, against P99 = 6.891842. That relationship is the thing
-  // a caller fitting measured vulnerability curves needs and cannot find anywhere
-  // else, so the message quotes the P95 that WOULD work rather than only the bound
-  // that failed.
-  //
-  // Separate from check_psi_magnitudes rather than folded into it, because that
-  // one is `static` and reached by name from plant's generated glue and from the
-  // CI consumer program: extending its signature is an API break where adding a
-  // function is not.
-  //
-  // ⚠️ NOT applied to the root curve, and that is a finding rather than an
-  // omission. #38 assumed `root_psi_crit` carried the same latent constraint;
-  // since #77 bounded the root curves past their last knot it does not throw --
-  // `root_vuln_at` CLAMPS its argument to the last knot instead. So a
-  // `root_psi_crit` past the root P99 silently reports the floor conductivity
-  // rather than failing, which is a different defect and is #85's question, not
-  // this check's.
-
-
   void setup_transpiration(double resolution);
 
   // The stem cumulative-vulnerability integral G and its inverse, as the FOUR
-  // operations the model actually performs on them. Both directions read ONE
-  // table -- the inverse by inverting it -- and every read goes through these,
-  // which is what keeps the rescale below in one place rather than as a
-  // condition repeated at eight call sites.
-  //
-  // At stem_b == stem_b_spline_ they are the splines, and bit-identically so --
-  // the scale is exactly 1.0, and dividing by it is the identity. Otherwise they
-  // apply the homogeneity identity documented at stem_b_spline_, with
-  // s = stem_b / stem_b_spline_:
-  //
-  //   G(psi)     = s * G_spline(psi/s)
-  //   G'(psi)    =     G'_spline(psi/s)
-  //   G^-1(w)    = s * G^-1_spline(w/s)
-  //   (G^-1)'(w) =     (G^-1)'_spline(w/s)
-  //
-  // The two derivative lines have no leading `s` on purpose: differentiating
-  // s*G(psi/s) with respect to psi cancels it.
+  // operations the model actually performs on them. Every read goes through
+  // these. G and G' are the table's value and slope, read from one polynomial so
+  // that G' is the derivative of the G the solve reads; G^-1 is Newton on that
+  // pair; and (G^-1)' is 1/G' at the inverse. None of them has a
+  // domain end: past the end of the curve G is G(inf), and only a negative
+  // potential, or a flux at or past G(inf), is refused.
   //
   // The two non-derivative reads take an optional `caller` label, which is
-  // appended to an out-of-domain failure. See eval_stem_curve for why the two
-  // splines cannot identify themselves and why the caller has to.
+  // appended to an out-of-domain failure, so a refusal names the read that made
+  // it (localising plant#576 came down to which).
   double stem_curve_integral(double psi, const char* caller = nullptr) const;
   double stem_curve_integral_deriv(double psi) const;
+  // `converge` is kept for its callers; the inverse always converges to a few
+  // ulps now.
   double stem_curve_integral_inverse(double w, const char* caller = nullptr,
                                      bool converge = false) const;
-  // G^-1 by inverting the forward table, with no domain check and no rescale --
-  // both are the caller above's, which is the only caller.
-  double invert_stem_curve(double w, bool converge = false) const;
   double stem_curve_integral_inverse_deriv(double w) const;
+  // G(inf) = stem_b Gamma(1/c) / c, the most the stem can carry per unit
+  // conductance.
+  double stem_curve_limit() const;
 
-  // Domain-guarded read behind the two accessors above. The stem curve is the
-  // only interpolator in this file built with extrapolation DISABLED (the root
-  // vulnerability pair clamps instead -- see setup_root_vulnerability), so it is
-  // the only one a lookup can throw on. odelia's message names the point and the
-  // domain but cannot name WHICH spline, because it does not know: there are two
-  // here, they are inverses of each other, and they carry different units, so
-  // "u = 7.5 beyond the upper end" is ambiguous in exactly the way that matters.
-  // Nor can it name the caller -- the same spline is read from four places, and
-  // localising plant#576 came down to which.
+  // Move stem_P50, and with it stem_b and psi_crit, without touching the stem
+  // table, which depends on stem_c alone.
   //
-  // Past the UPPER end it answers rather than throws: the table is a cache of
-  // G(psi) = (b/c) gamma_lower(1/c, (psi/b)^c), which is defined at every
-  // potential, so a soil drier than P99 reads the closed form at the curve's
-  // (b, c). The knots are seeded from that same closed form, so the value is
-  // continuous at the join. Only the lower end, a negative potential, throws.
-  static double eval_stem_curve(const odelia::interpolator::hermite_spline<double>& spline,
-                                double u, double scale, double b, double c,
-                                const char* spline_name,
-                                const char* arg_name, const char* caller);
-  // G^-1 past the table's upper end, on the closed form: the inverse of the
-  // branch eval_stem_curve takes there. Infeasible only where no potential
-  // gives `w`, i.e. at or past G(inf).
-  double invert_stem_curve_past_grid(double w, const char* caller) const;
-
-  // Move stem_b WITHOUT rebuilding the stem vulnerability spline, by the
-  // homogeneity identity above. stem_c is not accepted: it has no such identity.
-  //
-  // ⚠️ FOR DERIVATIVE WORK ONLY. It leaves the splines describing a different
-  // stem_b, which is sound only because every read goes through the four
-  // accessors, and it deliberately does NOT clear the solved operating point --
-  // re-seating the physiology is exactly the cost being avoided -- so whatever
-  // reads the outputs afterwards must write them first. `set_traits()` is the
-  // way back, and forces a rebuild.
+  // ⚠️ FOR DERIVATIVE WORK ONLY. It deliberately does NOT clear the solved
+  // operating point -- re-seating the physiology is exactly the cost being
+  // avoided -- so whatever reads the outputs afterwards must write them first.
+  // `set_traits()` is the way back.
   void perturb_stem_P50(double stem_P50_new);
   // Forwards to roots_.setup_vulnerability. Kept on Leaf because it is part of
   // the published construction sequence (see the umbrella header) and plant's
@@ -1994,25 +1866,13 @@ public:
     // Recorded for the reason setup_transpiration records it: `set_traits`
     // rebuilds both curves at this member.
     vulnerability_curve_ncontrol = resolution;
-    roots_.setup_vulnerability(resolution);
-  }
-  // Forwards to phylloptim::cumulative_vulnerability_integral, which now lives in
-  // vulnerability.hpp because it is shared by the stem and the root curves and
-  // so belongs to neither. The parameters are deliberately neutral names, not
-  // stem_*: this is called with (stem_b, stem_c) from setup_transpiration and
-  // with (root_b, root_c) from setup_root_vulnerability.
-  void build_cumulative_vulnerability_integral(double weibull_b, double weibull_c,
-                                               double resolution,
-                                               std::vector<double>& x,
-                                               std::vector<double>& y_integral) {
-    cumulative_vulnerability_integral(weibull_b, weibull_c, resolution, x,
-                                      y_integral);
+    roots_.setup_vulnerability(resolution, stem_curve_);
   }
   void setup_clean_leaf();
 
   // Absolute tolerance for the direct quadrature in
   // transpiration_full_integration (leaf/quadrature.hpp). Not used anywhere on
-  // the production path, which reads the pre-integrated spline instead.
+  // the production path, which reads the pre-integrated table instead.
   double integration_tol_ = 1e-8;
 
   // Retained for API compatibility with plant's R bindings, which expose this
@@ -2468,8 +2328,22 @@ public:
   // collar-potential interval [bound_a, bound_b] (positive magnitudes). Returns
   // false when the operating point is already fully determined (caller is done),
   // true when there is a real interval to choose a collar potential within.
+  //
+  // `first_bracket` lets a curve not bounded at psi_crit try [wet bound, the
+  // continuity root with the stem at psi_crit] first, which holds the optimum
+  // on most rows at the old bracket's cost; maximise_profit_over_collar extends
+  // it to the end of the stem curve when profit is still rising there. Only the
+  // optimising solve asks for it: a prescribed collar needs the whole domain.
   template <CostCurve K>
-  bool prepare_collar_solve(double& bound_a, double& bound_b);
+  bool prepare_collar_solve(double& bound_a, double& bound_b,
+                            bool first_bracket = false);
+  // Move the bracket's dry end from psi_crit to the end of the stem curve.
+  double extend_collar_bracket(double bound_a);
+  // At a dry pin of a curve psi_crit does not bound, the stem is held at the end
+  // of its curve, which carries the uptake (G(inf) - G(collar), to the
+  // continuity root's precision): seat it there, rather than where the inverse
+  // lands, which is anywhere G rounds to G(inf). Returns whether it did.
+  template <CostCurve K> bool seat_stem_at_dry_pin();
   // Evaluate the leaf at a *given* root-collar potential (positive magnitude)
   // rather than optimising it: reuses prepare_collar_solve, clamps the target to
   // the feasible interval, and evaluates there (no golden-section search). Leaves
@@ -2491,8 +2365,8 @@ public:
   // Exact d(profit)/d(opt_root_psi) at a given root-collar potential (positive
   // magnitude), for TF24f's acclimation tracking (#525/#527). Combines
   // forward-mode AD for the analytic photosynthesis/cost algebra, the
-  // implicit-function theorem at the psi_stem_to_ci root-find, and analytic
-  // spline derivatives (Interpolator::deriv) for the smooth transport. Replaces
+  // implicit-function theorem at the psi_stem_to_ci root-find, and the
+  // vulnerability tables' own slopes for the smooth transport. Replaces
   // the noisy finite-difference gradient. Seats the soil-side caches itself, so a
   // solve need not have run first.
   //
@@ -2534,7 +2408,7 @@ public:
   // the collar solve can share ONE supply_begin_solve across all ~10 of its
   // gradient evaluations instead of re-seating per call -- the same saving #530
   // made for the finite-difference path, and it matters here because
-  // begin_solve() is a spline evaluation per soil layer.
+  // begin_solve() is a vulnerability read per soil layer.
   template <CostCurve K>
   double dprofit_at_collar_psi(double opt_root_psi, bool* feasible = nullptr);
 
@@ -2651,6 +2525,10 @@ public:
   template <CostCurve K> double cost_deriv(double psi_stem,
                                            double psi_upstream);
   template <CostCurve K> static constexpr bool cost_reads_upstream();
+  template <CostCurve K> static constexpr bool cost_domain_ends_at_psi_crit();
+  // The stem potential past which a solve does not look: psi_crit for a curve
+  // whose own domain ends there, and the end of the stem curve for every other.
+  template <CostCurve K> double dry_end() const;
   template <CostCurve K> double cost_deriv_upstream(double psi_stem,
                                                     double psi_upstream);
   template <CostCurve K> double profit_psi_stem_for(double psi_stem,
@@ -2732,9 +2610,12 @@ public:
   // from a pinned upstream potential; the wet end of every stem route. The
   // upstream potential itself at g_min = 0.
   double stem_wet_bound(double psi_upstream);
+  // The root on [wettest, end], with the stem held at `end` for the continuity
+  // root (find_root_crit = 1) and the zero-uptake root otherwise.
   double find_root_psi(double wettest_soil_layer, const std::vector<double>& psi_soil, int find_root_crit,
-                       double f_wettest, double f_crit);
-  // The same root, taking its own endpoint values: for a caller outside the solve.
+                       double f_wettest, double f_crit, double end);
+  // The same root, taking its own endpoint values, with the stem at psi_crit:
+  // for a caller outside the solve.
   double find_root_psi(double wettest_soil_layer, const std::vector<double>& psi_soil, int find_root_crit) {
     const auto f = [&](double x) {
       return find_root_crit == 1 ? E_column(x, psi_soil, psi_crit)
@@ -2742,7 +2623,7 @@ public:
     };
     const double f_wettest = f(wettest_soil_layer);
     return find_root_psi(wettest_soil_layer, psi_soil, find_root_crit, f_wettest,
-                         f(psi_crit));
+                         f(psi_crit), psi_crit);
   }
   // A bracket bound find_root_psi placed at its 1e-4 tolerance, solved again to
   // collar_root_tol from where it stopped. Called only where the bound IS the
@@ -3084,6 +2965,13 @@ public:
                                     const PhotoCapacity<S>& cap,
                                     const S& sigma_h, const S& gc,
                                     const S& ci_h, bool collar_moves) const;
+  // Whether sigma_star is the stem held at a dry pin at the end of its curve
+  // (seat_stem_at_dry_pin). There sigma is that end as a function of the traits,
+  // and it does not move with the collar: both halves above read this.
+  bool stem_held_at_dry_pin(double sigma_star) const {
+    return operating_point_kind_ == OperatingPointKind::BoundaryDry &&
+           sigma_star == vulnerability_psi_end(stem_b, stem_c);
+  }
 
   // The stem's critical potential at any scalar. DERIVED from the trait pair, as
   // it is at double, which is what makes the old `no_gradient` question moot: it
@@ -3091,6 +2979,12 @@ public:
   // to be declared not to move.
   template <class S>
   S psi_crit_at(const leaf_pars<S>& pars) const;
+  // dry_end<K>() at any scalar: psi_crit_at for a curve bounded there, and the
+  // end of the stem curve, b x_end^(1/c), for every other.
+  template <CostCurve K, class S>
+  S dry_end_at(const leaf_pars<S>& pars) const;
+  template <class S>
+  S stem_curve_end_at(const leaf_pars<S>& pars) const;
 
   // The objective at a placed operating point, and everything plant reads.
   //
@@ -3194,19 +3088,9 @@ public:
   // The conditions that pin a collar. Neither is a second derivative, so each is
   // an ordinary implicit value: the residual's own slope at the bound, and the
   // residual at S for the rest.
-  //
-  // ⚠️ THE ROOT'S 5% POTENTIAL IS NOT ONE OF THEM. Under (P50, c) it is derived,
-  // so it is an ordinary expression the chain differentiates itself and there is
-  // no theorem to apply: a point the root's limit pins is tagged
-  // `BoundaryRootCrit`, and collar_at places it at root_psi_crit_at.
   template <CostCurve K, class S>
   S bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
              const leaf_pars<S>& pars) const;
-
-  // The ROOT curve's critical potential, derived from its trait pair exactly as
-  // the stem's is.
-  template <class S>
-  S root_psi_crit_at(const leaf_pars<S>& pars) const;
 
 
   // The pack as this leaf currently stands. The double path passes this where the
@@ -3690,13 +3574,13 @@ public:
     // operating point in this state reads NA sentinels.
     Unsolved,
     // Interior profit maximum: dprofit == 0 was solved for, strictly inside the
-    // feasible collar interval. 198 of the 288 golden grid points at 25 C -- 160 of
+    // feasible collar interval. 232 of the 336 golden grid points at 25 C -- 172 of
     // them at 40 C, where the optimum presses against the WET bound instead.
     Interior,
     // Constrained optimum at the psi_soil end of the feasible interval, just
     // inside root_zero_E (the collar at which uptake is exactly zero). The
     // objective is still climbing toward that bound, so the bound is the answer:
-    // the leaf declines to open. 24 golden points at 25 C. The gradient here is
+    // the leaf declines to open. 45 golden points at 25 C. The gradient here is
     // genuinely non-zero.
     //
     // ⚠️ THESE TWO ARE NAMED FOR THE BOUND THAT BINDS, NOT FOR THE CONDITIONS,
@@ -3704,39 +3588,31 @@ public:
     // that reason. `psi_stem == psi_soil` is the least-tension end of the
     // bracket, so it reads as the comfortable case -- but it is what a leaf does
     // under STRESS, when no interior point earns its water. The golden grid says
-    // so: 24 -> 80 rows as the leaf goes 25 -> 40 C, while the psi_crit end goes
-    // 18 -> 0. Warming drives this one and removes the other. Do not reintroduce
+    // so: 45 -> 116 rows as the leaf goes 25 -> 40 C, while the dry end goes
+    // 11 -> 0. Warming drives this one and removes the other. Do not reintroduce
     // a name whose reading inverts with temperature.
     BoundarySoil,
-    // Constrained optimum at the psi_crit end, min(root_crit,
-    // supply_psi_crit()) -- the most tension the stem is allowed. Worth pulling
-    // that hard only when water is cheap relative to carbon, so this is the
-    // UNstressed pin. 18 golden points at 25 C, none at 40 C. Gradient genuinely
-    // non-zero.
-    //
-    // ⚠️ TWO BOUNDS MEET AT THIS END AND THEY ARE CLOSED BY DIFFERENT CONDITIONS.
-    // This kind is the CONTINUITY ROOT (`root_crit`): T1 with the stem held at
-    // psi_crit, a residual. The next one is the root's own 5% potential
-    // (`supply_psi_crit()`), an expression the chain differentiates itself. Which
-    // one binds decides which row a pinned point needs, so it is a kind rather
-    // than a selector beside one -- a tally of kinds could not report it while it
-    // was a private bool, and the two arms then had no incidence anyone could read.
-    BoundaryCrit,
-    // The same end of the interval, closed by the ROOT's vulnerability limit
-    // instead. Named for the bound, like the pair above. At shipped defaults the
-    // root's own critical potential never wins the min, so a fixture for this arm
-    // has to lower it deliberately rather than wait for one.
-    BoundaryRootCrit,
+    // Constrained optimum at the dry end: the continuity root with the stem
+    // held at dry_end<K>(). For a curve whose own domain ends at psi_crit
+    // (cost_domain_ends_at_psi_crit) that is psi_crit, the most tension its
+    // form allows. For every other curve psi_crit bounds nothing (#183), and
+    // the dry end is the end of the stem curve: profit still rising there means
+    // the leaf transpires all the stem can carry, to within e^-40 -- a dry soil
+    // where A climbs steeply at the little flux left. Named for the end, not
+    // for psi_crit, because for most curves psi_crit is not where it is.
+    BoundaryDry,
     // Shutdown on water: no collar potential both carries more than the
-    // residual flux and stays inside the stem's and the root's critical
-    // potentials, so there is no interval to optimise over. The leaf sits at
-    // the wet bound -- the collar at which uptake equals the residual flux,
-    // the stem where it carries it -- with its stomata shut and every output
-    // from the ordinary evaluator there. 48 of the 288 golden grid points at
-    // every temperature, since it is hydraulics rather than heat that forbids
-    // transpiration. Light and heat do not shut a leaf: with the cuticle's CO2
-    // pathway the residual has a root for every leaf (#183), and a leaf in the
-    // dark is an ordinary optimum, usually at the wet bound.
+    // residual flux and keeps the stem short of its dry end, so there is no
+    // interval to optimise over. The leaf sits at the wet bound -- the collar at
+    // which uptake equals the residual flux, the stem where it carries it --
+    // with its stomata shut and every output from the ordinary evaluator there.
+    // For a curve bounded at psi_crit this is a soil drier than psi_crit can
+    // supply; for every other curve the dry end is the end of the stem curve,
+    // where it carries G(inf) to rounding, so a leaf reaches this only when the
+    // soil is drier than that and its flux is zero to rounding anyway -- the
+    // shutdown is asymptotic. Light and heat do not shut a leaf: with the
+    // cuticle's CO2 pathway the residual has a root for every leaf (#183), and a
+    // leaf in the dark is an ordinary optimum, usually at the wet bound.
     HydraulicShutdown,
     // The collar potential was IMPOSED by the caller (evaluate_root_collar_psi /
     // profit_at_collar_psi), clamped into the feasible interval, not optimised.
@@ -3831,14 +3707,19 @@ private:
   // solve's kind: a plausible answer about a different point. Resetting to
   // Unsolved means a path that forgets reports "unclassified" instead.
   OperatingPointKind operating_point_kind_ = OperatingPointKind::Unsolved;
-  // Which of the two bounds meeting at the dry end binds, carried from where the
-  // comparison is made to where the solve classifies the point. It is not the
-  // classification -- `BoundaryCrit` and `BoundaryRootCrit` are -- and it exists
-  // only because the comparison happens while the bracket is built and the
-  // classification happens after the solve lands. Re-deciding it there would
-  // repeat a root-find, and differentiating the comparison would manufacture a
-  // jump the model does not have.
-  bool dry_bound_is_root_limit_ = false;
+  // The stem's dry end for the solve in progress, dry_end<K>() of the seated
+  // curve: psi_crit for a curve bounded there, the end of the stem curve for
+  // every other. Seated at the top of prepare_collar_solve, so the bracket
+  // helpers that are not templated on the curve read the same number.
+  double dry_end_ = std::numeric_limits<double>::quiet_NaN();
+  // Whether dry_end_ is psi_crit standing in as a FIRST bracket for a curve it
+  // does not bound (prepare_collar_solve's first_bracket), so the dry end of the
+  // bracket is not yet the dry end of the domain.
+  bool dry_end_provisional_ = false;
+  // The wettest rooted layer and the uptake there, from the top of
+  // prepare_collar_solve, for extend_collar_bracket.
+  double bracket_wettest_ = std::numeric_limits<double>::quiet_NaN();
+  double bracket_E_up_at_wettest_ = std::numeric_limits<double>::quiet_NaN();
   // The zero-flux collar a wet pin was solved against, to collar precision, or NaN
   // where no solve placed one. A pinned solve returns a point a step INSIDE it,
   // and bound_at reads the flux at that point; knowing the root lets it correct
@@ -3854,8 +3735,7 @@ inline const char* Leaf::operating_point_kind_name(OperatingPointKind kind) {
     case OperatingPointKind::Unsolved:          return "unsolved";
     case OperatingPointKind::Interior:          return "interior";
     case OperatingPointKind::BoundarySoil:      return "boundary-soil";
-    case OperatingPointKind::BoundaryCrit:      return "boundary-crit";
-    case OperatingPointKind::BoundaryRootCrit:  return "boundary-root-crit";
+    case OperatingPointKind::BoundaryDry:       return "boundary-dry";
     case OperatingPointKind::HydraulicShutdown: return "hydraulic-shutdown";
     case OperatingPointKind::Prescribed:        return "prescribed";
     case OperatingPointKind::SolverRefused:     return "solver-refused";
@@ -3998,21 +3878,15 @@ inline void Leaf::set_traits(double vcmax_25_, double stem_c_, double stem_P50_,
   const double root_psi_crit_ =
       weibull_psi_at_fraction(root_b_, root_c_, k_crit_fraction);
 
-  // Which splines have to be rebuilt, decided BEFORE the assignment. Exact
-  // equality is the right test and not a sloppy one: the spline is a pure
-  // function of the pair, so an unchanged pair gives a bit-identical spline and
-  // rebuilding it is pure cost. A trait perturbed by a relative 1e-08 -- what a
-  // gradient loop does -- compares unequal and rebuilds, which is the case that
-  // must not be missed.
-  // ⚠️ The third clause is what makes set_traits the way back from
-  // perturb_stem_P50. While the splines are built at a different stem_b, "the
-  // parameters did not move" is not a reason to keep them -- it is exactly the
-  // case where the equality test would conclude there is nothing to do and leave
-  // the object rescaling forever.
-  const bool stem_curve_moved = (stem_b_ != stem_b) || (stem_c_ != stem_c) ||
-                                (stem_b != stem_b_spline_);
-  const bool root_curve_moved =
-      (root_b_ != roots_.root_b) || (root_c_ != roots_.root_c);
+  // Which tables have to be rebuilt, decided BEFORE the assignment. A table
+  // depends on its curve's c alone (VulnerabilityTable), so a P50 moves nothing.
+  // Exact equality is the right test and not a sloppy one: the table is a pure
+  // function of c, so an unchanged c gives a bit-identical table and rebuilding
+  // it is pure cost. A trait perturbed by a relative 1e-08 -- what a gradient
+  // loop does -- compares unequal and rebuilds, which is the case that must not
+  // be missed.
+  const bool stem_curve_moved = (stem_c_ != stem_c);
+  const bool root_curve_moved = (root_c_ != roots_.root_c);
 
   vcmax_25 = vcmax_25_;
   stem_c = stem_c_;
@@ -4080,7 +3954,7 @@ inline S Leaf::stem_integral_at(const S& psi, const leaf_pars<S>& pars) const {
   return closed_form_integral<S>(
       stem_curve_integral(at, "Leaf::stem_integral_at"),
       stem_curve_integral_deriv(at), psi, pars[par_stem_P50],
-      pars[par_stem_c], PastLastKnot::ReadsClosedForm);
+      pars[par_stem_c]);
 }
 
 inline leaf_pars<double> Leaf::passive_pars() const {
@@ -4410,7 +4284,7 @@ inline void Leaf::set_physiology(const RootNetwork& root_network, double PPFD, c
 // representation, no flip, and no bridge point. `psi_soil_`, `psi_crit`,
 // `root_psi_crit`, `stem_b`, `root_b`, `opt_psi_stem_`, `opt_root_psi_`, the
 // find_root_psi / E_column root variable, find_psi_stem_from_psi_root's
-// psi_root, transpiration's psi_upstream, and all four spline domains are the
+// psi_root, transpiration's psi_upstream, and the vulnerability tables' arguments are the
 // same kind of number. `set_physiology` asserts psi_soil >= 0 and the
 // constructor asserts psi_crit > 0 and stem_b > 0, so the convention is
 // checkable rather than merely documented -- which is the point: before #25
@@ -4478,7 +4352,7 @@ inline double Leaf::E_column_zero(double x, const std::vector<double>& psi_soil)
 // find root psi based on required condition, i.e. equilibrated continuum, zero water from soil
 //
 // #486: both targets (E_column / E_column_zero, the soil->collar continuity
-// residual over the collar suction x in [wettest_soil_layer, psi_crit]) are
+// residual over the collar suction x in [wettest_soil_layer, dry_end_]) are
 // smooth and strictly monotone in their *normal operating regime* -- a clean
 // single sign-change with derivatives continuous across every x == psi_soil[i]
 // layer crossing (the per-layer branch switches in E_from_Soil_to_Root_Collar
@@ -4491,32 +4365,41 @@ inline double Leaf::E_column_zero(double x, const std::vector<double>& psi_soil)
 //
 // SCOPE/CAVEAT: the brackets here are guaranteed valid (opposite-sign, finite
 // endpoints) by find_root_collar_psi's preceding early-exits -- the crit=1
-// psi_crit endpoint is exactly the E_column(psi_crit) < 0 shutdown test, and
-// crit=0 is only reached for soil wetter than psi_crit. The genuinely
+// dry_end_ endpoint is exactly the E_column(dry_end_) < 0 shutdown test, and
+// crit=0 is only reached for soil wetter than dry_end_. The genuinely
 // non-smooth failure mode in the earlier blanket-swap rejection (the root
-// vulnerability spline extrapolating negative beyond its ~root_psi_crit domain)
-// lives in E_from_Soil_to_Root_Collar itself and bites both solvers identically;
-// it does not arise on the brackets this finder is actually handed. Like
+// vulnerability spline extrapolating negative beyond its domain, before #183)
+// lived in E_from_Soil_to_Root_Collar itself and bit both solvers identically;
+// it did not arise on the brackets this finder is actually handed. Like
 // psi_stem_to_ci (Phase 6) this is a same-tolerance method swap, NOT a tolerance
 // loosening: same root, fewer evals.
 inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<double>& psi_soil, int find_root_crit,
-                                  double f_wettest, double f_crit) {
+                                  double f_wettest, double f_crit, double end) {
   // tol and iterations copied from control defaults (for now) - changed recently to 1e-6
   if (find_root_crit == 1) {
     auto target = [&](double x) -> double {
-      return E_column(x, psi_soil, psi_crit);
+      return E_column(x, psi_soil, end);
     };
     try {
       // Ends swapped, not just renamed: a bracketing solver needs opposite signs
       // at the two endpoints, but the LOWER bound must come first, and in
       // magnitudes the wettest layer is the smallest suction (#25).
-      return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, f_wettest,
-                                  f_crit, bracket_tol, ci_niter);
+      //
+      // ⚠️ THE WET END OF THE FINAL BRACKET, NOT ITS MIDPOINT. The target rises
+      // with the collar, so its wet end is a collar at which the soil delivers
+      // no more than the stem carries with its potential at the dry end. The
+      // midpoint can sit up to bracket_tol past the root, where it delivers
+      // more; with the dry end at the end of the stem curve, that is more than
+      // G(inf), which no stem potential carries, and the inverse refuses it.
+      return util::uniroot_smooth_bracket(target, wettest_soil_layer, end,
+                                          f_wettest, f_crit, bracket_tol,
+                                          ci_niter)
+          .first;
     } catch (const std::exception& e) {
       util::stop_infeasible("collar_bracket",
                  "find_root_psi(find_root_crit=1) failed: " + std::string(e.what()) +
                  "; min=" + util::to_string(wettest_soil_layer) +
-                 "; max=" + util::to_string(psi_crit));
+                 "; max=" + util::to_string(end));
     }
   }
 
@@ -4524,13 +4407,13 @@ inline double Leaf::find_root_psi(double wettest_soil_layer, const std::vector<d
     return E_column_zero(x, psi_soil);
   };
   try {
-    return util::uniroot_smooth(target, wettest_soil_layer, psi_crit, f_wettest,
+    return util::uniroot_smooth(target, wettest_soil_layer, end, f_wettest,
                                 f_crit, bracket_tol, ci_niter);
   } catch (const std::exception& e) {
     util::stop_infeasible("collar_bracket",
                "find_root_psi(find_root_crit=0) failed: " + std::string(e.what()) +
                "; min=" + util::to_string(wettest_soil_layer) +
-               "; max=" + util::to_string(psi_crit));
+               "; max=" + util::to_string(end));
   }
 
 }
@@ -4555,13 +4438,13 @@ inline double Leaf::polish_bracket_bound(double x0,
   // is the uptake exactly.
   auto target = [&](double x) -> double {
     if (find_root_crit == 1) {
-      return E_column(x, psi_soil, psi_crit);
+      return E_column(x, psi_soil, dry_end_);
     }
     const double up = E_column_zero(x, psi_soil);
     return up - residual_flux(x, up);
   };
   // Tighter than collar_root_tol, which at a collar of ~5 MPa is ~6e-12: near
-  // psi_crit the stem curve is steep enough to turn that into ~2e-11 of psi_stem,
+  // the dry end the stem curve is steep enough to turn that into ~2e-11 of psi_stem,
   // which a finite difference at a 1e-6 step reads as a 2e-6 error in a row.
   constexpr double polish_tol = 1e-15;
   const double f0 = target(x0);
@@ -4573,11 +4456,10 @@ inline double Leaf::polish_bracket_bound(double x0,
   // is the bracket's own tolerance at x0, which holds the
   // root it was placed around, so one probe usually suffices.
   //
-  // ⚠️ THE CONTINUITY ROOT'S PROBES STOP AT psi_crit, as find_root_psi's bracket
-  // does: past it the collar is drier than the stem held there, and
-  // transpiration() refuses a reversed gradient. Near the stem/root tie the
-  // root sits within one probe width of psi_crit, so an unclamped probe lands there.
-  const double hi = find_root_crit == 1 ? psi_crit
+  // ⚠️ THE CONTINUITY ROOT'S PROBES STOP AT THE DRY END, as find_root_psi's
+  // bracket does: past it the collar is drier than the stem held there, and
+  // transpiration() refuses a reversed gradient.
+  const double hi = find_root_crit == 1 ? dry_end_
                                         : std::numeric_limits<double>::infinity();
   const double sign = f0 > 0.0 ? -1.0 : 1.0;
   for (double d = bracket_tol_at(x0); d <= 0.1; d *= 4.0) {
@@ -4588,11 +4470,15 @@ inline double Leaf::polish_bracket_bound(double x0,
       }
       const double fx = target(x);
       if (std::isfinite(fx) && fx * f0 <= 0.0) {
-        return side < 0.0
-                   ? util::uniroot_smooth(target, x, x0, fx, f0, polish_tol,
-                                          static_cast<size_t>(ci_niter))
-                   : util::uniroot_smooth(target, x0, x, f0, fx, polish_tol,
-                                          static_cast<size_t>(ci_niter));
+        const std::pair<double, double> r =
+            side < 0.0
+                ? util::uniroot_smooth_bracket(target, x, x0, fx, f0, polish_tol,
+                                               static_cast<size_t>(ci_niter))
+                : util::uniroot_smooth_bracket(target, x0, x, f0, fx, polish_tol,
+                                               static_cast<size_t>(ci_niter));
+        // The continuity root from its feasible side, for the reason
+        // find_root_psi takes it; the wet bound from the middle of its bracket.
+        return find_root_crit == 1 ? r.first : 0.5 * (r.first + r.second);
       }
     }
   }
@@ -4652,12 +4538,11 @@ inline double Leaf::find_psi_stem_from_psi_root(double psi_root, const std::vect
 // ceiling tightens, and on the energy-balance path a larger uptake cools the
 // leaf). It is negative at the wettest layer, where uptake is at most the
 // gravity term, and positive once the soil delivers the cuticle's loss. That
-// can be past psi_crit -- a soil too dry to supply the cuticle inside the
-// stem's critical potential -- so the bracket is widened out from psi_crit
-// until the target changes sign, which it must: past the root grid the uptake
-// grows without bound while the residual flux is capped.
+// can be past the dry end, so the bracket is widened out from there until the
+// target changes sign, which it must: the residual flux is capped below the
+// roots' ceiling.
 //
-// `E_up_at_crit` is the uptake at psi_crit where the caller has it (NaN
+// `E_up_at_crit` is the uptake at the dry end where the caller has it (NaN
 // otherwise), handed over rather than re-taken for the reason the two bracket
 // root-finds share their endpoint values.
 inline double Leaf::find_wet_bound(double wettest_soil_layer,
@@ -4671,11 +4556,13 @@ inline double Leaf::find_wet_bound(double wettest_soil_layer,
   const double f_lo0 =
       E_up_at_wettest - residual_flux(wettest_soil_layer, E_up_at_wettest);
   double lo = wettest_soil_layer, f_lo = f_lo0;
-  // The first bracket is the one every solve used to take, [wettest, psi_crit],
-  // whenever it is a bracket at all.
+  // The first bracket is [wettest, psi_crit], whenever it is a bracket at all,
+  // whatever the dry end of this solve: the wet bound is then the same root
+  // from the same bracket on every route to it, and a replay re-takes it bit for
+  // bit. The uptake there is handed over where the caller has it.
   double hi = std::max(psi_crit, wettest_soil_layer +
                                      bracket_tol_at(wettest_soil_layer));
-  double f_hi = (hi == psi_crit && std::isfinite(E_up_at_crit))
+  double f_hi = (hi == psi_crit && dry_end_ == psi_crit && std::isfinite(E_up_at_crit))
                     ? E_up_at_crit - residual_flux(psi_crit, E_up_at_crit)
                     : target(hi);
   for (int i = 0; f_hi < 0.0; ++i) {
@@ -4855,7 +4742,8 @@ inline void Leaf::set_shut_state() {
 // caller should stop; returns true with [bound_a, bound_b] set to the feasible
 // collar-potential interval (positive magnitudes) otherwise.
 template <Leaf::CostCurve K>
-inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b){
+inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b,
+                                       bool first_bracket){
 
   // Clear the classification FIRST, so that a path which declines to write it
   // reports "unclassified" rather than the previous plant's kind of operating
@@ -4877,87 +4765,106 @@ inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b){
   const double E_up_at_wettest =
       E_column_zero(wettest_soil_layer, supply_psi_soil());
 
-  // Every exit below places the leaf at its wet bound with the stomata shut,
-  // through one function. The dry end of the interval is still psi_crit here
-  // (#183 step 2 removes it), so the first test is whether any collar inside
-  // it can both supply the cuticle and leave the stem something to carry.
-  if (wettest_soil_layer >= psi_crit){
-    set_shut_state<K>();
-    return false;
-  }
+  bracket_wettest_ = wettest_soil_layer;
+  bracket_E_up_at_wettest_ = E_up_at_wettest;
 
-// ⚠️ THE TWO BRACKET ROOT-FINDS SHARE THEIR ENDPOINT VALUES, and they are handed
-// over rather than re-taken. At psi_crit the column term is exactly zero, so
-// E_column there IS the uptake E_column_zero reads; at the wettest layer both read
-// one uptake. The same doubles either way, so the iterates are unchanged -- it is
-// three flux evaluations a solve, which is what pays for polishing a pinned bound.
-//
-// Uptake at a collar held at psi_crit is the most the soil delivers inside the
-// stem's critical potential; below the residual flux the cuticle cannot be
-// supplied from inside it, so the leaf is shut (at g_min = 0 this is the old
-// test for a negative uptake).
-const double E_at_crit = E_column(psi_crit, supply_psi_soil(), psi_crit);
-if(E_at_crit < residual_flux(psi_crit, E_at_crit)){
-      set_shut_state<K>();
+  // One bracket, with the stem held at `end`: whether any collar short of it
+  // can both supply the cuticle and leave the stem something to carry, and if
+  // so the interval [wet bound, continuity root]. The bracket helpers read the
+  // end through dry_end_, so it is seated first.
+  //
+  // ⚠️ THE TWO BRACKET ROOT-FINDS SHARE THEIR ENDPOINT VALUES, and they are
+  // handed over rather than re-taken. At the end the column term is exactly
+  // zero, so E_column there IS the uptake E_column_zero reads; at the wettest
+  // layer both read one uptake.
+  auto bracket = [&](double end) -> bool {
+    dry_end_ = end;
+    if (wettest_soil_layer >= end) {
       return false;
-}
-
-double root_crit = find_root_psi(
-    wettest_soil_layer, supply_psi_soil(), 1,
-    E_up_at_wettest - transpiration(psi_crit, wettest_soil_layer), E_at_crit);
-
-// If root crit would have to be larger than psi crit, also avoid loop as above
-
-    if (root_crit >= psi_crit){
-    set_shut_state<K>();
-    return false;
-  }
-
-// The wet bound: the collar at which the soil delivers the residual flux, and
-// at g_min = 0 the collar at which uptake is zero.
-double root_wet = find_wet_bound(wettest_soil_layer, E_up_at_wettest, E_at_crit);
-
-  // optimise for stem water potential
-    bound_a = root_wet;
-    // The dry end of the feasible interval is whichever limit binds FIRST: the
-    // continuity root, or the potential at which root conductivity is down to 5%.
-    // Both are positive magnitudes, so that is a min (#24, plant #584).
-    //
-    // This line used to read std::max(-root_crit, -root_psi_crit) -- a magnitude
-    // compared against a signed potential, so the second term was always negative
-    // and the clamp could never bind. The master solver's comment has claimed the
-    // bracket is "clamped to root_psi_crit" throughout; it now is. In magnitudes
-    // the correct form is the obvious one and the trap is gone, which is the
-    // clearest argument for #25 there is: the bug was a property of having two
-    // representations, not of this line.
-    bound_b = std::min(root_crit, supply_psi_crit());
-    // ⚠️ WHICH LIMIT WON IS A SELECTOR, SO IT IS RECORDED HERE RATHER THAN
-    // RE-DECIDED LATER. It is piecewise constant in the traits, and the two
-    // limits are closed by DIFFERENT conditions -- the continuity root by T1 with
-    // the stem at psi_crit, the root's own 5% potential by an expression the
-    // chain differentiates itself. Re-deriving it on the active pass would mean
-    // repeating a root-find, and differentiating the comparison would manufacture
-    // a jump the model does not have.
-    dry_bound_is_root_limit_ = !(root_crit < supply_psi_crit());
-
+    }
+    // Nor where the stem can carry less, from the wettest layer, than the curve
+    // resolves (stem_capacity_floor): no gradient there is more than rounding.
+    const double G_inf = stem_curve_limit();
+    if (!(G_inf - stem_curve_integral(wettest_soil_layer) >
+          stem_capacity_floor * G_inf)) {
+      return false;
+    }
+    // Uptake at a collar held at the end is the most the soil delivers with the
+    // stem short of it; below the residual flux the cuticle cannot be supplied
+    // (at g_min = 0, a negative uptake).
+    const double E_at_end = E_column(end, supply_psi_soil(), end);
+    if (E_at_end < residual_flux(end, E_at_end)) {
+      return false;
+    }
+    const double root_crit = find_root_psi(
+        wettest_soil_layer, supply_psi_soil(), 1,
+        E_up_at_wettest - transpiration(end, wettest_soil_layer), E_at_end, end);
+    // The continuity root at or past the end: no collar is left.
+    if (root_crit >= end) {
+      return false;
+    }
+    // The wet bound: the collar at which the soil delivers the residual flux,
+    // and at g_min = 0 the collar at which uptake is zero.
+    bound_a = find_wet_bound(wettest_soil_layer, E_up_at_wettest, E_at_end);
+    // The dry end of the interval: the collar at which the stem must sit at
+    // `end` to carry what the soil delivers. The root's own critical potential
+    // bounds nothing (#183); the clamp to it, and the tie with the stem's that
+    // made every default-trait shutdown a kink in the stem and root traits, are
+    // gone.
+    bound_b = root_crit;
     // An interval narrower than bracket_tol has ends that cannot be trusted, so
     // they are solved to collar precision before anything is decided on it.
     if (bound_b - bound_a < bracket_tol_at(bound_b)) {
       bound_a = polish_bracket_bound(bound_a, supply_psi_soil(), 0);
-      if (!dry_bound_is_root_limit_) {
-        bound_b = std::min(polish_bracket_bound(bound_b, supply_psi_soil(), 1),
-                           supply_psi_crit());
-        dry_bound_is_root_limit_ = !(bound_b < supply_psi_crit());
-      }
+      bound_b = polish_bracket_bound(bound_b, supply_psi_soil(), 1);
     }
-    // No collar both moves water and stays inside the critical potentials: the
-    // interval has closed, or the clamp to the root's limit inverted it.
-    if (bound_b - bound_a <= collar_root_tol) {
-      set_shut_state<K>();
+    return bound_b - bound_a > collar_root_tol;
+  };
+
+  // For a curve not bounded at psi_crit, psi_crit is only a first bracket: it
+  // holds the optimum wherever profit already falls there, at the old cost, and
+  // maximise_profit_over_collar extends it otherwise. Where it holds no interval
+  // the end of the stem curve is tried before the leaf is called shut.
+  if constexpr (!cost_domain_ends_at_psi_crit<K>()) {
+    if (first_bracket && bracket(psi_crit)) {
+      dry_end_provisional_ = true;
+      return true;
+    }
+  }
+  dry_end_provisional_ = false;
+  // Every exit below places the leaf at its wet bound with the stomata shut,
+  // through one function: no collar short of the dry end both supplies the
+  // cuticle and moves water.
+  if (!bracket(dry_end<K>())) {
+    set_shut_state<K>();
+    return false;
+  }
+  return true;
+}
+
+template <Leaf::CostCurve K>
+inline bool Leaf::seat_stem_at_dry_pin() {
+  if constexpr (cost_domain_ends_at_psi_crit<K>()) {
+    return false;
+  } else {
+    if (operating_point_kind_ != OperatingPointKind::BoundaryDry) {
       return false;
     }
-
+    opt_psi_stem_ = vulnerability_psi_end(stem_b, stem_c);
     return true;
+  }
+}
+
+inline double Leaf::extend_collar_bracket(double bound_a) {
+  const double end = vulnerability_psi_end(stem_b, stem_c);
+  dry_end_ = end;
+  dry_end_provisional_ = false;
+  const double E_at_end = E_column(end, supply_psi_soil(), end);
+  const double root_crit = find_root_psi(
+      bracket_wettest_, supply_psi_soil(), 1,
+      bracket_E_up_at_wettest_ - transpiration(end, bracket_wettest_), E_at_end,
+      end);
+  return std::max(root_crit, bound_a);
 }
 
 // The profit-maximising collar potential, by solving the first-order condition
@@ -4999,7 +4906,7 @@ double root_wet = find_wet_bound(wettest_soil_layer, E_up_at_wettest, E_at_crit)
 // history note, which is about exactly this judgement call.
 template <Leaf::CostCurve K>
 inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) {
-  const double width = bound_b - bound_a;
+  double width = bound_b - bound_a;
   const auto dprofit = [&](double psi, bool* feasible = nullptr) {
     return dprofit_at_collar_psi<K>(psi, feasible);
   };
@@ -5035,19 +4942,67 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
     }
   }
 
-  // The DRY endpoint is feasible everywhere measured, so it is tried as-is first
-  // and only stepped inside if that fails.
+  // The DRY endpoint. For a curve bounded at psi_crit it is feasible everywhere
+  // measured, so it is tried as-is first and only stepped inside if that fails.
+  //
+  // For every other curve the dry end is the end of the stem curve, where G is
+  // flat to rounding: the stem potential there is wherever G first rounds to
+  // G(inf), and every collar derivative divides by a G' of ~1e-16, so the
+  // gradient read at the bound is noise (measured: +0.99 at the bound, -35 one
+  // step of 1e-6 of the bracket inside it, -14.6 at 1e-2). So the first try is
+  // that step inside, and a gradient that is not yet negative steps further in
+  // rather than being read as a pin: the curve's marginal cost of water diverges,
+  // so a falling profit is what the dry end has.
+  //
+  // ⚠️ AND PROFIT CAN STILL BE RISING THERE, which is the model and not noise.
+  // These curves' marginal cost of water diverges only as x^((c-1)/c) along the
+  // stem curve, so where the stem has little left to carry (a dry soil) and A
+  // still climbs steeply in E, the optimum lies past the end of the curve: the
+  // leaf transpires everything the stem can carry, to within e^-40 of it. Every
+  // output is defined there; only the stem potential is not (any potential past
+  // the end carries the same flux). That is a pin at the dry end, reported as
+  // one: the continuity root with the stem at the end of its curve.
+  //
+  // On a first bracket (prepare_collar_solve's first_bracket) the dry end is
+  // the continuity root with the stem at psi_crit, an ordinary point: read as
+  // it stands, a falling profit there means the optimum lies inside and the
+  // bracket stays, and anything else extends it to the end of the stem curve.
+  constexpr bool bounded = cost_domain_ends_at_psi_crit<K>();
   bool ok_hi = false;
+  bool rising = false;
   double hi = bound_b;
-  double f_hi = dprofit(hi, &ok_hi);
-  if (!(ok_hi && std::isfinite(f_hi))) {
-    for (double frac = 1e-6; frac < 0.5; frac *= 10.0) {
+  double f_hi = 0.0;
+  bool settled = false;
+  if (dry_end_provisional_) {
+    f_hi = dprofit(hi, &ok_hi);
+    settled = ok_hi && std::isfinite(f_hi) && f_hi < 0.0;
+    if (!settled) {
+      bound_b = extend_collar_bracket(bound_a);
+      width = bound_b - bound_a;
+    }
+  }
+  if (!settled) {
+    hi = bounded ? bound_b : bound_b - 1e-6 * width;
+    f_hi = dprofit(hi, &ok_hi);
+  }
+  if (!settled &&
+      !(ok_hi && std::isfinite(f_hi) && (bounded || f_hi < 0.0))) {
+    rising = ok_hi && std::isfinite(f_hi);
+    for (double frac = bounded ? 1e-6 : 1e-5; frac < 0.5; frac *= 10.0) {
       hi = bound_b - frac * width;
       f_hi = dprofit(hi, &ok_hi);
-      if (ok_hi && std::isfinite(f_hi)) {
+      if (ok_hi && std::isfinite(f_hi) && (bounded || f_hi < 0.0)) {
+        rising = false;
         break;
       }
+      rising = rising || (ok_hi && std::isfinite(f_hi));
     }
+  }
+  if (!bounded && rising) {
+    // Rising wherever the gradient could be read: the dry end is the answer.
+    hi = bound_b;
+    f_hi = 1.0;
+    ok_hi = true;
   }
 
   // No usable gradient at one end. No driver sweep reaches this -- both ends are
@@ -5161,18 +5116,12 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
       }
     }
   }
-  if (f_hi >= 0.0 && hi == bound_b && !dry_bound_is_root_limit_) {
+  if (f_hi >= 0.0 && hi == bound_b) {
     const double b = polish_bracket_bound(bound_b, supply_psi_soil(), 1);
     // The dry end is feasible wherever it has been measured, and the sign f_hi
-    // has cannot flip across the ~1e-4 the bound moved. If the polished root
-    // passes the root's own limit, that limit is the bound instead.
+    // has cannot flip across the ~1e-4 the bound moved.
     if (b != bound_b && b > lo) {
-      if (b < supply_psi_crit()) {
-        hi = b;
-      } else {
-        hi = supply_psi_crit();
-        dry_bound_is_root_limit_ = true;
-      }
+      hi = b;
     }
   }
 
@@ -5195,12 +5144,7 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
     return lo;
   }
   if (f_hi >= 0.0) {
-    // Which of the two bounds meeting at this end closed it was decided where the
-    // bracket was built, because re-deciding it here would repeat a root-find. It
-    // is reported as the kind rather than carried beside one.
-    operating_point_kind_ = dry_bound_is_root_limit_
-                                ? OperatingPointKind::BoundaryRootCrit
-                                : OperatingPointKind::BoundaryCrit;
+    operating_point_kind_ = OperatingPointKind::BoundaryDry;
     return hi;
   }
 
@@ -5226,7 +5170,7 @@ inline void Leaf::find_root_collar_psi_for(){
     prepare_profitmax();
   }
     double bound_a, bound_b;
-    if (!prepare_collar_solve<K>(bound_a, bound_b)) {
+    if (!prepare_collar_solve<K>(bound_a, bound_b, true)) {
       return;
     }
     // root_crit / root_zero_E were consumed inside prepare_collar_solve; recover
@@ -5238,6 +5182,7 @@ inline void Leaf::find_root_collar_psi_for(){
     const double opt_root_psi = maximise_profit_over_collar<K>(bound_a, bound_b);
 
     opt_psi_stem_ = find_psi_stem_from_psi_root(opt_root_psi, supply_psi_soil());
+    seat_stem_at_dry_pin<K>();
 
     opt_root_psi_ = opt_root_psi;
     // ⚠️ `<K>`, NOT TF24. This read TF24's objective for every curve after the
@@ -5396,6 +5341,11 @@ inline double Leaf::replay_operating_point_for(double collar,
                                     std::max(bound_b, collar));
     }
     operating_point_kind_ = kind;
+    if (seat_stem_at_dry_pin<K>()) {
+      profit_ = profit_psi_stem_for<K>(opt_psi_stem_, opt_root_psi_);
+      lambda_emergent_ = lambda_collar_for<K>();
+      out = profit_;
+    }
     return out;
 }
 
@@ -5437,15 +5387,14 @@ inline double Leaf::profit_at_collar_psi(double target_opt_root_psi,
 
 // Exact d(profit)/d(opt_root_psi). profit(psi) = assim_colimited(ci) -
 // hydraulic_cost_TF(psi_stem), with psi_stem = find_psi_stem_from_psi_root(psi)
-// (smooth spline transport) and ci = psi_stem_to_ci(psi_stem, psi) (root-find).
+// (smooth transport) and ci = psi_stem_to_ci(psi_stem, psi) (root-find).
 // Chain rule:
 //   dprofit/dpsi = A'(ci) dci/dpsi - C'(psi_stem) dpsi_stem/dpsi
 // where dci/dpsi = (dci/dpsi_stem) dpsi_stem/dpsi + (dci/dpsi)|_explicit, and the
 // dci/d* terms come from the implicit-function theorem on the residual
 //   g(ci; psi_stem, psi) = A(ci) umol_to_mol - gc(psi_stem,psi) (ca-ci)/(atm kPa)
 // with gc = const * transpiration(psi_stem,psi). A'/C' are obtained by forward
-// AD; the gc partials use the analytic spline derivative (transpiration_from_psi
-// .deriv); dpsi_stem/dpsi by a tight central difference on the smooth transport.
+// AD; the gc partials use the stem table's own slope (stem_curve_integral_deriv); dpsi_stem/dpsi by a tight central difference on the smooth transport.
 template <Leaf::CostCurve K>
 inline double Leaf::dprofit_droot_collar_psi_for(double opt_root_psi, bool* feasible) {
   // Every transport evaluation below reads the supply path's per-solve caches, so
@@ -5476,8 +5425,17 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
     *feasible = false;
   }
 
-  // Operating point in double.
-  const double psi_stem = find_psi_stem_from_psi_root(psi, supply_psi_soil());
+  // Operating point in double. Past the continuity root with the stem at the
+  // end of its curve the soil delivers more than the stem can carry at any
+  // potential: no operating point, and so no gradient -- reachable by a caller
+  // differencing across a dry pin, as the gradient's own stationarity check
+  // does. Reported like the other no-gradient exits rather than thrown.
+  E_from_Soil_to_Root_Collar(psi, supply_psi_soil());
+  if (!(E_up_ / leaf_specific_conductance_max_ + stem_curve_integral(psi) <=
+        stem_curve_limit() * (1.0 + 16.0 * std::numeric_limits<double>::epsilon()))) {
+    return 0.0;
+  }
+  const double psi_stem = transpiration_to_psi_stem(E_up_, psi);
   // Shut down before the ci solve, not after. psi and psi_stem are both positive
   // magnitudes here, so psi >= psi_stem is the no-flow / reversed-gradient case --
   // the same condition set_leaf_states_rates_from_psi_stem treats as zero
@@ -5592,7 +5550,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   // Stomatal-conductance supply coefficient gc and its partials. gc =
   // gc_const * (E - r*) + rho g_min, with E = transpiration(psi_stem, psi) =
   // conductance_max * (transp_from_psi(psi_stem) - transp_from_psi(psi)), so
-  // the partials use the analytic spline derivative. The residual flux reads
+  // the partials use the stem table's own slope. The residual flux reads
   // psi_stem only through the leaf temperature (the energy-balance term's) and
   // the collar through its ceiling, appended below; both are exact zeros at
   // g_min = 0.
@@ -5707,7 +5665,7 @@ inline double Leaf::cost_deriv(double psi_stem, double psi_upstream) {
               stem_curve_integral_deriv(psi_stem);
   } else if constexpr (K == CostCurve::JS22) {
     // C = gamma*(psi - psi_up)^2, so dC/dpsi = 2*gamma*(psi - psi_up). Analytic,
-    // no AD and no spline -- the simplest derivative of the four.
+    // no AD and no table -- the simplest derivative of the four.
     C_prime = 2.0 * JS22_gamma * (psi_stem - psi_upstream);
   } else if constexpr (K == CostCurve::TF24_floor) {
     // C = TF24's cost + lambda_o*E, so dC/dpsi is the TF24 arm's expression plus
@@ -5798,6 +5756,51 @@ constexpr bool Leaf::cost_reads_upstream() {
   }
 }
 
+
+// Whether a curve's own published form ends at psi_crit (#183).
+//
+// For most curves psi_crit is a labelled point on a vulnerability curve that
+// continues past it. Their marginal cost of water diverges as the stem dries,
+// so the optimum stays inside without a bound, and the dry end of the solve is
+// the end of the stem curve itself (vulnerability_psi_end), where the stem
+// carries all it ever can.
+//
+// Four curves are different, and for each the bound belongs to the curve, not
+// to the hydraulics. Measured on psi_stem_optima.tsv, each sits AT psi_crit on
+// many rows:
+//
+//   SOX, JW26  their published gain factor reaches zero at psi_crit. With A < 0
+//              (every dark row) A*g is largest where g = 0, and past psi_crit
+//              g < 0 and profit grows without bound, so psi_crit is where these
+//              forms are defined to stop.
+//   CF77       a constant price need not overtake A'(E) before E reaches the
+//              stem's ceiling, so the supremum can lie at psi_stem -> infinity.
+//   LeastCost  sits at psi_crit on most rows, dark and light.
+//
+// What these should do instead is open (a follow-up to #183); until then they
+// keep the bound, a dry pin at psi_crit and the shut exit they had.
+template <Leaf::CostCurve K>
+constexpr bool Leaf::cost_domain_ends_at_psi_crit() {
+  if constexpr (K == CostCurve::SOX || K == CostCurve::JW26 ||
+                K == CostCurve::CF77 || K == CostCurve::LeastCost) {
+    return true;
+  } else {
+    static_assert(K == CostCurve::TF24 || K == CostCurve::JS22 ||
+                      K == CostCurve::CMax || K == CostCurve::ProfitMax ||
+                      K == CostCurve::TF24_floor,
+                  "unhandled CostCurve in cost_domain_ends_at_psi_crit");
+    return false;
+  }
+}
+
+template <Leaf::CostCurve K>
+inline double Leaf::dry_end() const {
+  if constexpr (cost_domain_ends_at_psi_crit<K>()) {
+    return psi_crit;
+  } else {
+    return vulnerability_psi_end(stem_b, stem_c);
+  }
+}
 
 // dC/dpsi_upstream at fixed psi_stem, for the curves `cost_reads_upstream` names.
 // The collar FOC subtracts it with a unit chain factor, since upstream is the
@@ -5959,9 +5962,10 @@ inline double Leaf::evaluate_psi_stem(double target_psi_stem) {
   // itself at g_min = 0.
   const double psi_wet = stem_wet_bound(psi_soil);
 
-  // A soil too dry for the stem to carry more than the cuticle's loss inside
-  // psi_crit leaves one feasible potential, and the target is irrelevant to it.
-  if (psi_wet > psi_crit) {
+  // A soil too dry for the stem to carry more than the cuticle's loss short of
+  // its dry end leaves one feasible potential, and the target is irrelevant to it.
+  const double psi_dry = dry_end<K>();
+  if (psi_wet > psi_dry) {
     opt_psi_stem_ = psi_wet;
     profit_ = profit_psi_stem_for<K>(psi_wet, psi_soil);
     operating_point_kind_ = OperatingPointKind::Prescribed;
@@ -5973,7 +5977,7 @@ inline double Leaf::evaluate_psi_stem(double target_psi_stem) {
   // gradient that points back inside is more useful than an exception. The tag
   // does not distinguish a clamped target from an interior one -- compare the
   // returned opt_psi_stem_ with what you asked for if you need to know.
-  const double psi = std::min(std::max(target_psi_stem, psi_wet), psi_crit);
+  const double psi = std::min(std::max(target_psi_stem, psi_wet), psi_dry);
 
   opt_psi_stem_ = psi;
   profit_ = profit_psi_stem_for<K>(psi, psi_soil);
@@ -6596,13 +6600,11 @@ inline double Leaf::g_min_factor_temp_deriv(double leaf_temp) const {
 }
 
 // kmax (G(inf) - G(psi_up)): the most the stem can ever carry from psi_up,
-// which it approaches as its own potential runs away. G(inf) is the cached
-// closed form, rescaled with stem_b exactly as the table is.
+// which it approaches as its own potential runs away.
 inline double Leaf::supply_ceiling(double psi_upstream) const {
-  const double s = (stem_b == stem_b_spline_) ? 1.0 : stem_b / stem_b_spline_;
-  const double G_inf = (s == 1.0) ? stem_curve_G_inf_ : s * stem_curve_G_inf_;
   return leaf_specific_conductance_max_ *
-         (G_inf - stem_curve_integral(psi_upstream, "Leaf::supply_ceiling"));
+         (stem_curve_limit() -
+          stem_curve_integral(psi_upstream, "Leaf::supply_ceiling"));
 }
 
 // r* = r (1 + (r/E_inf)^p)^(-1/p), the smooth minimum of the demand and the
@@ -6960,7 +6962,7 @@ inline double Leaf::proportion_of_conductivity(double psi) const {
   return proportion_of_conductivity_kernel(psi);
 }
 
-// set spline for proportion of conductivity
+// Seat the stem's vulnerability table at stem_c.
 inline void Leaf::setup_transpiration(double resolution) {
   // ⚠️ RECORDED, BECAUSE `set_traits` REBUILDS AT THE MEMBER. Without this the
   // object holds a curve at one resolution and re-traits it at another, so a
@@ -6970,362 +6972,84 @@ inline void Leaf::setup_transpiration(double resolution) {
   // builds the two curves at DIFFERENT resolutions gets the last one recorded,
   // which is the same one member both rebuilds have always read.
   vulnerability_curve_ncontrol = resolution;
-  std::vector<double> x_psi_, y_cumulative_transpiration_;
-  build_cumulative_vulnerability_integral(stem_b, stem_c, resolution, x_psi_,
-                                          y_cumulative_transpiration_);
-
-  // THE CLOSED FORM SUPPLIES BOTH HALVES. G' is the surviving conductivity,
-  // which this class already computes -- so the interpolant is handed a value and
-  // a slope at every knot rather than choosing slopes from the values.
-  //
-  // ⚠️ THIS IS NOT AN OPTIMISATION, and letting the interpolant choose is a
-  // measured regression. A shape-preserving rule (Fritsch-Carlson) limits slopes
-  // to stop overshoot, which is the wrong objective when a gradient READS the
-  // slope: at psi = 2 it lands 2,360x further from exp(-(psi/b)^c) than the fit it
-  // replaces. Measured on the suites -- the spline tier moves 8.18e-05 against a
-  // 1e-10 tolerance, test_leaf takes 7 failures, and the R suite goes 1484/0 to
-  // 1458/36. With the slopes supplied it is 1484/0 and the spline tier is 2.57e-08.
-  //
-  std::vector<double> g_(x_psi_.size());
-  for (std::size_t i = 0; i < x_psi_.size(); ++i) {
-    g_[i] = proportion_of_conductivity_kernel(x_psi_[i]);
-  }
-  transpiration_from_psi.init(x_psi_, y_cumulative_transpiration_, g_);
-
-  // ⚠️ THE INVERSE IS NOT FITTED. It is this table, inverted -- see the members.
-  // Kept rather than re-derived because inverting needs the segment, and the
-  // interpolant does not hand its knots back.
-  stem_curve_psi_ = std::move(x_psi_);
-  stem_curve_at_psi_ = std::move(y_cumulative_transpiration_);
-
-  {
-    const std::vector<double>& u = stem_curve_at_psi_;
-    const std::size_t cells = 4 * u.size();
-    const double range = u.back() - u.front();
-    stem_curve_inverse_scale_ = range > 0.0 ? cells / range : 0.0;
-    stem_curve_inverse_cell_.assign(cells + 1, 0);
-    std::size_t at = 0;
-    for (std::size_t j = 0; j <= cells; ++j) {
-      const double edge = u.front() + j / stem_curve_inverse_scale_;
-      while (at < u.size() && u[at] < edge) ++at;
-      stem_curve_inverse_cell_[j] = at;
-    }
-  }
-  {
-    // d/dpsi of exp(-(psi/b)^c), at the curve the table was built for.
-    const std::vector<double>& psi = stem_curve_psi_;
-    stem_curve_curvature_.resize(psi.size());
-    for (std::size_t i = 0; i < psi.size(); ++i) {
-      const double q = psi[i] / stem_b;
-      stem_curve_curvature_[i] = psi[i] > 0.0
-          ? -(stem_c / stem_b) * std::pow(q, stem_c - 1.0) * std::exp(-std::pow(q, stem_c))
-          : 0.0;
-    }
-  }
-
-  // The splines now describe the current stem_b, so the rescaling is over.
-  // Recording it HERE rather than at each caller is what makes it impossible to
-  // rebuild and forget.
-  stem_b_spline_ = stem_b;
-  stem_curve_G_inf_ = cumulative_vulnerability_integral_limit(stem_b, stem_c);
+  // The root's table is the same table wherever the two c agree (the defaults),
+  // so it is shared rather than built twice.
+  stem_curve_ = vulnerability_table(stem_c, resolution, roots_.vulnerability_);
   ++stem_curve_builds_;
 }
 
 // --- the stem curve, as the four operations performed on it ------------------
-//
-// See the declarations for the identity these implement. Each returns the spline
-// unchanged when nothing is rescaled, which is the production path.
 
-// Named, scale-aware domain check in front of the spline read. Checked here
-// rather than by catching odelia's throw and rethrowing, so the hot path carries
-// no exception machinery: one comparison on a path that already does a spline
-// solve.
-//
-// The domain is reported in the CALLER's units, not the spline's. Under a stem_b
-// rescale (#46) the value handed to the spline is u/s, so the range the caller
-// can actually reach is [s*min, s*max]; quoting the spline's own endpoints would
-// send the reader after a discrepancy that is not there. At s == 1 -- the
-// production path -- the two coincide.
-//
-// ⚠️ The comparison is `v < lo || v > hi` and NOT the negation of an in-range
-// test, matching odelia's Interpolator::eval for the same reason: every
-// comparison against NaN is false, so a non-finite u must keep falling through to
-// the spline and coming back non-finite. Callers rely on it (plant documents a
-// profit_psi_stem_TF(NA, .) -> NA contract built on exactly this), and negating
-// an in-range test here would read as a tightening while being a behaviour
-// change.
-// Off the hot path: only reached when the lookup is about to fail, so the string
-// building costs nothing in production. Kept out of line from eval_stem_curve so
-// that function stays small enough to inline.
-[[noreturn]] inline void stem_curve_out_of_domain(
-    double lo_node, double hi_node, double u, double v,
-    double scale, const char* spline_name, const char* arg_name,
-    const char* caller);
-
-inline double Leaf::eval_stem_curve(const odelia::interpolator::hermite_spline<double>& spline,
-                                    double u, double scale, double b, double c,
-                                    const char* spline_name,
-                                    const char* arg_name, const char* caller) {
-  // scale == 1.0 is the production path (no stem_b rescale), and it must not pay
-  // for the rescaled one: dividing and re-multiplying by 1.0 is exact but not
-  // free, and collapsing the two cases into one measured +5% on
-  // find_root_collar_psi.
-  //
-  // ⚠️ THIS CHECK IS THE ONLY ONE -- DO NOT DROP IT AS A DUPLICATE OF ONE INSIDE
-  // odelia. eval extends linearly past the end knot and raises nothing, so
-  // without this a stem potential off the table is answered with a straight line
-  // rather than with the closed form (above) or refused (below).
-  //
-  // The upper-end branch sits inside the out-of-range test, so the in-range
-  // path pays nothing for it. At the curve's (b, c) the closed form is already
-  // in psi, so no rescale applies to it.
-  if (scale == 1.0) {
-    if (u < spline.min() || u > spline.max()) {
-      if (u > spline.max()) return cumulative_vulnerability_integral_at(u, b, c);
-      stem_curve_out_of_domain(spline.min(), spline.max(), u, u, scale,
-                               spline_name, arg_name, caller);
-    }
-    return spline.eval(u);
-  }
-  const double v = u / scale;
-  if (v < spline.min() || v > spline.max()) {
-    if (v > spline.max()) return cumulative_vulnerability_integral_at(u, b, c);
-    stem_curve_out_of_domain(spline.min(), spline.max(), u, v, scale,
-                             spline_name, arg_name, caller);
-  }
-  return scale * spline.eval(v);
-}
-
-inline void stem_curve_out_of_domain(
-    double lo_node, double hi_node, double u, double v,
-    double scale, const char* spline_name, const char* arg_name,
+// Off the hot path: only reached when a read is about to be refused, so the
+// string building costs nothing in production.
+[[noreturn, gnu::cold, gnu::noinline]] inline void stem_curve_out_of_domain(
+    double lo, double hi, double u, const char* what, const char* arg_name,
     const char* caller) {
-    const bool below = v < lo_node;
-    const double lo = scale * lo_node;
-    const double hi = scale * hi_node;
-    util::stop_infeasible("stem_curve_domain",
-               std::string("Leaf hydraulics: ") + spline_name +
-               " evaluated outside its domain: " + arg_name + " = " +
-               util::format_double(u) + " lies " +
-               util::format_double(below ? lo - u : u - hi) + " beyond the " +
-               (below ? "lower" : "upper") + " end of [" +
-               util::format_double(lo) + ", " + util::format_double(hi) + "]" +
-               (scale == 1.0 ? std::string()
-                             : "; the spline is rescaled by stem_b / "
-                               "stem_b_spline = " +
-                                   util::format_double(scale) +
-                                   ", so it was read at " +
-                                   util::format_double(v)) +
-               (caller == nullptr ? std::string()
-                                  : std::string("; asked by ") + caller) +
-               ".");
+  const bool below = u < lo;
+  util::stop_infeasible("stem_curve_domain",
+             std::string("Leaf hydraulics: ") + what +
+             " evaluated outside its domain: " + arg_name + " = " +
+             util::format_double(u) + " lies " +
+             util::format_double(below ? lo - u : u - hi) + " beyond the " +
+             (below ? "lower" : "upper") + " end of [" +
+             util::format_double(lo) + ", " + util::format_double(hi) + "]" +
+             (caller == nullptr ? std::string()
+                                : std::string("; asked by ") + caller) +
+             ".");
 }
 
+inline double Leaf::stem_curve_limit() const {
+  return stem_b * stem_curve_->G_inf_over_b();
+}
+
+// ⚠️ The comparisons are written so that a NaN fails every one and falls
+// through to the read, which returns NaN: plant documents a
+// profit_psi_stem_TF(NA, .) -> NA contract built on exactly this.
 inline double Leaf::stem_curve_integral(double psi, const char* caller) const {
-  // x/x is exactly 1.0 for any finite non-zero x, so the equal case would fall
-  // out of the division anyway; the branch is kept because stem_b_spline_ is 0.0
-  // before the first setup_transpiration and 0/0 is not 1.
-  const double s = (stem_b == stem_b_spline_) ? 1.0 : stem_b / stem_b_spline_;
-  return eval_stem_curve(transpiration_from_psi, psi, s, stem_b, stem_c,
-                         "transpiration_from_psi (the cumulative xylem "
-                         "conductivity integral G, psi in +MPa)",
-                         "psi", caller);
+  if (psi < 0.0) {
+    stem_curve_out_of_domain(0.0, std::numeric_limits<double>::infinity(), psi,
+                             "the cumulative xylem conductivity integral G "
+                             "(psi in +MPa)",
+                             "psi", caller);
+  }
+  return vulnerability_integral(*stem_curve_, psi, stem_b, stem_inv_b_.of(stem_b));
 }
 
 inline double Leaf::stem_curve_integral_deriv(double psi) const {
-  // Past the table's upper end, G' is the curve itself -- the same
-  // exp(-(psi/b)^c) the knot slopes were given, so the slope is continuous at
-  // the join. The spline's own slope past its last knot is its extension, not
-  // the curve.
-  if (stem_b == stem_b_spline_) {
-    if (psi > transpiration_from_psi.max()) {
-      return proportion_of_conductivity_kernel(psi);
-    }
-    return transpiration_from_psi.slope(psi);
-  }
-  const double v = psi / (stem_b / stem_b_spline_);
-  if (v > transpiration_from_psi.max()) {
-    return proportion_of_conductivity_kernel(psi);
-  }
-  return transpiration_from_psi.slope(v);
+  return vulnerability_integral_deriv(*stem_curve_, psi, stem_inv_b_.of(stem_b));
 }
 
-// G^-1 on the table G is read from. G is the integral of a positive
-// conductivity, so it is strictly increasing and the segment is a binary search;
-// the rest is Newton on that interpolant, bisecting whenever a step would leave
-// the bracket. The bracket is one knot wide, so it starts within O(h) and takes
-// three or four evaluations -- on a path reached once per collar evaluation, not
-// once per solver iteration.
-inline double Leaf::invert_stem_curve(double w, bool converge) const {
-  const std::vector<double>& u = stem_curve_at_psi_;
-  const std::vector<double>& x = stem_curve_psi_;
-  std::size_t at;
-  if (!converge && !stem_curve_inverse_cell_.empty() && w >= u.front()) {
-    std::size_t j = std::size_t((w - u.front()) * stem_curve_inverse_scale_);
-    if (j >= stem_curve_inverse_cell_.size()) j = stem_curve_inverse_cell_.size() - 1;
-    at = stem_curve_inverse_cell_[j];
-    while (at < u.size() && u[at] < w) ++at;
-  } else {
-    at = std::size_t(std::lower_bound(u.begin(), u.end(), w) - u.begin());
-  }
-  if (at == 0) return x.front();
-  if (at >= u.size()) return x.back();
-  double lo = x[at - 1], hi = x[at];
-  const double span = u[at] - u[at - 1];
-  double psi = span > 0.0 ? lo + (hi - lo) * (w - u[at - 1]) / span
-                          : 0.5 * (lo + hi);
-  if (!converge && span > 0.0) {
-    // The span's own inverse, formed on the fly: a Hermite in G through the two
-    // knots, with the exact inverse slopes 1/G'(psi) the forward table already
-    // holds. At least the forward table's order, so the start is within
-    // rounding of the root wherever the curve is not steep, and one Newton step
-    // is the answer there -- accepted only when its correction proves it (below
-    // 1e-9 of psi). Elsewhere, chiefly the steep dry tail where G' goes to zero,
-    // the loop carries on from the improved point inside the same bracket.
-    const std::vector<double>& g = transpiration_from_psi.slopes();
-    const double g0 = g[at - 1], g1 = g[at];
-    if (g0 > 0.0 && g1 > 0.0 && stem_curve_curvature_.size() == x.size()) {
-      // Quintic Hermite in G: value, slope 1/G' and curvature -G''/G'^3 of the
-      // inverse at both knots. Two orders more accurate than the cubic at the
-      // same knots, which is what makes the single step pass in the dry tail.
-      const double t = (w - u[at - 1]) / span;
-      const double t2 = t * t, t3 = t2 * t, t4 = t3 * t, t5 = t4 * t;
-      const double d0 = 1.0 / g0, d1 = 1.0 / g1;
-      const double c0 = -stem_curve_curvature_[at - 1] * d0 * d0 * d0;
-      const double c1 = -stem_curve_curvature_[at] * d1 * d1 * d1;
-      const double start =
-          (1 - 10 * t3 + 15 * t4 - 6 * t5) * lo +
-          (t - 6 * t3 + 8 * t4 - 3 * t5) * span * d0 +
-          0.5 * (t2 - 3 * t3 + 3 * t4 - t5) * span * span * c0 +
-          (10 * t3 - 15 * t4 + 6 * t5) * hi +
-          (-4 * t3 + 7 * t4 - 3 * t5) * span * d1 +
-          0.5 * (t3 - 2 * t4 + t5) * span * span * c1;
-      if (start > lo && start < hi) {
-        psi = start;
-        double value, slope;
-        transpiration_from_psi.value_and_slope(psi, value, slope);
-        if (slope > 0.0) {
-          const double step = (value - w) / slope;
-          // After one Newton step the error left is ~ |G''/(2 G')| step^2, and
-          // G'' is the stored curvature at the nearer knot, so accept when that
-          // predicted error is a few ulps -- the bound, not a fixed tolerance.
-          const double curv = std::abs(stem_curve_curvature_[
-              (w - u[at - 1] < u[at] - w) ? at - 1 : at]);
-          if (0.5 * curv / slope * step * step <=
-              4.0 * std::numeric_limits<double>::epsilon() * std::abs(psi)) {
-            return psi - step;
-          }
-          if (value - w > 0.0) hi = psi; else lo = psi;
-          const double next = psi - step;
-          if (next > lo && next < hi) psi = next;
-        }
-      }
-    }
-  }
-  for (int i = 0; i < 24; ++i) {
-    // One span lookup and one Horner pass for the pair: the same numbers
-    // eval() and slope() return, read together.
-    double value, slope;
-    transpiration_from_psi.value_and_slope(psi, value, slope);
-    const double f = value - w;
-    if (f == 0.0) return psi;
-    if (f > 0.0) hi = psi; else lo = psi;
-    double next = slope > 0.0 ? psi - f / slope : 0.5 * (lo + hi);
-    if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
-    if (next == psi) break;
-    // Newton's error squares each step, so a Newton correction this small puts
-    // `next` at rounding and a further read would only confirm it. The full
-    // inversion (converge) keeps confirming, and stays the reference.
-    if (!converge && slope > 0.0 && std::abs(next - psi) <= 1e-9 * std::abs(psi)) {
-      return next;
-    }
-    psi = next;
-  }
-  return psi;
-}
-
-inline double Leaf::stem_curve_integral_inverse(double w, const char* caller, bool converge) const {
-  const double s = (stem_b == stem_b_spline_) ? 1.0 : stem_b / stem_b_spline_;
-  const double v = (s == 1.0) ? w : w / s;
-  if (v > stem_curve_at_psi_.back()) {
-    // Past the table, the inverse of the closed form eval_stem_curve reads
-    // there. Infeasible only at or past G(inf).
-    return invert_stem_curve_past_grid(w, caller);
-  }
-  if (v < stem_curve_at_psi_.front()) {
-    stem_curve_out_of_domain(stem_curve_at_psi_.front(),
-                             stem_curve_at_psi_.back(), w, v, s,
-                             "the cumulative xylem conductivity integral G, "
-                             "INVERTED (G^-1, argument in E/K_max)",
-                             "E/K_max", caller);
-  }
-  return (s == 1.0) ? invert_stem_curve(v, converge) : s * invert_stem_curve(v, converge);
-}
-
-inline double Leaf::invert_stem_curve_past_grid(double w, const char* caller) const {
-  // G is strictly increasing and bounded by G(inf) = (b/c) Gamma(1/c), so a
-  // potential gives w exactly when w < G(inf). At or past it no stem potential
-  // carries the flow, which is the infeasibility the lower end reports too.
-  const double G_inf = cumulative_vulnerability_integral_limit(stem_b, stem_c);
-  const double lo_0 = vulnerability_psi_max(stem_b, stem_c);
-  if (!(w < G_inf)) {
-    stem_curve_out_of_domain(0.0, G_inf, w, w, 1.0,
+inline double Leaf::stem_curve_integral_inverse(double w, const char* caller,
+                                                bool) const {
+  // G rises to G(inf), which it reaches to rounding at the end of the curve,
+  // so a potential gives w exactly when 0 <= w <= G(inf), and G(inf) itself is
+  // the end of the curve. Past G(inf) no stem potential carries the flow.
+  //
+  // ⚠️ "PAST" MEANS PAST ROUNDING. A flux the model keeps below the stem's
+  // ceiling -- the residual flux under its soft cap, a continuity root taken
+  // from its feasible side -- arrives here as w = E/kmax + G(upstream), and the
+  // sum can round a few ulps past G(inf) when the ceiling is nearly all used.
+  // That is G(inf), and the end of the curve is its potential.
+  const double G_inf = stem_curve_limit();
+  if (w < 0.0 || w > G_inf * (1.0 + 16.0 * std::numeric_limits<double>::epsilon())) {
+    stem_curve_out_of_domain(0.0, G_inf, w,
                              "the cumulative xylem conductivity integral G, "
                              "INVERTED (G^-1, argument in E/K_max), whose upper "
                              "end is its limit G(inf)",
                              "E/K_max", caller);
   }
-  // Bracket: G at P99 is below w (that is why we are here), and doubling from
-  // there reaches a potential above it, since G -> G(inf) > w. The bound on the
-  // doublings is a guard: each one squares exp(-(psi/b)^c) at least, so w within
-  // rounding of G(inf) is the only way to exhaust it.
-  double lo = lo_0, hi = 2.0 * lo_0;
-  int doublings = 0;
-  while (cumulative_vulnerability_integral_at(hi, stem_b, stem_c) < w) {
-    lo = hi;
-    hi *= 2.0;
-    if (++doublings > 60) {
-      stem_curve_out_of_domain(0.0, G_inf, w, w, 1.0,
-                               "the cumulative xylem conductivity integral G, "
-                               "INVERTED (G^-1, argument in E/K_max): w is "
-                               "within rounding of its limit G(inf)",
-                               "E/K_max", caller);
-    }
-  }
-  // Newton on the closed form, bisecting whenever a step leaves the bracket or
-  // the slope has underflowed. Off the hot path: reached only past P99.
-  double psi = 0.5 * (lo + hi);
-  for (int i = 0; i < 200; ++i) {
-    const double f = cumulative_vulnerability_integral_at(psi, stem_b, stem_c) - w;
-    if (f == 0.0) return psi;
-    if (f > 0.0) hi = psi; else lo = psi;
-    const double slope = proportion_of_conductivity_kernel(psi);
-    double next = slope > 0.0 ? psi - f / slope : 0.5 * (lo + hi);
-    if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
-    if (std::abs(next - psi) <= 4.0 * std::numeric_limits<double>::epsilon() * psi) {
-      return next;
-    }
-    psi = next;
-  }
-  return psi;
+  return vulnerability_integral_inverse(*stem_curve_, std::min(w, G_inf), stem_b);
 }
 
 inline double Leaf::stem_curve_integral_inverse_deriv(double w) const {
   // ⚠️ ONE SPELLING. dpsi/dG = 1/G'(psi) is an identity, so the reciprocal of
   // the forward slope at the psi this inverts to IS the answer -- and taking it
-  // any other way is a second definition of one number, free to disagree with
-  // the first wherever a fit does.
+  // any other way is a second definition of one number.
   return 1.0 / stem_curve_integral_deriv(stem_curve_integral_inverse(w));
 }
 
 inline void Leaf::perturb_stem_P50(double stem_P50_new) {
   check_psi_magnitudes(stem_P50_new, stem_c, roots_.root_P50, roots_.root_c);
-  // psi_crit is a quantile of the same curve, so it is a fixed multiple of
-  // stem_b at fixed stem_c: the ratio psi_crit/stem_b depends only on stem_c.
-  // Both therefore scale by the same factor here, the rescaled spline evaluated
-  // at the rescaled bound returns the same conductivity fraction, and the
-  // domain cannot newly bind -- so the rescaling shortcut below stays exact and
-  // no curve is rebuilt.
   stem_P50 = stem_P50_new;
   stem_b = weibull_b_from_P50(stem_P50_new, stem_c);
   psi_crit = weibull_psi_at_fraction(stem_b, stem_c, k_crit_fraction);
@@ -7338,7 +7062,7 @@ inline void Leaf::perturb_stem_P50(double stem_P50_new) {
 }
 
 // Direct integration of the xylem vulnerability curve, as an independent check
-// on the pre-integrated spline that transpiration() uses on the hot path. Not
+// on the pre-integrated table that transpiration() uses on the hot path. Not
 // used in production. Uses leaf/quadrature.hpp rather than plant's compiled QAG,
 // so values are convergent-but-not-bit-identical to plant's; see that header.
 inline double Leaf::transpiration_full_integration(double psi_stem, double psi_upstream) {
@@ -7364,13 +7088,13 @@ stop_reversed_flow(double psi_stem, double psi_upstream) {
 
 //calculates supply-side transpiration from psi_stem and opt_root_psi_, returns kg h20 s^-1 m^-2 LA
 // SIGN: psi_stem and psi_upstream are POSITIVE magnitudes here (passed straight
-// to the spline). Contrast transpiration_to_psi_stem below. See the sign-
+// to the table). Contrast transpiration_to_psi_stem below. See the sign-
 // conventions block above.
 inline double Leaf::transpiration(double psi_stem, double psi_upstream) {
 
   // 1-entry memo: identical (psi_stem, psi_upstream) is requested several times
   // per profit evaluation; return the cached value (bit-identical) to skip the
-  // redundant spline lookups. Cache invalidated in set_physiology.
+  // redundant table lookups. Cache invalidated in set_physiology.
   if (transpiration_cached_ &&
       psi_stem == transpiration_cache_psi_stem_ &&
       psi_upstream == transpiration_cache_psi_upstream_) {
@@ -7391,7 +7115,7 @@ inline double Leaf::transpiration(double psi_stem, double psi_upstream) {
   // a cost that re-reads the flux goes through operating_point_flux. So a reversed
   // pair here is a caller error. Equality is the shut-down state and stays legal;
   // NaN falls through to a non-finite E. Tested after the lookups so a negative
-  // potential still gets the spline's domain message, and before the memo is
+  // potential still gets the table's domain message, and before the memo is
   // written so the memo never holds a reversed pair.
   if (psi_stem < psi_upstream) [[unlikely]] {
     stop_reversed_flow(psi_stem, psi_upstream);
@@ -7408,10 +7132,9 @@ inline double Leaf::operating_point_flux(double psi_stem, double psi_upstream) {
   return psi_upstream >= psi_stem ? 0.0 : transpiration(psi_stem, psi_upstream);
 }
 
-// converts a known transpiration to its corresponding psi_stem, returns -MPa
-// SIGN: unlike transpiration() above, psi_upstream here is a SIGNED (negative)
-// potential, so it is flipped with a leading `-` before the spline lookup. The
-// two functions are inverses called with opposite-sign psi_upstream.
+// converts a known transpiration to its corresponding psi_stem; both potentials
+// are positive magnitudes, as in transpiration() above, of which this is the
+// inverse.
 inline double Leaf::transpiration_to_psi_stem(double transpiration_, double psi_upstream) {
   // integration of proportion_of_conductivity over [opt_root_psi_, psi_stem].
   // psi_upstream is a positive magnitude, same as in transpiration() -- #7 noted
@@ -7420,15 +7143,12 @@ inline double Leaf::transpiration_to_psi_stem(double transpiration_, double psi_
   // with opposite-sign arguments. Under one representation they are not, and the
   // negation is deleted (#25).
 
-  // Past the knot grid G flattens to its limit, and far enough out it is G(inf)
-  // to rounding, so every potential there maps to one value and G^-1 cannot say
-  // which. A zero flux has the stem AT the upstream potential, which is the
-  // answer the inverse would give if it could; any positive flux there needs
-  // more than G(inf) and is infeasible. Restricted to past the grid so that no
-  // in-grid point changes, and taken before the forward read, which it makes
-  // redundant.
+  // Past the end of the curve G is G(inf) to rounding, so every potential there
+  // maps to one value and G^-1 cannot say which. A zero flux has the stem AT the
+  // upstream potential, which is the answer the inverse would give if it could;
+  // any positive flux there needs more than G(inf) and is infeasible.
   if (transpiration_ == 0.0 &&
-      psi_upstream > vulnerability_psi_max(stem_b, stem_c)) {
+      psi_upstream >= vulnerability_psi_end(stem_b, stem_c)) {
     return psi_upstream;
   }
 
@@ -7436,25 +7156,14 @@ inline double Leaf::transpiration_to_psi_stem(double transpiration_, double psi_
     stem_curve_integral(psi_upstream, "Leaf::transpiration_to_psi_stem, at psi_upstream");
 
   // The lookup that killed plant#576, and the reason the inverse names its units:
-  // E_psi_stem below the spline's lower end means the demanded flux is NEGATIVE,
+  // E_psi_stem below the table's lower end means the demanded flux is NEGATIVE,
   // i.e. the collar cannot supply it and the stem potential that would carry it is
   // wetter than saturation. There is no such potential, so widening the domain is
   // not the fix -- the caller should not have asked. Naming the argument E/K_max
   // rather than a bare `u` is what makes that readable from the message.
-  const double psi_stem = stem_curve_integral_inverse(
+  return stem_curve_integral_inverse(
       E_psi_stem, "Leaf::transpiration_to_psi_stem, inverting for psi_stem");
-  // The single Newton step the inversion takes is below a double's resolution
-  // everywhere except where it matters most: at a flux near zero the stem sits
-  // within a few ulps of the upstream potential, and the ORDER of the two is
-  // what the wet bound reads (zero or reversed flux must not put the stem one
-  // ulp drier than the collar). There, converge fully, as the loop always did.
-  if (std::abs(psi_stem - psi_upstream) <= 64.0 * std::numeric_limits<double>::epsilon() *
-                                                std::abs(psi_upstream)) {
-    return stem_curve_integral_inverse(
-        E_psi_stem, "Leaf::transpiration_to_psi_stem, inverting for psi_stem", true);
-  }
-  return psi_stem;
-  }
+}
 
 // The TOTAL conductance to CO2 at a candidate pair, mol CO2 m^-2 LA s^-1: the
 // stomata's, from the flux the residual leaves them, plus the cuticle's. Reads
@@ -7724,7 +7433,7 @@ inline double Leaf::lambda_TF24_floor(double psi_stem) const {
 // derives it in one line and gives the scale-invariance test that pins it.
 //
 // ⚠️ It DIVERGES at `psi_crit`, where `g` is exactly zero. That is the mechanism by
-// which a product objective can never be boundary-crit -- water becomes infinitely
+// which a product objective can never be pinned at psi_crit -- water becomes infinitely
 // expensive before the bound is reached -- and it means this is not a number to
 // evaluate at the dry end of the bracket.
 inline double Leaf::lambda_SOX(double psi_stem, double psi_upstream) const {
@@ -8028,7 +7737,7 @@ inline void Leaf::held_coords_at(double sigma_star, double ci_star,
   // is forced rather than preferred: sigma is placed by an INVERSE TABLE, so its
   // response to the collar is that table's own slope -- while the implicit
   // function theorem on T1 divides by G'(sigma). The two agree only if the two
-  // stem splines are exact mutual inverses, and they are not. Letting the
+  // stem reads are exact mutual inverses, and they are not. Letting the
   // residual see a live collar therefore puts TWO values of dsigma/dcollar into
   // one object: measured, the lift said 0.6913 for dci/dcollar where the slope
   // beside it said 0.6382, and dM/dcollar came out an eighth of its size.
@@ -8054,19 +7763,28 @@ inline void Leaf::held_coords_at(double sigma_star, double ci_star,
   // MUST BE IN THIS LIST -- one left out is a row that never arrives, which
   // reads as an exact zero in that column rather than as an error. `held` is
   // to_passive and carries none.
-  sigma_h = odelia::implicit_value<S>(
-      sigma_star, dT1_dsigma,
-      [&](const S& sg) -> S {
-        return pars[par_kmax] *
-                   (leaf.template stem_integral_at<S>(sg, pars) -
-                    leaf.template stem_integral_at<S>(held, pars)) -
-               draw.flux.value;
-      },
-      pars, draw.flux.value);
+  //
+  // At a dry pin at the end of the stem curve the stem is HELD there
+  // (seat_stem_at_dry_pin), so sigma is that end as a function of the traits,
+  // not the root of T1: T1's slope there is kmax e^-40, and dividing by it hands
+  // over amplified rounding (measured: forward and reverse disagreed by 0.4%).
+  if (stem_held_at_dry_pin(sigma_star)) {
+    sigma_h = stem_curve_end_at<S>(pars);
+  } else {
+    sigma_h = odelia::implicit_value<S>(
+        sigma_star, dT1_dsigma,
+        [&](const S& sg) -> S {
+          return pars[par_kmax] *
+                     (leaf.template stem_integral_at<S>(sg, pars) -
+                      leaf.template stem_integral_at<S>(held, pars)) -
+                 draw.flux.value;
+        },
+        pars, draw.flux.value);
+  }
 
   // The stem's flux at the placed sigma. gc is built from THIS, not from the
   // draw, because that is what the model's ci solve reads -- the two agree only
-  // to the stem splines' round-trip. The residual flux comes off it and the
+  // to the stem table's round-trip. The residual flux comes off it and the
   // cuticle's conductance goes on, as the evaluator forms them (#182); at
   // g_min = 0 both are exact zeros carrying the g_min row.
   const S stem_flux = transpiration_at<S>(sigma_h, held, pars);
@@ -8159,14 +7877,12 @@ inline Leaf::CollarCoords<S> Leaf::collar_channel_at(
   // carries none.
   const S& kmax = pars[par_kmax];
   const S f_p = closed_form_curve<S>(stem_curve_integral_deriv(to_passive(collar)),
-                               held, pars[par_stem_P50], pars[par_stem_c],
-                               PastLastKnot::ReadsClosedForm);
+                               held, pars[par_stem_P50], pars[par_stem_c]);
   const S f_sigma = closed_form_curve<S>(stem_curve_integral_deriv(sigma_star),
                                    sigma_h, pars[par_stem_P50],
-                                   pars[par_stem_c],
-                                   PastLastKnot::ReadsClosedForm);
+                                   pars[par_stem_c]);
 
-  // dsigma/dcollar: THE INVERSE SPLINE'S OWN SLOPE times the transport's, which
+  // dsigma/dcollar: THE INVERSE'S OWN SLOPE times the transport's, which
   // is how upstream's dprofit_at_collar_psi forms it and what actually placed
   // sigma. Read at E_up/kmax + G(collar) -- THE SOIL DRAW, the point the inverse
   // table was queried at, not the stem flux.
@@ -8176,7 +7892,17 @@ inline Leaf::CollarCoords<S> Leaf::collar_channel_at(
   const S dsigma_du =
       S(stem_curve_integral_inverse_deriv(u_at)) + (recip - S(to_passive(recip)));
   // psi_crit does not move with the collar.
-  const S V = dsigma_du * (draw.flux.slope / kmax + f_p);
+  //
+  // ⚠️ NOR DOES A STEM HELD AT A DRY PIN. sigma_h is already the end of the curve
+  // as a function of the traits, and the collar is placed to keep the stem
+  // there, so its channel is an exact zero. Formed anyway it is e^40 (the
+  // inverse's slope at the end) times terms of order e^-40 -- the cost's slope
+  // and f_sigma -- which carry no information past rounding: measured, it moved
+  // the profit rows by up to 8e-5 on macOS/arm64 and by up to 60% on Linux/x86,
+  // where a difference of the solve agrees with the held stem's rows to 1e-9.
+  const S V = stem_held_at_dry_pin(sigma_star)
+                  ? S(0.0)
+                  : dsigma_du * (draw.flux.slope / kmax + f_p);
 
   const S gc_const = S(gc_per_flux);
   const S inv = S(inv_atm);
@@ -8214,6 +7940,22 @@ inline S Leaf::psi_crit_at(const leaf_pars<S>& pars) const {
   const S& c = pars[par_stem_c];
   const S b = phylloptim::weibull_b_from_P50<S>(pars[par_stem_P50], c);
   return b * pow(S(std::log(1.0 / k_crit_fraction)), 1.0 / c);
+}
+
+template <class S>
+inline S Leaf::stem_curve_end_at(const leaf_pars<S>& pars) const {
+  const S& c = pars[par_stem_c];
+  const S b = phylloptim::weibull_b_from_P50<S>(pars[par_stem_P50], c);
+  return b * pow(S(vulnerability_x_end), 1.0 / c);
+}
+
+template <Leaf::CostCurve K, class S>
+inline S Leaf::dry_end_at(const leaf_pars<S>& pars) const {
+  if constexpr (cost_domain_ends_at_psi_crit<K>()) {
+    return psi_crit_at<S>(pars);
+  } else {
+    return stem_curve_end_at<S>(pars);
+  }
 }
 
 template <Leaf::CostCurve K, class S>
@@ -8393,7 +8135,7 @@ inline S Leaf::marginal_from_coords(const S& collar, const leaf_pars<S>& pars,
               pars[par_TF24_floor_lambda_o] * pars[par_kmax] *
                   closed_form_curve<S>(stem_curve_integral_deriv(opt_psi_stem_),
                                  at.sigma.value, pars[par_stem_P50],
-                                 pars[par_stem_c], PastLastKnot::ReadsClosedForm);
+                                 pars[par_stem_c]);
   }
 
   S M = A_prime * at.ci.slope - C_prime * at.sigma.slope;
@@ -8404,18 +8146,11 @@ inline S Leaf::marginal_from_coords(const S& collar, const leaf_pars<S>& pars,
     // collar, so the term's own dM/dcollar reaches the implicit row.
     M = M + pars[par_TF24_floor_lambda_o] * pars[par_kmax] *
                 closed_form_curve<S>(stem_curve_integral_deriv(to_passive(collar)),
-                                     collar, pars[par_stem_P50], pars[par_stem_c],
-                                     PastLastKnot::ReadsClosedForm);
+                                     collar, pars[par_stem_P50], pars[par_stem_c]);
   }
   return M;
 }
 
-template <class S>
-inline S Leaf::root_psi_crit_at(const leaf_pars<S>& pars) const {
-  const S& c = pars[par_root_c];
-  const S b = phylloptim::weibull_b_from_P50<S>(pars[par_root_P50], c);
-  return b * pow(S(std::log(1.0 / k_crit_fraction)), 1.0 / c);
-}
 
 template <Leaf::CostCurve K, class S>
 inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
@@ -8487,12 +8222,11 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
     return wet;
   }
 
-  // The dry end is T1 with the stem held at ITS critical potential: the collar at
-  // which the soil delivers exactly what the column can still carry. The stem is
-  // held there, so only the second integral and the flux move with the collar.
-  //
-  // ⚠️ THE SLOPE IS THE TABLE'S, like every other conductivity on this surface,
-  // because the model's own bracket was placed with it.
+  // The dry end is T1 with the stem held at its dry end (dry_end_at): the collar
+  // at which the soil delivers exactly what the column can still carry. The stem
+  // is held there, so only the second integral and the flux move with the collar.
+  // Where the dry end is the end of the stem curve, the stem integral there is
+  // G(inf) and its rows are G(inf)'s: the leaf transpires all the stem can carry.
   const double dT_dx =
       -to_passive(pars[par_kmax]) * stem_curve_integral_deriv(bound_x) -
       dflux_dx;
@@ -8500,7 +8234,7 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
       bound_x, dT_dx,
       [&](const S& x) -> S {
         return pars[par_kmax] *
-                   (leaf.template stem_integral_at<S>(psi_crit_at<S>(pars),
+                   (leaf.template stem_integral_at<S>(dry_end_at<K, S>(pars),
                                                       pars) -
                     leaf.template stem_integral_at<S>(x, pars)) -
                draw.flux.value;
@@ -8601,14 +8335,9 @@ inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
     case OperatingPointKind::HydraulicShutdown:
       collar = bound_at<K, S>(true, opt_root_psi_, draw, pars);
       break;
-    case OperatingPointKind::BoundaryCrit:
+    case OperatingPointKind::BoundaryDry:
       // The continuity root: T1 with the stem held at its critical potential.
       collar = bound_at<K, S>(false, opt_root_psi_, draw, pars);
-      break;
-    case OperatingPointKind::BoundaryRootCrit:
-      // The root's own 5% potential, which is an expression rather than a
-      // residual -- so it needs no theorem, only its own chain.
-      collar = root_psi_crit_at<S>(pars);
       break;
     default:
       util::stop(std::string("Leaf::collar_at: no operating point to place at "
@@ -8650,10 +8379,8 @@ inline double Leaf::marginal_collar_slope() {
   // is a throw, not a wrong number, and it surfaces in a caller that never asked
   // for a curvature.
   const OperatingPointKind kind0 = operating_point_kind_;
-  const bool dry0 = dry_bound_is_root_limit_;
   evaluate_root_collar_psi_for<K>(p0);
   operating_point_kind_ = kind0;
-  dry_bound_is_root_limit_ = dry0;
   const bool have_up = up_ok && std::isfinite(up);
   const bool have_down = down_ok && std::isfinite(down);
   const bool have_here = here_ok && std::isfinite(here);
@@ -8940,7 +8667,7 @@ inline double Leaf::sox_reduction(double psi_stem) const {
 
 
 // Its slope. `|f'| = f*(c/b)*(psi/b)^(c-1)` is the same analytic form `lambda_TF24`
-// uses, so this needs neither AD nor a spline derivative; `f` decreases, so this is
+// uses, so this needs neither AD nor a table slope; `f` decreases, so this is
 // negative.
 inline double Leaf::sox_reduction_deriv(double psi_stem) const {
   const double f = proportion_of_conductivity(psi_stem);
@@ -9793,13 +9520,20 @@ inline void Leaf::optimise_psi_stem_single() {
   const double psi_wet = stem_wet_bound(psi_soil);
   opt_psi_stem_ = psi_wet;
 
+  // The dry end of the interval: psi_crit for a curve whose own domain ends
+  // there, the end of the stem curve for every other (#183).
+  const double psi_dry = dry_end<K>();
+
   // ⚠️ ONE CURVE NEEDS SETUP BEFORE THE SEARCH, AND ITS DEGENERATE EXIT DIFFERS.
   // ProfitMax divides by |A|max, so it is seeded here -- and where the normalisers
   // come out unusable there is no normalised objective to evaluate at the wet
   // end, which is why that arm ZEROES where every other curve EVALUATES. `PPFD_`
   // joins the test because a dark leaf has A = -R_d everywhere, so |A|max is
   // non-positive and the second bail-out would catch it anyway; testing it first
-  // avoids seeding in order to discover that.
+  // avoids seeding in order to discover that. Its normalisers are Sperry's own,
+  // taken over the stream to psi_crit (k_crit is part of the published form),
+  // so a wet end past psi_crit leaves k_span <= 0 and no objective, though the
+  // search itself is no longer bounded there.
   if constexpr (K == CostCurve::ProfitMax) {
     if ((PPFD_ < 1.5e-8) | (psi_wet > psi_crit)) {
       set_profitmax_degenerate_state(psi_wet, psi_soil);
@@ -9810,9 +9544,12 @@ inline void Leaf::optimise_psi_stem_single() {
       set_profitmax_degenerate_state(psi_wet, psi_soil);
       return;
     }
-  } else if (psi_wet > psi_crit) {
+  } else if (psi_wet > psi_dry ||
+             !(stem_curve_limit() - stem_curve_integral(psi_soil) >
+               stem_capacity_floor * stem_curve_limit())) {
     // Drier soil than the stem can carry more than the cuticle's loss from
-    // inside psi_crit: one feasible potential, and this is it.
+    // short of its dry end, or than the curve resolves a flux from
+    // (stem_capacity_floor): one feasible potential, and this is it.
     profit_ = profit_psi_stem_for<K>(psi_wet, psi_soil);
     lambda_emergent_ = lambda_for<K>(psi_wet, psi_soil);
     return;
@@ -9832,13 +9569,42 @@ inline void Leaf::optimise_psi_stem_single() {
   // inside the optimiser loses the whole solve. `basin_scan_cells()` returns a
   // scan whenever the gate is on, which is where the objective can carry two
   // basins.
+  const auto dobjective = [&](double psi_stem, bool* ok) -> double {
+    return dprofit_dpsi_stem<K>(psi_stem, psi_soil, ok);
+  };
+  // For a curve psi_crit does not bound, psi_crit is still the first bracket
+  // tried, as on the collar route: where profit already falls there the
+  // optimum lies inside, and the old interval finds it at the old cost. Not
+  // under a basin scan, whose cells are set by the interval.
+  double hi = psi_dry;
+  if constexpr (!cost_domain_ends_at_psi_crit<K>()) {
+    if (basin_scan_cells() == 0 && psi_wet < psi_crit) {
+      bool ok = false;
+      const double d = dobjective(psi_crit, &ok);
+      if (ok && std::isfinite(d) && d < 0.0) {
+        hi = psi_crit;
+      }
+    }
+  }
+  // ⚠️ A SCAN KEEPS ITS CELL WIDTH, NOT ITS CELL COUNT. Its cells span the
+  // interval, and past psi_crit the interval runs on to the end of the stem
+  // curve, 2.6x as wide at the defaults; at the old count the cells widened with
+  // it and stepped over the narrow basin a dark leaf has near its wet end
+  // (measured: JS22 and TF dropped to the wet end at lower profit on every dark
+  // energy-balance row). So the count grows with the interval against
+  // [psi_wet, psi_crit], to at most 4x.
+  int cells = basin_scan_cells();
+  if (cells > 0 && hi > psi_crit && psi_crit > psi_wet) {
+    cells = std::min(4 * cells,
+                     static_cast<int>(std::ceil(cells * (hi - psi_wet) /
+                                                (psi_crit - psi_wet))));
+  }
   opt_psi_stem_ = util::maximise_over_closed_interval_foc(
-      objective,
-      [&](double psi_stem, bool* ok) -> double {
-        return dprofit_dpsi_stem<K>(psi_stem, psi_soil, ok);
-      },
-      psi_wet, psi_crit, basin_scan_cells(), collar_root_tol,
+      objective, dobjective, psi_wet, hi, cells, collar_root_tol,
       static_cast<size_t>(ci_niter), &profit_opt);
+  // An argmax at psi_dry for a curve that is not bounded at psi_crit is the end
+  // of the stem curve: the leaf transpires all the stem can carry, as on the
+  // collar route (see maximise_profit_over_collar).
   profit_ = profit_psi_stem_for<K>(opt_psi_stem_, psi_soil);
   lambda_emergent_ = lambda_for<K>(opt_psi_stem_, psi_soil);
   (void)profit_opt;

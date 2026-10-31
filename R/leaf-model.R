@@ -75,10 +75,10 @@
 ##'
 ##' @section psi_crit is not a free trait:
 ##' `psi_crit` is the stem curve's **P95** and is derived from `stem_P50`/`stem_c`,
-##' not set, and could not safely be: the curve is pre-integrated over `[0, P99]`,
-##' `psi_crit` does not enter that bound, and every solve evaluates the curve *at*
-##' `psi_crit` -- so setting it to a plausible number off a measured vulnerability
-##' curve gives a domain error naming only the interpolator.
+##' not set: a free `psi_crit` would describe a curve it was not derived from. It
+##' is a labelled point on a curve that continues past it, and the dry end of the
+##' solve only for SOX, JW26, CF77 and LeastCost, whose own forms end there; for
+##' the other curves the stem may run past it (#183).
 ##'
 ##' At the defaults:
 ##'
@@ -87,8 +87,8 @@
 ##' 3.898245 * log(1/0.05)^(1/2.680147) = 5.870283 = psi_crit
 ##' ```
 ##'
-##' to six decimal places, against `P99 = 6.891842`. Both move with the pair, so
-##' there is nothing left to set inconsistently. `vignette("fitting")` derives the
+##' to six decimal places. It moves with the pair, so there is nothing left to set
+##' inconsistently. `vignette("fitting")` derives the
 ##' pair from a published P50/P88 pair, which is the right way round.
 ##'
 ##' @param vcmax_25 maximum carboxylation rate at 25 C (umol m^-2 s^-1)
@@ -238,11 +238,11 @@ leaf_traits <- function(vcmax_25 = 96,
 ##'   on `dJ/dpsi == 0` at a hardcoded tolerance; the `(cell width) * 1e-4` figure
 ##'   is its own golden-section fallback, not its normal path. Tightening this to
 ##'   sharpen a stem-route argmax does nothing.
-##' @param vulnerability_curve_ncontrol number of control points used to
-##'   pre-integrate the two Weibull vulnerability curves into splines. Higher is
-##'   more accurate and slower to construct; it does not affect solve speed.
-##'   The default, 400, is read from the C++ `Leaf::ncontrol_default`, so the R
-##'   and C++ defaults cannot differ.
+##' @param vulnerability_curve_ncontrol number of knot intervals in each Weibull
+##'   vulnerability curve's table (a C2 quintic of its cumulative integral).
+##'   Higher is more accurate and slower to construct; it does not affect solve
+##'   speed. The default, 800, is read from the C++ `Leaf::ncontrol_default`, so
+##'   the R and C++ defaults cannot differ.
 ##' @param ci_abs_tol absolute tolerance for root-solving intercellular CO2
 ##' @param ci_niter maximum iterations for root-solving intercellular CO2
 ##' @param integration_rule accepted and ignored. It selected a Gauss-Kronrod
@@ -251,7 +251,7 @@ leaf_traits <- function(vcmax_25 = 96,
 ##'   bindings expose it.
 ##' @param integration_tol absolute tolerance for the direct quadrature in
 ##'   `transpiration_full_integration()`. Not on the production path, which
-##'   reads the pre-integrated spline instead.
+##'   reads the vulnerability table instead.
 ##'
 ##' @return A `leaf_control` object; a named list.
 ##' @seealso [leaf_traits()], [leaf_model()]
@@ -262,8 +262,8 @@ leaf_traits <- function(vcmax_25 = 96,
 # `vulnerability_curve_ncontrol` defaults to `Leaf::ncontrol_default`, READ from
 # C++ rather than restated: RcppR6 binds only the 15-argument constructor, so R
 # passes the number in, and a literal here would be a second copy that could
-# drift without the golden file noticing (a spline resolution only refines the
-# answer: 400 -> 40 moves every field by ~3e-06). test-surface.R asserts the
+# drift without the golden file noticing (a table resolution only refines the
+# answer). test-surface.R asserts the
 # default is the C++ constant; plant's test-control.R compares plant's own
 # Control against `leaf_control()`.
 leaf_control <- function(GSS_tol_abs = 1e-3,
@@ -971,10 +971,10 @@ operating_point <- function(x) {
 ##'
 ##' `reuse = TRUE` is the default because constructing a `Leaf` from R costs
 ##' about **180x a trivial `.Call`** (~230 µs where this was measured), or 45
-##' solves, and only ~32 µs of that is the two vulnerability
-##' splines; the rest is R-side object construction. See [set_traits()] for
-##' varying traits without reconstructing, and note it costs 21.8 µs rather than
-##' 0.02 µs when the trait you change owns a vulnerability spline.
+##' solves, and only a small part of that is the vulnerability tables; the rest is
+##' R-side object construction. See [set_traits()] for varying traits without
+##' reconstructing, and note it costs many solves rather than almost nothing when
+##' the trait you change is `stem_c` or `root_c`, which own a table.
 ##'
 ##' @section Recycling:
 ##' `PPFD`, `atm_vpd`, `ca`, `leaf_temp`, `atm_o2_kpa`, `atm_kpa` and
@@ -1032,8 +1032,8 @@ operating_point <- function(x) {
 ##'   describes the bracket rather than the model. [operating_point()]'s
 ##'   `lambda_emergent` is how you find a value that means something.
 ##' @param reuse solve every row with one `Leaf` object (`TRUE`) or construct a
-##'   fresh one per row (`FALSE`, the default). Reuse is faster because the two
-##'   vulnerability splines are built once, and it is safe -- every exit from the
+##'   fresh one per row (`FALSE`, the default). Reuse is faster because the
+##'   vulnerability tables are built once, and it is safe -- every exit from the
 ##'   solve writes its own outputs. `FALSE` exists so that can be checked rather
 ##'   than assumed, and the package's tests do check it.
 ##'

@@ -61,6 +61,13 @@
 # of A(ci) = 0, which is zero by definition, and ci and the two exact zeros
 # (transpiration, gc) did not move.
 #
+# Then for #183 step 2 (the C2 vulnerability table and no psi_crit bound under
+# TF24), which moved every non-zero value of the four open rows by up to ~1e-7
+# relative (the table) and the 3-layer psi_soil = 4 row's stem from psi_crit to
+# 6.01 MPa (no bound). The shut-down row moved to psi_soil = 17, past the end of
+# the stem curve, since a soil of 6 MPa no longer shuts the leaf; there its e_up
+# and uptake are exact zeros.
+#
 # Before that, #92 (the indexed knot grid) moved 27, the psi_stem_to_ci tolerance
 # 18, and the collar root-find 27.
 
@@ -72,10 +79,10 @@
 #   3 and 5 layers   the multi-layer supply path, where the R side has to get a
 #                    whole vector across in the right order -- a transposed or
 #                    reversed soil profile is invisible at one layer
-#   the last row     a SHUT-DOWN point (psi_soil 6 MPa, low light, high VPD):
-#                    transpiration and gc are exactly zero, assimilation is the
-#                    root of A(ci) = 0 and the stem sits at the zero-uptake
-#                    collar (#182). This is the
+#   the last row     a SHUT-DOWN point (psi_soil 17 MPa, past the end of the
+#                    stem curve; low light, high VPD): transpiration and gc are
+#                    exactly zero, assimilation is the root of A(ci) = 0 and the
+#                    stem sits at the zero-uptake collar (#182, #183). This is the
 #                    branch #15 fixed, and it is the one where an output a code
 #                    path declines to write becomes the previous leaf's value.
 #                    Pinning it here means the R layer is checked on the exit
@@ -84,57 +91,57 @@ golden_rows <- list(
   list(
     inputs = list(psi_soil = 0.5, ppfd = 1500, vpd = 0.5, layers = 1L),
     expected = list(
-      psi_stem      = "0x1.709bdd8e0f12p+1",
-      opt_root_psi  = "0x1.066f205f53abep+1",
-      ci            = "0x1.9f4d835015451p+4",
-      assim         = "0x1.215ca9d76753dp+4",
-      transpiration = "0x1.450032bbf9f85p-16",
-      gc            = "0x1.0b2ace46dec4cp-3",
-      profit        = "0x1.07970cd1529dbp+4",
-      e_up          = "0x1.450032bbf9f87p-16",
-      uptake        = "0x1.19e24250556ecp-10"
+      psi_stem      = "0x1.709bdd973848bp+1",
+      opt_root_psi  = "0x1.066f206418756p+1",
+      ci            = "0x1.9f4d8353e5aeap+4",
+      assim         = "0x1.215ca9d9740dcp+4",
+      transpiration = "0x1.450032c3cb9c3p-16",
+      gc            = "0x1.0b2ace4d4c37fp-3",
+      profit        = "0x1.07970cd153bc7p+4",
+      e_up          = "0x1.450032c3cb9c7p-16",
+      uptake        = "0x1.19e242571d857p-10"
     )
   ),
   list(
     inputs = list(psi_soil = 2.0, ppfd = 900, vpd = 2.0, layers = 3L),
     expected = list(
-      psi_stem      = "0x1.b1bea0c26892fp+1",
-      opt_root_psi  = "0x1.821842026fc9ap+1",
-      ci            = "0x1.0de793a98da7cp+3",
-      assim         = "0x1.b2e0245668cabp+1",
-      transpiration = "0x1.b29d0f7ff2d3bp-18",
-      gc            = "0x1.654643ffb4b26p-7",
-      profit        = "0x1.8a7e20d7e0d4p-1",
-      e_up          = "0x1.b29d0f7ff2d3bp-18",
-      uptake        = "0x1.78f45d607ab87p-12"
+      psi_stem      = "0x1.b1bea0a2f445ap+1",
+      opt_root_psi  = "0x1.821841efd3748p+1",
+      ci            = "0x1.0de7939a33b56p+3",
+      assim         = "0x1.b2e0241264c9fp+1",
+      transpiration = "0x1.b29d0f355e608p-18",
+      gc            = "0x1.654643c265babp-7",
+      profit        = "0x1.8a7e20d88db48p-1",
+      e_up          = "0x1.b29d0f355e6p-18",
+      uptake        = "0x1.78f45d1fcb361p-12"
     )
   ),
   list(
     inputs = list(psi_soil = 4.0, ppfd = 500, vpd = 1.0, layers = 5L),
     expected = list(
-      psi_stem      = "0x1.77b2b65270b1p+2",
-      opt_root_psi  = "0x1.37e82d92b8d2bp+2",
-      ci            = "0x1.0bd5e9cb0bdcep+3",
-      assim         = "0x1.9da2a5e7a0c17p+1",
-      transpiration = "0x1.9c8a84daa0addp-19",
-      gc            = "0x1.53213b76ed3f1p-7",
-      profit        = "-0x1.db45b577f2b1dp+1",
-      e_up          = "0x1.9c8a84daa0ae3p-19",
-      uptake        = "0x1.65cf76fe907abp-13"
+      psi_stem      = "0x1.806ce1023184p+2",
+      opt_root_psi  = "0x1.3917d4d02abb8p+2",
+      ci            = "0x1.0ec2d5552da88p+3",
+      assim         = "0x1.aa12ab799f077p+1",
+      transpiration = "0x1.aa2d745ec3e0dp-19",
+      gc            = "0x1.5e56f599ccf32p-7",
+      profit        = "-0x1.db03fa1b158e9p+1",
+      e_up          = "0x1.aa2d745ec3e07p-19",
+      uptake        = "0x1.71a34488313e8p-13"
     )
   ),
   list(
-    inputs = list(psi_soil = 6.0, ppfd = 100, vpd = 4.0, layers = 5L),
+    inputs = list(psi_soil = 17.0, ppfd = 100, vpd = 4.0, layers = 5L),
     expected = list(
-      psi_stem      = "0x1.960cce048d520p+2",
-      opt_root_psi  = "0x1.960cce048d520p+2",
+      psi_stem      = "0x1.10141205bc01ap+4",
+      opt_root_psi  = "0x1.10141205bc01ap+4",
       ci            = "0x1.ec6f9e7580bddp+2",
-      assim         = "0x0.0p+0",
-      transpiration = "0x0.0p+0",
-      gc            = "0x0.0p+0",
-      profit        = "-0x1.ce1e653284966p+2",
-      e_up          = "-0x1.ed7785729b281p-68",
-      uptake        = "-0x1.ac00000000000p-62"
+      assim         = "0x0p+0",
+      transpiration = "0x0p+0",
+      gc            = "0x0p+0",
+      profit        = "-0x1.ep+2",
+      e_up          = "0x0p+0",
+      uptake        = "0x0p+0"
     )
   )
 )
@@ -213,30 +220,30 @@ golden_rows_40 <- list(
     inputs = list(psi_soil = 2.0, ppfd = 900, vpd = 2.0, layers = 1L,
                   leaf_temp = 40.0),
     expected = list(
-      psi_stem      = "0x1.3c43d2872de19p+1",
-      opt_root_psi  = "0x1.27d38b4c66e1ap+1",
-      ci            = "0x1.a8bad8ee8dd68p+4",
-      assim         = "0x1.b63a54317dbbcp-1",
-      transpiration = "0x1.00e0c211c7b37p-18",
-      gc            = "0x1.a65564b1f530fp-8",
-      profit        = "-0x1.c63090c3dfeap-4",
-      e_up          = "0x1.00e0c211c7b33p-18",
-      uptake        = "0x1.bd98ec093e225p-13"
+      psi_stem      = "0x1.3c43d2872d74ep+1",
+      opt_root_psi  = "0x1.27d38b4c6d6a5p+1",
+      ci            = "0x1.a8bad8ee963e6p+4",
+      assim         = "0x1.b63a5431b6154p-1",
+      transpiration = "0x1.00e0c211f2c13p-18",
+      gc            = "0x1.a65564b23bf9dp-8",
+      profit        = "-0x1.c63090c20abf8p-4",
+      e_up          = "0x1.00e0c211f2c2ap-18",
+      uptake        = "0x1.bd98ec0988d45p-13"
     )
   ),
   list(
     inputs = list(psi_soil = 0.5, ppfd = 1500, vpd = 0.5, layers = 3L,
                   leaf_temp = 40.0),
     expected = list(
-      psi_stem      = "0x1.ca0d19aa9ede7p+0",
-      opt_root_psi  = "0x1.8cdab5aee503ap+0",
-      ci            = "0x1.1428b2292bba5p+5",
-      assim         = "0x1.3ba438c16b9adp+1",
-      transpiration = "0x1.c63fbdbadacd8p-18",
-      gc            = "0x1.756a74122c438p-5",
-      profit        = "0x1.1563763924fc0p+1",
-      e_up          = "0x1.c63fbdbadacd4p-18",
-      uptake        = "0x1.89fc2b6a5c4a7p-12"
+      psi_stem      = "0x1.ca0d19a92a8a3p+0",
+      opt_root_psi  = "0x1.8cdab5adcbb34p+0",
+      ci            = "0x1.1428b22905327p+5",
+      assim         = "0x1.3ba438c0f6b7dp+1",
+      transpiration = "0x1.c63fbdb8a35c3p-18",
+      gc            = "0x1.756a741059ccp-5",
+      profit        = "0x1.1563763925828p+1",
+      e_up          = "0x1.c63fbdb8a35cdp-18",
+      uptake        = "0x1.89fc2b687021dp-12"
     )
   )
 )

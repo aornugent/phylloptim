@@ -62,13 +62,12 @@ checking one against the other. Forcing \code{"ift"} at a pinned optimum returns
 a confidently wrong number -- that is the whole reason \code{"auto"} exists --
 and \code{status} still reports the truth about the point.}
 
-\item{fast_stem_curve}{perturb \code{stem_b} without rebuilding the stem
-vulnerability spline (\code{TRUE}, the default). The curve is homogeneous of
-degree 1 in \code{stem_b}, so the spline for a perturbed \code{stem_b} is the existing
-one with its argument rescaled — which makes the rebuild, otherwise most of
-the cost of that gradient, unnecessary. \code{FALSE} rebuilds, and exists so the
-equivalence is checkable rather than assumed; the package's tests require
-the two routes to agree. \code{stem_c} has no such identity and always rebuilds.}
+\item{fast_stem_curve}{perturb \code{stem_P50} through \code{perturb_stem_P50()}, which
+moves \code{stem_b} and leaves the seated physiology alone (\code{TRUE}, the
+default), rather than through \code{set_traits()}. Neither route rebuilds the
+stem's vulnerability table, which depends on \code{stem_c} alone; \code{FALSE} exists
+so the equivalence is checkable rather than assumed, and the package's tests
+require the two routes to agree.}
 
 \item{model}{which optimality model to differentiate, as in
 \code{\link[=leaf_gradient]{leaf_gradient()}}: \code{"collar"} by default, or any \code{\link[=cost_curve_names]{cost_curve_names()}} entry.}

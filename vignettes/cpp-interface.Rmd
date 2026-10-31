@@ -41,8 +41,8 @@ handed a header they cannot compile.
 
 ## Building
 
-Two dependencies, both header-only: Boost (a root finder) and `odelia` (the
-spline interpolator and vendored XAD). `odelia` is distributed as an R package
+Two dependencies, both header-only: Boost (root finders and the incomplete
+gamma function) and `odelia` (the supplied-derivative nodes and vendored XAD). `odelia` is distributed as an R package
 but the headers used here are plain C++, so a git checkout is enough.
 
 ```sh
@@ -191,8 +191,8 @@ The ingredients are public, if you want to compose something else:
 
 | piece | what it is |
 |---|---|
-| `set_traits(...)` | replace all sixteen traits, refreshing splines and the temperature cache |
-| `perturb_stem_P50(P50)` | move the stem curve by rescaling it instead of rebuilding it |
+| `set_traits(...)` | replace all sixteen traits, refreshing the vulnerability tables and the temperature cache |
+| `perturb_stem_P50(P50)` | move `stem_P50` (and `stem_b`, `psi_crit`) without clearing the solved physiology |
 | `dprofit_droot_collar_psi(psi, &feasible)` | dprofit/dψ at a given collar potential |
 | `dprofit_droot_collar_psi_checked(psi)` | the same as `{dprofit, feasible}`, for R, because RcppR6 has no form for a `bool*` and the generated binding drops the flag |
 | `evaluate_root_collar_psi(psi)` | solve the inner problem at a fixed collar |
@@ -253,15 +253,15 @@ a call costs more than the C++ work it wraps.
 Of the cost per parameter, **only a small fraction is C++**. So a C++ consumer
 composing the theorem directly avoids the boundary that makes the R version slow,
 and is where the IFT's advantage first becomes visible at all: `bench_gradient`
-measures it at about 3.5× on the traits that rebuild no spline.
+measures it at about 3.5× on the traits that rebuild no vulnerability table.
 
 That is also what an R caller gets from `leaf_gradient_batch()`: the composition
 runs once, in C++, over every observation, so the boundary is crossed once per call
 rather than 112 times per observation, and none of the saving is a faster gradient.
 
 **Constructing a `Leaf` from R is the largest single cost in the R layer**, and
-most of it is R-side object construction rather than the vulnerability splines.
-From C++ that cost is the splines alone. Reuse the object either way. The measured
+most of it is R-side object construction rather than the vulnerability tables.
+From C++ that cost is the tables alone. Reuse the object either way. The measured
 figures for all of these are in the README's
 [Performance from R](https://github.com/traitecoevo/phylloptim#performance-from-r),
 the one place they are kept current.

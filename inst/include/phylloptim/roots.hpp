@@ -324,14 +324,13 @@ layer_thicknesses(const std::vector<double>& soil_depth) {
 // horizontal resistance is evaluated using the *average* fractional
 // conductivity over the potential interval spanned between the soil and the
 // collar (T_src_min..T_src_max). This mean is obtained as
-// (1/(b-a)) * integral_a^b f_r dpsi from a pre-integrated curve
-// (root_vuln_integral_from_psi) with two spline evals, the same technique used
-// for stem transpiration in Leaf::setup_transpiration.
+// (1/(b-a)) * integral_a^b f_r dpsi from the cumulative integral G at its two
+// ends, read from the same kind of table the stem uses (VulnerabilityTable).
 //
 // SIGN CONVENTION: every water potential here is a POSITIVE MAGNITUDE in MPa,
 // as everywhere else in this package (#25). psi_soil_ arrives that way and stays
 // that way -- there is no second representation and no flip. The vulnerability
-// splines are indexed by magnitude, so they are read directly. Where an equation
+// curve is indexed by magnitude, so it is read directly. Where an equation
 // needs one potential to oppose another the minus sign is written in the
 // equation: the collar draws water when its magnitude exceeds the soil's, so the
 // flux numerator is (T_collar - T_soil - gravity_head).
@@ -400,17 +399,11 @@ public:
   // arguments to root_network_from_carbon and members of whoever owns that
   // model. In plant that is TF24_Strategy.
 
-  // pre-computed root vulnerability curve f_r(m) = exp(-(m/root_b)^root_c)
-  odelia::interpolator::hermite_spline<double> root_vuln_from_psi;
-  // cumulative integral of it, G(m) = int_0^m f_r(s) ds, indexed by magnitude
-  // m = -psi. Lets uptake() obtain the mean conductivity over a potential
-  // interval from 2 evals instead of (n+1).
-  odelia::interpolator::hermite_spline<double> root_vuln_integral_from_psi;
-  // What the two splines do past their last knot, cached by setup_vulnerability.
-  // Both are read through the accessors below, never as bare .eval() calls --
-  // see the accessors for why. util::na_value until a curve is built.
-  double root_vuln_last_knot_ = util::na_value;
-  double root_vuln_integral_limit_ = util::na_value;
+  // The root's cumulative vulnerability integral G, as a table at root_c (see
+  // VulnerabilityTable). Shared with the stem's wherever the two c agree. The
+  // conductivity f_r itself has no table: it is exp(-(psi/root_b)^root_c).
+  std::shared_ptr<const VulnerabilityTable> vulnerability_;
+  InverseScale inv_b_;
 
   // --- soil geometry -------------------------------------------------------
   // The four scalars carry the same unset sentinels clear() assigns, so a bare
@@ -439,12 +432,12 @@ public:
 
   // --- soil state ----------------------------------------------------------
   std::vector<double> psi_soil_;           // positive magnitudes, as supplied
-  // Per-layer cache of root_vuln_integral_from_psi.eval(psi_soil_[i]).
+  // Per-layer cache of root_vuln_integral_at(psi_soil_[i]).
   // psi_soil_ is fixed for the whole collar solve, so the soil-side
   // endpoint of the cumulative-integral lookup in uptake() is constant across
   // every (re)evaluation of the nested root-finders. Precomputing it once per
   // solve (alongside the T_collar-side eval, hoisted out of the layer loop)
-  // collapses ~2 spline evals per layer to ~1 per call. Rebuilt in begin_solve.
+  // collapses ~2 table reads per layer to ~1 per call. Rebuilt in begin_solve.
   std::vector<double> root_vuln_integral_soil_;
 
   // --- root resistance network --------------------------------------------
@@ -471,119 +464,47 @@ public:
     max_soil_layer = util::na_value_int;
   }
 
-  // Pre-compute the root vulnerability curve and its cumulative integral over
-  // [0, psi_max_root], the range where conductivity drops to 1%. Avoids repeated
-  // exp(pow(...)) inside uptake().
+  // Seat the root's table at root_c, or share `reuse` (the stem's) when it is
+  // already that table.
   //
-  // A LAYER DRIER THAN THE GRID IS AN ORDINARY STATE, NOT AN ERROR: the grid
-  // stops where conductivity has fallen to 1% (~6.8 MPa at the root defaults),
-  // while the soil potential a caller may pass is bounded only by its own ceiling
-  // -- 1000 MPa in plant. So each curve needs a stated answer out there, and the
-  // two answers differ because the two limits do. Both are applied by the
-  // accessors below, which are the only way the rest of this class reads a curve.
-  // Issue #1 measured what taking odelia's extrapolant unexamined cost instead: a
-  // conductivity that turns negative past 7.3742 MPa, and an integral 4.35x its
-  // own limit at 1000 MPa.
-  void setup_vulnerability(double resolution) {
-    std::vector<double> x_psi_root, y_integral;
-    cumulative_vulnerability_integral(root_b, root_c, resolution, x_psi_root,
-                                      y_integral);
-
-    // f_r conductivity knots on the same grid. f_r(0) = exp(-pow(0,root_c)) = 1.
-    std::vector<double> y_f_r(x_psi_root.size());
-    for (size_t i = 0; i < x_psi_root.size(); ++i) {
-      y_f_r[i] = exp(-pow(x_psi_root[i] / root_b, root_c));
-    }
-    // Conductivity: NO extrapolation, matching the stem pair in
-    // Leaf::setup_transpiration. Its limit is zero, which is unusable as the
-    // divisor it becomes, so root_vuln_at clamps the argument to the last knot
-    // instead and this setting is what stops any other reading being possible.
-    // df_r/dpsi in closed form, so the interpolant is handed both halves rather
-    // than choosing slopes from the values -- see Leaf::setup_transpiration for
-    // what a shape-preserving rule costs a reader of the slope. f_r'(0) = 0 for
-    // root_c > 1, which the expression gives exactly at psi = 0.
-    std::vector<double> y_f_r_slope(x_psi_root.size());
-    for (size_t i = 0; i < x_psi_root.size(); ++i) {
-      const double u = x_psi_root[i] / root_b;
-      y_f_r_slope[i] = -y_f_r[i] * (root_c / root_b) * std::pow(u, root_c - 1.0);
-    }
-    root_vuln_from_psi.init(x_psi_root, y_f_r, y_f_r_slope);
-
-    // ⚠️ NEITHER SPLINE REFUSES AN OUT-OF-DOMAIN READ. A hermite interpolator
-    // extends linearly from the end knot in eval, value_at and slope alike, and
-    // there is no switch to turn that off -- DO NOT reach for one, and do not
-    // read a bound into the init call above. What bounds each curve is its
-    // accessor below: root_vuln_at clamps the argument, root_vuln_integral_at
-    // caps the value, and those are the only way the rest of this class reads a
-    // curve.
-    //
-    // Integral: the extension is wanted, under a ceiling. Its limit is finite and
-    // non-zero, and the end-knot polynomial tracks the true G closely over the
-    // half-MPa it takes to reach that limit (3.46212 against 3.46176 at 7 MPa), so
-    // capping the VALUE is both smooth and tighter than clamping the argument
-    // would be. root_vuln_integral_at applies the cap.
-    // dG_root/dpsi IS f_r by the fundamental theorem, and y_f_r is already built
-    // above -- so this pair costs nothing beyond passing it.
-    root_vuln_integral_from_psi.init(x_psi_root, y_integral, y_f_r);
-
-    // Read off the spline rather than recomputed. cumulative_vulnerability_integral
-    // sets its final knot to vulnerability_psi_max EXACTLY -- the `i == n` branch
-    // is there so the two cannot disagree by a rounding -- so this is that number
-    // (6.8918 MPa at the root defaults). Taking it from the curve keeps it one
-    // number rather than two spellings of one.
-    root_vuln_last_knot_ = root_vuln_from_psi.max();
-    root_vuln_integral_limit_ =
-        cumulative_vulnerability_integral_limit(root_b, root_c);
+  // A LAYER DRIER THAN THE CURVE IS AN ORDINARY STATE, NOT AN ERROR: the soil
+  // potential a caller may pass is bounded only by its own ceiling, so both
+  // reads below answer at every potential. Past the end of the curve G is
+  // G(inf) and f_r is exp(-x), however small (#85).
+  void setup_vulnerability(
+      double resolution,
+      const std::shared_ptr<const VulnerabilityTable>& reuse = nullptr) {
+    vulnerability_ = vulnerability_table(root_c, resolution, reuse);
   }
 
-  // f_r at a suction, clamped into the knot domain. This clamp is the whole of
-  // the bound: past the last knot the spline extends linearly and runs negative,
-  // and the last knot's ~1% is the driest conductivity this curve describes.
-  //
-  // Operand order is load-bearing: written this way both clamps return psi when
-  // psi is NaN, where the reversed forms return the bound. The uptake call site's
-  // !isfinite(f_ri) guard is what reads that NaN.
+  // f_r at a suction: the surviving root conductivity, exp(-(psi/root_b)^c). It
+  // underflows to exactly zero far past the curve (above ~46 MPa at the
+  // defaults), and the one reader that divides by it, uptake_impl's
+  // equal-potentials branch, takes a layer with none left as drawing nothing.
   double root_vuln_at(double psi) const {
-    const double held = std::max(std::min(psi, root_vuln_last_knot_), 0.0);
-    if (held != psi) clamps.note(CLAMP_ROOT_VULN_ARGUMENT);
-    return root_vuln_from_psi.eval(held);
+    if (psi <= 0.0) {
+      return 1.0;  // the curve starts at full conductivity; NaN falls through
+    }
+    return exp(-pow(psi / root_b, root_c));
   }
 
-  // G at a suction, with the closed-form limit G(inf) = (b/c)*Gamma(1/c) as a
-  // ceiling. The spline sits below that ceiling at every knot (99.83% of it at
-  // the last), so this is continuous, monotone, and identical to a bare eval
-  // everywhere on the grid: it binds only past 7.3132 MPa, where the end-knot
-  // polynomial would otherwise carry on accumulating for ever.
-  //
-  // WHY IT MATTERS: the general branch of uptake_impl forms the layer's mean
-  // resistance as r_R_H = r_R_H_min * span / integral. Unbounded, the integral
-  // makes r_R_H FALL as the layer dries, so the drier a near-embolised layer, the
-  // harder the plant supposedly pumps water into it -- and because whole-plant
-  // shutdown keys off the wettest layer, nothing stops it. Capped, the reverse
-  // flux tends to integral/r_R_H_min <= G(inf)/r_R_H_min as the span grows, which
-  // is the whole area under the conductivity curve and is the right limit.
+  // G(inf) = root_b Gamma(1/c) / c: the whole area under the conductivity curve.
+  double root_vuln_integral_limit() const {
+    return root_b * vulnerability_->G_inf_over_b();
+  }
+
+  // G at a suction. It approaches G(inf) as the layer dries, and the general
+  // branch of uptake_impl forms the layer's mean resistance from it as
+  // r_R_H = r_R_H_min * span / integral, so the reverse flux into a drying layer
+  // tends to integral / r_R_H_min <= G(inf) / r_R_H_min as the span grows: the
+  // whole area under the conductivity curve, which is the right limit.
   double root_vuln_integral_at(double psi) const {
-    const double raw = root_vuln_integral_from_psi.eval(psi);
-    if (raw > root_vuln_integral_limit_) {
-      clamps.note(CLAMP_ROOT_VULN_INTEGRAL_CAP);
-      return root_vuln_integral_limit_;
-    }
-    return raw;
+    return vulnerability_integral(*vulnerability_, psi, root_b, inv_b_.of(root_b));
   }
 
-  // dG/dpsi, consistent with root_vuln_integral_at: zero wherever that returns
-  // the cap, because there the value no longer depends on psi. Costs a second
-  // spline eval, which is affordable here and would not be on the uptake hot path
-  // -- duptake_dpsi runs once per gradient, not ~10^3 times per solve.
+  // dG/dpsi = f_r, in closed form.
   double root_vuln_integral_deriv_at(double psi) const {
-    // One span lookup for the pair: the same two numbers eval() and slope()
-    // return separately.
-    double value, slope;
-    root_vuln_integral_from_psi.value_and_slope(psi, value, slope);
-    if (value >= root_vuln_integral_limit_) {
-      return 0.0;
-    }
-    return slope;
+    return vulnerability_integral_deriv(*vulnerability_, psi, inv_b_.of(root_b));
   }
 
   // Per-timestep soil state: the layer potentials, the layer depths, and the
@@ -805,9 +726,8 @@ private:
   // (hydraulic redistribution).
   //
   // Implementation decisions:
-  //   * f_r and its running integral are read from pre-computed splines
-  //     (root_vuln_from_psi, root_vuln_integral_from_psi) instead of repeatedly
-  //     evaluating exp(-(psi/b)^c); see setup_vulnerability.
+  //   * the running integral of f_r is read from the root's table rather than
+  //     integrated; see setup_vulnerability.
   //   * Two special cases are handled exactly to avoid division/round-off
   //     issues: (a) collar potential equals layer potential, and (b) the
   //     gradient exactly balances gravity (E_i = 0).
@@ -825,8 +745,8 @@ public:
   // collar dries without bound. A layer's flux (T - psi_i - z_i) /
   // (r_H span / I + r_V) tends to I_inf / r_H as the span grows, where
   // I_inf = G(inf) - G(psi_i) is the area left under the conductivity curve
-  // past the layer's potential. A layer with none left (its whole span past the
-  // root integral's cap, #85) contributes nothing, and one with no horizontal
+  // past the layer's potential. A layer with none left (past the end of the
+  // curve, where G is G(inf) to rounding) contributes nothing, and one with no horizontal
   // resistance makes the limit infinite. The leaf caps the residual flux below
   // this on the collar route (#182, #184), so a soil the roots can barely draw
   // from is never asked for more than it can give. Rows on the tape: each G
@@ -837,7 +757,7 @@ public:
     using odelia::util::to_passive;
     T G_lim;
     if constexpr (std::is_same_v<T, double>) {
-      G_lim = root_vuln_integral_limit_;
+      G_lim = root_vuln_integral_limit();
     } else {
       const double P50_0 = to_passive(at.root_P50);
       const double c_0 = to_passive(at.root_c);
@@ -845,7 +765,7 @@ public:
       const VulnerabilityIntegralDerivatives d =
           cumulative_vulnerability_integral_limit_derivatives(b, c_0);
       const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
-      G_lim = T(root_vuln_integral_limit_) +
+      G_lim = T(root_vuln_integral_limit()) +
               T(rows.dP50) * (at.root_P50 - T(P50_0)) +
               T(rows.dc) * (at.root_c - T(c_0));
     }
@@ -859,8 +779,7 @@ public:
       } else {
         G_i = closed_form_integral<T>(root_vuln_integral_at(q),
                                       root_vuln_integral_deriv_at(q), psi_i,
-                                      at.root_P50, at.root_c,
-                                      PastLastKnot::HoldsLastKnot);
+                                      at.root_P50, at.root_c);
       }
       if (!(to_passive(G_lim) - to_passive(G_i) > 0.0)) {
         continue;
@@ -877,11 +796,11 @@ public:
   // The wet bound's floor: each layer's draw changes sign at its own gravity
   // balance, psi_i + z_i, so at the lowest balance among the layers that still
   // conduct every layer draws nothing or less, and the wet bound lies at or
-  // above it. Where no layer conducts (every rooted potential past the root
-  // integral's cap, #85) the uptake is zero at every collar, the wet bound has
+  // above it. Where no layer conducts (every rooted potential past the end of
+  // the curve) the uptake is zero at every collar, the wet bound has
   // nothing to place it, and it is the balance of the wettest layer: the last
   // to stop conducting, so the limit the bound reaches from the wet side. That
-  // is what makes a shut leaf continuous through the cap (#184). Returns the
+  // is what makes a shut leaf continuous past the end of the curve (#184). Returns the
   // layer whose balance it is; `conducts` says which case.
   int wet_floor_layer(const std::vector<double>& psi_soil, bool& conducts) const {
     int lowest = -1, wettest = -1;
@@ -890,7 +809,7 @@ public:
       if (wettest < 0 || s < psi_soil[static_cast<std::size_t>(wettest)]) {
         wettest = i;
       }
-      if (!(root_vuln_integral_limit_ - root_vuln_integral_at(s) > 0.0)) {
+      if (!(root_vuln_integral_limit() - root_vuln_integral_at(s) > 0.0)) {
         continue;
       }
       const double b = s + grav_head_z_[static_cast<std::size_t>(i)];
@@ -912,7 +831,7 @@ public:
     double highest = -std::numeric_limits<double>::infinity();
     for (int i = 0; i < max_soil_layer; ++i) {
       const double s = psi_soil[static_cast<std::size_t>(i)];
-      if (!(root_vuln_integral_limit_ - root_vuln_integral_at(s) > 0.0)) {
+      if (!(root_vuln_integral_limit() - root_vuln_integral_at(s) > 0.0)) {
         continue;
       }
       highest = std::max(highest, s + grav_head_z_[static_cast<std::size_t>(i)]);
@@ -993,8 +912,7 @@ public:
     auto curve = [&](const T& x) -> T {
       const double q = to_passive(x);
       if constexpr (std::is_same_v<T, double>) { return root_vuln_at(q); }
-      else { return closed_form_curve<T>(root_vuln_at(q), x, at.root_P50, at.root_c,
-                                         PastLastKnot::HoldsLastKnot); }
+      else { return closed_form_curve<T>(root_vuln_at(q), x, at.root_P50, at.root_c); }
     };
 
     const double G_at_T_collar =
@@ -1038,15 +956,22 @@ public:
 
       if (std::abs(collar_at - soil_at) < kink_tol) {
         const T f_ri = curve(T_src_max);
-        if (!std::isfinite(to_passive(f_ri)) || to_passive(f_ri) <= 0.0) {
+        if (!std::isfinite(to_passive(f_ri)) || to_passive(f_ri) < 0.0) {
           util::stop_infeasible("uptake",
               "E_from_Soil_to_Root_Collar invalid f_ri; layer=" +
               std::to_string(i) + "; f_ri=" +
               util::to_string(to_passive(f_ri)));
         }
-        const T r_R = rH_p[i] / f_ri +
-                      rV_p[i];
-        const T E_i = T(-zg_p[i]) / r_R;
+        // -z / (r_H / f + r_V), multiplied through by f so that a fully
+        // embolised layer (f_r underflows to zero far past the curve) draws
+        // exactly nothing rather than dividing by zero (#85). A layer with no
+        // horizontal resistance is r_V alone at any f.
+        T E_i;
+        if (to_passive(rH_p[i]) > 0.0) {
+          E_i = T(-zg_p[i]) * f_ri / (rH_p[i] + rV_p[i] * f_ri);
+        } else {
+          E_i = T(-zg_p[i]) / rV_p[i];
+        }
         out_p[i] = E_i;
         E_up += E_i;
       } else if (std::is_same_v<T, double> &&
@@ -1070,8 +995,7 @@ public:
           } else {
             return closed_form_integral<T>(root_vuln_integral_at(q),
                                      root_vuln_integral_deriv_at(q), arg,
-                                     at.root_P50, at.root_c,
-                                     PastLastKnot::HoldsLastKnot);
+                                     at.root_P50, at.root_c);
           }
         };
 
@@ -1083,9 +1007,8 @@ public:
           integral += (T_neg_hi - T_src_min);
         }
 
-        // A layer whose whole span lies past the root integral's cap (#85: the
-        // table holds G(inf) beyond its last knot) has no conductance left and
-        // draws nothing. At double that fell out of the arithmetic as
+        // A layer whose whole span lies past the end of the curve (where G is
+        // G(inf) to rounding) has no conductance left and draws nothing. At double that fell out of the arithmetic as
         // num / inf; on the tape it was inf * 0, so the layer is skipped
         // explicitly, with no flux and no rows. A shut leaf's collar can sit
         // there now that it is no longer held at a critical potential (#182).
@@ -1110,21 +1033,15 @@ public:
           //   dnum/dT   = 1,
           // and only r_R_H depends on the collar.
           const double sign_var = (collar_at > soil_at) ? 1.0 : -1.0;
-          // ⚠️ THE MOVING BOUND'S INTEGRAND IS THE INTEGRAL'S OWN DERIVATIVE,
-          // not the separate conductivity spline. The two agree on the knot
-          // domain and are bounded differently past it -- the lookup clamps to
-          // the last knot, the integral is capped at G(inf) -- so only this one
-          // stays consistent with the `integral` above. closed_form_curve
-          // supplies the ROWS; the VALUE stays the derivative table's, which is
-          // what keeps that distinction.
+          // The moving bound's integrand is the integral's own derivative,
+          // f_r(T_collar), in closed form; closed_form_curve supplies its rows.
           T fr_at = T(1.0);
           if (collar_at > 0.0) {
             const double table = root_vuln_integral_deriv_at(collar_at);
             if constexpr (std::is_same_v<T, double>) {
               fr_at = table;
             } else {
-              fr_at = closed_form_curve<T>(table, T_collar, at.root_P50, at.root_c,
-                                           PastLastKnot::HoldsLastKnot);
+              fr_at = closed_form_curve<T>(table, T_collar, at.root_P50, at.root_c);
             }
           }
           const T dinteg_dT = T(sign_var) * fr_at;

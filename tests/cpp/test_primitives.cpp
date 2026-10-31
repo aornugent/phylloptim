@@ -86,10 +86,10 @@ const char *kGoldenPath = "golden/primitives.tsv";
 // The tiers, in call-tree order. Named here rather than at each emit site so the
 // per-tier reporting and the file's own column agree by construction.
 enum Tier {
-  kArithmetic = 1,  // no state, no splines, no iteration: libm and FMA only
+  kArithmetic = 1,  // no state, no tables, no iteration: libm and FMA only
   kVulnerability,   // the Weibull curve and its pre-integrated grid
   kAssimilation,    // rational arithmetic, then a quadratic root
-  kSpline,          // the first functions that READ an interpolator
+  kSpline,          // the first functions that READ a vulnerability table
   kIterative,       // primitives containing their own root-find
   kTierCount
 };
@@ -183,7 +183,7 @@ std::vector<Row> run_grid() {
 
   // --- tier 2: the vulnerability curve and its grid --------------------------
   //
-  // Calls exp/pow; no spline read and no solve. The (b, c) sweep is #92's
+  // Calls exp/pow; no table read and no solve. The (b, c) sweep is #92's
   // instrument: the knot grid's realised endpoint is a function of the pair, and
   // pinning `psi_max` beside the integral is what would have caught a domain that
   // fell one step short of the one it claimed.
@@ -193,26 +193,28 @@ std::vector<Row> run_grid() {
   }
   for (double b : {2.5, 3.898245, 5.0}) {
     for (double c : {1.5, 2.680147, 4.0}) {
-      row(kVulnerability, "vulnerability_psi_max", b, c,
-          phylloptim::vulnerability_psi_max(b, c));
+      row(kVulnerability, "vulnerability_psi_end", b, c,
+          phylloptim::vulnerability_psi_end(b, c));
       row(kVulnerability, "cumulative_vulnerability_integral_limit", b, c,
           phylloptim::cumulative_vulnerability_integral_limit(b, c));
-      // The integral itself, at fractions of the curve's own domain so the sweep
-      // stays inside it for every pair rather than for the default pair only.
-      const double psi_max = phylloptim::vulnerability_psi_max(b, c);
+      // The integral itself, at fractions of the old P99 point so the sweep
+      // samples the working range of every pair rather than the default only.
+      const double psi_max = b * std::pow(std::log(100.0), 1.0 / c);
       for (int k = 1; k <= 4; ++k) {
         const double psi = psi_max * double(k) / 5.0;
         row(kVulnerability, "cumulative_vulnerability_integral_at", psi,
             b, phylloptim::cumulative_vulnerability_integral_at(psi, b, c));
       }
-      // And the realised knot grid: its LAST knot, which is the value #92 found
-      // was not the endpoint the model claimed. Pinned as a number rather than as
-      // an equality so that a regression says by how much.
-      std::vector<double> x, y;
-      phylloptim::cumulative_vulnerability_integral(b, c, 100, x, y);
-      row(kVulnerability, "knot_grid_last_psi", b, c, x.back());
-      row(kVulnerability, "knot_grid_last_value", b, c, y.back());
-      row(kVulnerability, "knot_grid_size", b, c, double(x.size()));
+      // And the table: its last knot, which is the end of the curve and holds
+      // G(inf)/b, and the table's G at the same fractions as the closed form.
+      const auto t = phylloptim::vulnerability_table(c, 100, nullptr);
+      row(kVulnerability, "table_last_u", b, c, t->u_at(t->intervals()));
+      row(kVulnerability, "table_last_g", b, c, t->g_at(t->intervals()));
+      for (int k = 1; k <= 4; ++k) {
+        const double psi = psi_max * double(k) / 5.0;
+        row(kVulnerability, "vulnerability_integral", psi, b,
+            phylloptim::vulnerability_integral(*t, psi, b));
+      }
     }
   }
 
@@ -225,13 +227,12 @@ std::vector<Row> run_grid() {
     row(kAssimilation, "assim_colimited", ci, 0.0, l.assim_colimited(ci));
   }
 
-  // --- tier 4: the first functions that read a spline ------------------------
+  // --- tier 4: the first functions that read a table -------------------------
   //
-  // This is where the interesting money is: the spline is built by odelia, and
-  // odelia's interpolator is the one dependency shared by header rather than by
-  // copy. `stem_curve_integral` is included alongside `transpiration` because it
-  // is the raw spline read and `transpiration` is that scaled -- so a tier-4
-  // failure that appears in one and not the other separates the interpolator from
+  // (The tier is still labelled "spline" in the golden file, after what it read
+  // before #183.) `stem_curve_integral` is included alongside `transpiration`
+  // because it is the raw table read and `transpiration` is that scaled -- so a
+  // tier-4 failure that appears in one and not the other separates the table from
   // the conductance scaling.
   for (double psi_stem = 0.25; psi_stem <= 5.5 + 1e-12; psi_stem += 0.25) {
     row(kSpline, "stem_curve_integral", psi_stem, 0.0,
@@ -253,10 +254,10 @@ std::vector<Row> run_grid() {
     row(kIterative, "psi_stem_to_ci", psi_stem, 0.0,
         l.psi_stem_to_ci(psi_stem, 0.0));
   }
-  // The inverse spline's domain ends at the transpiration reached at psi_crit, and
-  // asking past it throws rather than extrapolating. Derived from the model rather
-  // than hard-coded, so a trait change cannot silently push this out of range.
-  const double e_max = l.transpiration(l.supply_psi_crit(), 0.0);
+  // Fluxes up to the transpiration reached at psi_crit, derived from the model
+  // rather than hard-coded, so a trait change cannot push the sweep somewhere
+  // else.
+  const double e_max = l.transpiration(l.psi_crit, 0.0);
   for (int i = 1; i < 20; ++i) {
     const double e = e_max * i / 20.0;
     row(kIterative, "transpiration_to_psi_stem", e, 0.0,

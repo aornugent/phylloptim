@@ -30,11 +30,11 @@ on \code{dJ/dpsi == 0} at a hardcoded tolerance; the \verb{(cell width) * 1e-4} 
 is its own golden-section fallback, not its normal path. Tightening this to
 sharpen a stem-route argmax does nothing.}
 
-\item{vulnerability_curve_ncontrol}{number of control points used to
-pre-integrate the two Weibull vulnerability curves into splines. Higher is
-more accurate and slower to construct; it does not affect solve speed.
-The default, 400, is read from the C++ \code{Leaf::ncontrol_default}, so the R
-and C++ defaults cannot differ.}
+\item{vulnerability_curve_ncontrol}{number of knot intervals in each Weibull
+vulnerability curve's table (a C2 quintic of its cumulative integral).
+Higher is more accurate and slower to construct; it does not affect solve
+speed. The default, 800, is read from the C++ \code{Leaf::ncontrol_default}, so
+the R and C++ defaults cannot differ.}
 
 \item{ci_abs_tol}{absolute tolerance for root-solving intercellular CO2}
 
@@ -47,7 +47,7 @@ bindings expose it.}
 
 \item{integration_tol}{absolute tolerance for the direct quadrature in
 \code{transpiration_full_integration()}. Not on the production path, which
-reads the pre-integrated spline instead.}
+reads the vulnerability table instead.}
 }
 \value{
 A \code{leaf_control} object; a named list.

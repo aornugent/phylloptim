@@ -130,10 +130,10 @@ the resulting \code{Leaf} and not settable anywhere. See \code{\link[=weibull_p5
 \section{psi_crit is not a free trait}{
 
 \code{psi_crit} is the stem curve's \strong{P95} and is derived from \code{stem_P50}/\code{stem_c},
-not set, and could not safely be: the curve is pre-integrated over \verb{[0, P99]},
-\code{psi_crit} does not enter that bound, and every solve evaluates the curve \emph{at}
-\code{psi_crit} -- so setting it to a plausible number off a measured vulnerability
-curve gives a domain error naming only the interpolator.
+not set: a free \code{psi_crit} would describe a curve it was not derived from. It
+is a labelled point on a curve that continues past it, and the dry end of the
+solve only for SOX, JW26, CF77 and LeastCost, whose own forms end there; for
+the other curves the stem may run past it (#183).
 
 At the defaults:
 
@@ -141,8 +141,8 @@ At the defaults:
 3.898245 * log(1/0.05)^(1/2.680147) = 5.870283 = psi_crit
 }\if{html}{\out{</div>}}
 
-to six decimal places, against \code{P99 = 6.891842}. Both move with the pair, so
-there is nothing left to set inconsistently. \code{vignette("fitting")} derives the
+to six decimal places. It moves with the pair, so there is nothing left to set
+inconsistently. \code{vignette("fitting")} derives the
 pair from a published P50/P88 pair, which is the right way round.
 }
 

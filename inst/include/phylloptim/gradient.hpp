@@ -442,54 +442,19 @@ struct Result {
 // `only` names the single parameter that has moved, or -1 for "all of them".
 inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
                   int only, bool fast_stem_curve) {
-  // THE FAST PATH FOR stem_b. The stem
-  // cumulative-vulnerability integral is homogeneous of degree 1 in stem_b, so
-  // the spline for a perturbed stem_b is the existing one with its argument
-  // rescaled and the 11.9 us of incomplete gammas a rebuild spends is
-  // unnecessary -- 24.5x on that parameter's gradient.
+  // THE FAST PATH FOR stem_P50. The stem table depends on stem_c alone, so a
+  // perturbed P50 needs nothing rebuilt and nothing re-seated: perturb_stem_P50
+  // moves the trait and its two derived potentials and leaves the physiology in
+  // place, where set_traits would clear it.
   //
   // ⚠️ Sound only because `only` names a SINGLE parameter, so everything else in
   // `theta` is still what the object was last set to. That is true here and
   // nowhere else, which is why the argument exists rather than the function
-  // guessing. `stem_c` is deliberately not here: it has no such identity, and
-  // reading the curve from its closed form instead differentiates a slightly
-  // different model and disagrees by 3e-4.
+  // guessing. The restore goes through set_traits below, which recomputes
+  // stem_b by the same expression and so returns it to the base bit pattern.
   if (fast_stem_curve && only == par_stem_P50) {
     l.perturb_stem_P50(theta[par_stem_P50]);
     return;
-  }
-  // AND THE WAY BACK OUT OF IT (#74), which is what makes the shortcut worth its
-  // 24.5x through a batch instead of 2.4x. `set_traits()` below rebuilds the stem
-  // curve whenever `stem_b != stem_b_spline_`, and that third clause is what
-  // returns a shortcut-displaced leaf to a rebuilt one -- so a restore that
-  // followed a `perturb_stem_P50()` always paid for a rebuild, once per observation,
-  // whatever `pars` contained. Undoing the displacement WITH the shortcut leaves
-  // the clause false and the splines alone.
-  //
-  // Bit-identical by construction rather than by measurement. Everything
-  // `perturb_stem_P50()` writes -- `stem_P50`, and `stem_b`/`psi_crit` derived
-  // from it -- is a pure function of `(stem_P50, stem_c)` computed by the same
-  // expression `set_traits()` uses, so restoring the base P50 restores all three
-  // to the base bit pattern. The splines here ARE the ones built at
-  // `stem_b_spline_`, not a rescaled copy, and at `stem_b == stem_b_spline_` all
-  // four `stem_curve_*` accessors take their scale == 1 branch and read them
-  // directly.
-  //
-  // ⚠️ The two guards are both load-bearing, and neither is an optimisation.
-  // Displacement can only be created by `perturb_stem_P50()`, which is sound only
-  // when everything else is already at base -- so a displaced leaf is one whose
-  // stem_c/root_* are the values `stem_b_spline_` was validated against. Without
-  // the equality test that argument is gone: in a batch with a theta MATRIX the
-  // next row's restore moves stem_b somewhere new, and pushing it through the
-  // shortcut would rescale off a spline built for a different curve.
-  //
-  // The equality is on the DERIVED scale, not on the trait, because
-  // `stem_b_spline_` records a `b`. Same expression as the one inside
-  // `perturb_stem_P50()`, so a genuine round trip compares exactly equal.
-  if (fast_stem_curve && l.stem_b != l.stem_b_spline_ &&
-      Leaf::weibull_b_from_P50(theta[par_stem_P50], l.stem_c) ==
-          l.stem_b_spline_) {
-    l.perturb_stem_P50(theta[par_stem_P50]);
   }
   l.set_traits(theta[par_vcmax_25], theta[par_stem_c], theta[par_stem_P50],
                theta[par_root_c], theta[par_root_P50],
@@ -555,19 +520,19 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
 //
 // The loops restore base once at the END, not between parameters, because every
 // parameter's setter normally goes through the full `set_traits()` +
-// `set_physiology()` path and restores everything on the way. The `stem_b`
-// shortcut is the one that does not: `perturb_stem_P50()` rescales the stem spline
-// and touches nothing else, which is sound only if the rest of the object is
-// already at base. So a `stem_b` that is not the FIRST entry of `pars` was
+// `set_physiology()` path and restores everything on the way. The `stem_P50`
+// shortcut is the one that does not: `perturb_stem_P50()` moves stem_b and
+// touches nothing else, which is sound only if the rest of the object is
+// already at base. So a `stem_P50` that is not the FIRST entry of `pars` was
 // differentiated at a point displaced by one step in whichever parameter
 // preceded it -- up to 3.4e-5 relative, four orders above the ~1e-9 this is
 // supposed to deliver, on both routes.
 //
-// Cheap in the case that matters: `set_traits()` decides the two spline rebuilds
-// by comparing the pairs it is given, so after a parameter that owns no
-// vulnerability curve nothing is rebuilt and this costs one trait write plus one
-// driver write. After `stem_c`/`root_b`/`root_c` it does rebuild, and those are
-// the parameters whose own gradients cost a rebuild per side anyway.
+// Cheap in the case that matters: `set_traits()` decides the two table rebuilds
+// by comparing the `c` it is given, so after a parameter that owns no
+// vulnerability table nothing is rebuilt and this costs one trait write plus one
+// driver write. After `stem_c`/`root_c` it does rebuild, and those are the
+// parameters whose own gradients cost a rebuild per side anyway.
 //
 // ⚠️ Written as "this parameter takes a shortcut", not as "this parameter is
 // stem_b". `root_b` obeys the same homogeneity identity and would get the same

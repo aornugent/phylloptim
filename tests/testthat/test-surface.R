@@ -375,7 +375,7 @@ test_that("operating_point_values() returns the sixteen fields, in that order", 
   # the flux outputs are zero -- the branch where "every path writes its own
   # outputs" (hazard 8) is load-bearing.
   for (drivers in list(list(psi_soil = 2.0, PPFD = 900),
-                       list(psi_soil = 6.0, PPFD = 100, atm_vpd = 4.0))) {
+                       list(psi_soil = 17.0, PPFD = 100, atm_vpd = 4.0))) {
     do.call(set_drivers, c(list(l), drivers))
     l$find_root_collar_psi()
     expect_identical(l$operating_point_values(),
@@ -469,7 +469,7 @@ test_that("leaf_solve()'s rows are assembled in the right order", {
   # The drivers deliberately vary in a way that makes each row distinguishable
   # and non-monotonic, and they cross into shut-down, which is where a
   # last-written-value bug would show up as a duplicated row.
-  drivers <- list(psi_soil = c(1.0, 6.0, 0.5, 3.0, 2.0),
+  drivers <- list(psi_soil = c(1.0, 17.0, 0.5, 3.0, 2.0),
                   PPFD = c(900, 100, 1500, 600, 1200),
                   atm_vpd = c(2.0, 4.0, 0.5, 3.0, 1.0))
   many <- do.call(leaf_solve, drivers)
@@ -525,7 +525,7 @@ test_that("reuse = TRUE and reuse = FALSE give identical answers", {
   # left an output holding the PREVIOUS solve's value. The drivers below cross
   # from a wet, productive point to a shut-down one and back, which is the
   # transition that exposed those bugs.
-  drivers <- list(psi_soil = c(0.5, 6.0, 1.0, 6.0, 0.5),
+  drivers <- list(psi_soil = c(0.5, 17.0, 1.0, 17.0, 0.5),
                   PPFD = c(1500, 100, 900, 1500, 100),
                   atm_vpd = c(0.5, 4.0, 2.0, 4.0, 0.5))
   shared <- do.call(leaf_solve, c(drivers, list(reuse = TRUE)))

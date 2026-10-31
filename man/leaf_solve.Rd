@@ -70,8 +70,8 @@ assimilation by percent, not by rounding.}
 value rather than a profile.}
 
 \item{reuse}{solve every row with one \code{Leaf} object (\code{TRUE}) or construct a
-fresh one per row (\code{FALSE}, the default). Reuse is faster because the two
-vulnerability splines are built once, and it is safe -- every exit from the
+fresh one per row (\code{FALSE}, the default). Reuse is faster because the
+vulnerability tables are built once, and it is safe -- every exit from the
 solve writes its own outputs. \code{FALSE} exists so that can be checked rather
 than assumed, and the package's tests do check it.}
 
@@ -167,10 +167,10 @@ itself, which means C++.
 
 \code{reuse = TRUE} is the default because constructing a \code{Leaf} from R costs
 about \strong{180x a trivial \code{.Call}} (~230 µs where this was measured), or 45
-solves, and only ~32 µs of that is the two vulnerability
-splines; the rest is R-side object construction. See \code{\link[=set_traits]{set_traits()}} for
-varying traits without reconstructing, and note it costs 21.8 µs rather than
-0.02 µs when the trait you change owns a vulnerability spline.
+solves, and only a small part of that is the vulnerability tables; the rest is
+R-side object construction. See \code{\link[=set_traits]{set_traits()}} for varying traits without
+reconstructing, and note it costs many solves rather than almost nothing when
+the trait you change is \code{stem_c} or \code{root_c}, which own a table.
 }
 
 \section{Recycling}{

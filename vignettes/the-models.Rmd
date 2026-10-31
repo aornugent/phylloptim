@@ -180,22 +180,22 @@ Where profit is still climbing as it reaches the end of the feasible interval, `
 
 A solver therefore has to test the derivative's sign at each end and say explicitly that the answer is a bound. Handed no sign change, a bracketing root-find cannot on its own distinguish "the answer is the endpoint" from "I failed", so the operating-point kind is what carries the distinction.
 
-The feasible interval runs from the wet bound, where the stomata are closed and the stem carries only the cuticle's residual flux (`ψ_soil` itself, with no flow, at the default `g_min = 0`), to `ψ_crit`, the most tension the stem is allowed. Constrained answers are named for the bound that binds:
+The feasible interval runs from the wet bound, where the stomata are closed and the stem carries only the cuticle's residual flux (`ψ_soil` itself, with no flow, at the default `g_min = 0`), to the dry end. For SOX, JW26, CF77 and LeastCost the dry end is `ψ_crit`, where their own published forms end. For every other curve `ψ_crit` is a labelled point on a curve that continues past it, and the dry end is the end of the stem curve, where it carries all it ever can: their marginal cost of water diverges as the stem dries, and that, rather than a bound, keeps the optimum inside. Constrained answers are named for the bound that binds:
 
 | kind | where | what it means |
 |---|---|---|
 | `interior` | strictly inside | `dJ/dψ = 0`, the stationary case |
 | `boundary-soil` | `ψ_stem` at the wet bound | no interior point earns its water, and the leaf declines to open; a leaf in the dark, or too hot to fix carbon, lands here too |
-| `boundary-crit` | `ψ_stem = ψ_crit` | still worth pulling harder, and the hydraulic limit is what stops it |
-| `hydraulic-shutdown` | no interval exists | the soil is drier than `ψ_crit`, so nothing is optimised and the leaf sits shut at its wet bound |
+| `boundary-dry` | `ψ_stem` at the dry end | still worth pulling harder: at `ψ_crit` for the four curves bounded there; for the rest, a dry soil where the leaf transpires all its stem can carry |
+| `hydraulic-shutdown` | no interval exists | the soil is drier than the dry end (or than the stem curve resolves), so nothing is optimised and the leaf sits shut at its wet bound |
 
 : The four kinds of operating point the reference grid reaches, and what each says about the leaf.
 
-The solve records ten kinds in all; the others are rarer or are refusals. `vignette("derivative-surface")` lists them with what each means for a derivative.
+The solve records eight kinds in all; the others are rarer or are refusals. `vignette("derivative-surface")` lists them with what each means for a derivative.
 
-`boundary-soil` is the stressed case, despite sitting at the wet end of the interval. That is why the two are named for the bound rather than for the moisture: `ψ_soil` is the least-tension end, so "wet" reads as the comfortable case, whereas in fact it describes what a leaf does when carbon cannot pay for water. The reference grid makes the direction plain: warming the leaf from 25 °C to 40 °C takes `boundary-soil` from 24 rows to 80, and `boundary-crit` from 18 rows to none.
+`boundary-soil` is the stressed case, despite sitting at the wet end of the interval. That is why the two are named for the bound rather than for the moisture: `ψ_soil` is the least-tension end, so "wet" reads as the comfortable case, whereas in fact it describes what a leaf does when carbon cannot pay for water. The reference grid makes the direction plain: warming the leaf from 25 °C to 40 °C takes `boundary-soil` from 45 rows to 116, and `boundary-dry` from 11 rows to none.
 
-`boundary-crit` is rarer than it looks, and for some models it is not reachable at all. Any product objective is immune to it by construction, because `g(ψ_crit) = 0` makes the cost diverge before the bound and water becomes infinitely expensive first.
+`boundary-dry` is rarer than it looks. Under TF24 it is reached only where the soil is dry and the air humid enough that the leaf takes all its stem can still carry, and any product objective is immune to it at `ψ_crit` by construction, because `g(ψ_crit) = 0` makes the cost diverge before the bound and water becomes infinitely expensive first.
 
 A bound that binds is also not the same as a bound that is hit exactly. The bracket steps in by around one part in a million of its width, so testing `ψ* == ψ_soil` to detect closure is a test that never fires. Compare against the bound with a tolerance instead, or read the sign of the gradient there.
 
@@ -301,7 +301,7 @@ $$\log\big(A\,g\big) = \log A + \log g \quad\Longrightarrow\quad C(\psi)=-\log g
 So a product objective is a difference objective with a transformed benefit. The link, `log` here and the identity everywhere else, is the only new machinery the family needs. Two consequences follow, and both are substantive rather than bookkeeping:
 
 - Its λ carries a factor of `A`, because the cost is levied on proportional rather than absolute carbon. The section on λ derives this in one line, and shows that it is a property of the product form rather than of this particular `g`.
-- **It can never be boundary-crit.** `g(psi_crit)` is exactly zero, so `C` diverges there. Water becomes infinitely expensive before the bound is reached, and no parameter of the model's own is involved in arranging that.
+- **It can never be pinned at `psi_crit` with `A > 0`.** `g(psi_crit)` is exactly zero, so `C` diverges there. Water becomes infinitely expensive before the bound is reached, and no parameter of the model's own is involved in arranging that.
 
 **The link states the cost; it is not how the optimum is found.** At full closure `A ≤ 0` (zero in light at `g_min = 0`, negative in the dark), so `log A` does not exist, and that endpoint has to be a candidate. The optimiser therefore maximises the product directly, which is exact because `log` is monotone, while the *derivative* uses the log form.
 
@@ -937,14 +937,14 @@ So specify `(P50, c)` at whatever precision you have, and let everything else be
 
 Two things follow, and both are easy to miss.
 
-- The domain check disappears, because it becomes vacuous. It enforced `psi_crit ≤ P99`, and a derived `psi_crit = P95` satisfies that for every `c > 0`, since `ln 20 < ln 100`. There is nothing left to validate.
-- A shut-down leaf's hydraulic cost stops depending on the curve's scale. It sits at `psi_crit`, where the remaining conductivity is exactly `f` whatever `P50` is. The cost is therefore the same number for every `P50`, and `dprofit/dP50` at a shut-down point is exactly zero rather than merely small.
+- The domain check disappears, because it becomes vacuous. A derived `psi_crit` describes the curve it was derived from, so there is no consistency left to validate.
+- For the four curves whose domain ends at `psi_crit` (SOX, JW26, CF77, LeastCost), a leaf pinned there has a hydraulic cost that does not depend on the curve's scale: the remaining conductivity is exactly `f` whatever `P50` is, so `dprofit/dP50` at that pin is exactly zero rather than merely small.
 
 ## Three consequences for gradients
 
 All three are asserted in the suite rather than described here, and the numbers below are what those assertions compare against.
 
-**1. `P50` has a homogeneity shortcut.** At fixed `c`, `b` is a constant multiple of `P50`, so the cumulative-vulnerability integral is homogeneous of degree 1 and `d/dP50 = (ln 2)^{-1/c} · d/db`, a factor of 1.1465 at the defaults. That is what lets `fast_stem_curve = TRUE` move `stem_P50` by rescaling the spline's argument instead of rebuilding it. `psi_crit` scales by the same factor, which is why moving the trait can never walk the solve off the end of its own curve.
+**1. `P50` has a homogeneity shortcut.** At fixed `c`, `b` is a constant multiple of `P50`, so the cumulative-vulnerability integral is homogeneous of degree 1 and `d/dP50 = (ln 2)^{-1/c} · d/db`, a factor of 1.1465 at the defaults. It is also why the stem's vulnerability table is built in `ψ/b` and depends on `c` alone: moving `stem_P50` rebuilds nothing. `psi_crit` scales by the same factor.
 
 **2. The `c` gradient splits.** Once `P50` is the scale parameter, `b` depends on `c` as well:
 
@@ -953,9 +953,9 @@ $$\frac{d}{dc}\bigg|_{P_{50}}=\frac{d}{dc}\bigg|_{b}+\frac{db}{dc}\frac{d}{db},
 
 The second term is nearly free, because it reuses the cheap `b`-derivative. But omitting it silently converts a total derivative into a partial, which produces a plausible wrong gradient rather than an error.
 
-**3. A derived `psi_crit` adds a term.** Moving `P50` moves the threshold, so `d/dP50` picks up `dpsi_crit/dP50 · d/dpsi_crit`, with `dpsi_crit/dP50 = (log₂(1/f))^{1/c}`. That is 1.7266 at the defaults, and a constant at fixed `c`. The term is exactly zero at an interior optimum and of order 1 at one sitting on a bound, so the clean identity in (1) holds *only* where the optimum is interior.
+**3. A derived dry end adds a term.** Moving `P50` moves the dry end, so `d/dP50` picks up a term through it: `dpsi_crit/dP50 = (log₂(1/f))^{1/c}` (1.7266 at the defaults) for the curves `ψ_crit` bounds, and `dpsi_end/dP50 = (40/ln 2)^{1/c}` (4.5409) for the rest, both constant at fixed `c`. The term is exactly zero at an interior optimum and of order 1 at one sitting on a bound, so the clean identity in (1) holds *only* where the optimum is interior.
 
-The size of that term is the reason to care. At a boundary-crit point the two halves are `1.1465 × 4.6991` from the curve and `1.7266 × 1.2605` through the bound, so dropping the second gives 5.39 where the answer is 7.56. That is a 29% error with nothing about it that looks wrong.
+The size of that term is the reason to care. At a `ψ_crit` pin the two halves were `1.1465 × 4.6991` from the curve and `1.7266 × 1.2605` through the bound, so dropping the second gave 5.39 where the answer was 7.56. That is a 29% error with nothing about it that looks wrong.
 
 The root curve obeys the identical homogeneity identity and takes the same `(root_P50, root_c)` treatment. Two curves on different conventions is the shape of the mistake that once carried a root parameter into a stem cost.
 

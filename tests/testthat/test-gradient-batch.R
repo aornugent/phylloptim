@@ -106,12 +106,12 @@ test_that("the batch reproduces leaf_gradient() bit-for-bit across the grid", {
   #
   # `stem_c` is in `pars` deliberately: it is the one curve parameter with no
   # homogeneity identity to exploit, so it takes the rebuild route while
-  # `stem_P50` beside it takes the rescale. Having both means a transcription that
+  # `stem_P50` beside it moves b and leaves the table. Having both means a transcription that
   # dropped the explicit `collar` assignment, or differenced two identical numbers
   # instead, shows up on a column whose neighbour is computed another way.
   pars <- c("vcmax_25", "stem_P50", "TF24_cost_scale", "stem_c")
   rows <- expand.grid(layers = c(1L, 3L, 5L), psi_soil = c(0.5, 2.0, 3.0, 4.0,
-                                                          6.0),
+                                                          6.0, 16.0),
                       KEEP.OUT.ATTRS = FALSE)
   seen <- character(0)
   for (method in c("auto", "ift", "fd")) {
@@ -132,21 +132,14 @@ test_that("the batch reproduces leaf_gradient() bit-for-bit across the grid", {
   # ⚠️ The grid has to REACH all three classes, or the loop above is only testing
   # the happy path while looking thorough -- which is the way a comparison test
   # fails silently. Asserted by WHERE the classes fall rather than by bare counts,
-  # so the claim survives adding a row to the grid: the rows drier than psi_crit
-  # are shut, and the pinned ones are at the dry end a drought calibration visits.
-  #
-  # A shut leaf sits at its wet bound, the zero-uptake collar, and dprofit there
-  # is a derivative rather than a sentinel. With one layer that collar IS the soil
-  # potential, so the curvature's central difference steps into the reversed
-  # pair and the point reports `no-gradient`; with three or five the collar sits
-  # between the layers' potentials, the curvature is real and the point is a
-  # constrained optimum, `pinned`. Both take the difference of the solve.
-  expect_length(seen, 15L)
-  expect_true(all(seen[rows$psi_soil == 6] %in% c("no-gradient", "pinned")))
-  expect_identical(seen[rows$psi_soil == 6 & rows$layers == 1L], "no-gradient")
+  # so the claim survives adding a row to the grid: the rows past the end of the
+  # stem curve are shut (psi_crit bounds nothing under TF24, #183), and the
+  # pinned ones are at the dry end a drought calibration visits.
+  expect_length(seen, 18L)
+  expect_true(all(seen[rows$psi_soil == 16] == "no-gradient"))
   expect_true(all(rows$psi_soil[seen == "pinned"] %in% c(3, 4, 6)))
   expect_gt(sum(seen == "pinned" & rows$psi_soil < 6), 0L)
-  expect_identical(sum(seen == "interior"), 11L)
+  expect_identical(sum(seen == "interior"), 12L)
 })
 
 test_that("the batch matches leaf_gradient() on the single-potential path", {
@@ -207,12 +200,12 @@ test_that("the recorded gradients have not moved", {
     "interior-1layer" = list(args = batch_drivers(2.0), pars = pars_grid),
     "interior-5layer" = list(args = batch_drivers(0.5, vpd = 0.5, layers = 5L),
                              pars = pars_grid),
-    "pinned-dry-3layer" = list(args = batch_drivers(4.0, vpd = 0.5,
-                                                    layers = 3L),
+    # The leaf transpires all its stem can carry: a dry pin at the end of the
+    # stem curve (#183) -- see tools/gradient_golden.R.
+    "pinned-dry-1layer" = list(args = batch_drivers(6.0, ppfd = 500, vpd = 0.5),
                                pars = pars_grid),
-    # Off the default traits' tie between the stem's and the root's critical
-    # potentials, where the held stem has a kink -- see tools/gradient_golden.R.
-    "shutdown-1layer" = list(args = c(batch_drivers(6.0),
+    # A soil past the end of the stem curve, which shuts the leaf.
+    "shutdown-1layer" = list(args = c(batch_drivers(16.0),
                                       list(traits = leaf_traits(root_P50 = 4.0))),
                              pars = pars_grid),
     "single-potential" = list(
@@ -263,33 +256,33 @@ test_that("the recorded gradients have not moved", {
               if (golden_bit_exact_platform()) "bit-exact platform" else
                 "compared with tolerance"))
   # And the claim the choice of rows exists to make, stated rather than left
-  # implicit in the hex. Where the optimum is pinned at the dry bound, psi_stem IS
-  # psi_crit -- and psi_crit is a quantile of the stem curve, so it moves with
-  # stem_P50 by a factor that depends only on stem_c:
+  # implicit in the hex. Where the optimum is pinned at the dry end, psi_stem IS
+  # the end of the stem curve, b x_end^(1/c) with x_end = 40 (#183) -- and that
+  # moves with stem_P50 by a factor that depends only on stem_c:
   #
-  #     dpsi_crit/dstem_P50 = (log2(1/0.05))^(1/stem_c)
+  #     dpsi_end/dstem_P50 = (40 / log(2))^(1/stem_c)
   #
-  # That is the term a derived psi_crit adds to every stem gradient, and the one a
+  # That is the term a derived end adds to the stem gradient, and the one a
   # hand-written chain rule would be most likely to drop. It is exact at the
   # pinned row, and it is NOT the number at an interior optimum -- which is what
   # makes the comparison a test of the routes rather than of the algebra.
-  ratio <- (log(1 / 0.05) / log(2))^(1 / leaf_traits()$stem_c)
-  row <- gold[gold$case == "pinned-dry-3layer" & gold$par == "stem_P50", ]
+  ratio <- (40 / log(2))^(1 / leaf_traits()$stem_c)
+  row <- gold[gold$case == "pinned-dry-1layer" & gold$par == "stem_P50", ]
   expect_equal(as.numeric(row$psi_stem), ratio, tolerance = 1e-6,
-               label = "dpsi_stem/dstem_P50 at pinned-dry-3layer")
+               label = "dpsi_stem/dstem_P50 at pinned-dry-1layer")
   interior <- gold[gold$case == "interior-1layer" & gold$par == "stem_P50", ]
   expect_false(isTRUE(all.equal(as.numeric(interior$psi_stem), ratio,
                                 tolerance = 1e-3)))
 
   # The shut-down row sits at its wet bound, the zero-uptake collar, which no
   # stem trait moves (#182): its stem and collar rows in stem_P50 are exactly
-  # zero, it moves no gas, and the trait reaches it only through the hydraulic
-  # cost of the stem at that potential.
+  # zero and it moves no gas. Past the end of the stem curve the hydraulic cost
+  # has saturated too, so nothing reaches profit either (#183).
   shut <- gold[gold$case == "shutdown-1layer" & gold$par == "stem_P50", ]
   expect_identical(as.numeric(shut$A), 0)
   expect_identical(as.numeric(shut$psi_stem), 0)
   expect_identical(as.numeric(shut$collar), 0)
-  expect_gt(as.numeric(shut$profit), 0)
+  expect_identical(as.numeric(shut$profit), 0)
 })
 
 test_that("a forced method = \"ift\" at a pinned row is refused by name (#147)", {
@@ -298,14 +291,14 @@ test_that("a forced method = \"ift\" at a pinned row is refused by name (#147)",
   # The rows are the pinned ones test-gradient.R names -- two wet, one dry -- and
   # each is checked to be pinned under "auto" first, so the refusal is not read
   # off a row that never reached the branch.
-  pinned <- list(list(psi_soil = 4, vpd = 2.0, layers = 5L),
-                 list(psi_soil = 3, vpd = 4.0, layers = 3L),
-                 list(psi_soil = 4, vpd = 0.5, layers = 3L))
+  pinned <- list(list(psi_soil = 4, vpd = 2.0, layers = 5L, ppfd = 900),
+                 list(psi_soil = 3, vpd = 4.0, layers = 3L, ppfd = 900),
+                 list(psi_soil = 6, vpd = 0.5, layers = 1L, ppfd = 500))
   pars <- c("stem_P50", "vcmax_25")
   for (p in pinned) {
     lab <- sprintf("psi_soil=%g vpd=%g layers=%d", p$psi_soil, p$vpd, p$layers)
-    b <- do.call(leaf_batch, batch_drivers(p$psi_soil, vpd = p$vpd,
-                                           layers = p$layers))
+    b <- do.call(leaf_batch, batch_drivers(p$psi_soil, ppfd = p$ppfd,
+                                           vpd = p$vpd, layers = p$layers))
     auto <- leaf_gradient_batch(b, pars = pars)
     expect_identical(auto$status, "pinned", label = lab)
     ift <- leaf_gradient_batch(b, pars = pars, method = "ift")

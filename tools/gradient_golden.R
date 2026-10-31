@@ -100,8 +100,7 @@ grid_drivers <- function(psi_soil, ppfd = 900, vpd = 2.0, layers = 1L) {
 # Five rows, chosen for the branch each one takes rather than to sample evenly.
 # `stem_P50` and `stem_c` are in `pars` throughout because they are the two
 # parameters of one curve and their derivatives are taken by different routes:
-# `stem_P50` moves the curve by the homogeneity rescale, `stem_c` has no such
-# identity and rebuilds. Both now carry a term through the derived `stem_b` and
+# `stem_P50` moves b and leaves the table, `stem_c` rebuilds the table. Both now carry a term through the derived `stem_b` and
 # `psi_crit`, which is the part a hand-written chain rule would be most likely to
 # drop -- so pinning them here is what would catch a partial masquerading as a
 # total derivative.
@@ -116,16 +115,17 @@ cases <- list(
   list(label = "interior-5layer",
        args = grid_drivers(0.5, vpd = 0.5, layers = 5L),
        pars = c("vcmax_25", "stem_P50", "stem_c", "R_d_25")),
-  list(label = "pinned-dry-3layer",
-       args = grid_drivers(4.0, vpd = 0.5, layers = 3L),
+  # A dry pin: psi_crit bounds nothing under TF24 (#183), so the leaf pins dry
+  # only where it transpires all its stem can carry -- a dry soil in humid air,
+  # with the stem held at the end of its curve.
+  list(label = "pinned-dry-1layer",
+       args = grid_drivers(6.0, ppfd = 500, vpd = 0.5),
        pars = c("vcmax_25", "stem_P50", "stem_c", "R_d_25")),
-  # root_P50 4.0, NOT the default, kept from when a shut stem held at whichever
-  # critical potential the drying soil reached first (and the two are equal at
-  # the defaults, a kink). Since #182 the shut leaf sits at its wet bound, the
-  # zero-uptake collar, with the stem AT it, so no critical potential places it;
-  # the case keeps its traits so its rows stay comparable across that change.
+  # A shut leaf: a soil past the end of the stem curve (15.44 MPa at the
+  # defaults), where the stem carries nothing. root_P50 4.0, NOT the default,
+  # kept from when the shut stem's placement depended on the root curve.
   list(label = "shutdown-1layer",
-       args = c(grid_drivers(6.0), list(traits = leaf_traits(root_P50 = 4.0))),
+       args = c(grid_drivers(16.0), list(traits = leaf_traits(root_P50 = 4.0))),
        pars = c("vcmax_25", "stem_P50", "stem_c", "R_d_25")),
   list(label = "single-potential",
        args = list(psi_soil = 1.5, PPFD = 900, atm_vpd = 2.0,

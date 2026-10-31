@@ -133,7 +133,7 @@ There is nothing to link against — one include is the whole library.
 #include <phylloptim.hpp>
 
 phylloptim::Leaf l;                   // default Eucalyptus saligna traits
-l.setup_transpiration(phylloptim::Leaf::ncontrol_default);   // the xylem vulnerability tables, 400 knots
+l.setup_transpiration(phylloptim::Leaf::ncontrol_default);   // the xylem vulnerability tables, 800 knot intervals
 l.setup_root_vulnerability(phylloptim::Leaf::ncontrol_default);
 
 std::vector<double> psi_soil{2.0};             // positive suction, MPa
@@ -534,20 +534,18 @@ Four things follow:
   R loop per observation.
 - **Construct once and reuse.** Constructing a `Leaf` costs about as much as a
   hundred solves from R, and most of it is R-side object construction over the
-  active bindings rather than the vulnerability splines. Re-traiting and
+  active bindings rather than the vulnerability tables. Re-traiting and
   re-driving an existing leaf costs about four solves, which is why
   `leaf_solve(reuse = TRUE)` is the default, why [`set_traits()`](#trait-gradients)
   exists, and why construction is about two-thirds of a one-parameter
   `leaf_gradient()` on a fresh leaf.
 
 One C++ cost is worth knowing because it surprises people, and batching cannot
-help with it: **`set_traits()` is almost free unless you change `stem_P50`,
-`stem_c`, `root_P50` or `root_c`, and then costs about 16 C++ solves**, because
-those four own the pre-integrated vulnerability splines and it rebuilds one. Most
-of that is the incomplete gamma function seeding the knots, not the spline
-machinery. `leaf_gradient()` sidesteps it for `stem_P50`, because the curve is
-homogeneous of degree 1 in the scale that pair implies: see `fast_stem_curve` in
-`?leaf_gradient`.
+help with it: **`set_traits()` is almost free unless you change `stem_c` or
+`root_c`, and then costs about 17 C++ solves**, because each curve's vulnerability
+table depends on its `c` alone and it rebuilds one. Most of that is the incomplete
+gamma function seeding the knots, not the table machinery. A P50 moves nothing in
+a table, so changing one costs nothing beyond the re-drive.
 
 The solver's own costs, model by model, are the table in `vignette("the-models")`.
 

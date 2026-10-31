@@ -123,8 +123,8 @@ everything else ([measured figures](https://github.com/traitecoevo/phylloptim#pe
 
 **Do not write `l$vcmax_25 <- x` instead.** It compiles, and it is wrong. Two
 pieces of derived state go on describing the old trait afterwards, and no
-re-driving repairs either. The first is the pre-integrated vulnerability splines,
-one owned by `stem_P50`/`stem_c` and one by `root_P50`/`root_c`. The second is the
+re-driving repairs either. The first is the vulnerability curves: each `P50`
+sets a scale and each `c` owns a pre-integrated table. The second is the
 solved operating point, which no code path rewrites, so it reads as though it
 belonged to the new traits.
 
@@ -136,7 +136,7 @@ bound to R.
 The temperature-dependent `vcmax_`, `jmax_` and `R_d_` are not part of this
 problem. Their cache is keyed on every input of the temperature block, including
 `vcmax_25` and `jmax_25`, so re-driving after a bare trait write does recompute
-them. It is the splines and the operating point that no re-driving repairs.
+them. It is the curves and the operating point that no re-driving repairs.
 
 ```{r}
 l <- leaf_model(truth)
@@ -484,11 +484,11 @@ obvious from the interface.
 
 Compare the `ms per par` column across rows: the hydraulic study is several times
 the others, and that ratio is the point rather than its exact value, which moves
-with the machine. `stem_b` and
-`stem_c` own the pre-integrated stem vulnerability spline, so perturbing either
+with the machine. `stem_c` and
+`root_c` each own a pre-integrated vulnerability table, so perturbing either
 rebuilds it, and the incomplete gamma functions that seed it cost many times a
-whole solve per side ([measured](https://github.com/traitecoevo/phylloptim#performance-from-r)). `stem_b` escapes most of that by a homogeneity identity
-(`fast_stem_curve`, on by default); `stem_c` has no such identity and cannot.
+whole solve per side ([measured](https://github.com/traitecoevo/phylloptim#performance-from-r)). The table is built in `ψ/b`, so a `P50`
+rebuilds nothing.
 
 So **a fit that frees a vulnerability curve is in a different cost regime from one
 that does not**, and it is the regime the exact gradient helps least with, since the
@@ -501,15 +501,15 @@ see `?leaf_gradient`'s `fast_stem_curve`.
 This is the sharpest trap on this surface, and the table above provokes it
 deliberately.
 
-`psi_crit` sets the dry end of the *feasible* collar interval and appears in the
-profit function nowhere else. It is not a parameter you can ask for, being the
-5%-conductivity quantile of the stem curve, so its effect arrives as a term
-inside `d/dstem_P50`**, and that term behaves completely differently on the two
-sides of a pin. At an interior optimum it is exactly zero, and the gradient is the
-curve's own effect scaled by `(ln 2)^{-1/c}`. **At a boundary-crit optimum the bound
-is binding**, the term is order 1, and at the default traits it is 29% of the
-total. `leaf_gradient()` differences the solve there precisely so that half is not
-lost.
+The dry end of the *feasible* collar interval appears in the profit function
+nowhere else: `psi_crit` for the curves it bounds, the end of the stem curve for
+the rest (#183). It is not a parameter you can ask for, being a quantile of the
+stem curve, so its effect arrives as a term inside `d/dstem_P50`**, and that term
+behaves completely differently on the two sides of a pin. At an interior optimum
+it is exactly zero, and the gradient is the curve's own effect scaled by
+`(ln 2)^{-1/c}`. **At a dry pin the bound is binding**, and the term is order 1:
+at a `psi_crit` pin it was 29% of the total at the default traits.
+`leaf_gradient()` differences the solve there precisely so that half is not lost.
 
 A silent zero is a worse failure than a wildly wrong number: it tells an optimiser
 the parameter does nothing, and nothing about it looks suspicious. If you fit a
@@ -569,13 +569,12 @@ Because a fit that straddles the boundary has three problems:
   optimising through a corner and may stall or oscillate;
 - `leaf_gradient()` falls back to differencing the solve at boundary points, which
   is correct but noisier;
-- **the stem traits are special.** The dry bound `psi_crit` is a quantile of
-  the stem curve, so it moves with `stem_P50`. But it bounds the feasible range
-  rather than entering the profit function, so the composite cannot see that
-  movement and returns only the curve's own term. At an interior optimum that is
-  the whole answer. At a boundary-crit optimum it is 29% short, and nothing about the
-  number looks wrong. The fallback exists for exactly this and is not a degraded
-  path.
+- **the stem traits are special.** The dry end is a quantile of the stem curve,
+  so it moves with `stem_P50`. But it bounds the feasible range rather than
+  entering the profit function, so the composite cannot see that movement and
+  returns only the curve's own term. At an interior optimum that is the whole
+  answer. At a dry pin it is short by order one, and nothing about the number
+  looks wrong. The fallback exists for exactly this and is not a degraded path.
 
 ## Fitting to real data
 

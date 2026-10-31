@@ -57,7 +57,7 @@ namespace {
 // The default trait vector, in set_traits' argument order.
 //
 // Eleven of the fifteen traits. `R_d_25`, `JS22_gamma`, `CMax_a` and `CMax_b` are
-// left at their defaults because none needs a spline rebuild, so all four land in
+// left at their defaults because none needs a table rebuild, so all four land in
 // the cheap bucket this table already has examples of -- adding them would lengthen
 // the output without changing the finding. `beta_R_H` and `beta_R_V` are not here at all -- they left
 // with the root-architecture model in #33, and a gradient in either is now taken
@@ -99,11 +99,11 @@ static_assert(sizeof(kBase.v) / sizeof(kBase.v[0]) == kNTraits,
 static_assert(sizeof(kNames) / sizeof(kNames[0]) == kNTraits,
               "kNames must have exactly kNTraits entries");
 
-// Whether perturbing this trait forces a vulnerability spline to be rebuilt:
-// stem_c/stem_P50 own the transpiration pair, root_c/root_P50 own the root curve.
-// This turns out to be the single most important fact about the results.
-bool rebuilds_a_spline(int i) {
-  return i == 1 || i == 2 || i == 3 || i == 4;
+// Whether perturbing this trait forces a vulnerability table to be rebuilt:
+// stem_c owns the stem's, root_c the root's. A P50 only rescales the argument
+// (#183). This turns out to be the single most important fact about the results.
+bool rebuilds_a_table(int i) {
+  return i == 1 || i == 3;
 }
 
 void apply_traits(phylloptim::Leaf &l, const Traits &t) {
@@ -172,9 +172,9 @@ double ift_arm(phylloptim::Leaf &l, int idx, double psi_star, long reps,
   return us_per(t0, clock_type::now(), reps);
 }
 
-// The same composite, but moving the stem curve by the homogeneity rescale
-// instead of through set_traits -- so no spline is rebuilt and set_physiology is
-// not needed either, since nothing it derives depends on stem_b.
+// The same composite, but moving stem_P50 through perturb_stem_P50 instead of
+// set_traits -- so the solved physiology is not cleared and set_physiology is
+// not needed, since nothing it derives depends on stem_b.
 double ift_arm_rescaled_stem_curve(phylloptim::Leaf &l, double psi_star,
                                    long reps, double &sink) {
   const auto t0 = clock_type::now();
@@ -237,7 +237,7 @@ int main(int argc, char **argv) {
     Traits t = kBase;
     t0 = clock_type::now();
     for (long r = 0; r < reps; ++r) {
-      t.v[0] = kBase.v[0] + double(r) * 1e-9;  // vcmax_25: no spline
+      t.v[0] = kBase.v[0] + double(r) * 1e-9;  // vcmax_25: no table
       apply_traits(l, t);
       sink += l.vcmax_25;
     }
@@ -246,22 +246,21 @@ int main(int argc, char **argv) {
     t = kBase;
     t0 = clock_type::now();
     for (long r = 0; r < reps; ++r) {
-      t.v[2] = kBase.v[2] + double(r) * 1e-9;  // stem_b: rebuilds the stem curve
+      t.v[1] = kBase.v[1] + double(r) * 1e-9;  // stem_c: rebuilds the stem table
       apply_traits(l, t);
       sink += l.stem_b;
     }
-    printf("  set_traits, spline rebuild %8.3f us   <-- the finding\n",
+    printf("  set_traits, table rebuild  %8.3f us   <-- the finding\n",
            us_per(t0, clock_type::now(), reps));
 
-    // And the way round it, for the stem curve only: it is homogeneous of degree
-    // 1 in stem_b, which is a fixed multiple of stem_P50, so the spline for a
-    // perturbed trait is this one with its argument rescaled.
+    // And a P50, which rebuilds nothing whichever route moves it; this route also
+    // leaves the solved physiology alone.
     t0 = clock_type::now();
     for (long r = 0; r < reps; ++r) {
       l.perturb_stem_P50(kBase.v[2] + double(r) * 1e-9);
       sink += l.stem_b;
     }
-    printf("  perturb_stem_P50, no rebuild %8.3f us  <-- and the way round it\n",
+    printf("  perturb_stem_P50, no rebuild %8.3f us\n",
            us_per(t0, clock_type::now(), reps));
     apply_traits(l, kBase);
     set_drivers(l);
@@ -269,7 +268,7 @@ int main(int argc, char **argv) {
   }
 
   printf("\n%-15s %10s %10s %9s  %s\n", "trait", "FD", "IFT", "speedup",
-         "rebuilds a spline");
+         "rebuilds a table");
   double fd_all = 0.0, ift_all = 0.0, fd_cheap = 0.0, ift_cheap = 0.0;
   int n_cheap = 0;
   for (int i = 0; i < kNTraits; ++i) {
@@ -294,10 +293,10 @@ int main(int argc, char **argv) {
       }
     }
     printf("%-15s %10.3f %10.3f %8.2fx  %s\n", kNames[i], fd, ift, fd / ift,
-           rebuilds_a_spline(i) ? "yes" : "");
+           rebuilds_a_table(i) ? "yes" : "");
     fd_all += fd;
     ift_all += ift;
-    if (!rebuilds_a_spline(i)) {
+    if (!rebuilds_a_table(i)) {
       fd_cheap += fd;
       ift_cheap += ift;
       ++n_cheap;
@@ -309,11 +308,11 @@ int main(int argc, char **argv) {
          fd_all, ift_all, fd_all / ift_all);
   printf("  the %2d with no rebuild  FD %8.1f us   IFT %8.1f us   %.2fx\n",
          n_cheap, fd_cheap, ift_cheap, fd_cheap / ift_cheap);
-  printf("  the  4 that rebuild     FD %8.1f us   IFT %8.1f us   %.2fx\n",
-         fd_all - fd_cheap, ift_all - ift_cheap,
+  printf("  the %2d that rebuild     FD %8.1f us   IFT %8.1f us   %.2fx\n",
+         kNTraits - n_cheap, fd_all - fd_cheap, ift_all - ift_cheap,
          (fd_all - fd_cheap) / (ift_all - ift_cheap));
-  // stem_b again, moved by the rescale rather than by a rebuild. Interleaved with
-  // its own rebuild arm rather than compared against the table above, because the
+  // stem_P50 again, moved by perturb_stem_P50 rather than set_traits. Interleaved
+  // with its set_traits arm rather than compared against the table above, because the
   // two have to be measured in one run to be comparable at this effect size.
   double reb = 0.0, resc = 0.0;
   for (int round = 0; round < 3; ++round) {
@@ -322,7 +321,7 @@ int main(int argc, char **argv) {
     reb = round == 0 ? a : std::min(reb, a);
     resc = round == 0 ? b : std::min(resc, b);
   }
-  printf("\n  stem_b, IFT: rebuild %8.3f us   rescaled %8.3f us   %.2fx\n",
+  printf("\n  stem_P50, IFT: set_traits %8.3f us   perturb %8.3f us   %.2fx\n",
          reb, resc, reb / resc);
 
   // --- and the same identity per OBSERVATION, which is the number to quote ----
@@ -371,10 +370,10 @@ int main(int argc, char **argv) {
       bool fast;
     };
     const Arm arms[] = {
-        {"vcmax_25 (no spline anywhere)", 0, true},
+        {"vcmax_25 (no table anywhere)", 0, true},
         {"stem_P50, fast_stem_curve on", phylloptim::gradient::par_stem_P50, true},
         {"stem_P50, fast_stem_curve off", phylloptim::gradient::par_stem_P50, false},
-        {"stem_c (no identity to use)", phylloptim::gradient::par_stem_c, true}};
+        {"stem_c (rebuilds its table)", phylloptim::gradient::par_stem_c, true}};
 
     printf("\n%-32s %10s %12s\n", "pars", "us/obs", "rebuilds/obs");
     const long batch_reps = std::max(1L, per_round / 20);
@@ -392,11 +391,10 @@ int main(int argc, char **argv) {
         const auto t0 = clock_type::now();
         for (long r = 0; r < batch_reps; ++r) {
           // Vary theta per rep for the reason `perturbed()` documents -- but in
-          // `TF24_beta2`, NOT in the parameter being differentiated. Moving the base
-          // `stem_b` per rep moves it off `stem_b_spline_`, which is a rebuild the
-          // model genuinely owes and which showed up as 0.05 rebuilds/obs (one per
-          // rep over 20 observations) while reading like a leftover of the bug
-          // this arm exists to measure. `TF24_beta2` owns no spline.
+          // `TF24_beta2`, NOT in the parameter being differentiated, and not in
+          // `stem_c`, which would rebuild the stem table each rep -- a rebuild the
+          // model genuinely owes, which would read like a leftover of the bug this
+          // arm exists to measure. `TF24_beta2` owns no table.
           theta[phylloptim::gradient::par_TF24_beta2] =
               kBase.v[7] * (1.0 + double(r) * 1e-12);
           const std::vector<phylloptim::gradient::Result> g =
@@ -421,13 +419,11 @@ int main(int argc, char **argv) {
   }
 
   printf(
-      "\nThe four that rebuild a spline are stem_b, stem_c, root_b and root_c --\n"
-      "and they are exactly the traits for which the argmax-mediated term is\n"
-      "100%% of the gradient. So the composite's advantage is smallest precisely\n"
-      "where the composite is most necessary.\n"
-      "\nstem_b escapes it: G is homogeneous of degree 1 in stem_b, so the spline\n"
-      "for a perturbed stem_b is this one with its argument rescaled and no\n"
-      "rebuild is needed. stem_c has no such identity.\n");
+      "\nThe two that rebuild a table are stem_c and root_c, and they are among\n"
+      "the traits for which the argmax-mediated term is 100%% of the gradient. So\n"
+      "the composite's advantage is smallest precisely where the composite is\n"
+      "most necessary. The P50s rebuild nothing: each table is built in psi/b\n"
+      "and depends on c alone (#183).\n");
   printf("\nchecksum %.6f\n", sink);
   return 0;
 }

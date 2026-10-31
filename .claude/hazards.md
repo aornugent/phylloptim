@@ -12,23 +12,21 @@ Stem (`stem_P50`, `stem_c`) drives `hydraulic_cost_TF`; root (`root_P50`, `root_
 
 ⚠️ **Each curve has exactly TWO settable numbers, and everything else about it is derived.** `stem_b = P50/(ln 2)^(1/c)` and `psi_crit = b·ln(1/0.05)^(1/c)`, i.e. P95 of the same curve — and Sperry's `k_crit = 0.05·kmax` reads that same 0.05 from `Leaf::k_crit_fraction`. All four are readable and none is settable.
 
-This is worth defending, because the failure it removes was expensive and quiet. A free `psi_crit` described a curve it was not derived from: the spline is pre-integrated over `[0, P99]`, `psi_crit` never entered that bound, and every solve evaluates the curve *at* `psi_crit` — so anyone fitting a measured vulnerability curve picked a plausible number and got a domain error naming only the interpolator. Deriving it removed the need for a consistency check and a domain check: the domain check is provably vacuous (a derived P95 is inside P99 for every `c > 0`, since `ln 20 < ln 100`), and there is nothing left for a consistency check to compare.
+This is worth defending, because the failure it removes was expensive and quiet. A free `psi_crit` described a curve it was not derived from: the spline was pre-integrated over `[0, P99]`, `psi_crit` never entered that bound, and every solve evaluated the curve *at* `psi_crit` — so anyone fitting a measured vulnerability curve picked a plausible number and got a domain error naming only the interpolator. Deriving it removed the need for a consistency check and a domain check. Since #183 `psi_crit` bounds only the four curves whose own forms end there (`cost_domain_ends_at_psi_crit`); for the rest it is a labelled point on a curve that continues past it.
 
 Do not reintroduce `stem_b` as settable. Solving `c = ln(ln 2)/ln(P50/b)` diverges as `P50 → b`, so a (b, c) interface has a singularity that a (P50, c) one does not.
 
-The root curve's clamp is still worth knowing: `root_vuln_at` clamps to the last knot rather than throwing (#77). A layer silently reporting the floor conductivity is #85's question, not this one.
+⚠️ **Both curves are read from one kind of table, and nothing has a domain end but `G(inf)` (#183, #85).** `VulnerabilityTable` holds `g(u) = G(psi)/b` on `u = psi/b` as a quintic Hermite with exact `g`, `g'` and `g''` at every knot, so `G` is C2 across knots, and `G'` is read from the same polynomial: the derivative of the value the solve reads. It depends on `c` alone, so a P50 rebuilds nothing, and it is shared through a pointer, between copies and between the stem and the root where their `c` agree. Past the end of the curve (`x = (psi/b)^c = 40`, 15.44 MPa at the defaults) `G` is `G(inf)` to rounding. The root's conductivity is its closed form everywhere, with no clamp, and a layer it reaches zero in draws nothing. What stays `stem_curve_domain`: a negative potential and a flow past `G(inf)` beyond rounding, which no stem potential carries. The table's accuracy, measured against a 50-digit reference, is in `VulnerabilityTable`'s comment; the boost incomplete gamma it was seeded from is ~50 table reads per call, which is why it is not on the hot path (plant's TF24 stands ran 3.3–3.9× slower reading it).
 
-⚠️ **Past the stem curve's last knot is not a domain error (#157).** The stem table is a cache of `G(psi) = (b/c) gamma_lower(1/c, (psi/b)^c)`, and a soil drier than P99 is an ordinary state (plant's ceiling is 1000 MPa). Past the grid, `stem_curve_integral` reads that closed form, `stem_curve_integral_deriv` reads the curve `exp(-(psi/b)^c)`, and the inverse solves the closed form; the knots are seeded from the same expression, so value and slope are continuous at the join. What stays `stem_curve_domain`: a negative potential, a flow below the table (plant#576), and a flow at or past `G(inf)`, which no stem potential carries. The in-grid path is untouched: the forward read's branch sits inside its out-of-range test and `stem_curve_integral_deriv` pays one comparison. The shut leaf reads past it too: since #182 it sits at its wet bound with the stem at the collar, so a soil drier than P99 puts the stem there, and the single-potential stem routes, where the stem's upstream end is pinned at `psi_soil`, read `G(psi_soil)`.
+⚠️ **Near `G(inf)` the curve resolves nothing.** `G` is read to ~2e-16 of `G(inf)`, so where the stem's remaining capacity `G(inf) - G` falls below ~1e-13 of it every gradient is rounding, and the collar solve refused there. `Leaf::stem_capacity_floor` (1e-11) shuts the leaf before that, at ~12.4 MPa at the defaults. A dry pin at the end of the curve holds the stem at `psi_end` (`seat_stem_at_dry_pin`), not where the inverse lands, for the same reason. Carrying the tail as `G(inf) - G` would resolve it and remove both.
 
-⚠️ **So the two tables differ past their grids, and the rows follow the table.** The root table holds its last knot (#77), so `closed_form_rows.hpp` gives it the knot's rows there; the stem table reads the closed form, so it gets the closed form's rows. Both functions there take a `PastLastKnot` argument with no default, and every call site names its table's. Passing the wrong one gives finite rows that are wrong only past the grid.
-
-⚠️ **The knot grid is indexed, and its last knot is asserted bit-exactly.** A grid built by accumulating `psi += step` produced `resolution` *or* `resolution - 1` knots depending on `b` and `c`, so the realised bound was not `vulnerability_psi_max` and was not reproducible across parameter values; at the package defaults it fell one full step (1.0%) short (#92). `x.back() == vulnerability_psi_max(b, c)` is asserted **bit-exactly** over 1800 (b, c, resolution) triples: a tolerance there would pass on the code the test exists to reject.
+⚠️ **The knot grid is indexed, and its last knot is asserted bit-exactly.** A grid built by accumulating `x += step` produced `resolution` *or* `resolution - 1` knots depending on `b` and `c` (#92). The table's last knot is `u_end` exactly and holds `G(inf)/b` exactly, so the end of the curve and the value past it are one number.
 
 ## 2. Every ψ is a positive magnitude in MPa (#25)
 
 This slot used to be "signed versus magnitude water potentials". There is now one representation, so the hazard is removed rather than managed. Two conventions held together by comments cost a negative λ (`dE_from_soil_dpsi_collar` differentiated w.r.t. the *signed* potential and returned a negative where a conductance was wanted) and a dead clamp (plant #584, filed here as #24). Tagging the two conventions as types (#23, `Psi` / `AbsPsi`) was tried and closed unmerged: it described the two-convention model instead of removing one, and it could not cover the derivative, which is neither type.
 
-`psi_soil_`, `psi_crit`, `root_psi_crit`, `stem_b`, `root_b`, `opt_psi_stem_`, `opt_root_psi_`, the collar variable inside the solve, the root-finding brackets and all four spline domains are the same kind of number. Where an equation needs one potential to oppose another the minus sign is **in the equation**: `E_i = (T_collar - T_soil_i - gravity_head*z_i)/r_R`.
+`psi_soil_`, `psi_crit`, `root_psi_crit`, `stem_b`, `root_b`, `opt_psi_stem_`, `opt_root_psi_`, the collar variable inside the solve, the root-finding brackets and the vulnerability tables' arguments are the same kind of number. Where an equation needs one potential to oppose another the minus sign is **in the equation**: `E_i = (T_collar - T_soil_i - gravity_head*z_i)/r_R`.
 
 Three things follow:
 
@@ -38,10 +36,7 @@ Three things follow:
 
 ⚠️ **Do not call the convention "tension" in code.** It is exact only because there is no osmotic term and gravity is carried separately as `gravity_head`, so ψ here is a pure pressure potential. Add solutes and "tension" is wrong while "magnitude of ψ" stays right.
 
-**The collar solve's dry bound is `std::min(root_crit, supply_psi_crit())`** in `prepare_collar_solve` (the #24 / plant #584 clamp). Two things to carry:
-
-- **The golden file cannot see it**, because at this package's defaults `psi_crit == root_psi_crit` so the window is empty. It opens whenever the stem's `psi_crit` is drier than the root's — in plant, by **1.2 MPa** (7.0855 vs 5.8703). A bit-identical golden run says nothing here.
-- **A correct clamp can invert the bracket.** When `root_psi_crit` lands below `root_zero_E` — the collar at which uptake is exactly zero — no operating point both moves water and stays inside the root limit, so the answer is shut-down. Without that exit the solver is handed `bound_a > bound_b` and returns a point past the limit the clamp exists to enforce. Three regimes (no bind / tightened-but-transpiring / shut-down) are pinned in `test_root_psi_crit_clamp_binds`.
+**The collar solve's dry end is the continuity root with the stem at `dry_end<K>()`**, taken from its feasible side, and the root's critical potential bounds nothing (#183). That removed the #24 / plant #584 clamp to `root_psi_crit` and, with it, the tie at the default traits (`psi_crit == root_psi_crit`) that put every shutdown on a kink in the stem and root traits.
 
 ## 3. Argmax smoothness is a hard constraint, not a preference
 
@@ -74,7 +69,7 @@ Every input is per unit leaf area or a dimensionless/intensive driver. Nothing s
 
 What is *not* true is the blanket "prefer compile-time dispatch, a virtual call in the solve would cost". Measured (`make -C tests/cpp bench`), the code splits into two halves that answer oppositely:
 
-- **The soil/supply path is already out-of-line.** `E_from_Soil_to_Root_Collar` is inlined into none of its 18 call sites at `-O2`, nor at `-inline-threshold=2000`; neither is the per-layer spline `eval`. So making it virtual costs **+1.1%**, `std::function` +0.6%, `std::variant` +2.6% — noise. Forcing more inlining is *worse*, by 4%.
+- **The soil/supply path is already out-of-line.** `E_from_Soil_to_Root_Collar` is inlined into none of its 18 call sites at `-O2`, nor at `-inline-threshold=2000`; neither was the per-layer spline `eval` that the vulnerability table replaced in #183. So making it virtual costs **+1.1%**, `std::function` +0.6%, `std::variant` +2.6% — noise. Forcing more inlining is *worse*, by 4%.
 - **The cost core is fully inlined.** `profit_psi_stem_TF`, `hydraulic_cost_TF`, `assim_colimited` and `transpiration_to_psi_stem` have no out-of-line symbol at all, so a change there is a different question and needs its own measurement.
 
 Before arguing from inlining, check: `nm -C test_golden | grep <fn>`. No symbol means inlined; a symbol plus `bl` call sites in `objdump -d` means it is not. How to time an A/B is in [measurements.md](measurements.md#benchmark-method).
@@ -130,7 +125,7 @@ The traits are public plain doubles, so `l.vcmax_25 = x` compiles — and leaves
 
 Three pieces of derived state depend on the traits:
 
-- the pre-integrated **vulnerability splines** (`stem_b`/`stem_c` build the transpiration pair, `root_b`/`root_c` the root curve);
+- the **vulnerability tables**, one per `c` (`stem_c` builds the stem's, `root_c` the root's; a P50 builds nothing);
 - the **solved operating point** (hazard 8);
 - `vcmax_`, `jmax_` and `R_d_`, derived inside `set_physiology`'s **temperature cache**.
 
@@ -138,14 +133,14 @@ Three pieces of derived state depend on the traits:
 
 ⚠️ **One deliberate exception: the thermal-damage layer's inputs are NOT in the key.** `set_physiology` never serves the cache while `use_thermal_damage_` is on, because `A_`, `I_` and `D_` are state a caller moves every step; only the gate itself is keyed, so switching it off at unchanged drivers recomputes. Remove that bypass and every input the block reads (the solve-reaching fourteen in the gradient enumeration, plus `k_i_Ea_`, `k_i_Tiso_` and `dTimpair_max_`) must join the key. `test_thermal_damage_bypasses_the_cache` (C++) and `test-thermal-damage.R` fail if either half goes.
 
-The cache key does not clear the splines or the solved operating point, so `set_traits()` stays the way to change a trait. `test_set_traits_matches_a_fresh_leaf` asserts a re-traited leaf is **bit-identical** to a freshly constructed one, which catches all three at once — the two routes share no code, so anything not refreshed shows up as a difference. It solves at the defaults *first*, on purpose: on a cold object the cache would miss anyway and the trap would not fire.
+The cache key does not clear the tables or the solved operating point, so `set_traits()` stays the way to change a trait. `test_set_traits_matches_a_fresh_leaf` asserts a re-traited leaf is **bit-identical** to a freshly constructed one, which catches all three at once — the two routes share no code, so anything not refreshed shows up as a difference. It solves at the defaults *first*, on purpose: on a cold object the cache would miss anyway and the trap would not fire.
 
 **Measure before optimising a trait loop, in the layer you actually care about.** Two costs dominate, and which one bites depends on where you are:
 
-- **From R**, constructing a `Leaf` is the largest single cost: most of a one-parameter gradient on a fresh leaf, and mostly R-side object construction over the active bindings rather than the splines. That, not the choice of gradient formula, is what dominates a finite-difference gradient in R. `set_traits` exists to avoid it: a re-trait plus a re-drive costs a few solves.
-- **In C++**, `set_traits` is almost free unless it rebuilds a vulnerability curve, and then costs many whole solves. So a gradient loop over `stem_P50`, `stem_c`, `root_P50` or `root_c` is dominated by spline reconstruction, and no amount of cleverness in the derivative touches it. `stem_P50` has a way round it, because the stem curve is homogeneous of degree 1 in its scale: `perturb_stem_P50` rescales instead of rebuilding.
+- **From R**, constructing a `Leaf` is the largest single cost: most of a one-parameter gradient on a fresh leaf, and mostly R-side object construction over the active bindings rather than the tables. That, not the choice of gradient formula, is what dominates a finite-difference gradient in R. `set_traits` exists to avoid it: a re-trait plus a re-drive costs a few solves.
+- **In C++**, `set_traits` is almost free unless it rebuilds a vulnerability table, and then costs many whole solves. Only `stem_c` and `root_c` rebuild: a table depends on `c` alone, so a P50 moves nothing in it, and `perturb_stem_P50` moves `stem_b` without even clearing the operating point.
 
-The measured ratios for both are in the README's "Performance from R", the one place they are quoted; `tools/bench_user_cost.R` and `make -C tests/cpp bench_gradient` reproduce them. ⚠️ **Do not carry the R conclusion into C++**: with the boundary removed, the IFT composite beats differencing the solve several-fold on the traits that touch no spline (`bench_gradient`'s summary lines), which an R measurement does not show.
+The measured ratios for both are in the README's "Performance from R", the one place they are quoted; `tools/bench_user_cost.R` and `make -C tests/cpp bench_gradient` reproduce them. ⚠️ **Do not carry the R conclusion into C++**: with the boundary removed, the IFT composite beats differencing the solve several-fold on the traits that touch no table (`bench_gradient`'s summary lines), which an R measurement does not show.
 
 ## 11. A bracketing optimiser answers "where is the interior maximum", which is not "where is the maximum"
 
@@ -179,7 +174,7 @@ C++ `gradient::apply()`, R's `.gradient_setter`, the batch route's `theta` matri
 
 ## 14. A derived `psi_crit` makes the P50 chain rule CONDITIONAL
 
-Since `psi_crit` is the curve's 95% quantile rather than a trait, moving `stem_P50` moves the threshold, and `d/dP50` picks up a term through it. That term is **exactly zero at an interior optimum and order one at a pinned one**, so the clean identity `d/dP50 = (ln 2)^{-1/c} · d/db` holds only where the optimum is interior. Assert it keyed on `status`, never unconditionally: an unconditional assertion fails on pinned rows for a *correct* implementation.
+Since the dry end is a quantile of the curve rather than a trait — `psi_crit` for the curves it bounds, the end of the curve (`b·40^(1/c)`) for the rest (#183) — moving `stem_P50` moves it, and `d/dP50` picks up a term through it. That term is **exactly zero at an interior optimum and order one at a dry pin**, so the clean identity `d/dP50 = (ln 2)^{-1/c} · d/db` holds only where the optimum is interior. Assert it keyed on `status`, never unconditionally: an unconditional assertion fails on pinned rows for a *correct* implementation.
 
 ## 15. A finite difference through a solve has a noise floor, and the floor moves with the solver
 

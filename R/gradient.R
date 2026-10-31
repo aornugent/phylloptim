@@ -60,7 +60,7 @@
 ##' The reason it is a function rather than sixteen assignable fields is that
 ##' `leaf$vcmax_25 <- x` could not be made correct. Three separate pieces of
 ##' derived state go stale on a bare trait write: the two pre-integrated
-##' vulnerability splines, the solved operating point, and -- least visibly --
+##' vulnerability tables, the solved operating point, and -- least visibly --
 ##' `vcmax_`/`jmax_`/`R_d_`, which `set_physiology()` computes behind a cache keyed
 ##' on leaf temperature and O2 alone. That last one means the obvious repair,
 ##' "change the trait and then set the drivers again", silently does not work.
@@ -282,11 +282,11 @@ set_traits <- function(x, traits) {
 ##' differences the constrained answer. That is the one thing the crude method does
 ##' better, and `method` in the result says which was used.
 ##'
-##' It is better in a second way, which is sharper than accuracy. `psi_crit` does
-##' not appear in the profit function at all -- it only sets the dry end of the
-##' feasible collar interval -- so the composite necessarily returns **exactly
-##' zero** for it. At an interior optimum that is correct. At a boundary-crit optimum
-##' `psi_crit` *is* the binding constraint, the true `dA/dθ` is about `1.26`, and a
+##' It is better in a second way, which is sharper than accuracy. The dry end of
+##' the feasible collar interval -- `psi_crit` for the curves it bounds, the end of
+##' the stem curve for the rest -- does not appear in the profit function at all,
+##' so the composite necessarily returns **exactly zero** for it. At an interior
+##' optimum that is correct. At a dry pin it *is* the binding constraint, and a
 ##' zero is arguably a worse answer than a wildly wrong one: it tells an optimiser
 ##' the parameter does nothing, and nothing about it looks suspicious. The
 ##' difference of the solve gets it for free.
@@ -444,13 +444,12 @@ set_traits <- function(x, traits) {
 ##'   finite-difference fallback is used. The default `1e-08` sits in the empty
 ##'   band between the two measured populations; there is no operating point in
 ##'   this package's grid within four orders of magnitude of it.
-##' @param fast_stem_curve perturb `stem_b` without rebuilding the stem
-##'   vulnerability spline (`TRUE`, the default). The curve is homogeneous of
-##'   degree 1 in `stem_b`, so the spline for a perturbed `stem_b` is the existing
-##'   one with its argument rescaled — which makes the rebuild, otherwise most of
-##'   the cost of that gradient, unnecessary. `FALSE` rebuilds, and exists so the
-##'   equivalence is checkable rather than assumed; the package's tests require
-##'   the two routes to agree. `stem_c` has no such identity and always rebuilds.
+##' @param fast_stem_curve perturb `stem_P50` through `perturb_stem_P50()`, which
+##'   moves `stem_b` and leaves the seated physiology alone (`TRUE`, the
+##'   default), rather than through `set_traits()`. Neither route rebuilds the
+##'   stem's vulnerability table, which depends on `stem_c` alone; `FALSE` exists
+##'   so the equivalence is checkable rather than assumed, and the package's tests
+##'   require the two routes to agree.
 ##' @param method which route to take: `"auto"` (the default) uses the
 ##'   implicit-function composite where its premise holds and the finite
 ##'   difference where it does not. `"ift"` and `"fd"` force one route, for
@@ -960,7 +959,7 @@ leaf_gradient <- function(psi_soil,
   # answering about whatever model the leaf was last used for. Seating on
   # construction means every closure has one.
   #
-  # It survives a perturbation: `set_traits()` clears the splines, the operating
+  # It survives a perturbation: `set_traits()` clears the tables, the operating
   # point and the temperature cache, but not the seated curve.
   l$set_model(model, "stem")
 
@@ -1330,27 +1329,19 @@ leaf_gradient <- function(psi_soil,
   apply_drivers <- l$set_physiology
 
   function(theta, only = NULL) {
-    # THE FAST PATH FOR stem_b.
+    # THE FAST PATH FOR stem_P50.
     #
-    # stem_b owns the pre-integrated stem vulnerability spline, so moving it
-    # through set_traits() rebuilds it -- incomplete gammas at every knot plus two
-    # interpolator inits, many solves' worth (README, "Performance from R"), which
-    # is essentially the entire cost of its gradient.
-    # But the curve is homogeneous of degree 1 in stem_b, so the spline for
-    # another stem_b IS this one with its argument rescaled, and no rebuild is
-    # needed at all.
-    #
-    # ⚠️ stem_c is NOT here, and that is a measured decision rather than an
-    # omission: it has no such identity, and reading the curve from its closed
-    # form instead -- the obvious alternative -- differentiates a slightly
-    # different model and disagrees by 3e-4.
+    # The stem's vulnerability table depends on stem_c alone, so moving stem_P50
+    # rebuilds nothing whichever way it is moved; perturb_stem_P50 also leaves the
+    # seated physiology alone, where set_traits would clear it and the driver
+    # write below would seat it again. stem_c has no such route: it rebuilds.
     #
     # ⚠️ Sound only because `only` names a SINGLE parameter, so everything else in
     # `theta` is still what the object was last set to. That is true here and
     # nowhere else, which is why the argument exists rather than the function
     # guessing: .gradient_ift and .gradient_fd perturb exactly one parameter at a
     # time, and the next parameter's first call goes through the full path below,
-    # rebuilding the spline on its way.
+    # restoring the base point on its way.
     if (fast_stem_curve && identical(only, "stem_P50")) {
       l$perturb_stem_P50(theta[["stem_P50"]])
       return(invisible(l))
@@ -1468,8 +1459,8 @@ leaf_gradient <- function(psi_soil,
 # ⚠️ THE FIX FOR #72, AND THE INVARIANT IT RESTORES: every parameter's gradient
 # is taken from the BASE point.
 #
-# `perturb_stem_P50()` rescales the stem vulnerability spline and touches nothing
-# else, which is sound only if everything else on the object is already at base.
+# `perturb_stem_P50()` moves stem_b and touches nothing else, which is sound only
+# if everything else on the object is already at base.
 # The loops below restore base once at the END, not between parameters, because
 # every other parameter's setter goes through the full `set_traits()` +
 # `set_physiology()` path and restores it on the way. `stem_P50` on the fast path
@@ -1479,15 +1470,15 @@ leaf_gradient <- function(psi_soil,
 # this function documents as achievable, and on BOTH routes.
 #
 # Restoring base before the shortcut is the whole fix. It is cheap in the case
-# that matters, because `set_traits()` decides the two spline rebuilds by
-# comparing the pairs it was given: after a parameter that owns no vulnerability
-# curve nothing is rebuilt, so this costs one trait write and one driver write.
-# After `stem_c`/`root_b`/`root_c` it does rebuild -- but those are the
-# parameters whose own gradients cost a rebuild per side anyway.
+# that matters, because `set_traits()` decides the two table rebuilds by
+# comparing the `c` it was given: after a parameter that owns no vulnerability
+# table nothing is rebuilt, so this costs one trait write and one driver write.
+# After `stem_c`/`root_c` it does rebuild -- but those are the parameters whose
+# own gradients cost a rebuild per side anyway.
 #
-# ⚠️ Not `stem_b`-specific by name at the call site, deliberately. `root_b` obeys
-# the same homogeneity identity and would get the same fast path, at which point
-# the condition has to be "this parameter takes a shortcut" rather than a name.
+# ⚠️ Not `stem_P50`-specific by name at the call site, deliberately. `root_P50`
+# rebuilds nothing either and could take the same path, at which point the
+# condition has to be "this parameter takes a shortcut" rather than a name.
 .gradient_reseat_base <- function(reset, theta, pars, fast_stem_curve) {
   shortcut <- pars %in% .gradient_shortcut_pars(fast_stem_curve)
   at_base <- TRUE

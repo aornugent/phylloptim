@@ -30,7 +30,7 @@ genuinely unknown until the drivers are re-supplied.
 The reason it is a function rather than sixteen assignable fields is that
 \code{leaf$vcmax_25 <- x} could not be made correct. Three separate pieces of
 derived state go stale on a bare trait write: the two pre-integrated
-vulnerability splines, the solved operating point, and -- least visibly --
+vulnerability tables, the solved operating point, and -- least visibly --
 \code{vcmax_}/\code{jmax_}/\code{R_d_}, which \code{set_physiology()} computes behind a cache keyed
 on leaf temperature and O2 alone. That last one means the obvious repair,
 "change the trait and then set the drivers again", silently does not work.

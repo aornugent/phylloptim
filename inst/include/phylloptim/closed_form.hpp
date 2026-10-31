@@ -321,11 +321,10 @@ struct Solution {
 // ⚠️ NOT `E/kmax`. G is the cumulative vulnerability integral, so the two agree only
 // where f == 1 -- i.e. nowhere on a real curve. See note 5 in the header.
 //
-// The domain check is done against the transpiration AT psi_crit rather than left to
-// the spline, because `stem_curve_integral_inverse` throws past its domain and the
-// only thing a caller here can do with that is report psi_crit. A demand above what
-// the stem can carry at psi_crit IS the dry bound, so it is returned rather than
-// raised: the guard downstream then sees the resulting ci/ca and falls back.
+// The domain check is done against the transpiration AT psi_crit, the expansion's
+// window (see within_guard): a demand above what the stem carries there returns
+// psi_crit rather than a potential past it, and the guard downstream hands the row
+// to the exact solve.
 inline double psi_from_supply(Leaf &l, double E, double psi_upstream) {
   if (!(E > 0.0)) {
     return psi_upstream;
@@ -354,7 +353,7 @@ inline Solution evaluate_at(Leaf &l, double psi, double Q, double sqrt_D) {
   return evaluate_at_lambda(l, psi, l.lambda_TF24(psi), Q, sqrt_D);
 }
 
-// The wet-end starting potential, in units of stem_b. Pure arithmetic: no spline
+// The wet-end starting potential, in units of stem_b. Pure arithmetic: no table
 // read, no assimilation evaluation, so this is free relative to the Newton step
 // that follows it.
 //
@@ -379,7 +378,7 @@ inline double wet_end_p(double C, double p_up, double n, double p_crit) {
   // Newton on h, from above the root: h is increasing on p > p_up for n >= 0, so a
   // start at `p_up + p0` is on the far side of it and the iteration walks down.
   // Four steps, fixed: this is an algebraic scalar equation, not the model, and its
-  // cost is four `pow` calls against the spline reads and root-find that follow.
+  // cost is four `pow` calls against the table reads and root-find that follow.
   double p = p_up + p0;
   for (int i = 0; i < 4; ++i) {
     const double q = std::pow(p, n / 2.0);
@@ -459,7 +458,7 @@ inline Solution solve(Leaf &l, double psi_upstream, int newton_steps = 1) {
 // TF24_beta2 == 1/stem_c. The psi dependence cancels out of lambda entirely (n = 0),
 // so xi is constant and there is nothing to solve for it -- no power law, no Newton
 // step. The stem potential still has to come out of the supply inversion, which is
-// one spline solve.
+// one table inversion.
 //
 // ⚠️ A VALID SPECIAL CASE AT AN UNMOTIVATED PARAMETER VALUE, AND THIS FILE USED TO
 // CLAIM MORE. It said 1/stem_c was 0.917, "within a hair" of the beta2 <= 1 argued
@@ -501,8 +500,8 @@ inline bool beta2_is_exact(const Leaf &l, double tol = 1e-12) {
 // ⚠️ "NO ITERATION" IS NOT THE SAME AS "EXACT", and conflating them is what note 5
 // in the header withdraws. Two separate approximations remain: the USO form's 3*Gstar
 // is the electron-transport-limited dA/dci (see `uso_group`), so under Rubisco-bound
-// colimitation this ci is not the optimal one; and `psi_from_supply` is a spline
-// inversion, exact to the spline. The n = 0 exactness is a statement about lambda,
+// colimitation this ci is not the optimal one; and `psi_from_supply` is a table
+// inversion, exact to the table. The n = 0 exactness is a statement about lambda,
 // which is the only thing the power-law machinery approximates.
 inline Solution solve_CF77(Leaf &l, double psi_upstream) {
   require_prescribed_temperature(l, "closed_form::solve_CF77");
@@ -633,6 +632,10 @@ inline Solution solve_TF24_floor(Leaf &l, double psi_upstream,
 // error. A bound is where the two methods are least comparable and where the exact
 // solve is cheapest to be right about -- it tests the gradient's sign there
 // explicitly -- so a closed form that arrives at one hands the row back.
+// psi_crit here is the expansion's own window, not a bound on the model: for
+// TF24 and TF24_floor the exact optimum may lie past it (#183), and a closed
+// form arriving there hands the row to the exact solve, which has no bound
+// there.
 // ⚠️ AND IT GUARDS THE EXPANSION, NOT THE MODEL. It reads the solution and three
 // bounds (`ca_`, `psi_soil`, `psi_crit`) and no driver, so it cannot see an INPUT
 // being wrong: with the energy balance forced through, the deficit out by 3-4x and
@@ -640,10 +643,15 @@ inline Solution solve_TF24_floor(Leaf &l, double psi_upstream,
 // means "outside the expansion, fall back to the exact solve"; a `true` never
 // means "the answer is right". That is why the energy-balance refusal is a stop in
 // the solvers and not a case here.
+// The window's dry edge is where the Newton step clamps, psi_crit (1 - 1e-9),
+// so an answer there is a clamp and not an optimum: handed back too (measured,
+// at psi_soil 5 and VPD 0.5 the clamp was served at psi_crit while the exact
+// optimum, unbounded under TF24, lay at 11.4 MPa: A 24% short).
 inline bool within_guard(const Leaf &l, const Solution &s) {
   return std::isfinite(s.psi_stem) && std::isfinite(s.ci) &&
          std::isfinite(s.assim) && s.ci / l.ca_ > 0.5 &&
-         s.psi_stem > l.supply_psi_soil_scalar() && s.psi_stem < l.psi_crit;
+         s.psi_stem > l.supply_psi_soil_scalar() &&
+         s.psi_stem < l.psi_crit * (1.0 - 1e-9);
 }
 
 // ---------------------------------------------------------------------------
@@ -707,9 +715,19 @@ inline void optimise_into(Leaf &l) {
     // there is nothing for either method to choose between. Kept identical rather
     // than shared because the shared version would be a fourth caller of a
     // two-line body.
-    if (psi_soil > l.psi_crit) {
+    if (psi_soil > l.dry_end<K>()) {
       l.profit_ = l.profit_psi_stem_for<K>(psi_soil, psi_soil);
       l.lambda_emergent_ = l.lambda_for<K>(psi_soil, psi_soil);
+      return;
+    }
+
+    // The expansion's window is [psi_soil, psi_crit] (see within_guard). A soil
+    // at or past psi_crit leaves it empty while a curve unbounded there still
+    // has an interval, so the exact solve answers.
+    if (!(psi_soil < l.psi_crit)) {
+      ++l.closed_form_fallbacks_;
+      l.last_solve_fell_back_ = true;
+      l.optimise_psi_stem_single<K>();
       return;
     }
 

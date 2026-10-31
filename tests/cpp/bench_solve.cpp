@@ -98,7 +98,7 @@ std::vector<Point> grid() {
 // the shutdown-state leak makes a reused Leaf order-dependent,
 // and this harness should measure what the golden file pins.
 //
-// Spline setup is hoisted out of the timed region: setup_transpiration and
+// Table setup is hoisted out of the timed region: setup_transpiration and
 // setup_root_vulnerability are per-strategy work in plant, not per-solve, so
 // timing them would dilute the signal. set_physiology is left in, because plant
 // does call it once per solve and it invalidates the caches -- which is what

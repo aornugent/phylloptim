@@ -188,32 +188,24 @@ test_that("a pinned optimum takes the fallback, and the composite would be wrong
   # Pinned DRY is the milder case and is worth separating: the composite is only
   # a factor of 1.6 out for vcmax_25 there rather than seven orders, so a test
   # that only looked at the wet rows would let a threshold drift past it.
-  dry <- grid_gradient(4, vpd = 0.5, layers = 3L,
+  # The dry pin (#183): a dry soil in humid air, where the leaf transpires all
+  # its stem can carry and the stem is held at the end of its curve,
+  # b x_end^(1/c). Its water is the stem's capacity, which no photosynthetic
+  # trait moves, so the conductance and collar rows in vcmax_25 and R_d_25 are
+  # exactly zero while A's are not; and the stem moves with stem_P50 exactly as
+  # the end of the curve does, (40 / ln 2)^(1/c) -- the term through the bound
+  # that the composite cannot see, and the reason this is a fallback row.
+  dry <- grid_gradient(6, ppfd = 500, vpd = 0.5, layers = 1L,
                        pars = c("stem_P50", "vcmax_25", "R_d_25"))
   expect_identical(dry$status, "pinned")
-  expect_equal(dry$gradient["vcmax_25", "A"], 0.017548, tolerance = 1e-3)
-  # ⚠️ NOT the interior identity. At a boundary-crit optimum the derived psi_crit is
-  # the binding constraint, so dA/dstem_P50 picks up a second term through it --
-  # and both halves are independently arbitrated numbers from before the
-  # reparameterisation (4.6991 for d/dstem_b, 1.2605 for d/dpsi_crit):
-  #
-  #     dA/dP50 = (db/dP50).dA/db + (dpsi_crit/dP50).dA/dpsi_crit
-  #
-  # Dropping the second term is the plausible-looking mistake this catches: it
-  # would give 5.39 rather than 7.56, a 29% error with nothing about it that looks
-  # wrong.
+  for (p in c("vcmax_25", "R_d_25")) {
+    expect_identical(dry$gradient[p, "gc"], 0, label = p)
+    expect_identical(dry$gradient[p, "collar"], 0, label = p)
+    expect_true(dry$gradient[p, "A"] != 0, label = p)
+  }
   tr <- leaf_traits()
-  d_dP50 <- log(2)^(-1 / tr$stem_c)
-  bound  <- (log(1 / 0.05) / log(2))^(1 / tr$stem_c)
-  expect_equal(dry$gradient["stem_P50", "A"],
-               d_dP50 * 4.6991 + bound * 1.2605, tolerance = 2e-3)
-
-  # `dA/dvcmax_25` is a PARTIAL at fixed respiration, since `R_d_25` is its own
-  # trait. A fit that wants respiration to follow Vcmax adds the two columns, so
-  # that combination is asserted rather than left implicit.
-  expect_equal(dry$gradient["vcmax_25", "A"] +
-                 0.015 * dry$gradient["R_d_25", "A"],
-               0.014357, tolerance = 1e-3)
+  expect_equal(dry$gradient["stem_P50", "psi_stem"],
+               (40 / log(2))^(1 / tr$stem_c), tolerance = 1e-6)
 })
 
 test_that("at a pinned optimum the moving BOUND carries part of the gradient", {
@@ -242,15 +234,17 @@ test_that("at a pinned optimum the moving BOUND carries part of the gradient", {
                tolerance = 5e-3)
 
   # Pinned: the bound term is present and is 40% of the total.
-  pinned <- grid_gradient(4, vpd = 0.5, layers = 3L, pars = "stem_P50")
+  # At a dry pin the stem is held at the end of its curve, so its row in
+  # stem_P50 is the end's own, (40 / ln 2)^(1/c): carried by the bound, not by
+  # the curve (#183).
+  pinned <- grid_gradient(6, ppfd = 500, vpd = 0.5, layers = 1L, pars = "stem_P50")
   expect_identical(pinned$status, "pinned")
   expect_identical(pinned$method, "fd")
-  # Both halves were arbitrated separately against least-squares slopes over +-2%
-  # at n = 41, before the reparameterisation: 4.6991 for dA/dstem_b and 1.2605 for
-  # dA/dpsi_crit (R^2 = 0.998; the fit is imperfect because the response has a
-  # kink in it, which is the whole point).
-  expect_equal(pinned$gradient["stem_P50", "A"],
-               d_dP50 * 4.6991 + bound * 1.2605, tolerance = 2e-3)
+  expect_equal(pinned$gradient["stem_P50", "psi_stem"],
+               (40 / log(2))^(1 / tr$stem_c), tolerance = 1e-6)
+  expect_false(isTRUE(all.equal(pinned$gradient["stem_P50", "psi_stem"],
+                                interior$gradient["stem_P50", "psi_stem"],
+                                tolerance = 1e-3)))
   expect_gt(pinned$gradient["stem_P50", "collar"], 0)
 })
 
@@ -262,7 +256,8 @@ test_that("a shut-down operating point reports no gradient and still differences
   # reversed pair -- so there is nothing to divide by and the point says so.
   # The gradient itself is not all zero, because the hydraulic cost of the stem
   # at that potential still moves with the stem curve's traits.
-  g <- grid_gradient(6.0, pars = c("vcmax_25", "stem_P50", "root_P50", "R_d_25"))
+  # Past the end of the stem curve, which shuts the leaf (#183).
+  g <- grid_gradient(16.0, pars = c("vcmax_25", "stem_P50", "root_P50", "R_d_25"))
   expect_identical(g$status, "no-gradient")
   expect_identical(g$method, "fd")
 
@@ -276,7 +271,7 @@ test_that("a shut-down operating point reports no gradient and still differences
   expect_lt(abs(g$gradient["R_d_25", "profit"]), 1e-9)
 
   l <- leaf_model()
-  do.call(set_drivers, c(list(l), grid_drivers(6.0)))
+  do.call(set_drivers, c(list(l), grid_drivers(16.0)))
   l$find_root_collar_psi()
   expect_identical(l$transpiration_, 0)
   expect_identical(g$value[["profit"]],
@@ -288,29 +283,23 @@ test_that("a shut-down operating point reports no gradient and still differences
   # profit only through the cost of a stem at that potential, which falls as the
   # stem gets harder to embolise.
   expect_identical(l$opt_psi_stem_, l$opt_root_psi_)
-  expect_lt(abs(l$opt_psi_stem_ - 6.0), 0.01)
+  expect_lt(abs(l$opt_psi_stem_ - 16.0), 0.01)
   expect_identical(g$gradient["stem_P50", "psi_stem"], 0)
   expect_identical(g$gradient["root_P50", "psi_stem"], 0)
   expect_identical(g$gradient["root_P50", "profit"], 0)
-  expect_gt(g$gradient["stem_P50", "profit"], 0)
-
-  # And that is a derivative of the cost, not an artefact of the difference: the
-  # profit of three re-solved leaves follows the row's sign, and is no longer the
-  # same number on every curve, as it was when the stem was held at psi_crit.
+  # And past the end of the curve the hydraulic cost has saturated, so not even
+  # profit sees the stem trait: a re-solve agrees.
+  expect_identical(g$gradient["stem_P50", "profit"], 0)
   P50s <- leaf_traits()$stem_P50 + c(-0.05, 0, 0.05)
   profits <- vapply(P50s, function(P50) {
     ll <- leaf_model(leaf_traits(stem_P50 = P50))
-    do.call(set_drivers, c(list(ll), grid_drivers(6.0)))
+    do.call(set_drivers, c(list(ll), grid_drivers(16.0)))
     ll$find_root_collar_psi()
     ll$profit_
   }, numeric(1))
-  expect_true(all(diff(profits) > 0))
-  expect_equal((profits[3] - profits[1]) / 0.1, g$gradient["stem_P50", "profit"],
-               tolerance = 1e-3)
+  expect_lt(max(abs(diff(profits))), 1e-12)
 
-  # Forcing the composite here is an error rather than a wrong number: there is
-  # no curvature to divide by.
-  expect_error(grid_gradient(6.0, pars = "vcmax_25", method = "ift"),
+  expect_error(grid_gradient(16.0, pars = "vcmax_25", method = "ift"),
                "usable curvature")
 })
 
@@ -318,18 +307,16 @@ test_that("the active-set classification splits the golden grid as measured", {
   # The whole 288-point grid, which is what makes `stationarity_tol` a measured
   # threshold rather than a guess. Two claims:
   #
-  #   * the counts: 198 interior, 63 pinned, 27 with no gradient at all;
+  #   * the counts: 231 interior and 57 pinned;
   #   * the GAP. The worst interior point is ~2e-12 and the mildest pinned one
   #     on an open leaf ~6e-06, so the default 1e-08 sits in an empty band
   #     several orders wide on each side. That is the number worth defending,
   #     because a threshold in a populated region would be a judgement call.
   #
-  # The 48 shut rows (psi_soil = 6) sit at their wet bound (#182). With one
-  # layer that bound is the soil potential and the curvature's difference steps
-  # into the reversed pair: `no-gradient`. With three or five it lies between
-  # the layers' potentials, so it has a curvature and is a constrained optimum:
-  # `pinned`, either on the stationarity test or because the closed interval is
-  # narrower than the difference step. Every one of them differences the solve.
+  # psi_soil = 6 is past psi_crit, which bounds nothing under TF24 (#183), so
+  # none of its 48 rows is shut: 15 are interior optima, and the rest are pinned,
+  # at the wet bound where the leaf declines to open or at the dry end where it
+  # transpires all its stem can carry. Every pinned row differences the solve.
   psi_soils <- c(0.5, 1.0, 2.0, 3.0, 4.0, 6.0)
   vpds <- c(0.5, 1.0, 2.0, 4.0)
   layer_counts <- c(1L, 3L, 5L)
@@ -355,10 +342,9 @@ test_that("the active-set classification splits the golden grid as measured", {
   }))
 
   expect_identical(nrow(res), 288L)
-  expect_identical(sum(res$status == "interior"), 198L)
-  expect_identical(sum(res$status == "pinned"), 63L)
-  expect_identical(sum(res$status == "no-gradient"), 27L)
-  expect_true(all(res$status[res$psi_soil == 6] %in% c("pinned", "no-gradient")))
+  expect_identical(sum(res$status == "interior"), 231L)
+  expect_identical(sum(res$status == "pinned"), 57L)
+  expect_identical(sum(res$status == "no-gradient"), 0L)
 
   # Open pinned points are all at the dry end, which is where a drought
   # calibration wanders and is the reason this is not a curiosity.
@@ -973,7 +959,7 @@ test_that("an infeasible prescribed psi is no-gradient, not a sentinel zero", {
   # reach. Most such points are caught as `clamped` first -- the shut-down state
   # seats a collar of its own choosing -- so the test hands back exactly that
   # collar, which is the case `clamped` cannot see.
-  d <- grid_drivers(6.0)                       # drier than psi_crit: shut down
+  d <- grid_drivers(16.0)          # past the end of the stem curve: shut down
   solved <- do.call(leaf_gradient, c(d, list(pars = "vcmax_25")))
   expect_identical(solved$status, "no-gradient")
 
@@ -987,7 +973,7 @@ test_that("an infeasible prescribed psi is no-gradient, not a sentinel zero", {
   expect_true(all(is.na(g$gradient)))
   expect_true(all(is.na(g$dY_dpsi)))
 
-  b <- leaf_batch(psi_soil = 6.0, PPFD = 900)
+  b <- leaf_batch(psi_soil = 16.0, PPFD = 900)
   expect_identical(leaf_gradient_batch(b, pars = "vcmax_25",
                                        psi = solved$psi)$status, "no-gradient")
 })

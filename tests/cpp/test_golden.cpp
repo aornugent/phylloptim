@@ -102,13 +102,17 @@ Row solve(double psi_soil, double ppfd, double vpd, int layers,
 }
 
 std::vector<Row> run_grid() {
-  const double psi_soils[] = {0.5, 1.0, 2.0, 3.0, 4.0, 6.0};
+  // 17 MPa is past the end of the stem curve (15.44 at the defaults), the only
+  // place a TF24 leaf shuts since psi_crit stopped bounding it (#183): it keeps
+  // the shut-down exit, where an output a path declines to write becomes the
+  // previous leaf's (hazard 8), in the baseline.
+  const double psi_soils[] = {0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 17.0};
   const double ppfds[] = {100.0, 500.0, 900.0, 1500.0};
   const double vpds[] = {0.5, 1.0, 2.0, 4.0};
   const int layer_counts[] = {1, 3, 5};
 
   // ⚠️ TEMPERATURE IS THE OUTERMOST LOOP ON PURPOSE. It makes the file contiguous
-  // copies of one 288-point state grid, so a regeneration that only adds a
+  // copies of one 336-point state grid, so a regeneration that only adds a
   // temperature is checkable as an ADDITION: the 25 C block must come out
   // byte-identical. Reordering these loops rewrites every row without changing any
   // value.
@@ -132,25 +136,23 @@ std::vector<Row> run_grid() {
 // ---------------------------------------------------------------------------
 //
 // `Leaf::operating_point_kind()` says which branch of the collar solve produced
-// the point, and the grid's split between those branches is already an
-// established number AT 25 C: 240 of those 288 points are feasible, of which 198 sit
-// at an interior profit maximum and 42 at a constrained optimum pinned to a bracket
-// bound (24 wet, 18 dry); the remaining 48 shut down. Those figures are quoted in
-// the developer guide and in maximise_profit_over_collar's own comment. The 40 C
-// counts were measured when the axis was added.
+// the point, and the grid's split between those branches is a measured number.
+// AT 25 C, of the 336 points 232 sit at an interior profit maximum and 56 at a
+// constrained optimum pinned to a bracket bound: 45 wet, and 11 dry, at
+// psi_soil = 6, where the leaf transpires all its stem can carry (#183). The 48
+// at psi_soil = 17, past the end of the stem curve, shut down; psi_crit bounds
+// nothing under TF24, so no drier soil short of that end does. The 40 C counts
+// are measured the same way.
 //
-// So this asserts the classification against numbers that already exist rather
-// than inventing reference values for it. It is a cheap test with a specific
-// job: the tag must come from the branch that was TAKEN, and a plausible-looking
-// wrong implementation -- classifying by |dprofit| against a tolerance -- would
-// not reproduce this split, because dprofit's shut-down sentinel is exactly 0.0
-// and would move all 48 shutdown points into `interior`.
+// It is a cheap test with a specific job: the tag must come from the branch that
+// was TAKEN, and a plausible-looking wrong implementation -- classifying by
+// |dprofit| against a tolerance -- would not reproduce this split, because
+// dprofit's no-flow sentinel is exactly 0.0.
 //
-// Five kinds are expected to be EMPTY here, and the table below asserts each:
+// Four kinds are expected to be EMPTY here, and the table below asserts each:
 // `solver-refused` and
 // `non-finite-gradient` because both bracket endpoints admit a usable gradient on
-// every feasible row; `boundary-root-crit` because the continuity root never
-// reaches the root's own limit at these traits; and `prescribed` and `unsolved` because
+// every feasible row; and `prescribed` and `unsolved` because
 // every row is solved rather than evaluated at a given collar.
 //
 // ⚠️ The hot end does NOT reach the compensation-point exit either, which is worth
@@ -170,17 +172,15 @@ struct KindCount {
 // One row per entry of kLeafTemps, in that order.
 struct TempKinds {
   double leaf_temp;
-  int interior, boundary_soil, boundary_crit, shutdown;
+  int interior, boundary_soil, boundary_dry, shutdown;
 };
 //
 // The split MOVES with temperature, in a direction that is physical: a hot leaf
 // assimilates less and respires more, so it has less to gain from water and its
-// optimum presses against the WET bound instead of the dry one. The 48 shut-down
-// rows do not move, because there it is hydraulics rather than heat that forbids
-// transpiration.
+// optimum presses against the WET bound instead of the dry one.
 const TempKinds kExpectedKinds[] = {
-    {25.0, 198, 24, 18, 48},
-    {40.0, 160, 80, 0, 48},
+    {25.0, 232, 45, 11, 48},
+    {40.0, 172, 116, 0, 48},
 };
 
 int check_operating_kinds(const std::vector<Row> &rows) {
@@ -191,12 +191,7 @@ int check_operating_kinds(const std::vector<Row> &rows) {
     const KindCount expected[] = {
         {Kind::Interior, e.interior},
         {Kind::BoundarySoil, e.boundary_soil},
-        {Kind::BoundaryCrit, e.boundary_crit},
-        // The dry end's other bound. At these traits root_psi_crit is 5.87 MPa
-        // and the continuity root never reaches it, so the arm is zero over the
-        // whole grid -- asserted rather than left out, because a kind absent from
-        // this list is a kind the golden file stops covering.
-        {Kind::BoundaryRootCrit, 0},
+        {Kind::BoundaryDry, e.boundary_dry},
         {Kind::HydraulicShutdown, e.shutdown},
         {Kind::Prescribed, 0},        {Kind::SolverRefused, 0},
         {Kind::NonFiniteGradient, 0}, {Kind::Unsolved, 0},
@@ -227,10 +222,10 @@ int check_operating_kinds(const std::vector<Row> &rows) {
     printf("kinds: %zu points at %zu leaf temperatures\n", rows.size(),
            sizeof kExpectedKinds / sizeof kExpectedKinds[0]);
     for (const TempKinds &e : kExpectedKinds) {
-      printf("  T = %4.1f C  %3d interior, %2d at a bound (%2d soil, %2d crit), "
+      printf("  T = %4.1f C  %3d interior, %2d at a bound (%2d soil, %2d dry), "
              "%2d shutdown\n",
-             e.leaf_temp, e.interior, e.boundary_soil + e.boundary_crit,
-             e.boundary_soil, e.boundary_crit, e.shutdown);
+             e.leaf_temp, e.interior, e.boundary_soil + e.boundary_dry,
+             e.boundary_soil, e.boundary_dry, e.shutdown);
     }
   }
   return failures == 0 ? 0 : 1;

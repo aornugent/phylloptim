@@ -10,25 +10,16 @@ namespace phylloptim {
 // Putting a closed-form row onto a table read.
 //
 // THE VALUE IS THE TABLE'S, in both functions and at every call site, because the
-// solve ran on the table: a value from the curve would place the operating point
-// somewhere else. THE TRAIT ROWS ARE THE CURVE'S, in both, because a table carries
-// none.
+// solve ran on the table: a value from elsewhere would place the operating point
+// somewhere else, if only by the table's ~1e-14. THE TRAIT ROWS ARE THE CURVE'S,
+// in both, because a table carries none.
 //
-// THE QUERY ROW IS WHICHEVER THE REST OF THE ASSEMBLY ALREADY FORMS, and it is the
-// only one that differs between the two below. Where the model forms that
-// derivative from a table, a closed-form row is a SECOND value of it and the two
-// disagree about where the operating point is stationary; where the model forms it
-// nowhere, a table row is a row of the fit rather than of the curve. Which case a
-// function is in is a grep and not a judgement:
-//
-//   G  dG/dpsi IS formed -- stem_curve_integral_deriv and
-//      root_vuln_integral_deriv_at, both read by the physics -- so
-//      closed_form_integral takes the table's slope as an argument.
-//   f  df/dpsi is formed from the closed form where it is formed at all (the
-//      stem's stem_curve_curvature_ table is closed-form at its knots), never as
-//      a table slope: root_vuln_from_psi is built WITH slopes and .slope() is
-//      never called on it, and odelia's interpolator reads no second derivative.
-//      So closed_form_curve uses the curve's own, and there is one value of it.
+// THE QUERY ROW IS THE ONE THE REST OF THE ASSEMBLY ALREADY FORMS: dG/dpsi is
+// formed by stem_curve_integral_deriv and root_vuln_integral_deriv_at, so
+// closed_form_integral takes it as an argument rather than forming a second
+// value of it; df/dpsi is formed nowhere else, so closed_form_curve uses the
+// curve's own. Both are closed forms now, so the two could not disagree in any
+// case, but the argument keeps there being one value of each.
 //
 // Every bracket below is exactly zero in VALUE at the recording point, so the
 // number is untouched and only the tape sees the rows.
@@ -39,60 +30,36 @@ namespace phylloptim {
 // row that nothing reports, which is exactly the class of defect this file exists
 // to make unwritable.
 
-// What a table reads past its last knot, which decides the rows there, so every
-// call names its table's. The stem table reads the closed form itself (#157), so
-// its rows are the closed form's wherever it is read. The root table holds its
-// last knot (#77): the integral runs along that knot's tangent up to G(inf) and
-// stays at G(inf) beyond, and the conductivity stays at the floor.
-enum class PastLastKnot { ReadsClosedForm, HoldsLastKnot };
-
-// G(psi): the cumulative vulnerability integral.
-//
-// ⚠️ THE QUERY SLOPE IS THE CALLER'S, AND IT MUST BE THE TABLE'S -- this is the
-// case above where the model forms dG/dpsi itself. Measured with the closed form
-// here instead: the residual lift's dci/dcollar read 0.6913 against 0.6382 from
-// the explicit slope beside it, and dM/dcollar came out at an eighth of its true
-// size. Both are finite and plausible and they differ by the fit error.
+// G(psi): the cumulative vulnerability integral. Past the end of the curve the
+// rows are G(inf)'s, which cumulative_vulnerability_integral_derivatives_at
+// returns there.
 template <class S>
 inline S closed_form_integral(double table_value, double table_slope, const S& psi,
-                        const S& P50, const S& c, PastLastKnot tail) {
+                        const S& P50, const S& c) {
   using odelia::util::to_passive;
   const double at = to_passive(psi);
   const double P50_0 = to_passive(P50);
   const double c_0 = to_passive(c);
   const double b = weibull_b_from_P50(P50_0, c_0);
-  const double end = vulnerability_psi_max(b, c_0);
-  // Past the root table's dry end, up to G(inf), the read is the last knot's
-  // tangent, whose slope is f there, so the knot's own motion cancels and the
-  // rows are G's at the knot; beyond, it is G(inf), and its slope is zero.
-  const bool held = tail == PastLastKnot::HoldsLastKnot && at > end;
   const VulnerabilityIntegralDerivatives d =
-      !held               ? cumulative_vulnerability_integral_derivatives_at(at, b, c_0)
-      : table_slope > 0.0 ? cumulative_vulnerability_integral_derivatives_at(end, b, c_0)
-                          : cumulative_vulnerability_integral_limit_derivatives(b, c_0);
+      cumulative_vulnerability_integral_derivatives_at(at, b, c_0);
   const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
   return S(table_value) + S(table_slope) * (psi - S(at)) +
          S(rows.dP50) * (P50 - S(P50_0)) + S(rows.dc) * (c - S(c_0));
 }
 
-// f(psi): the surviving conductivity, the curve itself. No table-slope argument,
-// because nothing else in the assembly forms df/dpsi to disagree with.
+// f(psi): the surviving conductivity, the curve itself.
 template <class S>
-inline S closed_form_curve(double table_value, const S& psi, const S& P50,
-                     const S& c, PastLastKnot tail) {
+inline S closed_form_curve(double value, const S& psi, const S& P50,
+                     const S& c) {
   using odelia::util::to_passive;
   const double at = to_passive(psi);
   const double P50_0 = to_passive(P50);
   const double c_0 = to_passive(c);
   const double b = weibull_b_from_P50(P50_0, c_0);
-  // Past the root table's dry end the read is its last knot's value, and f there
-  // is the conductivity floor whatever b and c are: the read has no row.
-  if (tail == PastLastKnot::HoldsLastKnot && at > vulnerability_psi_max(b, c_0)) {
-    return S(table_value);
-  }
   const VulnerabilityDerivatives d = vulnerability_derivatives_at(at, b, c_0);
   const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
-  return S(table_value) + S(d.dpsi) * (psi - S(at)) +
+  return S(value) + S(d.dpsi) * (psi - S(at)) +
          S(rows.dP50) * (P50 - S(P50_0)) + S(rows.dc) * (c - S(c_0));
 }
 

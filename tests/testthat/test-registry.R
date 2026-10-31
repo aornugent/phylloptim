@@ -11,14 +11,14 @@ skip_if_not_installed("yaml")
 registry <- model_registry()
 leaf <- leaf_model()
 
-# Registry parameters held by a member no R binding exposes: four constants
+# Registry parameters held by a member no R binding exposes: the constants
 # (static or constexpr members, valued through Doxygen's initializer) and two
 # constructor arguments the Leaf stores but does not bind (leaf_control()
 # holds their defaults).
 .registry_unbound_members <- c("damage_surv_floor", "collar_root_tol", "k_crit_fraction",
                                "GSS_tol_abs", "vulnerability_curve_ncontrol",
                                "medlyn_H2O_CO2_ratio", "residual_cap_power",
-                               "residual_cap_fraction")
+                               "residual_cap_fraction", "stem_capacity_floor")
 
 # Inputs with no default by design: an unset one reads NaN and the code refuses
 # it where it is used (TF24_floor's price, the energy balance's near-infrared),
