@@ -17,8 +17,8 @@ leaf_traits(
   curv_fact_colim = 0.99,
   TF24_cost_scale = 7.5,
   R_d_25 = 1.44,
-  JS22_gamma = 1,
-  CMax_a = 0.6,
+  JS22_gamma = 0.4717887793,
+  CMax_a = 0.6385596982,
   CMax_b = 0,
   g_min = 0
 )
@@ -62,8 +62,9 @@ photon. Was \code{a} (incident basis) before 0.13.0: \code{phi_J = a / 0.85}.}
 (umol C m^-2 s^-1 MPa^-2), read only by the \code{JS22} cost curve and returning
 an exactly zero gradient on every other one.
 
-⚠️ \strong{The default is not a literature value.} It is order-of-magnitude
-matched to TF24 at this package's defaults, and no single value matches more
+⚠️ \strong{The default is not a literature value.} It is aligned to TF24 by
+\code{\link[=align_curves]{align_curves()}}: the value at which the JS22 stem optimum has TF24's
+conductance at that function's reference environment. No single value matches more
 than one soil potential: the \code{JS22_gamma} reproducing TF24's cost at its own
 optimum runs 0.287 at \code{psi_soil} 0.5 MPa to 1.761 at 3.0 MPa. TF24's cost
 tracks the absolute potential and this one tracks the drop, and across a
@@ -72,6 +73,8 @@ drydown those move in opposite directions.}
 \item{CMax_a, CMax_b}{slope and intercept of the \code{CMax} marginal cost,
 \code{dC/dpsi = CMax_a * psi + CMax_b}, following Wolf et al. (2016) as
 Anderegg et al. (2018) parameterised it. Read only by the \code{CMax} curve.
+\code{CMax_a}'s default is aligned to TF24 by \code{\link[=align_curves]{align_curves()}}, with \code{CMax_b} at
+zero; neither default is a literature value.
 
 ⚠️ \strong{\code{CMax_b} is signed, and negative in the source convention.} Sabot's
 \code{TractLSM} stores it with the sign inverted "so as to get a positive

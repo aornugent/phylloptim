@@ -280,13 +280,13 @@ column stays numeric and the frame stays rectangular.
 `plant` does, and it is what you want when you care about the intermediate state
 rather than only the operating point.
 
-It is not the faster route, which is worth saying because it looks as though it
-ought to be. Measured over 32 rows, `leaf_solve()` costs 21.5 µs a row and this
-loop costs 20.3, so they are within 6% of each other. Both are dominated by the
-same thing: a call across the R boundary costs about 1.1 µs, against 2.8 µs for
-the whole C++ solve. If you need an inner loop faster than that, what has to go is
-the number of R calls per row rather than which R function makes them.
-`?leaf_solve` has the numbers, and the README has a section on it.
+It is also the cheaper route per row: driving one object by hand, as below,
+measures at about half of `leaf_solve()`'s cost per row. Both are dominated by
+the same thing, which is that a call across the R boundary costs about half as
+much as the whole C++ solve. If you need an inner loop faster than that, what has
+to go is the number of R calls per row rather than which R function makes them.
+The measured figures are in the README's
+[Performance from R](https://github.com/traitecoevo/phylloptim#performance-from-r).
 
 ```{r}
 l <- leaf_model()
@@ -311,8 +311,11 @@ tibble(psi = seq(0, 6, length.out = 200)) |>
 The profit function is not defined everywhere. Water flows from the soil to the
 leaf, so `psi_stem` must be at least the upstream potential. Below it the leaf
 would be wetter than the soil, so `transpiration()`, `stom_cond_CO2()` and
-`psi_stem_to_ci()` stop with an error rather than return a negative flux. Plot
-the domain the solve actually searches:
+`psi_stem_to_ci()` stop with an error rather than return a negative flux.
+`profit_psi_stem_TF()` reads that pair as zero flux, as the solve's evaluator
+does, so it returns a number, but not one on the curve the solve maximises.
+`psi_stem` equal to the upstream potential is the shut stomata's state, with no
+stomatal flux. Plot the domain the solve actually searches:
 
 ```{r, fig.height = 3.4}
 psi_upstream <- 2.0
@@ -576,13 +579,13 @@ be applied after solving, and a rejected row falls back to the exact solve. That
 makes the fallback fraction `phi` part of the price: the realised speedup is
 `1/[phi + (1 - phi)/s]` rather than the ceiling `s`.
 
-Measured in `tests/cpp/bench_solve`, with both arms in one process on a 96-point
-single-layer driver grid:
+Measured in `tests/cpp/bench_solve` at 0.16.2, with both arms in one process on a
+96-point single-layer driver grid:
 
-| curve | exact | closed | realised | `phi` | ceiling at `phi = 0` |
-|---|---|---|---|---|---|
-| `TF24` | 2.65 µs | 1.16 µs | **2.3×** | 0.27 | 4.4× |
-| `CF77` | 2.74 µs | 1.37 µs | **2.0×** | 0.39 | 5.2× |
+| curve | realised speedup | `phi` | ceiling at `phi = 0` |
+|---|---|---|---|
+| `TF24` | **2.2×** | 0.27 | 4.0× |
+| `CF77` | **2.0×** | 0.39 | 5.3× |
 
 Two-fold, in other words — not the order of magnitude an earlier version of this
 code advertised. Those figures predated the current solver, which root-finds the

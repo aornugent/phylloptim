@@ -82,18 +82,25 @@ test_that("the solved chi is Prentice et al.'s first-order condition", {
   }
 })
 
-test_that("LeastCost refuses an unset, zero or negative beta", {
+test_that("LeastCost refuses a cleared, zero or negative beta", {
   sp <- leaf_supply_singlelayer()
   solve_at <- function(...) {
     leaf_solve(psi_soil = 0.1, PPFD = 900, atm_vpd = 2, supply = sp,
                model = "LeastCost", ...)
   }
-  # Unset is refused rather than solved as a NaN objective, and the message has
-  # to carry the units: a beta derived against this package's kg H2O and umol
-  # CO2 rather than mol and mol is out by 5.6e7 and would solve to something
-  # entirely plausible.
-  expect_error(solve_at(), "needs LeastCost_beta set")
-  expect_error(solve_at(), "DIMENSIONLESS")
+  # Unset takes the aligned default (#156) ...
+  expect_identical(solve_at(), solve_at(LeastCost_beta =
+                                          .level_defaults[["LeastCost_beta"]]))
+  # ... and a beta cleared to NA on the leaf is refused rather than solved as a
+  # NaN objective. The message has to carry the units: a beta derived against
+  # this package's kg H2O and umol CO2 rather than mol and mol is out by 5.6e7
+  # and would solve to something entirely plausible.
+  cleared <- leaf_model(supply = sp)
+  cleared$set_model("LeastCost", "stem")
+  cleared$LeastCost_beta <- NA_real_
+  set_drivers(cleared, psi_soil = 0.1, PPFD = 900, atm_vpd = 2)
+  expect_error(cleared$optimise(), "needs LeastCost_beta set")
+  expect_error(cleared$optimise(), "DIMENSIONLESS")
   # ⚠️ ZERO IS REFUSED, WHICH `TF24_floor` DOES NOT DO. Zero is meaningful there
   # -- the curve is `TF24`. Here it deletes the capacity term, leaving `A/E`,
   # which is water-use efficiency and rises without bound as transpiration

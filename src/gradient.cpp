@@ -55,7 +55,7 @@ DriverBatch* checked(SEXP drivers) {
 
 //' The differentiable parameters, in the order C++ indexes them
 //'
-//' The fifteen [leaf_traits()] in `set_traits()`'s argument order, then
+//' The sixteen [leaf_traits()] in `set_traits()`'s argument order, then
 //' `leaf_specific_conductance_max`, `resistance` and `CF77_lambda_`. Exported so that R's own
 //' copy of this order can be compared against it in a test: R passes integer
 //' positions into this enumeration, so appending to it is safe and reordering it
@@ -92,6 +92,14 @@ std::vector<std::string> cost_curve_names() {
     out.push_back(nm);
   }
   return out;
+}
+
+// `Leaf::ncontrol_default`, the vulnerability curves' knot count, read rather
+// than restated: leaf_control() takes its default from here, so the number has
+// one definition. Not exported; leaf_control() is the user-facing route.
+// [[Rcpp::export(name = ".leaf_ncontrol_default")]]
+double leaf_ncontrol_default() {
+  return phylloptim::Leaf::ncontrol_default;
 }
 
 

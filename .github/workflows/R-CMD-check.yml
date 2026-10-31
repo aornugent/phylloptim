@@ -3,7 +3,7 @@ name: R-CMD-check
 # The R layer's job. It is deliberately SEPARATE from cpp-tests.yml rather than a
 # step inside it, and that separation is load-bearing: cpp-tests.yml runs on
 # machines with no R, which is the only thing that can demonstrate that
-# inst/include/ is usable without R (PLAN item 6a). This job installs R, so it
+# inst/include/ is usable without R (hazard 9 in .claude/CLAUDE.md). This job installs R, so it
 # could never notice an Rcpp include creeping into a model header. Two workflows,
 # two different claims.
 
@@ -51,7 +51,7 @@ jobs:
 
       # RcppR6 is deliberately NOT a declared dependency -- it is a developer
       # tool whose output is committed, so nobody installing this package needs
-      # it (PLAN item 6c). It is installed here, and only here, for the
+      # it (.claude/CLAUDE.md, "Build and test"). It is installed here, and only here, for the
       # regeneration check below.
       # odelia is not on CRAN, and DESCRIPTION names only the oldest release
       # this package builds against (LinkingTo), not where to fetch it: a

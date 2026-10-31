@@ -234,33 +234,37 @@ call. This is here to show what the primitives compose into, not as a template.
 
 ## What is fast, and what is not
 
-Measured per parameter at one operating point, both arms in one tree, interleaved:
+Measured per parameter (`vcmax_25`) at one operating point through `leaf_gradient()`,
+the three routes interleaved in one process, relative to the cheapest:
 
-| route | µs per parameter |
+| route | cost per parameter |
 |---|---:|
-| central FD on the solve, fresh `Leaf` per perturbation | 343 |
-| central FD on the solve, `set_traits` reuse | 84 |
-| the IFT composite, `set_traits` reuse | 89 |
+| central FD on the solve, fresh `Leaf` per call | 3.2× |
+| central FD on the solve, `set_traits` reuse | 1 |
+| the IFT composite, `set_traits` reuse | 1.12× |
 
-**The composite is 6% slower than the finite difference it was built to
-replace**, and the 4× that is real comes from **object reuse, not from the
+**The composite is about 10% slower than the finite difference it was built to
+replace**, and the 3× that is real comes from **object reuse, not from the
 theorem**, and that accrues to the finite difference equally. The composite does
-replace a 2.78 µs solve with a 0.26 µs gradient evaluation exactly as projected;
-it just costs one extra R call per side to do it, and in the R layer a call costs
-~1.8 µs against the 0.26 µs of C++ work it wraps.
+replace a solve with a gradient evaluation costing under a tenth as much, exactly
+as projected; it just costs one extra R call per side to do it, and in the R layer
+a call costs more than the C++ work it wraps.
 
-Of the 84 µs per parameter, **only ~6 µs is C++**. So a C++ consumer composing the
-theorem directly avoids the boundary that makes the R version slow, and is where
-the IFT's advantage first becomes visible at all.
+Of the cost per parameter, **only a small fraction is C++**. So a C++ consumer
+composing the theorem directly avoids the boundary that makes the R version slow,
+and is where the IFT's advantage first becomes visible at all: `bench_gradient`
+measures it at about 3.5× on the traits that rebuild no spline.
 
 That is also what an R caller gets from `leaf_gradient_batch()`: the composition
 runs once, in C++, over every observation, so the boundary is crossed once per call
-rather than 112 times per observation. Measured at `length(pars)` = 4, **363 →
-10.6 µs per observation, a factor of 22**, and none of it is a faster gradient.
+rather than 112 times per observation, and none of the saving is a faster gradient.
 
-**Constructing a `Leaf` from R costs about 180× a trivial `.Call`, or 45 solves**, of which only ~32 µs
-is the two vulnerability splines; the rest is R-side object construction. From
-C++ that cost is the splines alone. Reuse the object either way.
+**Constructing a `Leaf` from R is the largest single cost in the R layer**, and
+most of it is R-side object construction rather than the vulnerability splines.
+From C++ that cost is the splines alone. Reuse the object either way. The measured
+figures for all of these are in the README's
+[Performance from R](https://github.com/traitecoevo/phylloptim#performance-from-r),
+the one place they are kept current.
 
 ## The golden file is the contract
 

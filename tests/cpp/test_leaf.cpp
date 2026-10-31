@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <iterator>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -1922,10 +1923,11 @@ void test_cowan_farquhar_closed_state() {
 }
 
 void test_cowan_farquhar_refuses_an_unset_lambda() {
-  printf("Cowan-Farquhar refuses an unset lambda\n");
+  printf("Cowan-Farquhar refuses a cleared lambda\n");
   Drivers d;
   phylloptim::Leaf l = make_leaf(d, {1.0}, {1.0});
-  ok(!std::isfinite(l.CF77_lambda_), "CF77_lambda_ starts unset");
+  ok(std::isfinite(l.CF77_lambda_), "CF77_lambda_ starts at its aligned default");
+  l.CF77_lambda_ = std::numeric_limits<double>::quiet_NaN();
   bool threw = false;
   std::string what;
   try {
@@ -3715,6 +3717,159 @@ void test_root_network_from_carbon() {
   }
 }
 
+// The template overload is plant's route onto its own tape, and its comment
+// claims it is the double overload term for term. At double that is a
+// bit-identity, so it is asserted as one, on a uniform, a graded and a gapped
+// profile (an interior zero-carbon layer passes the running sum through) and one
+// with trailing rootless layers. At a tangent the VALUES must still be the double
+// overload's, bit for bit, since only the rows are added.
+void test_root_network_template_is_the_double_overload() {
+  printf("root architecture: the template overload is the double one, bit for bit\n");
+  using T = odelia::ode::tangent_scalar<double>;
+  const double beta_H = 3.4e2, beta_V = 9.4e3;
+  const std::vector<std::pair<std::vector<double>, std::vector<double> > > cases{
+      {{3.0, 6.0, 1.5}, {0.5, 0.5, 0.5}},
+      {{3.0, 6.0, 1.5}, {0.02, 0.28, 1.2}},
+      {{4.0, 0.0, 2.5, 7.0}, {0.1, 0.3, 0.6, 1.0}},
+      {{3.0, 6.0, 0.0, 0.0}, {0.5, 0.5, 0.5, 0.5}},
+      {{1.0 / 3.0, 2.0 / 7.0, 0.1}, {0.3, 0.7, 0.11}}};
+  int compared = 0;
+  for (const auto& [carbon, dz] : cases) {
+    const phylloptim::RootNetwork want =
+        phylloptim::root_network_from_carbon(carbon, dz, beta_H, beta_V);
+    std::vector<double> h, v;
+    phylloptim::root_network_from_carbon<double>(carbon, dz, beta_H, beta_V, h, v);
+    ok(h.size() == want.r_R_H_min.size() && v.size() == want.r_R_V_sum.size(),
+       "the template sizes to the deepest rooted layer, as the double one does");
+    std::vector<T> carbon_t(carbon.begin(), carbon.end()), h_t, v_t;
+    for (T& c : carbon_t) odelia::ode::set_direction(c, 1.0);
+    phylloptim::root_network_from_carbon<T>(carbon_t, dz, beta_H, beta_V, h_t, v_t);
+    for (std::size_t i = 0; i < h.size() && i < want.r_R_H_min.size(); ++i) {
+      ok(h[i] == want.r_R_H_min[i] && v[i] == want.r_R_V_sum[i],
+         "layer " + std::to_string(i) + " is bit-identical at double");
+      ok(odelia::util::to_passive(h_t[i]) == want.r_R_H_min[i] &&
+             odelia::util::to_passive(v_t[i]) == want.r_R_V_sum[i],
+         "layer " + std::to_string(i) + " is bit-identical in value at a tangent");
+      ++compared;
+    }
+  }
+  printf("    %d layers compared\n", compared);
+  ok(compared == 15, "every rooted layer of every case was compared");
+}
+
+// G^-1 is Newton on the forward table with a fixed iteration cap and a
+// hard-coded acceptance test, so it is checked as a round trip: psi -> G(psi)
+// -> G^-1 -> psi', fast path and converged, over the whole table at both knot
+// counts, rescaled by perturb_stem_P50, and past the last knot. The accuracy
+// that can be asked of an inverse is its conditioning, eps * w / G'(psi), so
+// the error is read in those units; the residual in G must be rounding.
+void test_stem_curve_inverse_round_trips() {
+  printf("the stem curve's inverse round-trips\n");
+  const double eps = std::numeric_limits<double>::epsilon();
+  double worst_cond = 0.0, worst_res = 0.0, worst_cross = 0.0;
+  std::string cond_at, res_at, cross_at;
+  int compared = 0;
+  const auto check = [&](phylloptim::Leaf& l, double psi, const std::string& at) {
+    const double w = l.stem_curve_integral(psi);
+    const double fast = l.stem_curve_integral_inverse(w);
+    const double full = l.stem_curve_integral_inverse(w, nullptr, true);
+    const double scale = eps * std::max(w, eps) / l.stem_curve_integral_deriv(psi) +
+                         eps * psi;
+    const double cond = std::abs(fast - psi) / scale;
+    const double res = std::abs(l.stem_curve_integral(fast) - w) / std::max(w, eps);
+    const double cross = std::abs(fast - full) / scale;
+    if (cond > worst_cond) { worst_cond = cond; cond_at = at; }
+    if (res > worst_res) { worst_res = res; res_at = at; }
+    if (cross > worst_cross) { worst_cross = cross; cross_at = at; }
+    ++compared;
+  };
+  for (int n : {100, 400}) {
+    phylloptim::Leaf l;
+    l.setup_transpiration(n);
+    const double end = phylloptim::vulnerability_psi_max(l.stem_b, l.stem_c);
+    for (int i = 0; i <= 1000; ++i) {
+      check(l, end * i / 1000.0, " at n=" + std::to_string(n) + " psi=" +
+                                     std::to_string(end * i / 1000.0));
+    }
+    // Past the last knot, the closed form's inverse.
+    for (double psi : {end * 1.01, end * 1.3, end * 2.0}) {
+      check(l, psi, " past the grid at n=" + std::to_string(n) + " psi=" +
+                        std::to_string(psi));
+    }
+    // Rescaled through the homogeneity identity rather than rebuilt.
+    l.perturb_stem_P50(l.stem_P50 * 1.3);
+    for (int i = 1; i <= 100; ++i) {
+      check(l, end * i / 100.0, " rescaled at n=" + std::to_string(n) + " psi=" +
+                                    std::to_string(end * i / 100.0));
+    }
+  }
+  printf("    %d points | worst %.3g x conditioning, residual %.3g, fast-vs-full %.3g "
+         "x conditioning\n",
+         compared, worst_cond, worst_res, worst_cross);
+  ok(compared == 2208, "every point of the round trip was compared");
+  ok(worst_cond <= 8.0, "the inverse is within 8 units of its conditioning; worst" +
+                            cond_at);
+  ok(worst_res <= 4.0 * eps, "the residual in G is rounding; worst" + res_at);
+  ok(worst_cross <= 8.0, "the fast path agrees with the converged one; worst" +
+                             cross_at);
+}
+
+// The stem conductivity carries the TABLE's value and the CURVE's rows
+// (closed_form_rows.hpp), so its P50 row is not the table's own response to P50:
+// the two differ by the P50-derivative of the fit error. That difference is
+// bounded here, as the worst |closed-form row - table row| over the in-grid range,
+// scaled by the largest row, with the table row a central difference of tables
+// rebuilt at P50 +/- h. It must shrink as the knots refine (the table's order),
+// which is the evidence that it is the fit and not a wrong row.
+void test_conductivity_row_against_the_tables_own() {
+  printf("the conductivity's P50 row against the table's own response\n");
+  using AD = xad::fwd<double>::active_type;
+  const auto leaf_at = [](double P50, int n) {
+    phylloptim::Leaf l;
+    l.vulnerability_curve_ncontrol = n;
+    l.set_traits(l.vcmax_25, l.stem_c, P50, l.roots_.root_c, l.roots_.root_P50,
+                 l.TF24_beta2, l.jmax_25, l.phi_J, l.curv_fact_elec_trans,
+                 l.curv_fact_colim, l.TF24_cost_scale, l.R_d_25, l.JS22_gamma,
+                 l.CMax_a, l.CMax_b, l.g_min);
+    // set_traits rebuilds only a curve whose pair moved, so the knot count is
+    // seated explicitly.
+    l.setup_transpiration(n);
+    return l;
+  };
+  double worst[2] = {0.0, 0.0};
+  const int knots[2] = {100, 400};
+  // Measured 1.54e-4 and 9.57e-6; each bound is ~3x its figure.
+  const double bound[2] = {5e-4, 3e-5};
+  for (int k = 0; k < 2; ++k) {
+    const int n = knots[k];
+    phylloptim::Leaf l = leaf_at(phylloptim::Leaf().stem_P50, n);
+    const double P50 = l.stem_P50, c = l.stem_c;
+    const double h = 1e-5 * P50;
+    phylloptim::Leaf up = leaf_at(P50 + h, n), down = leaf_at(P50 - h, n);
+    const double end = phylloptim::vulnerability_psi_max(l.stem_b, c);
+    double worst_abs = 0.0, largest = 0.0;
+    for (int i = 1; i < 1000; ++i) {
+      const double psi = end * i / 1000.0;
+      AD a_P50 = P50, a_c = c;
+      xad::derivative(a_P50) = 1.0;
+      const double row = xad::derivative(phylloptim::closed_form_curve<AD>(
+          l.stem_curve_integral_deriv(psi), AD(psi), a_P50, a_c,
+          phylloptim::PastLastKnot::ReadsClosedForm));
+      const double table = (up.stem_curve_integral_deriv(psi) -
+                            down.stem_curve_integral_deriv(psi)) / (2.0 * h);
+      worst_abs = std::max(worst_abs, std::abs(row - table));
+      largest = std::max(largest, std::abs(row));
+    }
+    worst[k] = worst_abs / largest;
+    printf("    %d knots: worst |closed-form - table| / largest row = %.3g "
+           "(bound %.1g)\n", n, worst[k], bound[k]);
+    ok(worst[k] < bound[k], "the conductivity row is within its bound at " +
+                                std::to_string(n) + " knots");
+  }
+  ok(worst[1] < worst[0] / 4.0,
+     "the disagreement shrinks as the knots refine, so it is the fit");
+}
+
 // layer_thicknesses(): the profile -> widths helper an R caller and the test
 // fixtures come through (#626).
 void test_layer_thicknesses() {
@@ -4312,14 +4467,287 @@ double profit_row_at_current_point(phylloptim::Leaf &l, int par,
       l.operating_point_kind() == phylloptim::Leaf::OperatingPointKind::Interior
           ? l.marginal_collar_slope<phylloptim::Leaf::CostCurve::TF24>()
           : std::numeric_limits<double>::quiet_NaN();
-  const T collar =
-      l.collar_at<phylloptim::Leaf::CostCurve::TF24, T>(draw, pars, curvature);
-  const auto out =
-      l.outputs_at<phylloptim::Leaf::CostCurve::TF24, T>(collar, draw, pars);
+  phylloptim::Leaf::HeldCoords<T> held;
+  const T collar = l.collar_at<phylloptim::Leaf::CostCurve::TF24, T>(
+      draw, pars, curvature, &held);
+  const auto out = l.outputs_at<phylloptim::Leaf::CostCurve::TF24, T>(
+      collar, draw, pars, &held);
   if (residual_row != nullptr) {
     *residual_row = odelia::ode::derivative_along(out.residual_flux);
   }
   return odelia::ode::derivative_along(out.profit);
+}
+
+// The supplied rows against a central difference of the SOLVE, at every kind
+// collar_at places by a condition: the in-tree form of the referee behind #136's
+// bound-polish fix, which lived outside the repository. A difference re-solves,
+// so it re-derives the bound or the stationarity condition from scratch and
+// shares nothing with the rows but the model -- which is what makes it a
+// referee for rows the surface SUPPLIES. Each fixture is asserted to land on its
+// kind, and a parameter whose step moves the point to another kind is skipped
+// and counted, because a difference across a kink is not a derivative.
+//
+// Every trait and kmax, for collar, profit and every layer's uptake, at the
+// default 400 knots so a perturbed curve is rebuilt at the base's resolution.
+void test_supplied_rows_match_a_resolve_at_every_kind() {
+  printf("supplied rows against a difference of the solve, at every kind\n");
+  using T = odelia::ode::tangent_scalar<double>;
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  using CC = phylloptim::Leaf::CostCurve;
+  namespace pl = phylloptim;
+  struct Fixture {
+    std::vector<double> psi_soil;
+    double ppfd, vpd, root_P50;
+    Kind want;
+    double g_min = 0.0;
+  };
+  // Golden-grid drivers: layers 0.25 MPa apart; the pinned rows test-gradient.R
+  // names, the transpose test's root-limit point, a leaf in the dark (a net
+  // source sitting on its wet bound, with a cuticle so the bound is a regular
+  // point: at g_min = 0 the solve steps 1e-6 of the bracket inside it, and a
+  // difference of the solve then measures that step), a shut leaf, and an
+  // interior control.
+  const std::vector<Fixture> fixtures{
+      {{1.0, 1.25}, 1500.0, 2.0, 0.0, Kind::Interior},
+      {{4.0, 4.25, 4.5, 4.75, 5.0}, 900.0, 2.0, 0.0, Kind::BoundarySoil},
+      {{3.0, 3.25, 3.5}, 900.0, 4.0, 0.0, Kind::BoundarySoil},
+      {{4.0, 4.25, 4.5}, 900.0, 0.5, 0.0, Kind::BoundaryCrit},
+      {{2.0}, 900.0, 2.0, 1.2, Kind::BoundaryRootCrit},
+      {{1.0}, 1.0, 2.0, 0.0, Kind::BoundarySoil, 5e-4},
+      {{6.0, 6.25, 6.5}, 900.0, 2.0, 0.0, Kind::HydraulicShutdown}};
+  const std::vector<int> pars{
+      pl::par_vcmax_25, pl::par_stem_c, pl::par_stem_P50, pl::par_root_c,
+      pl::par_root_P50, pl::par_TF24_beta2, pl::par_jmax_25, pl::par_phi_J,
+      pl::par_curv_fact_elec_trans, pl::par_curv_fact_colim,
+      pl::par_TF24_cost_scale, pl::par_R_d_25, pl::par_kmax};
+  double worst_rel = 0.0, worst_abs = 0.0;
+  std::string worst_rel_at, worst_abs_at, skipped_at;
+  int compared = 0, skipped = 0;
+  for (const Fixture& fx : fixtures) {
+    std::vector<double> depth, root;
+    for (std::size_t i = 0; i < fx.psi_soil.size(); ++i) {
+      depth.push_back(1.0 * double(i + 1));
+      root.push_back(1.0 / 0.05 / double(fx.psi_soil.size()));
+    }
+    const pl::RootNetwork network = fixture::root_network(root, depth);
+    const auto solve = [&](const pl::leaf_pars<double>& p) {
+      pl::Leaf l;
+      l.set_traits(p[pl::par_vcmax_25], p[pl::par_stem_c], p[pl::par_stem_P50],
+                   p[pl::par_root_c], p[pl::par_root_P50], p[pl::par_TF24_beta2],
+                   p[pl::par_jmax_25], p[pl::par_phi_J],
+                   p[pl::par_curv_fact_elec_trans], p[pl::par_curv_fact_colim],
+                   p[pl::par_TF24_cost_scale], p[pl::par_R_d_25],
+                   p[pl::par_JS22_gamma], p[pl::par_CMax_a], p[pl::par_CMax_b],
+                   p[pl::par_g_min]);
+      l.set_physiology(network, fx.ppfd, fx.psi_soil, depth, p[pl::par_kmax],
+                       fx.vpd, 40.0, 25.0, 21.0, 101.3);
+      l.find_root_collar_psi();
+      return l;
+    };
+    pl::Leaf base;
+    base.set_physiology(network, fx.ppfd, fx.psi_soil, depth, 0.000157 / 5.0,
+                        fx.vpd, 40.0, 25.0, 21.0, 101.3);
+    pl::leaf_pars<double> p0 = base.passive_pars();
+    p0[pl::par_g_min] = fx.g_min;
+    if (fx.root_P50 > 0.0) {
+      // The transpose test's traits for its root-limited fixtures.
+      p0[pl::par_stem_P50] = 3.4287;
+      p0[pl::par_root_P50] = fx.root_P50;
+      p0[pl::par_phi_J] = 0.30;
+      p0[pl::par_JS22_gamma] = 1.0;
+      p0[pl::par_CMax_a] = 0.6;
+      p0[pl::par_CMax_b] = 0.0;
+    }
+    pl::Leaf l = solve(p0);
+    const std::string name = l.operating_point_kind_name(fx.want);
+    ok(l.operating_point_kind() == fx.want,
+       "the " + name + " fixture lands on its kind, got " +
+           l.operating_point_kind_name(l.operating_point_kind()));
+    if (l.operating_point_kind() != fx.want) continue;
+    const double curvature = fx.want == Kind::Interior
+                                 ? l.marginal_collar_slope<CC::TF24>()
+                                 : std::numeric_limits<double>::quiet_NaN();
+    for (int k : pars) {
+      pl::leaf_pars<T> tp;
+      for (std::size_t i = 0; i < tp.size(); ++i) tp[i] = T(p0[i]);
+      odelia::ode::set_direction(tp[std::size_t(k)], 1.0);
+      std::vector<T> soil, r_h, r_v;
+      for (int i = 0; i < l.supply_n_layers(); ++i) {
+        soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
+        r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
+        r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
+      }
+      const pl::SupplyAt<T> supply{soil, r_h, r_v, tp[pl::par_root_P50],
+                                   tp[pl::par_root_c]};
+      const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
+      const T collar = l.collar_at<CC::TF24, T>(draw, tp, curvature);
+      const auto out = l.outputs_at<CC::TF24, T>(collar, draw, tp);
+      std::vector<double> rows{odelia::ode::derivative_along(collar),
+                               odelia::ode::derivative_along(out.profit)};
+      for (const T& u : out.uptake) rows.push_back(odelia::ode::derivative_along(u));
+
+      // RELATIVE 1e-4, read off a step sweep rather than assumed: every row's
+      // error-versus-step V has its floor at or above 1e-5, and at the
+      // gradient's own 1e-6 kmax's profit row at a wet bound reads the
+      // difference's noise (2e-4 against a floor of 9e-7). At 1e-4 every row
+      // larger than 1e-6 agrees to 1e-5.
+      const double h = std::abs(p0[std::size_t(k)]) * 1e-4;
+      pl::leaf_pars<double> p_up = p0, p_down = p0;
+      p_up[std::size_t(k)] += h;
+      p_down[std::size_t(k)] -= h;
+      pl::Leaf up = solve(p_up), down = solve(p_down);
+      if (up.operating_point_kind() != fx.want ||
+          down.operating_point_kind() != fx.want) {
+        ++skipped;
+        skipped_at += " " + name + "/" + pl::gradient::par_names()[std::size_t(k)];
+        continue;
+      }
+      std::vector<double> fd{(up.opt_root_psi_ - down.opt_root_psi_) / (2.0 * h),
+                             (up.profit_ - down.profit_) / (2.0 * h)};
+      for (std::size_t j = 0; j < out.uptake.size(); ++j) {
+        fd.push_back((up.soil_consumption_[j] - down.soil_consumption_[j]) /
+                     (2.0 * h));
+      }
+      for (std::size_t j = 0; j < rows.size(); ++j) {
+        const std::string at =
+            " at " + name + " d" + (j == 0 ? std::string("collar")
+                                    : j == 1 ? std::string("profit")
+                                             : "uptake[" + std::to_string(j - 2) + "]") +
+            "/d" + pl::gradient::par_names()[std::size_t(k)];
+        const double err = std::abs(rows[j] - fd[j]);
+        const double scale = std::max(std::abs(rows[j]), std::abs(fd[j]));
+        if (err > worst_abs) { worst_abs = err; worst_abs_at = at; }
+        if (scale > 1e-6 && err / scale > worst_rel) {
+          worst_rel = err / scale;
+          worst_rel_at = at;
+        }
+        ++compared;
+        ok(err <= 1e-4 * scale + 1e-7,
+           "the supplied row matches a difference of the solve" + at +
+               ": row " + std::to_string(rows[j]) + ", difference " +
+               std::to_string(fd[j]));
+      }
+    }
+  }
+  printf("    %d rows compared, %d parameters skipped across a kind change:%s\n"
+         "    worst relative %.3g%s\n    worst absolute %.3g%s\n",
+         compared, skipped, skipped_at.c_str(), worst_rel, worst_rel_at.c_str(),
+         worst_abs, worst_abs_at.c_str());
+  // A referee that skipped most of its work would pass on what is left.
+  ok(compared >= 350, "the referee compared at least 350 rows");
+  ok(skipped <= 2, "at most two parameters were skipped across a kind change");
+}
+
+// The interior arm divides every collar row by the curvature it is handed, and
+// odelia refuses only an exactly zero or non-finite one. So the arm refuses a
+// curvature that is not negative or lies inside the floor, naming the value; the
+// true curvature, one just outside the floor, and the double path (which never
+// reads the curvature) all still answer.
+void test_collar_at_refuses_a_flat_or_rising_curvature() {
+  printf("collar_at refuses a curvature it cannot divide by\n");
+  using T = odelia::ode::tangent_scalar<double>;
+  using CC = phylloptim::Leaf::CostCurve;
+  Drivers d;
+  d.PPFD = 1500.0;
+  phylloptim::Leaf l = make_leaf(d, {1.0, 1.5}, {1.0, 2.0});
+  l.find_root_collar_psi();
+  ok(l.operating_point_kind() == phylloptim::Leaf::OperatingPointKind::Interior,
+     "the fixture is an interior point");
+  phylloptim::leaf_pars<T> pars;
+  const phylloptim::leaf_pars<double> seated = l.passive_pars();
+  for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
+  odelia::ode::set_direction(pars[phylloptim::par_vcmax_25], 1.0);
+  std::vector<T> soil, r_h, r_v;
+  for (int i = 0; i < l.supply_n_layers(); ++i) {
+    soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
+    r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
+    r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
+  }
+  const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
+                                       pars[phylloptim::par_root_P50],
+                                       pars[phylloptim::par_root_c]};
+  const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
+  const double floor = phylloptim::Leaf::interior_curvature_floor;
+  const double k = l.marginal_collar_slope<CC::TF24>();
+  printf("    curvature at the fixture %.3g, floor %.3g\n", k, floor);
+  ok(k < -floor, "the fixture's own curvature is outside the floor");
+  auto row = [&](double curvature) {
+    return odelia::ode::derivative_along(
+        l.collar_at<CC::TF24, T>(draw, pars, curvature));
+  };
+  ok(std::isfinite(row(k)), "the true curvature answers");
+  ok(std::isfinite(row(-2.0 * floor)), "a curvature just outside the floor answers");
+  ok(throws_with([&] { row(-1e-300); }, "inside the floor of 0.001"),
+     "a curvature of -1e-300 is refused against the floor");
+  ok(throws_with([&] { row(-1e-300); }, "-1e-300"),
+     "the refusal names the curvature");
+  ok(throws_with([&] { row(-0.5 * floor); }, "inside the floor"),
+     "a curvature half the floor is refused");
+  ok(throws_with([&] { row(0.5); }, "which is not negative"),
+     "a positive curvature is refused as not negative");
+  ok(throws_with([&] { row(0.0); }, "which is not negative"),
+     "a zero curvature is refused as not negative");
+  const auto draw_d =
+      l.supply_draw_at<double>(l.opt_root_psi_, l.roots_.held_supply());
+  ok(l.collar_at<CC::TF24, double>(draw_d, seated, -1e-300) == l.opt_root_psi_,
+     "the double path reads no curvature, so refuses none");
+}
+
+// Three of the surface's preconditions fail with every number finite, so each is
+// checked by name: the curve the solve was seated on, the supply path the draw
+// walks, and the draw's flux at a shutdown, which supply_draw_at returns before
+// writing. The control for each is the same call on the matching leaf.
+void test_surface_refuses_a_curve_or_supply_it_was_not_solved_on() {
+  printf("the derivative surface refuses another curve or supply path\n");
+  using CC = phylloptim::Leaf::CostCurve;
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  Drivers d;
+  d.PPFD = 1500.0;
+  phylloptim::Leaf l = make_leaf(d, {1.0, 1.5}, {1.0, 2.0});
+  l.find_root_collar_psi();
+  ok(l.operating_point_kind() == Kind::Interior, "the fixture is an interior point");
+  const phylloptim::leaf_pars<double> pars = l.passive_pars();
+  const auto draw =
+      l.supply_draw_at<double>(l.opt_root_psi_, l.roots_.held_supply());
+  ok(l.collar_at<CC::TF24, double>(draw, pars) == l.opt_root_psi_,
+     "control: collar_at answers on the seated curve");
+  ok(std::isfinite(l.outputs_at<CC::TF24, double>(l.opt_root_psi_, draw, pars).profit),
+     "control: outputs_at answers on the seated curve");
+  const std::string wrong =
+      "asked for the TF24_floor curve, and the leaf is seated on TF24";
+  ok(throws_with([&] { l.collar_at<CC::TF24_floor, double>(draw, pars); },
+                 "Leaf::collar_at: " + wrong),
+     "collar_at refuses a curve the leaf is not seated on");
+  ok(throws_with([&] {
+       l.outputs_at<CC::TF24_floor, double>(l.opt_root_psi_, draw, pars);
+     }, "Leaf::outputs_at: " + wrong),
+     "outputs_at refuses a curve the leaf is not seated on");
+
+  phylloptim::Leaf single;
+  single.setup_transpiration(100);
+  single.setup_root_vulnerability(100);
+  single.set_supply_single();
+  std::vector<double> psi_soil{1.0}, depth{1.0};
+  single.set_physiology(fixture::series_resistance(1.0e3), d.PPFD, psi_soil, depth,
+                        d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
+                        d.atm_o2_kpa, d.atm_kpa);
+  single.find_root_collar_psi();
+  ok(std::isfinite(single.profit_), "control: the single-potential leaf solves");
+  ok(throws_with([&] {
+       single.supply_draw_at<double>(single.opt_root_psi_,
+                                     single.roots_.held_supply());
+     }, "Leaf::supply_draw_at: the derivative surface reads the multi-layer "
+        "supply, and this leaf is on the single path"),
+     "supply_draw_at refuses the single-potential path");
+
+  phylloptim::Leaf shut = make_leaf(Drivers{}, {12.0}, {1.0});
+  shut.find_root_collar_psi();
+  ok(shut.operating_point_kind() == Kind::HydraulicShutdown,
+     "the dry fixture is a hydraulic shutdown");
+  const auto dry =
+      shut.supply_draw_at<double>(shut.opt_root_psi_, shut.roots_.held_supply());
+  ok(dry.flux.value == 0.0 && dry.flux.slope == 0.0,
+     "a shutdown draw's flux is zero, not indeterminate");
 }
 
 // A consumer that records each solve and replays it later (plant does, on every
@@ -4374,6 +4802,219 @@ void test_a_replay_hands_over_the_rows_its_solve_did() {
   ok(seen["interior"] > 0 && seen["boundary-soil"] > 0,
      "the grid reaches an interior point and a wet bound (test is not vacuous)");
   ok(differ == 0, "every replayed collar and row equals its solve's, bit for bit");
+}
+
+// The coordinates collar_at hands to outputs_at must be the ones outputs_at
+// would have solved for itself, so handing them over moves no number and no row.
+// Asserted bit for bit on the tangent, where both routes run the same arithmetic
+// on the same values; the adjoint, where the rows are summed in another order,
+// is test_transpose's.
+struct HandoffTally {
+  int interior = 0, other = 0, rows = 0, differ = 0, misplaced = 0;
+};
+
+template <phylloptim::Leaf::CostCurve K>
+void compare_held_handoff(phylloptim::Leaf &l, const std::string &at,
+                          HandoffTally &tally) {
+  using T = odelia::ode::tangent_scalar<double>;
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  const Kind kind = l.operating_point_kind();
+  const double curvature = kind == Kind::Interior
+                               ? l.marginal_collar_slope<K>()
+                               : std::numeric_limits<double>::quiet_NaN();
+  if (kind == Kind::Interior && !std::isfinite(curvature)) {
+    return;
+  }
+  ++(kind == Kind::Interior ? tally.interior : tally.other);
+  // -1 is the shallowest layer's soil potential, the supply's own direction.
+  for (int direction : {phylloptim::par_vcmax_25, phylloptim::par_stem_P50,
+                        phylloptim::par_root_P50, phylloptim::par_kmax,
+                        phylloptim::par_TF24_cost_scale,
+                        phylloptim::par_TF24_floor_lambda_o, -1}) {
+    // TF24 leaves the floor's price unset, and reads none of it.
+    if (K == phylloptim::Leaf::CostCurve::TF24 &&
+        direction == phylloptim::par_TF24_floor_lambda_o) {
+      continue;
+    }
+    phylloptim::leaf_pars<T> pars;
+    const phylloptim::leaf_pars<double> seated = l.passive_pars();
+    for (std::size_t i = 0; i < pars.size(); ++i) pars[i] = T(seated[i]);
+    std::vector<T> soil, r_h, r_v;
+    for (int i = 0; i < l.supply_n_layers(); ++i) {
+      soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
+      r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
+      r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
+    }
+    odelia::ode::set_direction(direction < 0 ? soil[0] : pars[std::size_t(direction)],
+                               1.0);
+    const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
+                                         pars[phylloptim::par_root_P50],
+                                         pars[phylloptim::par_root_c]};
+    const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
+    const T solved_collar = l.collar_at<K, T>(draw, pars, curvature);
+    const auto solved = l.outputs_at<K, T>(solved_collar, draw, pars);
+    phylloptim::Leaf::HeldCoords<T> held;
+    const T handed_collar = l.collar_at<K, T>(draw, pars, curvature, &held);
+    const auto handed = l.outputs_at<K, T>(handed_collar, draw, pars, &held);
+    if (held.placed() != (kind == Kind::Interior)) {
+      ++tally.misplaced;
+      printf("    placed=%d at %s\n", int(held.placed()), at.c_str());
+    }
+    auto same = [](const T &a, const T &b) {
+      return odelia::util::to_passive(a) == odelia::util::to_passive(b) &&
+             odelia::ode::derivative_along(a) == odelia::ode::derivative_along(b);
+    };
+    bool all_same = same(solved_collar, handed_collar) &&
+                    same(solved.profit, handed.profit) &&
+                    solved.uptake.size() == handed.uptake.size();
+    for (std::size_t j = 0; all_same && j < solved.uptake.size(); ++j) {
+      all_same = same(solved.uptake[j], handed.uptake[j]);
+    }
+    ++tally.rows;
+    if (!all_same) {
+      ++tally.differ;
+      printf("    differs along %d at %s: profit row %.17g vs %.17g\n", direction,
+             at.c_str(), odelia::ode::derivative_along(solved.profit),
+             odelia::ode::derivative_along(handed.profit));
+    }
+  }
+}
+
+void test_held_coordinates_move_no_row() {
+  printf("the coordinates collar_at hands to outputs_at move no number and no row\n");
+  using K = phylloptim::Leaf::CostCurve;
+  HandoffTally tally;
+  for (int layers : {1, 3}) {
+    for (double psi0 : {0.5, 1.0, 2.0, 4.0, 6.0}) {
+      for (double ppfd : {100.0, 900.0}) {
+        for (double temp : {25.0, 40.0}) {
+          Drivers d;
+          d.PPFD = ppfd;
+          d.leaf_temp = temp;
+          std::vector<double> psi_soil, soil_depth;
+          for (int i = 0; i < layers; ++i) {
+            psi_soil.push_back(psi0 + 0.35 * i);
+            soil_depth.push_back(1.0 * (i + 1));
+          }
+          const std::string at = "psi_soil=" + std::to_string(psi0) +
+                                 " ppfd=" + std::to_string(ppfd) +
+                                 " T=" + std::to_string(temp) +
+                                 " layers=" + std::to_string(layers);
+          phylloptim::Leaf tf = make_leaf(d, psi_soil, soil_depth);
+          tf.find_root_collar_psi();
+          compare_held_handoff<K::TF24>(tf, "TF24 " + at, tally);
+          // The floor's price reads the collar inside profit, so it is the curve
+          // whose profit could tell a held collar from a live one.
+          phylloptim::Leaf fl = make_leaf(d, psi_soil, soil_depth);
+          fl.TF24_floor_lambda_o = kPriceForFOC;
+          fl.set_model(K::TF24_floor, true);
+          fl.optimise();
+          compare_held_handoff<K::TF24_floor>(fl, "TF24_floor " + at, tally);
+        }
+      }
+    }
+  }
+  printf("    %d rows | %d interior points, %d at other kinds\n", tally.rows,
+         tally.interior, tally.other);
+  ok(tally.interior > 0 && tally.other > 0,
+     "the sweep reaches interior points and other kinds (test is not vacuous)");
+  ok(tally.misplaced == 0, "collar_at places coordinates at interior points only");
+  ok(tally.differ == 0,
+     "every collar, profit and uptake, value and row, is the same with the "
+     "coordinates handed over");
+}
+
+// Coordinates are handed over only where they mean something, and refused,
+// by name, where reading them would answer for another point.
+void test_held_coordinates_are_refused_off_their_point() {
+  printf("held coordinates are refused away from the point that placed them\n");
+  using T = odelia::ode::tangent_scalar<double>;
+  using CC = phylloptim::Leaf::CostCurve;
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  // pars and supply at the leaf's seated state, carrying no direction.
+  struct Seat {
+    phylloptim::leaf_pars<T> pars;
+    std::vector<T> soil, r_h, r_v;
+    phylloptim::SupplyAt<T> supply() const {
+      return {soil, r_h, r_v, pars[phylloptim::par_root_P50],
+              pars[phylloptim::par_root_c]};
+    }
+  };
+  auto seat = [](const phylloptim::Leaf &l) {
+    Seat s;
+    const phylloptim::leaf_pars<double> p = l.passive_pars();
+    for (std::size_t i = 0; i < p.size(); ++i) s.pars[i] = T(p[i]);
+    for (int i = 0; i < l.supply_n_layers(); ++i) {
+      s.soil.push_back(T(l.roots_.psi_soil_[std::size_t(i)]));
+      s.r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
+      s.r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
+    }
+    return s;
+  };
+  Drivers d;
+  phylloptim::Leaf in = make_leaf(d, {1.0}, {1.0});
+  in.find_root_collar_psi();
+  // Shade death sits on the wet bound, and dim light is what reaches it.
+  Drivers dim;
+  dim.PPFD = 1.0;
+  phylloptim::Leaf bound = make_leaf(dim, {1.0}, {1.0});
+  bound.find_root_collar_psi();
+  ok(in.operating_point_kind() == Kind::Interior, "the first fixture is interior");
+  ok(bound.operating_point_kind() != Kind::Interior &&
+         bound.operating_point_kind() != Kind::HydraulicShutdown,
+     std::string("the second fixture is at a bound, got ") +
+         bound.operating_point_kind_name(bound.operating_point_kind()));
+
+  const Seat si = seat(in);
+  const auto draw = in.supply_draw_at<T>(T(in.opt_root_psi_), si.supply());
+  const double curvature = in.marginal_collar_slope<CC::TF24>();
+  phylloptim::Leaf::HeldCoords<T> held;
+  const T collar = in.collar_at<CC::TF24, T>(draw, si.pars, curvature, &held);
+  ok(held.placed() && held.at == in.opt_root_psi_,
+     "the interior arm places the coordinates at its own collar");
+
+  // Read at another collar on the same leaf: the draw is taken there, so only
+  // the coordinates are out of place.
+  const double off = in.opt_root_psi_ + 0.01;
+  const auto draw_off = in.supply_draw_at<T>(T(off), si.supply());
+  ok(throws_with([&] { in.outputs_at<CC::TF24, T>(T(off), draw_off, si.pars, &held); },
+                 "Leaf::outputs_at: the held coordinates were placed at a collar of"),
+     "outputs_at refuses coordinates placed at another collar");
+
+  // Read at a point of another kind.
+  const Seat sb = seat(bound);
+  const auto draw_b = bound.supply_draw_at<T>(T(bound.opt_root_psi_), sb.supply());
+  ok(throws_with([&] {
+       bound.outputs_at<CC::TF24, T>(T(bound.opt_root_psi_), draw_b, sb.pars, &held);
+     },
+                 "were placed at an interior point and are being read at one that is"),
+     "outputs_at refuses coordinates placed at an interior point at another kind");
+
+  // collar_at unplaces what it is handed before deciding, so coordinates left
+  // from the interior point cannot survive a call at the bound.
+  bound.collar_at<CC::TF24, T>(draw_b, sb.pars,
+                               std::numeric_limits<double>::quiet_NaN(), &held);
+  ok(!held.placed(), "collar_at at a bound leaves the coordinates unplaced");
+  ok(std::isfinite(odelia::util::to_passive(
+         bound.outputs_at<CC::TF24, T>(T(bound.opt_root_psi_), draw_b, sb.pars,
+                                       &held).profit)),
+     "outputs_at solves its own with unplaced coordinates");
+
+  // At double the interior arm records nothing, so there is nothing to hand over.
+  phylloptim::leaf_pars<double> pd = in.passive_pars();
+  std::vector<double> soil_d(in.roots_.psi_soil_), rh_d(in.roots_.network_.r_R_H_min),
+      rv_d(in.roots_.network_.r_R_V_sum);
+  const phylloptim::SupplyAt<double> supply_d{soil_d, rh_d, rv_d,
+                                              pd[phylloptim::par_root_P50],
+                                              pd[phylloptim::par_root_c]};
+  const auto draw_d = in.supply_draw_at<double>(in.opt_root_psi_, supply_d);
+  phylloptim::Leaf::HeldCoords<double> held_d;
+  const double collar_d = in.collar_at<CC::TF24, double>(draw_d, pd, curvature, &held_d);
+  ok(!held_d.placed(), "collar_at at double leaves the coordinates unplaced");
+  ok(in.outputs_at<CC::TF24, double>(collar_d, draw_d, pd, &held_d).profit ==
+         in.profit_,
+     "outputs_at at double with unplaced coordinates is the solve's profit");
+  (void)collar;
 }
 
 void test_the_dry_end_reports_which_bound_closed_it() {
@@ -4917,11 +5558,18 @@ void test_prescribed_lambda_survives_redriving() {
   Drivers d;
   std::vector<double> mrp{1.0 / d.area_leaf}, psi_soil{2.0}, depth{1.0};
 
-  // A fresh Leaf reads the NA sentinel: "no longer reset" must not have become
+  // A fresh Leaf reads the default: "no longer reset" must not have become
   // "never initialised", which is the one way this change could go wrong quietly.
   {
     phylloptim::Leaf l = make_leaf(d, {2.0}, {1.0});
-    ok(std::isnan(l.CF77_lambda_), "CF77_lambda_ is NA on a freshly constructed leaf");
+    ok(l.CF77_lambda_ == 107750.8846,
+       "CF77_lambda_ is its aligned default on a freshly constructed leaf");
+    // The other three aligned initialisers. R assigns its own copies on every
+    // leaf it builds, so only a C++ consumer (plant) reads these, and nothing
+    // on the R side would see one drift.
+    ok(l.JS22_gamma == 0.4717887793 && l.CMax_a == 0.6385596982 &&
+           l.CMax_b == 0.0 && l.LeastCost_beta == 51.59667042,
+       "JS22_gamma, CMax_a and LeastCost_beta are their aligned defaults");
   }
 
   const double prescribed = 30.0;
@@ -5287,7 +5935,9 @@ void test_out_of_domain_names_the_spline() {
 
   // Forward direction, below the near end of the vulnerability curve. Past the
   // FAR end reads the closed form, which test_stem_curve_past_its_grid covers.
-  const std::string fwd = message_of([&] { l.transpiration(-1.0, 0.0); });
+  // The upstream potential is below the stem's too, so the pair is not a
+  // reversed gradient and the lookup is what refuses.
+  const std::string fwd = message_of([&] { l.transpiration(-1.0, -2.0); });
   ok(mentions(fwd, "transpiration_from_psi"), "forward lookup names its spline");
   ok(mentions(fwd, "psi = -1"), "forward lookup reports the point");
   ok(mentions(fwd, "beyond the lower end"), "forward lookup reports which end");
@@ -5325,6 +5975,13 @@ void test_out_of_domain_names_the_spline() {
      "an in-domain lookup still returns a finite value");
 }
 
+// Below psi_upstream the flux integral is negative: water running from the leaf
+// to the soil, returned as a finite number (#31). transpiration() refuses it,
+// and the two functions that read the flux through it inherit the refusal --
+// psi_stem_to_ci included, whose compensation-point fallback must not swallow
+// it. The profit functions never read it there: they seat the no-flow state at
+// or below the upstream potential, which this pins so the two decisions stay
+// apart. Equality is the shut-down state and stays legal, at exactly zero.
 // The rescaled path reports the domain in the CALLER's units, not the spline's.
 // Under perturb_stem_P50 the value handed to the spline is psi/s, so quoting the
 // spline's own endpoints would send the reader after a discrepancy that is not
@@ -5333,12 +5990,12 @@ void test_out_of_domain_under_rescale() {
   Drivers d;
   // At the LOWER end: past the upper end reads the closed form.
   phylloptim::Leaf wide = make_leaf(d, {2.0}, {1.0});
-  const std::string before = message_of([&] { wide.transpiration(-1.0, 0.0); });
+  const std::string before = message_of([&] { wide.transpiration(-1.0, -2.0); });
 
   phylloptim::Leaf rescaled = make_leaf(d, {2.0}, {1.0});
   rescaled.perturb_stem_P50(rescaled.stem_P50 * 2.0);
   const std::string after =
-      message_of([&] { rescaled.transpiration(-1.0, 0.0); });
+      message_of([&] { rescaled.transpiration(-1.0, -2.0); });
 
   ok(!before.empty() && !after.empty(), "both report a domain failure");
   ok(before != after, "the rescaled domain is reported, not the spline's own");
@@ -5512,6 +6169,45 @@ phylloptim::Leaf make_single_leaf(const Drivers &d, double psi_soil,
   l.set_physiology(rn, d.PPFD, {psi_soil}, {1.0}, d.K_s * d.theta / d.h,
                    d.atm_vpd, d.ca, d.leaf_temp, d.atm_o2_kpa, d.atm_kpa);
   return l;
+}
+
+// The aligned defaults (#156): at the reference environment `align_curves()`
+// uses, every curve with a level parameter has TF24's conductance at its class
+// default. This reads the C++ initialisers directly, where the R side's test
+// reads `leaf_traits()`, so the two copies of the four numbers are each checked
+// against the property rather than against each other.
+void test_aligned_defaults_match_tf24_at_the_reference() {
+  printf("the aligned level defaults give TF24's conductance at the reference\n");
+  using K = phylloptim::Leaf::CostCurve;
+  Drivers d;  // PPFD 900, VPD 2 kPa, ca 40 Pa, 25 C, kmax 3.14e-5: the reference
+  auto gc_of = [&](auto curve) {
+    phylloptim::Leaf l;
+    l.setup_transpiration(phylloptim::Leaf::ncontrol_default);
+    l.setup_root_vulnerability(phylloptim::Leaf::ncontrol_default);
+    l.set_supply_single(0.0);
+    phylloptim::RootNetwork rn;
+    rn.r_R_V_sum = std::vector<double>{1.0e3};
+    rn.r_R_H_min = std::vector<double>{0.0};
+    rn.r_R_V = std::vector<double>{1.0e3};
+    rn.c_r_V = std::vector<double>{0.0};
+    rn.c_r_H = std::vector<double>{0.0};
+    l.set_physiology(rn, d.PPFD, {1.0}, {1.0}, d.K_s * d.theta / d.h,
+                     d.atm_vpd, d.ca, d.leaf_temp, d.atm_o2_kpa, d.atm_kpa);
+    l.optimise_psi_stem_single<decltype(curve)::value>();
+    return l.stom_cond_CO2_;
+  };
+  const double tf24 = gc_of(std::integral_constant<K, K::TF24>{});
+  ok(tf24 > 0.0, "TF24 transpires at the reference");
+  // 1e-6: the defaults carry ten significant figures, and the alignment is
+  // re-solved in R against a 400-knot spline, as here.
+  near(gc_of(std::integral_constant<K, K::CF77>{}) / tf24, 1.0, 1e-6,
+       "CF77 at its default price");
+  near(gc_of(std::integral_constant<K, K::JS22>{}) / tf24, 1.0, 1e-6,
+       "JS22 at its default gamma");
+  near(gc_of(std::integral_constant<K, K::CMax>{}) / tf24, 1.0, 1e-6,
+       "CMax at its default slope");
+  near(gc_of(std::integral_constant<K, K::LeastCost>{}) / tf24, 1.0, 1e-6,
+       "LeastCost at its default beta");
 }
 
 // An open leaf that cannot fix carbon at ambient CO2 at its own temperature
@@ -7832,9 +8528,10 @@ void test_leastcost_refuses_an_unset_or_degenerate_beta() {
   Drivers d;
   {
     phylloptim::Leaf l = make_single_leaf(d, 1.0);
+    l.LeastCost_beta = std::numeric_limits<double>::quiet_NaN();
     l.set_model(phylloptim::Leaf::CostCurve::LeastCost, false);
     ok(throws_with([&] { l.optimise(); }, "needs LeastCost_beta set"),
-       "an unset beta is refused rather than optimised as a NaN objective");
+       "a cleared beta is refused rather than optimised as a NaN objective");
     // The message has to carry the units. A beta derived against this package's
     // kg H2O and umol CO2 rather than mol and mol is out by 5.6e7, and would
     // otherwise solve to something entirely plausible.
@@ -9642,6 +10339,7 @@ int main() {
   test_cowan_farquhar_reproduces_the_TF_optimum();
   test_cowan_farquhar_closed_state();
   test_cowan_farquhar_refuses_an_unset_lambda();
+  test_aligned_defaults_match_tf24_at_the_reference();
   test_dprofit_dpsi_stem_matches_a_finite_difference();
   test_dprofit_dpsi_stem_matches_a_finite_difference_energy_balance();
   test_dprofit_dpsi_stem_vanishes_at_the_optimum();
@@ -9666,6 +10364,9 @@ int main() {
   test_single_potential();
   test_leaf_on_single_potential();
   test_root_network_from_carbon();
+  test_root_network_template_is_the_double_overload();
+  test_stem_curve_inverse_round_trips();
+  test_conductivity_row_against_the_tables_own();
   test_layer_thicknesses();
   test_temperature_parameters_are_settable();
   test_temperature_params_invalidate_cache();
@@ -9675,6 +10376,11 @@ int main() {
   test_light_reaches_carbon_with_a_row();
   test_every_answered_point_hands_over_finite_rows();
   test_a_replay_hands_over_the_rows_its_solve_did();
+  test_held_coordinates_move_no_row();
+  test_held_coordinates_are_refused_off_their_point();
+  test_supplied_rows_match_a_resolve_at_every_kind();
+  test_collar_at_refuses_a_flat_or_rising_curvature();
+  test_surface_refuses_a_curve_or_supply_it_was_not_solved_on();
   test_tf24_floor_rows_at_a_price();
   test_set_traits_matches_a_fresh_leaf();
   test_prescribed_lambda_survives_redriving();

@@ -42,9 +42,9 @@
 ##' because it is an `RcppR6` `list:` class and every crossing rebuilds a
 ##' five-element named list. Converting 1,327 of them per likelihood evaluation
 ##' would cost ~80 ms and swamp the ~13 ms of gradient it was carrying. The same
-##' argument applies to the `Leaf`: constructing one from R costs about **180x a
-##' trivial `.Call`**, or 45 solves, so a fit builds it once here rather than once
-##' per gradient (#52).
+##' argument applies to the `Leaf`: constructing one is the largest single cost in
+##' the R layer (the README's "Performance from R" has the measured ratio), so a fit
+##' builds it once here rather than once per gradient (#52).
 ##'
 ##' ⚠️ **The result holds a C++ pointer, so it does not survive `saveRDS()` or a
 ##' new session.** Rebuild it rather than restoring it; [leaf_gradient_batch()]
@@ -62,7 +62,7 @@
 ##'
 ##' @param CF77_lambda Cowan-Farquhar's prescribed marginal value of water, in
 ##'   umol C (kg H2O)^-1, one per observation. Only `model = "CF77"` reads it;
-##'   `NA_real_` (the default) leaves it unset, which every other model wants.
+##'   `NA_real_` (the default) uses its aligned default (see [align_curves()]).
 ##' @param TF24_floor_lambda_o the `TF24_floor` curve's price of water as transpiration
 ##'   goes to zero, same units, one per observation. Only `model = "TF24_floor"`
 ##'   reads it; `NA_real_` (the default) leaves it unset. That curve refuses to
@@ -70,8 +70,8 @@
 ##' @param LeastCost_beta least-cost theory's unit-cost ratio (Prentice et al.
 ##'   2014's beta): the cost of maintaining carboxylation capacity relative to the
 ##'   cost of transpiration, dimensionless, one per observation. Only
-##'   `model = "LeastCost"` reads it; `NA_real_` (the default) leaves it unset.
-##'   That curve refuses to solve without one, and refuses zero as well, since at
+##'   `model = "LeastCost"` reads it; `NA_real_` (the default) uses its aligned
+##'   default (see [align_curves()]). Zero is refused, since at
 ##'   zero the capacity term vanishes and what is left is water-use efficiency,
 ##'   which rises without bound as transpiration falls. The published value is 146.
 ##'
@@ -229,10 +229,11 @@ print.leaf_batch <- function(x, ...) {
 ##' transcription, and it is required to agree with the R version bit-for-bit.
 ##'
 ##' @section Speed, and which side of the boundary the figure belongs to:
-##' A four-parameter gradient costs ~237 µs per observation through
-##' [leaf_gradient()], of which the model work — two solves — is 6 µs, or 1.5%.
-##' Everything else is dispatch and the R interpreter. The C++ composite runs at
-##' ~1.8 µs per trait, so the same gradient is order 10 µs here.
+##' Through [leaf_gradient()], almost all of a four-parameter gradient's cost per
+##' observation is dispatch and the R interpreter; the model work — two solves — is
+##' a few percent of it. Composed here in C++, the same gradient costs over an order
+##' of magnitude less per observation. The README's "Performance from R" has the
+##' measured ratios.
 ##'
 ##' ⚠️ **That is a per-observation figure and it needs a batch to be realised.**
 ##' Calling this with one observation pays the whole R-side call overhead for one
@@ -257,7 +258,9 @@ print.leaf_batch <- function(x, ...) {
 ##' is what a hierarchical fit needs: a matrix with one row per observation (or one
 ##' row shared by all of them) and one column per [gradient_par_names()] entry, in
 ##' that order. `resistance` is ignored on the multi-layer path and may be `NA`
-##' there.
+##' there. An `NA` in the column of the level parameter `model` owns
+##' (`CF77_lambda_` or `LeastCost_beta`) takes its aligned default, as it does
+##' when `theta` is built for you.
 ##'
 ##' @param batch a [leaf_batch()]
 ##' @param traits a [leaf_traits()] object: the point in trait space to
@@ -365,14 +368,15 @@ leaf_gradient_batch <- function(batch,
     } else if (!inherits(traits, "leaf_traits")) {
       stop("`traits` must come from leaf_traits()", call. = FALSE)
     }
-    theta <- .gradient_theta_matrix(batch, traits, damage)
+    theta <- .gradient_theta_matrix(batch, traits, damage, model)
   } else {
     if (!is.null(traits)) {
       stop("`traits` and `theta` both say where the gradient is taken; pass one ",
            "or the other. `theta` is the general form -- put the traits in its ",
            "columns.", call. = FALSE)
     }
-    theta <- .gradient_check_theta(theta, batch, par_names)
+    theta <- .gradient_fill_level_defaults(
+      .gradient_check_theta(theta, batch, par_names), model, par_names)
   }
 
   psi <- .gradient_check_psi_batch(psi, batch$n, method)
@@ -478,7 +482,8 @@ leaf_gradient_batch <- function(batch,
 # The two non-traits are `leaf_specific_conductance_max` and, on the
 # single-potential path only, `resistance`: both are DRIVERS that a calibration
 # fits like traits (#44), so the enumeration carries them after the traits.
-.gradient_theta_matrix <- function(batch, traits, damage = FALSE) {
+.gradient_theta_matrix <- function(batch, traits, damage = FALSE,
+                                   model = NULL) {
   nr <- batch$theta_nrow
   par_names <- .gradient_par_names()
   m <- matrix(NA_real_, nrow = nr, ncol = length(par_names),
@@ -507,6 +512,7 @@ leaf_gradient_batch <- function(batch,
   m[, "CF77_lambda_"] <- batch$CF77_lambda
   m[, "TF24_floor_lambda_o"] <- batch$TF24_floor_lambda_o
   m[, "LeastCost_beta"] <- batch$LeastCost_beta
+  m <- .gradient_fill_level_defaults(m, model, par_names)
   # The thermal-damage inputs, off the batch's leaf, when its gate is on; NA (and
   # unread) otherwise. One row for every observation: pass `theta` to give each
   # observation its own state.
@@ -538,4 +544,20 @@ leaf_gradient_batch <- function(batch,
          nrow(theta), call. = FALSE)
   }
   theta
+}
+
+# An unset slot on the route that owns it takes the leaf's own default, whether
+# the matrix was built here or supplied, so `theta = NA` means what it means in
+# leaf_gradient(). Columns by position: a supplied matrix may have no names.
+.gradient_fill_level_defaults <- function(m, model, par_names) {
+  if (is.null(model)) {
+    return(m)
+  }
+  for (field in names(.level_defaults)) {
+    if (.owns_field(model, field)) {
+      j <- match(field, par_names)
+      m[is.na(m[, j]), j] <- .level_defaults[[field]]
+    }
+  }
+  m
 }

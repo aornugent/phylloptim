@@ -3,7 +3,7 @@ RSCRIPT = Rscript --no-init-file
 
 # Developer entry points. Same shape as plant's and odelia's Makefiles, plus the
 # targets this package needs that they do not: it has both an R layer and a C++
-# core that must keep building without R (PLAN item 6a).
+# core that must keep building without R (hazard 9 in .claude/CLAUDE.md).
 #
 # The split worth knowing before you pick a target:
 #

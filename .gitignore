@@ -26,7 +26,8 @@ build*/
 CMakeCache.txt
 CMakeFiles/
 
-# Doxygen output (generated; see Doxyfile)
+# Doxygen output in docs/html (see Doxyfile) and the pkgdown site in docs/site
+# (see _pkgdown.yml); both generated
 docs/
 
 # Agent worktrees. A worktree checked out here records as a gitlink with no

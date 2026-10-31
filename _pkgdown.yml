@@ -1,0 +1,96 @@
+url: https://traitecoevo.github.io/phylloptim/
+
+# docs/html is the Doxygen render (see Doxyfile), so the site builds beside it
+# rather than over it. docs.yml publishes the two together, with this site at
+# the root and the C++ API under cpp/, which is what the navbar link assumes.
+destination: docs/site
+
+template:
+  bootstrap: 5
+
+navbar:
+  structure:
+    right: [search, cpp-api, github]
+  components:
+    cpp-api:
+      text: C++ API
+      href: cpp/index.html
+
+reference:
+- title: Solving a leaf
+  desc: Build a leaf, set its traits and drivers, and read the solved operating point.
+  contents:
+  - leaf_solve
+  - leaf_model
+  - leaf_traits
+  - leaf_control
+  - set_drivers
+  - set_traits
+  - operating_point
+  - cost_curve_names
+  - align_curves
+- title: Water supply
+  desc: How water reaches the root collar, and the root resistances that carry it.
+  contents:
+  - leaf_supply_singlelayer
+  - RootNetwork
+  - root_network_from_carbon
+  - series_resistance
+- title: Trait gradients
+  desc: Exact derivatives of the operating point with respect to traits and drivers.
+  contents:
+  - leaf_gradient
+  - leaf_batch
+  - leaf_gradient_batch
+  - gradient_par_names
+  - gradient_output_names
+- title: Thermal damage
+  desc: The leaf's thermal-damage states over a temperature series, and their gradient.
+  contents:
+  - leaf_damage_trajectory
+  - leaf_damage_gradient
+- title: Vulnerability curves
+  desc: Converting published vulnerability-curve quantities to the (P50, c) the model takes.
+  contents:
+  - weibull_p50_c
+  - weibull_p50_from_b
+  - weibull_s50
+  - psi_at_plc
+- title: Errors and conditions
+  contents:
+  - with_phylloptim_conditions
+  - leaf_infeasible_codes
+- title: Model registry
+  desc: The leaf's equations and parameters as data, with their values and code locations.
+  contents:
+  - model_registry
+  - registry_values
+  - registry_resolve
+  - registry_locations
+- title: Figures
+  contents:
+  - plot_model_overview
+  - plot_solver_convergence
+- title: Package and low-level class
+  desc: >
+    The package help page, and the generated R6 class the functions above are
+    built on. Most users should prefer the functions above.
+  contents:
+  - phylloptim-package
+  - Leaf
+
+articles:
+- title: Using the model from R
+  navbar: Using the model from R
+  contents:
+  - phylloptim
+  - fitting
+- title: The models
+  navbar: The models
+  contents:
+  - the-models
+- title: Using the model from C++ and inside other models
+  navbar: From C++ and inside other models
+  contents:
+  - cpp-interface
+  - derivative-surface

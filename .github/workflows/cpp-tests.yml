@@ -5,7 +5,7 @@ name: C++ tests
 # width and FMA contraction differing between compilers and architectures (see the
 # arm64 note in Leaf::hydraulic_cost_Sperry), which a single-platform build misses.
 #
-# ⚠️ THIS WORKFLOW IS ALSO THE ENFORCEMENT MECHANISM FOR PLAN ITEM 6a, and must
+# ⚠️ THIS WORKFLOW IS ALSO THE ENFORCEMENT MECHANISM FOR HAZARD 9, and must
 # not gain an R step. The package has an R layer now, and what keeps
 # inst/include/ usable from C++ and Python is that these jobs build the whole
 # model on runners with no R installed. An `R CMD check` job compiles the same
@@ -157,7 +157,7 @@ jobs:
 
       # An installed phylloptim must be consumable by find_package, and must NOT have
       # shipped phylloptim.h or the RcppR6_*.hpp headers -- those need Rcpp, and handing
-      # them to a non-R consumer would turn PLAN item 6a's one-way dependency into
+      # them to a non-R consumer would turn hazard 9's one-way dependency into
       # a broken build a long way from its cause.
       - name: Consume the installed package (no R)
         env:

@@ -3,7 +3,7 @@
 #
 # This exists so that "the model does not need R" is a thing you can run rather
 # than a claim in DESCRIPTION. The package gained an R layer in issue #5, and the
-# guarantee that survived it (PLAN item 6a) is that inst/include/ is plain C++:
+# guarantee that survived it (hazard 9 in .claude/CLAUDE.md) is that inst/include/ is plain C++:
 # no R headers, no Rcpp, nothing that requires an R installation to build or to
 # run. An R package's build system cannot demonstrate that, because R is present
 # the whole time. This can, and CI runs it on a runner with no R.
@@ -213,7 +213,7 @@ endif()
 # by RcppR6 and DO include Rcpp -- they are excluded here, along with leaf.h, the
 # R-facing umbrella that includes them. Installing them would hand a non-R
 # consumer headers they cannot compile, and would blur the one-way dependency
-# that PLAN item 6a rests on. <phylloptim.hpp> is the entry point; <phylloptim.h> is not.
+# that hazard 9 in .claude/CLAUDE.md rests on. <phylloptim.hpp> is the entry point; <phylloptim.h> is not.
 
 install(DIRECTORY inst/include/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}

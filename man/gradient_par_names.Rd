@@ -10,7 +10,7 @@ gradient_par_names()
 A character vector, one entry per differentiable parameter.
 }
 \description{
-The fifteen \code{\link[=leaf_traits]{leaf_traits()}} in \code{set_traits()}'s argument order, then
+The sixteen \code{\link[=leaf_traits]{leaf_traits()}} in \code{set_traits()}'s argument order, then
 \code{leaf_specific_conductance_max}, \code{resistance} and \code{CF77_lambda_}. Exported so that R's own
 copy of this order can be compared against it in a test: R passes integer
 positions into this enumeration, so appending to it is safe and reordering it

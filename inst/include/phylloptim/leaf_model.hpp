@@ -44,23 +44,33 @@
 // whatever scalar it holds, after the solve has run at double:
 //
 //   SupplyDraw<S>  draw = leaf.supply_draw_at<S>(S(leaf.opt_root_psi_), supply);
-//   S              psi  = leaf.collar_at<K, S>(draw, pars, curvature);
-//   LeafOutputs<S> out  = leaf.outputs_at<K, S>(psi, draw, pars);
+//   HeldCoords<S>  held;
+//   S              psi  = leaf.collar_at<K, S>(draw, pars, curvature, &held);
+//   LeafOutputs<S> out  = leaf.outputs_at<K, S>(psi, draw, pars, &held);
 //
 // `out.profit` and each layer's `out.uptake[j]` then carry their derivatives in
 // `pars` and `supply`, supplied from the implicit function theorem at the
 // converged point; nothing the root-find did is recorded. S is double, a tangent
 // (odelia::ode::tangent_scalar) or an adjoint (odelia::ode::adjoint_scalar).
-// Preconditions, none checked beyond the first:
+// `held` is optional: it carries the stem potential and ci collar_at solved at
+// an interior point to outputs_at, which otherwise solves them again. Without
+// it every value and tangent is the same bit for bit, and every adjoint row the
+// same to rounding, because it is summed in another order. Preconditions,
+// checked where marked:
 //
-//   - the draw is taken at the solved collar (collar_at refuses another);
+//   - the draw is taken at the solved collar (checked: collar_at and outputs_at
+//     refuse another);
+//   - `held`, if passed, comes from collar_at at this point (checked: outputs_at
+//     refuses one placed at another collar or kind);
 //   - nothing moves the leaf between the solve and outputs_at;
 //   - `pars` and `supply` hold, in value, the seated traits (passive_pars()) and
 //     the seated soil state and root network;
-//   - K is the curve the solve used, TF24 or TF24_floor;
-//   - the supply path is multi-layer;
+//   - K is the curve the solve used, TF24 or TF24_floor (checked against the
+//     seated curve; see check_surface_curve for the one solve it cannot see);
+//   - the supply path is multi-layer (checked: supply_draw_at refuses another);
 //   - `curvature` is marginal_collar_slope<K>() at an Interior point, and is
-//     not read at any other kind;
+//     not read at any other kind or at double; collar_at refuses one that is
+//     not negative or lies inside Leaf::interior_curvature_floor;
 //   - the thermal-damage layer is off: collar_at and outputs_at refuse
 //     use_thermal_damage_, because the kernels they read do not apply it.
 //
@@ -773,13 +783,36 @@ public:
   // interchangeable-looking re-driving calls comes next, so neither clears it.
   //
   // An in-class initialiser, not a line in setup_clean_leaf(), so a fresh Leaf
-  // still reads the NA sentinel: the member is otherwise uninitialised, and
-  // "never reset" must not become "never initialised".
+  // reads the default: the member is otherwise uninitialised, and "never reset"
+  // must not become "never initialised".
   // ⚠️ IT IS AN INPUT AND NOTHING ELSE. No model code assigns it. The units are
   // carbon per unit TRANSPIRATION, which is the Cowan-Farquhar marginal value of
   // water and the convention the lambda literature uses -- NOT the same quantity
   // as ProfitMax's normaliser ratio, which is per unit CONDUCTANCE.
-  double CF77_lambda_ = util::na_value;         // umol C (kg H2O)^-1
+  //
+  // ALIGNED DEFAULTS (#156). Every cost curve with a level parameter defaults to
+  // the value at which its stem optimum has TF24's conductance at one reference
+  // environment: single-potential supply, psi_soil 1 MPa, PPFD 900, VPD 2 kPa,
+  // ca 40 Pa, leaf at 25 C with the energy balance off, and every other trait at
+  // its default. The curves then agree at the reference and differ only in how
+  // their optimum moves away from it, which is what a comparison across curves
+  // is after. TF24 is the anchor and does not move. Four parameters carry it:
+  // `CF77_lambda_`, `JS22_gamma`, `CMax_a` (with `CMax_b` 0) and `LeastCost_beta`.
+  //
+  // ⚠️ THE FOUR NUMBERS ARE SOLVED, NOT CHOSEN, and R's `align_curves()` is the
+  // solver. `test-align-curves.R` re-solves them and fails when a model change
+  // moves an optimum at the reference; re-align then, rather than loosening it.
+  // `leaf_traits()` and `.level_defaults` carry the same numbers on the R side.
+  //
+  // What is left unaligned, and why. SOX, JW26 and ProfitMax have no level
+  // parameter: the shared supply sets their optimum, and aligning them through
+  // `kmax` would break the one supply every curve shares. TF24_floor's hydraulic
+  // half IS TF24's cost at TF24's traits, so the only lambda_o that reaches
+  // TF24's conductance is zero, where the curve is TF24; it keeps no default.
+  //
+  // CF77's aligned price is exactly TF24's emergent lambda at the reference: at
+  // that price the two first-order conditions coincide, so the optima do.
+  double CF77_lambda_ = 107750.8846;            // umol C (kg H2O)^-1
   // Optional Medlyn (2011) soil-moisture factor on the CF77 price: with this on,
   // the marginal value of water becomes `CF77_lambda_ / beta(theta)` rather than
   // the bare constant, where beta is the same expression medlyn_model_gs uses.
@@ -796,9 +829,9 @@ public:
   // this path rather than dividing it by a computed 1.0.
   bool CF77_soil_beta_ = false;
   // THE PRICE OF WATER AS TRANSPIRATION GOES TO ZERO, umol C (kg H2O)^-1 -- the
-  // `lambda_o` of the TF24_floor cost curve, and an INPUT on exactly the same footing
-  // as `CF77_lambda_` above: same units, same meaning, no default, never assigned
-  // by model code, and not cleared by setup_clean_leaf().
+  // `lambda_o` of the TF24_floor cost curve, and an INPUT on the same footing as
+  // `CF77_lambda_` above: same units, same meaning, never assigned by model code,
+  // and not cleared by setup_clean_leaf() -- but, unlike it, with no default.
   //
   // WHY IT HAS NO DEFAULT, and this is the sharpest case in the class. Zero is a
   // defensible number and it is the WRONG default, because at `lambda_o = 0` this
@@ -823,8 +856,8 @@ public:
   double TF24_floor_lambda_o = util::na_value;     // umol C (kg H2O)^-1
   // THE UNIT-COST RATIO OF LEAST-COST THEORY (@Prentice-2014's beta), and the
   // LeastCost curve's ONLY parameter. An INPUT on the same footing as
-  // `CF77_lambda_` and `TF24_floor_lambda_o`: no default, never assigned by model
-  // code, not cleared by setup_clean_leaf().
+  // `CF77_lambda_`: never assigned by model code, not cleared by
+  // setup_clean_leaf(), and defaulted to its ALIGNED value (see `CF77_lambda_`).
   //
   // Least-cost minimises `C_P = (c_E*E + c_V*Vcmax)/A`, so it has two unit costs
   // rather than one. ⚠️ ONE FIELD IS ENOUGH, AND THIS IS NOT A SIMPLIFICATION.
@@ -854,7 +887,13 @@ public:
   // @Prentice-2014 report beta = 146 and @Dong-2017 fit 146 +- a factor of about
   // two; below ~10 the water term dominates and the leaf closes, above ~1e4 the
   // capacity term does and it opens to the wet bound.
-  double LeastCost_beta = util::na_value;          // dimensionless, c_V / c_E
+  //
+  // ⚠️ THE DEFAULT IS NOT THE PUBLISHED 146. At this package's default leaf, 146
+  // pins the stem optimum at psi_crit from the reference psi_soil of 1 MPa
+  // drier (the leaf opens fully at the reference), so it cannot be compared with
+  // the other curves there. The aligned value, 146/2.83, sits below Dong's
+  // factor-of-two band about 146.
+  double LeastCost_beta = 51.59667042;             // dimensionless, c_V / c_E
   double hydraulic_cost_;
   
   double electron_transport_;
@@ -1460,14 +1499,14 @@ public:
   // is a real omission rather than a simplification. Do not describe a run of this
   // curve as "Joshi et al. (2022)".
   //
-  // ⚠️ THE DEFAULT IS NOT A LITERATURE VALUE. It is order-of-magnitude matched to
-  // TF24 at this package's defaults, and there is no single value that matches
-  // more than one soil potential: the gamma reproducing TF24's cost at its own
+  // ⚠️ THE DEFAULT IS NOT A LITERATURE VALUE. It is ALIGNED to TF24 at the
+  // reference environment (see `CF77_lambda_`), and no single value matches more
+  // than one soil potential: the gamma reproducing TF24's cost at its own
   // optimum runs 0.287 (psi_soil 0.5 MPa) to 1.761 (3.0 MPa), a 6.1x range,
   // because TF24's cost tracks the ABSOLUTE potential through (1 - f) while this
   // one tracks the DROP -- and across a drydown those move in opposite directions.
   // That spread is the models' structural difference, not a fitting problem.
-  double JS22_gamma = 1.0;             // umol C m^-2 s^-1 MPa^-2
+  double JS22_gamma = 0.4717887793;    // umol C m^-2 s^-1 MPa^-2
   // Wolf, Anderegg & Pacala (2016) carbon maximisation, in the form Anderegg et al.
   // (2018) gave it and Sabot's `TractLSM` implements (`SPAC/fregulate.py`,
   // `dcost_dpsi = Alpha*|P| + Beta`): a marginal cost LINEAR in the absolute leaf
@@ -1485,11 +1524,12 @@ public:
   // sign here has to be pinned by reproducing a TractLSM number and not by reading
   // the formula. It is therefore NOT range-checked the way JS22_gamma is.
   //
-  // ⚠️ NEITHER DEFAULT IS A LITERATURE VALUE. Measured: with CMax_b = 0 the CMax_a
-  // reproducing TF24's cost at TF24's own optimum runs 0.406 (psi_soil 0.5 MPa) to
-  // 0.807 (3.0 MPa) -- a 2.0x range, against JS22's 6.1x, which is the absolute-
-  // versus-drop distinction showing up as a number. 0.6 is mid-range of that band.
-  double CMax_a = 0.6;                 // umol C m^-2 s^-1 MPa^-2
+  // ⚠️ NEITHER DEFAULT IS A LITERATURE VALUE. CMax_a is ALIGNED to TF24 at the
+  // reference environment with CMax_b = 0 (see `CF77_lambda_`). Measured: the
+  // CMax_a reproducing TF24's cost at TF24's own optimum runs 0.406 (psi_soil
+  // 0.5 MPa) to 0.807 (3.0 MPa) -- a 2.0x range, against JS22's 6.1x, which is the
+  // absolute-versus-drop distinction showing up as a number.
+  double CMax_a = 0.6385596982;        // umol C m^-2 s^-1 MPa^-2
   double CMax_b = 0.0;                 // umol C m^-2 s^-1 MPa^-1
   // Dark respiration's temperature response, Tjoelker et al. (2001):
   //
@@ -2070,7 +2110,10 @@ public:
   template <class S>
   struct SupplyDraw {
     double at = 0.0;
-    odelia::with_slope<S> flux;
+    // Zero, not default-initialised: at a hydraulic shutdown supply_draw_at
+    // returns before writing it, and a default-initialised double is
+    // indeterminate.
+    odelia::with_slope<S> flux{};
     std::vector<S> uptake;
     std::vector<double> duptake_dp;
     // The most the roots can deliver from this soil, which caps the residual
@@ -2092,6 +2135,9 @@ public:
     // a gradient column rather than as an error -- so this exists to make the
     // theorem's inputs reachable, not for convenience. `at` and `duptake_dp` are
     // double and carry no row. Const because the harvest reads slots.
+    // A member added above and not visited here would be such a column, so the
+    // layout is asserted below this struct: adding a member fails to compile
+    // until both are updated.
     template <class F>
     void for_each_active(F&& f) const {
       f(flux.value);
@@ -2107,6 +2153,18 @@ public:
       }
     }
   };
+  // The two optional rows (#182), the roots' ceiling and the dead soil's
+  // gravity balance, are each a flag and a value; at double the flag pads to
+  // the value's alignment, so each pair counts as two doubles.
+  static_assert(sizeof(SupplyDraw<double>) ==
+                    sizeof(double) + sizeof(odelia::with_slope<double>) +
+                        sizeof(std::vector<double>) * 2 +
+                        2 * (alignof(double) + sizeof(double)),
+                "SupplyDraw gained or lost a member: update for_each_active, "
+                "then this count");
+  static_assert(sizeof(odelia::with_slope<double>) == 2 * sizeof(double),
+                "odelia::with_slope is no longer a value and a slope: re-check "
+                "that SupplyDraw::for_each_active visits all of it");
 
   // How a draw is meant to be made: it records the collar it was taken at, so its
   // values cannot come from different ones, and collar_at refuses a draw whose
@@ -2118,6 +2176,14 @@ public:
   template <class S>
   SupplyDraw<S> supply_draw_at(const S& collar,
                                const SupplyAt<S>& supply) const {
+    // The walk below is MultiLayerRoots', whatever path the leaf solved on, so
+    // a single-potential leaf would be handed a draw from a supply its solve
+    // never read.
+    if (supply_kind_ != SupplyKind::MultiLayer) {
+      util::stop("Leaf::supply_draw_at: the derivative surface reads the "
+                 "multi-layer supply, and this leaf is on the " +
+                 supply_kind_name() + " path");
+    }
     const std::size_t n = static_cast<std::size_t>(supply_n_layers());
     SupplyDraw<S> d;
     d.at = odelia::util::to_passive(collar);
@@ -2491,6 +2557,24 @@ public:
                            bool* feasible = nullptr);
 
   static std::string curve_name(int curve);
+
+  // ⚠️ THE DERIVATIVE SURFACE READ ON ANOTHER CURVE IS A WRONG NUMBER, like a
+  // draw from another collar (check_draw): collar_at and outputs_at evaluate
+  // whatever K names at the solve's collar, and every value stays finite.
+  // Checked against the SEATED curve, which is what optimise() and
+  // replay_operating_point() solve. find_root_collar_psi() is the exception --
+  // it solves TF24 whatever is seated -- so a leaf seated on another curve and
+  // solved through it passes this check for the wrong reason.
+  template <CostCurve K>
+  void check_surface_curve(const char* who) const {
+    if (K != cost_curve_) {
+      util::stop(std::string(who) + ": asked for the " +
+                 curve_name(static_cast<int>(K)) + " curve, and the leaf is "
+                 "seated on " + curve_name(static_cast<int>(cost_curve_)) +
+                 "; read the surface on the curve the solve used");
+    }
+  }
+
   // ⚠️ THE ONLY RUNTIME CURVE DISPATCH IN THE CLASS, and the reason it is a
   // template rather than four switches. Calls `f(tag)` where `tag` is an
   // `std::integral_constant<CostCurve, K>`, so the body it hands back is
@@ -2776,13 +2860,51 @@ public:
 
     // ⚠️ WHAT CARRIES A ROW, NAMED FOR visit_active -- see SupplyDraw. A shape
     // dispatch does not open is skipped in silence, and the ci residual reads
-    // every one of these.
+    // every one of these. The member count is asserted below this struct.
     template <class F>
     void for_each_active(F&& f) const {
       f(vcmax);
       f(transport);
       f(curvature);
       f(respiration);
+    }
+  };
+  static_assert(sizeof(PhotoCapacity<double>) == 4 * sizeof(double),
+                "PhotoCapacity gained or lost a member: update for_each_active, "
+                "then this count");
+
+  // The coordinates at an interior collar, held, as collar_at placed them: the
+  // capacity, the stem potential sigma, the stem's flux and ci, each carrying
+  // its rows in the traits and the soil. outputs_at reads them rather than
+  // solving sigma and ci again. The caller owns them, as it owns the draw.
+  //
+  // ⚠️ THEY LIVE ON THE CALLER'S TAPE, SO THEIR LIFETIME IS THE DRAW'S. They are
+  // recorded before collar_at's residual is rewound, which is why they survive
+  // it; a tape reset or a new recording between collar_at and outputs_at
+  // leaves them pointing at slots that no longer hold them.
+  //
+  // `at` is the collar they were placed at, NaN until collar_at places them.
+  // collar_at places them only at an interior point and only at an active
+  // scalar, so at double and at every other kind outputs_at solves its own.
+  template <class S>
+  struct HeldCoords {
+    double at = std::numeric_limits<double>::quiet_NaN();
+    PhotoCapacity<S> cap{};
+    S sigma{};
+    S gc{};
+    S ci{};
+
+    bool placed() const { return !std::isnan(at); }
+
+    // ⚠️ WHAT CARRIES A ROW, NAMED FOR visit_active -- see SupplyDraw. The
+    // marginal's residual reads every one of these, and one left out is a
+    // column of exact zeros in the collar's row.
+    template <class F>
+    void for_each_active(F&& f) const {
+      cap.for_each_active(f);
+      f(sigma);
+      f(gc);
+      f(ci);
     }
   };
 
@@ -2946,6 +3068,23 @@ public:
                                    const PhotoCapacity<S>& cap,
                                    bool collar_moves) const;
 
+  // collar_coords_at in its two halves, so a caller holding the first can add
+  // the second without solving sigma and ci again: the coordinates at the HELD
+  // collar, carrying the trait and soil rows, and then the collar's channel on
+  // top of them. collar_coords_at is exactly the one followed by the other.
+  template <class S>
+  void held_coords_at(double sigma_star, double ci_star, const S& collar,
+                      const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
+                      const PhotoCapacity<S>& cap, S& sigma_h, S& gc,
+                      S& ci_h) const;
+  template <class S>
+  CollarCoords<S> collar_channel_at(double sigma_star, const S& collar,
+                                    const SupplyDraw<S>& draw,
+                                    const leaf_pars<S>& pars,
+                                    const PhotoCapacity<S>& cap,
+                                    const S& sigma_h, const S& gc,
+                                    const S& ci_h, bool collar_moves) const;
+
   // The stem's critical potential at any scalar. DERIVED from the trait pair, as
   // it is at double, which is what makes the old `no_gradient` question moot: it
   // is an ordinary expression the chain differentiates, not a parameter that has
@@ -2962,10 +3101,22 @@ public:
   template <CostCurve K, class S>
   S profit_at(const S& collar, const SupplyDraw<S>& draw,
               const leaf_pars<S>& pars, bool collar_moves) const;
+  // The objective at coordinates already placed, which is all profit_at does
+  // once it has them.
+  template <CostCurve K, class S>
+  S profit_from_coords(const S& collar, const leaf_pars<S>& pars,
+                       const PhotoCapacity<S>& cap, const S& sigma,
+                       const S& ci) const;
 
+  // `placed`, when collar_at placed it at this point, is read instead of
+  // solving sigma and ci again; otherwise, and when it is null, this solves its
+  // own. ⚠️ Placed coordinates are refused at any kind but interior and at any
+  // collar but the one they were placed at, because either means the leaf has
+  // moved.
   template <CostCurve K, class S>
   LeafOutputs<S> outputs_at(const S& collar, const SupplyDraw<S>& draw,
-                            const leaf_pars<S>& pars) const;
+                            const leaf_pars<S>& pars,
+                            const HeldCoords<S>* placed = nullptr) const;
 
   // M = dprofit/dcollar, as a SCALAR. What used to travel beside it -- the two
   // collar responses -- are the coordinates' own slope halves now, so there is
@@ -2973,6 +3124,15 @@ public:
   template <CostCurve K, class S>
   S marginal_at(const S& collar, const SupplyDraw<S>& draw,
                 const leaf_pars<S>& pars) const;
+  // The same marginal on coordinates collar_at has already placed, adding only
+  // the collar's channel.
+  template <CostCurve K, class S>
+  S marginal_at(const S& collar, const SupplyDraw<S>& draw,
+                const leaf_pars<S>& pars, const HeldCoords<S>& held) const;
+  template <CostCurve K, class S>
+  S marginal_from_coords(const S& collar, const leaf_pars<S>& pars,
+                         const PhotoCapacity<S>& cap,
+                         const CollarCoords<S>& at) const;
 
   // dM/dp at the operating point the solve placed -- the curvature the interior
   // derivation divides by. A FIRST difference of the marginal, which is what this
@@ -3013,10 +3173,23 @@ public:
   // drives the model off the operating point and puts it back -- so this mutates
   // the leaf even though it leaves it where it found it. Declared const it
   // const_cast itself, which hid that from every caller.
+  //
+  // `placed`, when given, receives the coordinates the interior arm solved,
+  // for outputs_at to read instead of solving them again. It is left unplaced
+  // at double and at every other kind, which have none to hand over.
   template <CostCurve K, class S>
   S collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
               double interior_curvature =
-                  std::numeric_limits<double>::quiet_NaN());
+                  std::numeric_limits<double>::quiet_NaN(),
+              HeldCoords<S>* placed = nullptr);
+
+  // The smallest |dM/dp| collar_at's interior arm divides by. Every collar row
+  // there is a quotient over the curvature, so one near zero returns
+  // amplification rather than a derivative -- finite, and huge. The value is
+  // plant's default gradient_curvature_floor, so plant's own guard and this one
+  // refuse the same points at its defaults; the smallest |curvature| on
+  // test_transpose's grid is 0.14.
+  static constexpr double interior_curvature_floor = 1e-3;
 
   // The conditions that pin a collar. Neither is a second derivative, so each is
   // an ordinary implicit value: the residual's own slope at the bound, and the
@@ -7834,6 +8007,19 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
     double sigma_star, double ci_star, const S& collar,
     const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
     const PhotoCapacity<S>& cap, bool collar_moves) const {
+  S sigma_h, gc, ci_h;
+  held_coords_at<S>(sigma_star, ci_star, collar, draw, pars, cap, sigma_h, gc,
+                    ci_h);
+  return collar_channel_at<S>(sigma_star, collar, draw, pars, cap, sigma_h, gc,
+                              ci_h, collar_moves);
+}
+
+template <class S>
+inline void Leaf::held_coords_at(double sigma_star, double ci_star,
+                                 const S& collar, const SupplyDraw<S>& draw,
+                                 const leaf_pars<S>& pars,
+                                 const PhotoCapacity<S>& cap, S& sigma_h,
+                                 S& gc, S& ci_h) const {
   using odelia::util::to_passive;
   check_draw(to_passive(collar), draw);
 
@@ -7868,7 +8054,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   // MUST BE IN THIS LIST -- one left out is a row that never arrives, which
   // reads as an exact zero in that column rather than as an error. `held` is
   // to_passive and carries none.
-  const S sigma_h = odelia::implicit_value<S>(
+  sigma_h = odelia::implicit_value<S>(
       sigma_star, dT1_dsigma,
       [&](const S& sg) -> S {
         return pars[par_kmax] *
@@ -7886,7 +8072,17 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   const S stem_flux = transpiration_at<S>(sigma_h, held, pars);
   const S r_star = residual_flux_at<S>(held, pars, draw);
   const S cuticle = pars[par_g_min] * S(g_min_co2_ratio_ * g_min_factor(Tleaf_));
-  const S gc = S(gc_per_flux) * (stem_flux - r_star) + cuticle;
+  // ⚠️ WHERE NOTHING CONDUCTS, THE STOMATAL TERM CARRIES NO ROW. That is a shut
+  // leaf at g_min = 0: it sits on its wet bound, where the stomatal flux is
+  // zero identically -- the collar moves to keep it so -- and the collar's
+  // channel below is skipped there, so nothing would cancel the held collar's
+  // partial that stem_flux carries. Left in, it reached ci and A: the root_P50
+  // row of a three-layer shut leaf's profit read 9.5e-2 where a difference of
+  // the solve gives 1.3e-2. The cuticle keeps its g_min row, which is the
+  // derivative of a leaf that starts to conduct.
+  gc = stom_cond_CO2_ == 0.0
+           ? cuticle
+           : S(gc_per_flux) * (stem_flux - r_star) + cuticle;
 
   // ⚠️ FOLLOW THE BRANCH THE FORWARD MODEL TOOK. With nothing conducting at all
   // (g_min = 0 and the stomata shut) the residual is A(ci) = 0, which the
@@ -7909,7 +8105,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
   }
   // The capacity and gc are the active things the residual reads, so they are
   // the list; ca_ and inv_atm are double.
-  const S ci_h =
+  ci_h =
       no_coordinate
           ? S(ci_star)
           : odelia::implicit_value<S>(
@@ -7919,6 +8115,21 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
                   return A * umol_to_mol - gc * (S(leaf.ca_) - c) * S(inv_atm);
                 },
                 cap, gc);
+}
+
+template <class S>
+inline Leaf::CollarCoords<S> Leaf::collar_channel_at(
+    double sigma_star, const S& collar, const SupplyDraw<S>& draw,
+    const leaf_pars<S>& pars, const PhotoCapacity<S>& cap, const S& sigma_h,
+    const S& gc, const S& ci_h, bool collar_moves) const {
+  using odelia::util::to_passive;
+  const S held(to_passive(collar));
+  const double gc_per_flux =
+      atm_kpa_ * kg_to_mol_h2o / vpd_leaf_ / H2O_CO2_stom_diff_ratio_;
+  const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
+  // A ci with no root was handed over as +inf, as collar_coords_at's no-root
+  // branch places it; the channel has nothing to carry there.
+  const bool no_coordinate = !std::isfinite(to_passive(ci_h));
 
   // Everything below is the collar's channel, and where the collar is held it is
   // multiplied by a step that is zero in value AND carries no derivative -- so
@@ -8016,6 +8227,17 @@ inline S Leaf::profit_at(const S& collar, const SupplyDraw<S>& draw,
   const PhotoCapacity<S> cap = photo_capacity_at<S>(pars);
   const CollarCoords<S> at = collar_coords_at<S>(opt_psi_stem_, ci_, collar,
                                                  draw, pars, cap, collar_moves);
+  return profit_from_coords<K, S>(collar, pars, cap, at.sigma.value,
+                                  at.ci.value);
+}
+
+template <Leaf::CostCurve K, class S>
+inline S Leaf::profit_from_coords(const S& collar, const leaf_pars<S>& pars,
+                                  const PhotoCapacity<S>& cap, const S& sigma,
+                                  const S& ci) const {
+  static_assert(K == CostCurve::TF24 || K == CostCurve::TF24_floor,
+                "the reverse-mode surface covers TF24 and TF24_floor; another "
+                "curve is a row in profit_at and marginal_at");
   // A leaf with no conductance and no ci at which it nets zero reported
   // ci = +inf and its saturated assimilation; the same here. One with no
   // conductance and a root reported A = 0 exactly (the residual there IS A),
@@ -8025,19 +8247,19 @@ inline S Leaf::profit_at(const S& collar, const SupplyDraw<S>& draw,
   if (!std::isfinite(ci_)) {
     A = assim_saturated_kernel<S, S>(cap);
   } else {
-    A = assim_colimited_kernel<S>(at.ci.value, cap);
+    A = assim_colimited_kernel<S>(ci, cap);
     if (stom_cond_CO2_ == 0.0) {
       A = A - S(odelia::util::to_passive(A));
     }
   }
-  S cost = hydraulic_cost_TF_kernel<S>(at.sigma.value, pars);
+  S cost = hydraulic_cost_TF_kernel<S>(sigma, pars);
   if constexpr (K == CostCurve::TF24_floor) {
     // TF24's own cost plus a part LINEAR IN THE FLUX: Theta(E) = Theta~(psi) +
     // lambda_o*E. Written as the parent's expression plus a term, which is what
     // makes the reduction at lambda_o = 0 exact rather than approximate -- an
     // exact zero added to TF24's exact value, fused multiply-add included.
     cost = cost + pars[par_TF24_floor_lambda_o] *
-                      transpiration_at<S>(at.sigma.value, collar, pars);
+                      transpiration_at<S>(sigma, collar, pars);
   }
   return A - cost;
 }
@@ -8045,10 +8267,30 @@ inline S Leaf::profit_at(const S& collar, const SupplyDraw<S>& draw,
 template <Leaf::CostCurve K, class S>
 inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
                                              const SupplyDraw<S>& draw,
-                                             const leaf_pars<S>& pars) const {
+                                             const leaf_pars<S>& pars,
+                                             const HeldCoords<S>* placed) const {
   using odelia::util::to_passive;
   refuse_thermal_damage("Leaf::outputs_at");
+  check_surface_curve<K>("Leaf::outputs_at");
   check_draw(to_passive(collar), draw);
+  // Placed coordinates exist only at an interior point and only at the collar
+  // collar_at placed them at, so either check failing means the leaf moved
+  // between the two calls -- and the coordinates would answer for another point
+  // with every number finite.
+  const bool reuse = placed != nullptr && placed->placed();
+  if (reuse) {
+    if (operating_point_kind_ != OperatingPointKind::Interior) {
+      util::stop(std::string("Leaf::outputs_at: the held coordinates were "
+                             "placed at an interior point and are being read "
+                             "at one that is ") +
+                 operating_point_kind_name(operating_point_kind_));
+    }
+    if (placed->at != to_passive(collar)) {
+      util::stop("Leaf::outputs_at: the held coordinates were placed at a "
+                 "collar of " + util::to_string(placed->at) +
+                 " and are being read at " + util::to_string(to_passive(collar)));
+    }
+  }
   LeafOutputs<S> out;
   const std::size_t n = static_cast<std::size_t>(supply_n_layers());
 
@@ -8081,8 +8323,15 @@ inline Leaf::LeafOutputs<S> Leaf::outputs_at(const S& collar,
   // placed by the wet bound and profit carries its movement.
   const bool interior = operating_point_kind_ == OperatingPointKind::Interior;
   const S collar_held(to_passive(collar));
-  out.profit = profit_at<K, S>(interior ? collar_held : collar, draw, pars,
-                               !interior);
+  if (reuse) {
+    // The same coordinates profit_at would solve for at the held collar: the
+    // residuals see a held collar there too, so these are its numbers and rows.
+    out.profit = profit_from_coords<K, S>(collar_held, pars, placed->cap,
+                                          placed->sigma, placed->ci);
+  } else {
+    out.profit = profit_at<K, S>(interior ? collar_held : collar, draw, pars,
+                                 !interior);
+  }
   // The residual flux at the LIVE collar: the envelope theorem is profit's,
   // and the cuticle's loss moves with the collar through the stem's ceiling.
   // An exact zero carrying the g_min row at g_min = 0.
@@ -8105,6 +8354,33 @@ inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
   const PhotoCapacity<S> cap = photo_capacity_at<S>(pars);
   const CollarCoords<S> at =
       collar_coords_at<S>(opt_psi_stem_, ci_, collar, draw, pars, cap, true);
+  return marginal_from_coords<K, S>(collar, pars, cap, at);
+}
+
+template <Leaf::CostCurve K, class S>
+inline S Leaf::marginal_at(const S& collar, const SupplyDraw<S>& draw,
+                           const leaf_pars<S>& pars,
+                           const HeldCoords<S>& held) const {
+  using odelia::util::to_passive;
+  check_draw(to_passive(collar), draw);
+  if (held.at != to_passive(collar)) {
+    util::stop("Leaf::marginal_at: the held coordinates were placed at a "
+               "collar of " + util::to_string(held.at) +
+               " and are being read at " + util::to_string(to_passive(collar)));
+  }
+  const CollarCoords<S> at =
+      collar_channel_at<S>(opt_psi_stem_, collar, draw, pars, held.cap,
+                           held.sigma, held.gc, held.ci, true);
+  return marginal_from_coords<K, S>(collar, pars, held.cap, at);
+}
+
+template <Leaf::CostCurve K, class S>
+inline S Leaf::marginal_from_coords(const S& collar, const leaf_pars<S>& pars,
+                                    const PhotoCapacity<S>& cap,
+                                    const CollarCoords<S>& at) const {
+  static_assert(K == CostCurve::TF24 || K == CostCurve::TF24_floor,
+                "the reverse-mode surface covers TF24 and TF24_floor; another "
+                "curve is a row in profit_at and marginal_at");
   const S A_prime = assim_slope_at<S>(at.ci.value, cap);
   // dC/dpsi_stem, the same way: a tangent through the cost kernel rather than a
   // slope written out beside it.
@@ -8238,12 +8514,18 @@ inline S Leaf::bound_at(bool wet, double bound_x, const SupplyDraw<S>& draw,
 // condition is first order and composes here.
 template <Leaf::CostCurve K, class S>
 inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
-                         double interior_curvature) {
+                         double interior_curvature, HeldCoords<S>* placed) {
   // At every kind, not only where the kernels below are read: a bound is placed
   // by the supply alone, but outputs_at refuses beside it, and a surface that
   // answers at some kinds and not others is one a caller cannot plan around.
   refuse_thermal_damage("Leaf::collar_at");
+  check_surface_curve<K>("Leaf::collar_at");
   check_draw(opt_root_psi_, draw);
+  // Unplaced until the interior arm places it, so coordinates left from an
+  // earlier point can never be read at this one.
+  if (placed != nullptr) {
+    placed->at = std::numeric_limits<double>::quiet_NaN();
+  }
   S collar = S(opt_root_psi_);
   switch (operating_point_kind_) {
     case OperatingPointKind::Interior: {
@@ -8262,14 +8544,54 @@ inline S Leaf::collar_at(const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
             std::isnan(interior_curvature)
                 ? this->template marginal_collar_slope<K>()
                 : interior_curvature;
-        // The whole draw, because marginal_at reads more of it than the flux:
-        // SupplyDraw names its own active members for this.
-        collar = odelia::implicit_value<S>(
-            opt_root_psi_, curvature,
-            [&](const S& y) -> S {
-              return marginal_at<K, S>(y, draw, pars);
-            },
-            draw, pars);
+        // ⚠️ odelia's implicit_value refuses only a zero or non-finite
+        // denominator, so these two are this arm's to refuse: a curvature of
+        // -1e-300 otherwise returns rows of ~1e296 with nothing flagged. Two
+        // messages because they are two findings: an interior collar sits on a
+        // downward crossing of the marginal, so a curvature that is not negative
+        // indicts the curvature, while a tiny negative one is a flat optimum.
+        if (!(curvature < 0.0)) {
+          util::stop("Leaf::collar_at: the profit curvature at this interior "
+                     "point is " + util::format_double(curvature) +
+                     ", which is not negative, so the implicit function "
+                     "theorem has nothing to divide by");
+        }
+        if (curvature > -interior_curvature_floor) {
+          util::stop("Leaf::collar_at: the profit curvature at this interior "
+                     "point is " + util::format_double(curvature) +
+                     ", inside the floor of " +
+                     util::format_double(interior_curvature_floor) +
+                     ", so the collar rows would divide by too little to answer");
+        }
+        // ⚠️ THE COORDINATES ARE PLACED BEFORE THE RESIDUAL, NOT INSIDE IT. The
+        // residual is recorded, swept and rewound, so anything it solves is gone
+        // when this returns; placed out here they stay on the caller's tape for
+        // outputs_at to read, and the residual adds only the collar's channel.
+        // They are then inputs the residual reads, so they join the list: one
+        // left out is a column of exact zeros in the collar's row.
+        if (placed != nullptr) {
+          const S at = S(opt_root_psi_);
+          placed->cap = photo_capacity_at<S>(pars);
+          held_coords_at<S>(opt_psi_stem_, ci_, at, draw, pars, placed->cap,
+                            placed->sigma, placed->gc, placed->ci);
+          placed->at = opt_root_psi_;
+          const HeldCoords<S>& h = *placed;
+          collar = odelia::implicit_value<S>(
+              opt_root_psi_, curvature,
+              [&](const S& y) -> S {
+                return marginal_at<K, S>(y, draw, pars, h);
+              },
+              draw, pars, h);
+        } else {
+          // The whole draw, because marginal_at reads more of it than the
+          // flux: SupplyDraw names its own active members for this.
+          collar = odelia::implicit_value<S>(
+              opt_root_psi_, curvature,
+              [&](const S& y) -> S {
+                return marginal_at<K, S>(y, draw, pars);
+              },
+              draw, pars);
+        }
       }
       break;
     }
@@ -9087,16 +9409,15 @@ inline double Leaf::benefit_link_deriv(double A) const {
 template <Leaf::CostCurve K>
 inline void Leaf::check_cost_parameters() {
   if constexpr (K == CostCurve::CF77) {
-    // ⚠️ CF77_lambda_ IS AN INPUT AND HAS NO DEFAULT. It is the marginal value of
-    // water -- the one parameter this model is defined by -- and no model code
-    // supplies one, so a caller who has not set it is maximising a NaN objective.
-    // The potential that comes back from that is a property of the bracket rather
-    // than of the leaf, and it looks entirely plausible. Refuse instead.
+    // CF77_lambda_ is an input with an aligned default, so a non-finite value
+    // means a caller cleared it. That maximises a NaN objective, whose argmax is
+    // a property of the bracket and looks entirely plausible. Refuse instead.
     if (!std::isfinite(CF77_lambda_)) {
       util::stop("the CF77 cost curve needs CF77_lambda_ set: it is the "
-                 "PRESCRIBED marginal value of water in umol C (kg H2O)^-1, NA "
-                 "until you assign one, and never set by set_physiology or "
-                 "set_traits.");
+                 "PRESCRIBED marginal value of water in umol C (kg H2O)^-1, and "
+                 "it was set to " + util::to_string(CF77_lambda_) + ". Its "
+                 "default is aligned to TF24 (see align_curves()); "
+                 "set_physiology and set_traits never touch it.");
     }
     // ⚠️ Only when the option is ON, so a caller who never touches it cannot be
     // refused for soil-moisture values the bare constant never reads. beta <= 0
@@ -9141,9 +9462,9 @@ inline void Leaf::check_cost_parameters() {
       util::stop("CMax_b must be finite; got " + util::to_string(CMax_b));
     }
   } else if constexpr (K == CostCurve::TF24_floor) {
-    // ⚠️ ONE PARAMETER, AND IT IS AN INPUT WITH NO DEFAULT -- exactly like
-    // CF77_lambda_ and for a sharper reason: zero is a perfectly good value here,
-    // and it is the value at which this curve stops being itself. The hydraulic
+    // ⚠️ ONE PARAMETER, AND IT IS AN INPUT WITH NO DEFAULT -- unlike
+    // CF77_lambda_, which has an aligned one -- because zero is a perfectly good
+    // value here, and it is the value at which this curve stops being itself. The hydraulic
     // half is TF24's cost at TF24's own traits, so at lambda_o = 0 TF24_floor IS
     // TF24, and a caller who seated this curve and never named a price would be
     // running the production model under the new model's name. Refuse the
@@ -9161,10 +9482,10 @@ inline void Leaf::check_cost_parameters() {
                  util::to_string(TF24_floor_lambda_o));
     }
   } else if constexpr (K == CostCurve::LeastCost) {
-    // ⚠️ AN INPUT WITH NO DEFAULT, for CF77's reason rather than TF24_floor's.
-    // There is no other curve this one collapses into, so an unset beta is not a
-    // silent substitution -- it is a NaN objective, whose argmax is a property of
-    // the bracket and looks entirely plausible. Refuse instead.
+    // An input with an aligned default, refused when cleared for CF77's reason
+    // rather than TF24_floor's: there is no other curve this one collapses into,
+    // so a non-finite beta is a NaN objective, whose argmax is a property of the
+    // bracket and looks entirely plausible.
     //
     // ⚠️ AND STRICTLY POSITIVE, WHICH IS NOT THE SAME CHECK `TF24_floor_lambda_o`
     // GETS. Zero is accepted there and is the reduction test's own case; here it
@@ -9177,9 +9498,10 @@ inline void Leaf::check_cost_parameters() {
                  "Prentice et al. (2014)'s beta, the unit cost of maintaining "
                  "carboxylation capacity relative to that of transpiration, "
                  "DIMENSIONLESS (both fluxes are weighed in mol m^-2 s^-1), "
-                 "strictly positive, and NA until you assign one -- "
-                 "set_physiology and set_traits never touch it. The published "
-                 "value is 146. Set `$LeastCost_beta` on the leaf, or pass "
+                 "strictly positive; its default is aligned to TF24 (see "
+                 "align_curves()), and set_physiology and set_traits never touch "
+                 "it. The published value is 146. Set `$LeastCost_beta` on the "
+                 "leaf, or pass "
                  "`LeastCost_beta =` to leaf_solve() / leaf_batch(); got " +
                  util::to_string(LeastCost_beta));
     }

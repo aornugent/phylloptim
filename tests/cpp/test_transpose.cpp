@@ -49,6 +49,7 @@
 #include <odelia/tangent.hpp>
 
 #include <cmath>
+#include <map>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -147,16 +148,19 @@ Inputs<S> inputs_of(const pl::Leaf& l) {
 // <v, J u>: one tangent, every input given its direction at once.
 double forward_side(pl::Leaf l, const std::vector<double>& u,
                     const std::vector<double>& v, double curvature,
-                    bool has_coords) {
+                    bool has_coords, bool handoff) {
   Inputs<T> in = inputs_of<T>(l);
   std::vector<T*> f = in.flat();
   for (std::size_t k = 0; k < f.size(); ++k) {
     odelia::ode::set_direction(*f[k], u[k]);
   }
   const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), in.supply());
+  pl::Leaf::HeldCoords<T> held;
+  pl::Leaf::HeldCoords<T>* h = handoff ? &held : nullptr;
   const T collar =
-      l.collar_at<pl::Leaf::CostCurve::TF24, T>(draw, in.pars, curvature);
-  const auto o = l.outputs_at<pl::Leaf::CostCurve::TF24, T>(collar, draw, in.pars);
+      l.collar_at<pl::Leaf::CostCurve::TF24, T>(draw, in.pars, curvature, h);
+  const auto o =
+      l.outputs_at<pl::Leaf::CostCurve::TF24, T>(collar, draw, in.pars, h);
 
   double acc = v[2] * odelia::ode::derivative_along(draw.flux.value) +
                v[3] * odelia::ode::derivative_along(o.profit);
@@ -183,7 +187,7 @@ struct Pairing {
 // One recording, one sweep.
 Pairing reverse_side(pl::Leaf l, const std::vector<double>& u,
                      const std::vector<double>& v, double curvature,
-                     bool hold_collar, bool has_coords) {
+                     bool hold_collar, bool has_coords, bool handoff) {
   Tape tape;
   Inputs<A> in = inputs_of<A>(l);
   std::vector<A*> f = in.flat();
@@ -191,10 +195,13 @@ Pairing reverse_side(pl::Leaf l, const std::vector<double>& u,
   tape.newRecording();
 
   auto draw = l.supply_draw_at<A>(A(l.opt_root_psi_), in.supply());
-  A collar = l.collar_at<pl::Leaf::CostCurve::TF24, A>(draw, in.pars, curvature);
+  pl::Leaf::HeldCoords<A> held;
+  pl::Leaf::HeldCoords<A>* h = handoff ? &held : nullptr;
+  A collar =
+      l.collar_at<pl::Leaf::CostCurve::TF24, A>(draw, in.pars, curvature, h);
   // The control: strip the collar's rows on THIS side only.
   if (hold_collar) collar = A(odelia::util::to_passive(collar));
-  auto o = l.outputs_at<pl::Leaf::CostCurve::TF24, A>(collar, draw, in.pars);
+  auto o = l.outputs_at<pl::Leaf::CostCurve::TF24, A>(collar, draw, in.pars, h);
 
   if (has_coords) {
     auto co = l.collar_coords_at<A>(l.opt_psi_stem_, l.ci_, collar, draw,
@@ -262,6 +269,15 @@ Arm arm_of(pl::Leaf::OperatingPointKind kind) {
 // for the reason the identity is.
 const double kControlFloor = 1e-7;
 int seen_carry = 0, seen_shut = 0, seen_residual = 0;
+// The handoff against solving the coordinates again in outputs_at: the same rows
+// summed in another order on the reverse side, so equal to rounding there and
+// bit for bit on the forward side, where the arithmetic is the same.
+double worst_handoff = 0.0;
+int handoff_forward_differs = 0;
+// Compared points per kind, by name. The identity is evidence only about the
+// kinds it ran on, and collar_at places each by a different condition, so every
+// kind that carries rows is asserted reached, not just the arm.
+std::map<std::string, int> seen_kind;
 
 void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
   const std::size_t layers = std::size_t(l.supply_n_layers());
@@ -300,11 +316,28 @@ void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
 
   const bool has_coords =
       l.operating_point_kind() != pl::Leaf::OperatingPointKind::HydraulicShutdown;
-  const double fwd = forward_side(l, u, v, curvature, has_coords);
-  const Pairing rev = reverse_side(l, u, v, curvature, false, has_coords);
+  // Through the coordinates collar_at hands to outputs_at, which is how plant
+  // calls the surface.
+  const double fwd = forward_side(l, u, v, curvature, has_coords, true);
+  const Pairing rev = reverse_side(l, u, v, curvature, false, has_coords, true);
+
+  const double fwd_solved = forward_side(l, u, v, curvature, has_coords, false);
+  const Pairing rev_solved =
+      reverse_side(l, u, v, curvature, false, has_coords, false);
+  if (fwd != fwd_solved) ++handoff_forward_differs;
+  const double handoff_rel =
+      std::abs(rev.value - rev_solved.value) / std::max(rev.terms, 1e-300);
+  if (handoff_rel > worst_handoff) worst_handoff = handoff_rel;
+  // Two orders below the identity's own threshold, which is what rounding in a
+  // reordered sum reaches here (1.1e-13 on this sweep).
+  char moved_by[32];
+  std::snprintf(moved_by, sizeof moved_by, "%.3e", handoff_rel);
+  ok(handoff_rel < 1e-12,
+     "handing the coordinates over moves the reverse pairing past rounding: " +
+         at + " rel=" + moved_by);
 
   // The control, on the reverse side only.
-  const Pairing held = reverse_side(l, u, v, curvature, true, has_coords);
+  const Pairing held = reverse_side(l, u, v, curvature, true, has_coords, true);
   const double moved =
       std::abs(rev.value - held.value) / std::max(rev.terms, 1e-300);
   ++seen_carry;
@@ -325,6 +358,7 @@ void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
   ++compared;
   if (rel > worst) worst = rel;
   if (cancel > worst_cancel) worst_cancel = cancel;
+  ++seen_kind[l.operating_point_kind_name(l.operating_point_kind())];
   ok(rel < 1e-10, "transpose identity: " + at + " rel=" + std::to_string(rel) +
                       " cancellation=" + std::to_string(cancel));
 }
@@ -339,6 +373,40 @@ void check(int layers, double psi0, double ppfd, double leaf_temp,
                    " T=" + std::to_string(leaf_temp) +
                    " g_min=" + std::to_string(g_min),
                seed);
+}
+
+// The kinds the sweep above does not reach, each on test_leaf's drivers and
+// asserted to land on its kind before it is compared: a fixture that drifted to
+// another kind would narrow the check without failing it. A root_P50 of zero
+// keeps the default traits.
+void check_kind(const std::vector<double>& psi_soil, double ppfd, double vpd,
+                double root_P50, pl::Leaf::OperatingPointKind want,
+                unsigned long seed) {
+  pl::Leaf l;
+  l.setup_transpiration(100);
+  l.setup_root_vulnerability(100);
+  std::vector<double> depth, root;
+  for (std::size_t i = 0; i < psi_soil.size(); ++i) {
+    depth.push_back(1.0 * double(i + 1));
+    root.push_back(1.0 / 0.05 / double(psi_soil.size()));
+  }
+  if (root_P50 > 0.0) {
+    l.set_traits(96.0, 2.680147, 3.4287, 2.680147, root_P50, 1.5, 157.44, 0.30,
+                 0.7, 0.99, 7.5, 1.44, 1.0, 0.6, 0.0, /*g_min=*/0.0);
+  }
+  l.set_physiology(fixture::root_network(root, depth), ppfd, psi_soil, depth,
+                   0.000157 / 5.0, vpd, 40.0, 25.0, 21.0, 101.3);
+  l.find_root_collar_psi();
+  const std::string at = std::string(pl::Leaf::operating_point_kind_name(want)) +
+                         " fixture psi_soil=" + std::to_string(psi_soil[0]) +
+                         " ppfd=" + std::to_string(ppfd) +
+                         " vpd=" + std::to_string(vpd) +
+                         " root_P50=" + std::to_string(root_P50);
+  ok(l.operating_point_kind() == want,
+     "the " + at + " is " +
+         std::string(pl::Leaf::operating_point_kind_name(want)) + ", got " +
+         l.operating_point_kind_name(l.operating_point_kind()));
+  check_solved(l, at, seed);
 }
 
 }  // namespace
@@ -361,20 +429,38 @@ int main() {
       }
     }
   }
+  using K = pl::Leaf::OperatingPointKind;
+  // The two dry bounds collar_at places by different conditions -- the
+  // continuity root and the root's own critical potential.
+  check_kind({4.0, 4.25, 4.5}, 900.0, 0.5, 0.0, K::BoundaryCrit, seed += 7919);
+  check_kind({2.0}, 900.0, 2.0, 1.2, K::BoundaryRootCrit, seed += 7919);
   printf("    %d operating points compared | worst relative %.3e\n", compared,
          worst);
   // Reported because it is what the scaling above is for: a sweep that stopped
   // reaching a cancelling pairing would have stopped exercising the reason.
   printf("    worst cancellation in the pairing: %.3gx\n", worst_cancel);
+  printf("    coordinates handed over against solved again: reverse worst %.3e, "
+         "forward differs at %d points\n",
+         worst_handoff, handoff_forward_differs);
+  ok(handoff_forward_differs == 0,
+     "handing the coordinates over moves no forward tangent, bit for bit");
   // The identity is only evidence about the points it ran on, so a fixture that
   // stops reaching them has narrowed the check without narrowing the claim.
   printf("    arms reached: %d placed by a rule, %d of them shut, %d with a "
          "residual conductance\n",
          seen_carry, seen_shut, seen_residual);
-  // The identity is only evidence about the arms it ran on.
+  printf("    kinds reached:");
+  for (const auto& [name, count] : seen_kind) printf(" %s %d,", name.c_str(), count);
+  printf("\n");
+  // The identity is only evidence about the arms and kinds it ran on.
   ok(compared >= 20, "the sweep reached at least 20 operating points");
   ok(seen_shut > 0, "the sweep reached a shut leaf");
   ok(seen_residual > 0, "the sweep reached a leaf with a residual conductance");
-  printf("%d checks, %d failures\n", compared + seen_carry + 3, failures);
+  for (const char* kind : {"interior", "boundary-soil", "boundary-crit",
+                           "boundary-root-crit", "hydraulic-shutdown"}) {
+    ok(seen_kind[kind] > 0, std::string("the identity was checked at a ") + kind +
+                                " point");
+  }
+  printf("%d checks, %d failures\n", compared + seen_carry + 8, failures);
   return failures == 0 ? 0 : 1;
 }

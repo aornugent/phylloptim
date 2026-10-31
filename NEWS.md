@@ -1,3 +1,35 @@
+# phylloptim 0.20.0
+
+## `collar_at` can hand its coordinates to `outputs_at` (#161)
+
+At an interior point `collar_at` solves the stem potential and intercellular CO2 on its way to the marginal, and `outputs_at` solved them again for profit. Both now take an optional `HeldCoords<S>*`: `collar_at` fills it, `outputs_at` reads it, and refuses one placed at another collar or kind. Values and forward tangents are bit-identical and reverse rows agree to rounding (worst 1.0e-15 on plant's gradient references). plant's long-drought reverse sweep (108 introductions, `ode_tol` 1e-3) is about 4.6% faster once its TF24 strategy passes the struct. Migration: none; both arguments default to null.
+
+## The cost curves' defaults are aligned, so they can be compared at defaults (#156)
+
+Each curve with a level parameter now defaults to the value at which its stem optimum has TF24's conductance at one reference environment (single-potential supply, `psi_soil` 1 MPa, PPFD 900, VPD 2 kPa, 25 C, energy balance off). The new `align_curves()` solves those values, and the defaults are its answer at its own defaults: `JS22_gamma` 1.0 -> 0.4718, `CMax_a` 0.6 -> 0.6386, and `CF77_lambda_` and `LeastCost_beta`, which had no default and refused to solve without one, now 107751 (TF24's own emergent lambda there) and 51.60. Previously the eight curves gave conductances 1.4-fold apart at the same drivers, and that spread said where each curve's parameters sat rather than how it responds. TF24 is the anchor and does not move, so neither do plant's results. `TF24_floor_lambda_o` keeps no default: TF24_floor reaches TF24's conductance only at zero, where it is TF24. SOX, JW26 and ProfitMax have no level parameter and are left where the supply puts them.
+
+The three golden baselines are bit-identical; `test_golden.cpp` now pins JS22 and CMax at their former defaults and clears the two new ones, since it tests the solver rather than the defaults. A value cleared to NA on the leaf is still refused by name. `leaf_gradient_batch()` no longer clears the batch leaf's `CF77_lambda_` and `LeastCost_beta` when run on a route that does not own them, and an NA in an owned column of a supplied `theta` takes the default, as it does in `leaf_gradient()`.
+
+## Documentation (#150, #151, #152)
+
+The developer guide is split into `.claude/CLAUDE.md` (the standing rules), `.claude/hazards.md` and `.claude/measurements.md`, with hazard numbers unchanged (0.19.0's hazard 18 included) and its stale figures and counts corrected against the code (#150). `?phylloptim` is now a package help page, and a pkgdown site (`_pkgdown.yml`) groups the reference by purpose and carries all five vignettes as articles; `docs.yml` builds it beside the Doxygen API and publishes both as one site, still gated on `PUBLISH_DOCS` (#151): pkgdown at the root, the C++ API under `cpp/`, and the resolved registry at `cpp/model-registry.yml`. The cost figures are re-measured at 0.16.2, recorded as a new row of `tools/cost-baseline.tsv`, quoted as ratios in one place each (the README's "Performance from R" for the R side and `set_traits()`, `vignette("the-models")` for the solver) and linked from everywhere else. Two of them changed direction: constructing a `Leaf` from R now costs about 97 solves rather than 45, and a `set_traits()` that rebuilds a vulnerability curve about 16 C++ solves rather than 3.5 (the 400-knot default postdates both old figures), and driving one leaf by hand is now about half the per-row cost of `leaf_solve()` rather than level with it (#152).
+
+## Each golden file has its own cross-platform tolerance (#125)
+
+`test_golden --cross-platform` compared `operating_points.tsv` and `psi_stem_optima.tsv` with one shared pair, set before #173 when the worst disagreements were ~100-1000x larger. Each file now has its own, at ~50x its worst on Linux CI: `operating_points.tsv` profit 1e-9 (measured 2.13e-11) and argmax 5e-6 (8.6e-8); `psi_stem_optima.tsv` profit 1e-10 (2.01e-12) and argmax 1e-7 (1.33e-9). That last class measured 6.63e-6 before 0.19.0, a shut leaf's near-zero `assim` cancelling; since #182 that `A` is an exact zero, and the class sits at the solver floor. Tests only; no number moves.
+
+## `collar_at` refuses a curvature it cannot divide by (#146)
+
+At an interior point `collar_at` divided every collar row by the curvature it was handed, and odelia refuses only an exactly zero or non-finite one, so a curvature of `-1e-300` returned `dcollar/dvcmax = +1.5e296` with nothing flagged. The interior arm now refuses, naming the value, a curvature that is not negative or whose magnitude is below `Leaf::interior_curvature_floor` (1e-3, plant's default `gradient_curvature_floor`; the smallest on `test_transpose`'s grid is 0.14). The double path never reads the curvature and refuses nothing. No number moves.
+
+## The derivative surface's silent failures are loud (#148)
+
+Four ways to get every number finite and some of them wrong now fail by name. `collar_at` and `outputs_at` refuse a curve `K` other than the seated `cost_curve_` (`find_root_collar_psi()`, which solves TF24 whatever is seated, is the one solve this cannot see). `supply_draw_at` refuses a leaf on the single-potential path, since it walks the multi-layer supply whatever the leaf solved on. `PhotoCapacity` and `SupplyDraw` carry a `static_assert` on their layout, so a member added without a matching `for_each_active` entry is a compile error rather than a column of exact zeros. `SupplyDraw::flux` is zero-initialised, where a shutdown draw used to return it indeterminate. And `leaf_control()`'s `vulnerability_curve_ncontrol` default is read from C++ `Leaf::ncontrol_default` rather than restated as a literal. No number moves.
+
+## Tests for what the derivative surface claims (#147)
+
+Six claims the derivative surface made with nothing checking them now have tests. The supplied trait rows are refereed in-tree against a central difference of the solve at every kind `collar_at` places (interior, the wet bound as `boundary-soil` and as `hydraulic-shutdown`, both dry bounds): 387 rows, worst 1.8e-4 relative on a row of size 3.7e-5, at a relative step of 1e-4 read off a step sweep. `test_transpose` now reaches boundary-crit and boundary-root-crit, asserts that every kind was reached, and checks that coordinates handed over give the rows solving them again would. The stem conductivity's closed-form P50 row is bounded against the table's own response, at 9.6e-6 of the largest row at 400 knots and 1.5e-4 at 100. The stem curve's inverse round-trips to within 0.91 of its conditioning `eps * w / G'`. The template `root_network_from_carbon` is bit-identical to the double overload. A forced `method = "ift"` at a pinned row is refused by name in the batch. `leaf_control()`'s knot count against the C++ default is covered by #148. Tests only; no number moves.
+
 # phylloptim 0.19.0
 
 ## A residual (cuticular) conductance, and one shut leaf in place of the no-flow family (#182)
@@ -2809,7 +2841,6 @@ name for them, because the leaf does not have them. Perturbing them is cheap
 network is a scaling of the base one and needs no rebuild) but the derivative of a
 solved output still costs two solves. The previously recorded values are kept in a
 comment in `tests/testthat/test-gradient.R` for anyone checking that route.
-
 
 ## Documented when the exact gradient beats differencing, and it is not "at more parameters"
 

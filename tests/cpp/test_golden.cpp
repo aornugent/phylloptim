@@ -346,18 +346,29 @@ struct Tolerance {
   double argmax;  // everything else: evaluated at the optimum's LOCATION
 };
 const Tolerance kExact{-1.0, -1.0};
-// Measured over the full grid on Linux, gcc and clang identical: profit 2.13e-11,
-// the argmax class 8.6e-08 (an `assim` of 5.4e-06, cancelling). Each tolerance is
-// the decade ~50-100x above that. What sets these figures is the loosest tolerance
-// inside the solve, not libm: with `psi_stem_to_ci` at 1e-10 they were 6.95e-10
-// and 2.44e-06 (#172). So a tolerance that starts failing after a solver change is
-// a measurement to redo, not a number to widen until it passes.
-const Tolerance kCrossPlatform{1e-9, 1e-5};
-
-// psi_stem_optima.tsv's own pair, measured the same way: profit 2.01e-12, the
-// argmax class 6.63e-06, at an `assim` of ~2e-6 on a hot leaf -- a cancellation
-// cell, which is why that class needs the wider decade here.
-const Tolerance kOptimaCrossPlatform{1e-9, 1e-3};
+// Each golden file has its own pair, set from its own worst relative difference
+// on Linux CI (gcc and clang identical), with ~50x of headroom where that stays
+// below the ~1e-4 at which a real behavioural change shows:
+//
+//                          measured worst   tolerance   headroom
+//   operating_points.tsv
+//     profit                 2.13e-11        1e-9         47x
+//     argmax-derived         8.6e-8          5e-6         58x
+//   psi_stem_optima.tsv
+//     profit                 2.01e-12        1e-10        50x
+//     argmax-derived         1.33e-9         1e-7         75x
+//
+// The psi_stem argmax class was 6.63e-6 until 0.19.0: its worst cells were a
+// shut leaf's `assim`, a root-find's residue around zero that cancelled in the
+// relative metric. Since #182 that A is zero by definition and reported as an
+// exact zero, so the class sits at the solver floor like the rest. Where a
+// near-zero value still cancels, read the absolute line printed beside each.
+//
+// ⚠️ THESE FIGURES ARE SET BY `psi_stem_to_ci`'S 1e-13 TOLERANCE, NOT BY libm.
+// At 1e-10 they were ~100-1000x larger. Loosen that root-find and these must be
+// re-measured off the summary lines, not widened until they pass.
+const Tolerance kCrossPlatform{1e-9, 5e-6};
+const Tolerance kCrossPlatformOptima{1e-10, 1e-7};
 
 // `profit` is the only reported field that is the maximum itself; every other
 // field is evaluated at the argmax and so inherits its displacement.
@@ -653,6 +664,22 @@ const double kLambdaFloorO = 1.5e5;
 // published value. A beta derived against this package's kg H2O and umol CO2
 // rather than mol and mol would be out by 5.6e7 and would still solve.
 const double kBetaLeastCost = 146.0;
+// JS22's and CMax's level parameters, at the class defaults these rows were
+// generated with. Pinned here because the defaults are now ALIGNED (#156) and
+// move whenever TF24 moves at the reference; this file tests the solver, so its
+// parameters must not follow them.
+const double kGammaJS22 = 1.0;
+const double kCMaxA = 0.6;
+
+// The two inputs whose class default is now an aligned number rather than NA,
+// cleared on every Leaf this file builds. The `lambda` column records
+// `CF77_lambda_` on every row -- it is how the reuse pass sees one solver's input
+// leak into the next -- so a fresh Leaf must read what it read when the rows were
+// generated, and the CF77 and LeastCost arms set their own values in dispatch().
+void clear_aligned_inputs(phylloptim::Leaf &l) {
+  l.CF77_lambda_ = std::numeric_limits<double>::quiet_NaN();
+  l.LeastCost_beta = std::numeric_limits<double>::quiet_NaN();
+}
 
 // ⚠️ APPEND ONLY. The reuse pass drives ONE Leaf through kSolvers in order, so
 // inserting a solver changes what every solver after it inherits -- see the header.
@@ -801,10 +828,13 @@ void dispatch(phylloptim::Leaf &l, Solver s) {
                             l.CF77_lambda_ = kLambdaCF77;
                             l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::CF77>(); break;
     case Solver::Collar:    l.find_root_collar_psi();        break;
-    // These three need nothing set first: their parameters are TRAITS with
-    // defaults, where CF77_lambda_ above is an input with none.
-    case Solver::JS22:      l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::JS22>();      break;
-    case Solver::CMax:      l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::CMax>();      break;
+    case Solver::JS22:
+                            l.JS22_gamma = kGammaJS22;
+                            l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::JS22>();      break;
+    case Solver::CMax:
+                            l.CMax_a = kCMaxA;
+                            l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::CMax>();      break;
+    // These two need nothing set: neither has a level parameter.
     case Solver::SOX:       l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::SOX>();       break;
     case Solver::JW26:      l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::JW26>();      break;
     // ⚠️ ONE PARAMETER, AND IT IS AN INPUT WITH NO DEFAULT, like CF77_lambda_
@@ -828,6 +858,7 @@ OptRow solve_one(Solver s, Topology t, double psi_soil, double ppfd,
   OptRow r{s, t, psi_soil, ppfd, leaf_temp, eb, tc, false, "ok", "-",
            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   phylloptim::Leaf l;
+  clear_aligned_inputs(l);
   l.setup_transpiration(phylloptim::Leaf::ncontrol_default);
   l.setup_root_vulnerability(phylloptim::Leaf::ncontrol_default);
   l.use_energy_balance_ = eb;
@@ -884,6 +915,7 @@ std::vector<OptRow> run_optima_grid() {
     for (bool eb : {false, true})
       for (bool tc : {false, true}) {
         phylloptim::Leaf l;
+        clear_aligned_inputs(l);
         l.setup_transpiration(phylloptim::Leaf::ncontrol_default);
         l.setup_root_vulnerability(phylloptim::Leaf::ncontrol_default);
         l.use_energy_balance_ = eb;
@@ -965,16 +997,19 @@ void opt_row_values(const OptRow &r, double *out) {
   out[13] = r.thermal_cost_out;
 }
 
-// `kExact` on the generating platform; `kOptimaCrossPlatform`, measured for this
-// file's fields, elsewhere. Two things hold in every mode:
+// `kExact` is right on the generating platform and needs no justification. The
+// `--cross-platform` arm uses this file's own pair, `kCrossPlatformOptima`,
+// measured off Linux CI; its figures and headroom are at its definition. Two
+// things hold in every mode:
 //
 //   * the two NON-numeric columns -- `status` and `kind` -- are compared exactly,
 //     because a refusal that stopped refusing or a branch that changed is never a
 //     rounding difference, and those are the changes this file most needs to
 //     catch;
-//   * the worst difference per class is printed even when the comparison PASSES,
-//     so the real magnitude is read off a green run rather than bisected out of a
-//     red one.
+//   * the worst observed difference per class is printed even when the comparison
+//     PASSES, so the tolerance can be re-measured off a green run rather than
+//     bisected out of a red one.
+//
 // One class's worst differences, in the same two-line shape as compare()'s
 // summary. A class with no differing cell prints nothing.
 template <typename W>
@@ -1116,9 +1151,10 @@ int compare_optima(Tolerance tol) {
     printf("psi_stem optima: %zu rows, all %s\n", rows.size(),
            exact_mode ? "bit-identical"
                       : "within cross-platform tolerance");
-    // ⚠️ PRINTED ON SUCCESS TOO, AND ON PURPOSE: this is where the figures
-    // `kOptimaCrossPlatform` is set from come from, and a summary that only
-    // appeared on failure could not supply them.
+    // ⚠️ PRINTED ON SUCCESS TOO, AND ON PURPOSE. This line is where the
+    // tolerances in `kCrossPlatformOptima` were read from, and where they must be
+    // re-read whenever a solver tolerance moves; a summary that only appears on
+    // failure cannot supply it.
     if (!exact_mode) {
       print_optima_worst(stdout, worst_max, tol.maximum,
                          "profit  (the maximum)    ");
@@ -1201,19 +1237,30 @@ void report_optima_shape(const std::vector<OptRow> &rows) {
 // arm64, and FMA contraction differs too. Regenerating the file on a second
 // platform is NOT the fix -- it just moves the failure to the first one.
 //
-// The SIZE of the disagreement is per class, because `profit` is the maximum itself
-// and the other fields are evaluated at its location, and the two classes differ
-// by orders. The figures live at the tolerances' definitions, and this program
-// prints the worst per class, relative and absolute, on every run. **If you need a
-// magnitude, read that summary line, not a comment and not the FAIL lines**: the
-// failure list is truncated at 20 and biased toward whichever rows come first.
+// The interesting part is the SIZE of the disagreement, because it is not one
+// number. The reported fields split into two classes, `profit` (the maximum
+// itself) and the rest (evaluated at the argmax's location), and the second sits
+// orders of magnitude above the first in both files. gcc and clang agree exactly.
+// The measured figures, per file and per class, are at `kCrossPlatform`.
 //
-// The figures are set by the loosest tolerance inside the solve, not by libm. A
-// last-bit platform difference shifts where each bracketing solver stops inside
-// its band, so the disagreement is that band, amplified: with the ci root-find at
-// 1e-10 both classes sat at ~1e-9 absolute, and at 1e-13 they are 9e-13 (profit)
-// and 4e-11 (ci). A tolerance failing after a solver change is a measurement to
-// redo, not a number to widen until it passes.
+// ⚠️ NOTHING ASSERTS THOSE FIGURES, so they rot in silence -- this comment has
+// been wrong four times. **If you need a magnitude, read the summary line, not a
+// comment and not the FAIL lines**: the failure list is truncated at 20 and
+// biased toward whichever rows come first.
+//
+// That split is structural, not luck. The maximum is FLAT, profit ~
+// p* - k(psi - x*)^2, so an error dp in the profit VALUE displaces the ARGMAX by
+// up to sqrt(dp/k). Profit is therefore the best-conditioned reported field
+// across platforms, because it is the maximum itself rather than its location.
+// Do NOT expect sqrt(worst profit) to equal the worst argmax difference -- the
+// two worsts occur at different operating points, and the argmax is pinned by a
+// root-find of dprofit == 0 rather than by a search on profit.
+//
+// What sets both classes is the loosest tolerance in the solve, `psi_stem_to_ci`'s
+// root-find, not the platform's libm. So the tolerances are per file and per
+// class, each with ~50x headroom over its measured worst and all at or below the
+// ~1e-4 scale at which a real behavioural change shows; the mode reports the
+// worst value per class on every run so they can be re-read.
 int main(int argc, char **argv) {
   if (argc > 1 && std::strcmp(argv[1], "--generate") == 0) {
     return generate();
@@ -1222,11 +1269,11 @@ int main(int argc, char **argv) {
     return generate_optima();
   }
   Tolerance tol = kExact;
-  Tolerance optima_tol = kExact;
+  Tolerance tol_optima = kExact;
   if (argc > 1) {
     if (std::strcmp(argv[1], "--cross-platform") == 0) {
       tol = kCrossPlatform;
-      optima_tol = kOptimaCrossPlatform;
+      tol_optima = kCrossPlatformOptima;
     } else {
       fprintf(stderr,
               "unknown argument '%s'\n"
@@ -1248,7 +1295,7 @@ int main(int argc, char **argv) {
   // even when the two above fail: the collar grid and the optimiser grid have
   // disjoint causes, so seeing only one of them is how a mixed diff gets
   // misread. See the block above kOptimaPath for what this file is and is not.
-  const int optima_status = compare_optima(optima_tol);
+  const int optima_status = compare_optima(tol_optima);
   report_optima_shape(run_optima_grid());
   return (golden_status != 0 || kind_status != 0 || optima_status != 0) ? 1 : 0;
 }

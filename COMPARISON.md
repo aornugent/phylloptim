@@ -132,10 +132,7 @@ Thirteen exported functions, no photosynthesis, no stomatal model, no hydraulics
 - **Units.** `units` is in `Depends`; parameter constructors validate and convert
   on entry. `leaf` documents units in comments and trusts the caller.
 
-**Where `leaf` differs:** `g_sw` in `tealeaves` is a *fixed input trait*. There is
-no water supply side at all, so the package cannot tell you when a leaf must
-close. `leaf` derives gs from hydraulic supply, which is the opposite starting
-point.
+**Where `leaf` differs:** `g_sw` in `tealeaves` is a *fixed input trait*. There is no water supply side at all, so the package cannot tell you when a leaf must close. `leaf` derives gs from hydraulic supply, which is the opposite starting point. Since 0.19.0 `leaf` also carries a cuticular conductance in parallel with the stomata (the `g_min` trait, temperature-dependent, drawn through the same hydraulic path), but on one surface: it has no amphistomy.
 
 **The tension worth naming.** `tealeaves` shows what a rigorous leaf energy
 balance costs: one `uniroot` per leaf, per condition, scalar internals,

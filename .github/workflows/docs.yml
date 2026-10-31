@@ -1,11 +1,17 @@
 name: API docs
 
-# Renders the C++ API with Doxygen (issue #12, PLAN item 15).
+# Renders the package's two sites and publishes them as ONE: the pkgdown site
+# (the R reference and the vignettes, issue #151) at the root, and the C++ API
+# from Doxygen (issue #12) under cpp/, which _pkgdown.yml's navbar links to. A
+# repository has one GitHub Pages site, so the two cannot deploy separately --
+# whichever published second would replace the other. Hence one deploy job that
+# needs both builds, rather than odelia's pkgdown workflow pushing to gh-pages.
 #
 # Building the docs is a check in its own right, not just a publishing step: the
-# render runs with warnings promoted to errors, so a malformed reference or a
-# comment that confuses the parser fails here rather than quietly producing a
-# worse page.
+# Doxygen render runs with warnings promoted to errors, so a malformed reference
+# or a comment that confuses the parser fails here rather than quietly producing
+# a worse page, and the pkgdown build fails on a topic missing from
+# _pkgdown.yml's reference index or a vignette that does not knit.
 
 on:
   push:
@@ -148,18 +154,54 @@ jobs:
           path: docs/html
           if-no-files-found: error
 
-      - name: Package for Pages
-        if: github.event_name == 'push' && vars.PUBLISH_DOCS == 'true'
-        uses: actions/upload-pages-artifact@v3
+  # The R reference and the vignettes. Steps follow r-lib's pkgdown example, as
+  # odelia's workflow does; only the publishing differs (see the top of the file).
+  pkgdown:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # BEFORE setup-r, for the reason given in R-CMD-check.yml.
+      - uses: ./.github/actions/working-apt-mirror
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: r-lib/actions/setup-r@v2
         with:
-          path: docs/html
+          use-public-rspm: true
+
+      # odelia is not on CRAN and DESCRIPTION names no Remotes, so it is fetched
+      # here at the release R-CMD-check.yml checks against. Keep the two in step.
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::pkgdown
+            github::traitecoevo/odelia@v0.10.0
+            local::.
+          needs: website
+
+      # dest_dir is explicit because this function overrides _pkgdown.yml's
+      # `destination` with its own default of docs/, where Doxygen writes.
+      - name: Build site
+        run: pkgdown::build_site_github_pages(dest_dir = "docs/site", new_process = FALSE, install = FALSE)
+        shell: Rscript {0}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkgdown-site
+          path: docs/site
+          if-no-files-found: error
+          include-hidden-files: true
 
   # Publishing is opt-in and off by default. To turn it on: set the repository
   # variable PUBLISH_DOCS to "true", and set Settings -> Pages -> Source to
-  # "GitHub Actions". Until then the rendered site is still available from every
-  # run as the `api-docs` artifact, and nothing here goes near the public web.
+  # "GitHub Actions". Until then each rendered site is available from every run as
+  # the `pkgdown-site` and `api-docs` artifacts, and nothing here goes near the
+  # public web.
   deploy:
-    needs: build
+    needs: [build, pkgdown]
     if: github.event_name == 'push' && vars.PUBLISH_DOCS == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -169,5 +211,19 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pkgdown-site
+          path: site
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: api-docs
+          path: site/cpp
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
       - id: deploy
         uses: actions/deploy-pages@v4

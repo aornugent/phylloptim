@@ -33,6 +33,31 @@ test_that("leaf_traits() and leaf_control() partition the C++ constructor", {
   expect_false(any(grepl("tol|niter", names(leaf_traits()))))
 })
 
+test_that("leaf_control()'s knot count is the C++ default, read not restated (#148)", {
+  # plant seats its Control from the same constant and compares it against
+  # leaf_control() with expect_identical, so the type matters as well as the value.
+  expect_identical(leaf_control()$vulnerability_curve_ncontrol,
+                   phylloptim:::.leaf_ncontrol_default())
+  expect_identical(formals(leaf_control)$vulnerability_curve_ncontrol,
+                   quote(.leaf_ncontrol_default()))
+})
+
+test_that("a stem wetter than its upstream potential is refused, not answered (#31)", {
+  # Below the upstream potential the flux integral is negative, and these used
+  # to return it as a finite number. Equality is the shut-down state and stays
+  # legal; the profit functions read a reversed pair as no flow and refuse nothing.
+  l <- leaf_model()
+  set_drivers(l, psi_soil = 2.0, PPFD = 900)
+  msg <- "psi_stem = 1.99 MPa is wetter than psi_upstream = 2 MPa"
+  expect_error(l$transpiration(1.99, 2.0), msg)
+  expect_error(l$stom_cond_CO2(1.99, 2.0), msg)
+  expect_true(is.finite(l$profit_psi_stem_TF(1.99, 2.0)))
+  expect_identical(l$transpiration_, 0)
+  expect_identical(l$transpiration(2.0, 2.0), 0)
+  expect_true(is.finite(l$profit_psi_stem_TF(2.0, 2.0)))
+  expect_gt(l$transpiration(2.01, 2.0), 0)
+})
+
 test_that("every trait can be read back from the object (#95)", {
   # The traits were `set_traits()` arguments and nothing else, so from R they could
   # be written and not read. A caller who needed one to compute a derived quantity
@@ -837,7 +862,8 @@ test_that("a prescribed CF77_lambda_ survives both re-driving calls (#96)", {
   # Both arms matter. `set_drivers` always kept it; asserting only that one
   # passes on the code this test exists to reject.
   l <- leaf_model(supply = leaf_supply_singlelayer())
-  expect_true(is.na(l$CF77_lambda_))          # not "never initialised"
+  # not "never initialised": the aligned default (#156)
+  expect_identical(l$CF77_lambda_, .level_defaults[["CF77_lambda_"]])
 
   l$CF77_lambda_ <- 30
   set_drivers(l, psi_soil = 1.5, root_network = series_resistance(1500))

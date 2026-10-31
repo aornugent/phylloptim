@@ -500,9 +500,18 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
                theta[par_CMax_a], theta[par_CMax_b], theta[par_g_min]);
   // Not traits, so they are set directly rather than through set_traits -- and
   // nothing is derived from either, so a bare write leaves no stale state behind.
-  l.CF77_lambda_ = theta[par_CF77_lambda];
-  l.TF24_floor_lambda_o = theta[par_TF24_floor_lambda_o];
-  l.LeastCost_beta = theta[par_LeastCost_beta];
+  // ⚠️ ONLY A SET SLOT IS WRITTEN, as R's reference does (`!is.na`). On a route
+  // that does not own a slot it is NA, and writing it would overwrite the leaf's
+  // aligned default, so a later solve on the owning route would be refused.
+  if (!std::isnan(theta[par_CF77_lambda])) {
+    l.CF77_lambda_ = theta[par_CF77_lambda];
+  }
+  if (!std::isnan(theta[par_TF24_floor_lambda_o])) {
+    l.TF24_floor_lambda_o = theta[par_TF24_floor_lambda_o];
+  }
+  if (!std::isnan(theta[par_LeastCost_beta])) {
+    l.LeastCost_beta = theta[par_LeastCost_beta];
+  }
   // The thermal-damage layer's inputs, ONLY with its gate on -- off, the slots
   // hold whatever a caller zero-filled and are never read -- and BEFORE the
   // drivers, because set_physiology is what seats the block that reads them.

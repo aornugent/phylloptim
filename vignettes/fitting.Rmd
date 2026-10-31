@@ -25,7 +25,7 @@ derivative-free optimiser that scales badly past a handful of parameters.
 This package removes that choice. Two things make the difference.
 
 **The model itself is fast.** It is a set of header-only C++ routines with no R in
-the solve path, and one operating point costs about **3 µs**. A likelihood over a
+the solve path, and one operating point costs **a few microseconds**. A likelihood over a
 thousand observations is therefore milliseconds of model, which means the fit is
 no longer bounded by how long the biology takes to evaluate.
 
@@ -34,8 +34,9 @@ supplies the derivatives of the photosynthesis and cost algebra, and the implici
 function theorem carries them through the two nested solvers, so
 `leaf_gradient()` returns the exact derivative of every solved output with respect
 to every parameter — with no step size to choose and no truncation error. The
-composite is assembled in C++ and vectorised over observations, at **10.6 µs per
-observation** for four differentiated parameters.
+composite is assembled in C++ and vectorised over observations, so four
+differentiated parameters cost a small multiple of one trivial R call per observation
+([measured](https://github.com/traitecoevo/phylloptim#performance-from-r)).
 
 Put together, those change what is affordable. A finite-difference fit costs two
 solves for every parameter *the optimiser is moving*. The exact route costs a term
@@ -115,9 +116,10 @@ Two things about that loop are worth getting right, because both are easy to get
 wrong and neither fails loudly.
 
 **Build the model once, outside the loop.** `set_traits()` replaces the traits on
-an existing object. Constructing a fresh one costs about 45 solves, against 3.4 to
-re-trait, so building inside the loop throws away roughly 40 solves per objective
-evaluation. In a fit, that dominates everything else.
+an existing object. Constructing a fresh one costs about as much as a hundred
+solves, against about four to re-trait and re-drive, so building inside the loop
+throws away most of each objective evaluation. In a fit, that dominates
+everything else ([measured figures](https://github.com/traitecoevo/phylloptim#performance-from-r)).
 
 **Do not write `l$vcmax_25 <- x` instead.** It compiles, and it is wrong. Two
 pieces of derived state go on describing the old trait afterwards, and no
@@ -424,7 +426,8 @@ Four things follow:
 - **Use the batch entry point, which removes the slope.**
   `leaf_gradient_batch()` composes the theorem in C++ and loops over observations
   there, so the boundary is crossed once per call instead of 112 times per
-  observation: **10.6 µs per observation against 363**, at `length(pars)` = 4.
+  observation: **over an order of magnitude cheaper per observation** than the R
+  loop at `length(pars)` = 4 ([measured](https://github.com/traitecoevo/phylloptim#performance-from-r)).
 
 Read the table above as what the R boundary costs, not as the fastest this can
 go. The cost *model* is the thing to reason with, and `P_fit` against `P_model` is
@@ -483,8 +486,8 @@ Compare the `ms per par` column across rows: the hydraulic study is several time
 the others, and that ratio is the point rather than its exact value, which moves
 with the machine. `stem_b` and
 `stem_c` own the pre-integrated stem vulnerability spline, so perturbing either
-rebuilds it, at 11.9 µs of incomplete gamma functions per side, several times the
-cost of a whole solve. `stem_b` escapes most of that by a homogeneity identity
+rebuilds it, and the incomplete gamma functions that seed it cost many times a
+whole solve per side ([measured](https://github.com/traitecoevo/phylloptim#performance-from-r)). `stem_b` escapes most of that by a homogeneity identity
 (`fast_stem_curve`, on by default); `stem_c` has no such identity and cannot.
 
 So **a fit that frees a vulnerability curve is in a different cost regime from one

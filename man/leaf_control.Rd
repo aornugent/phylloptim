@@ -6,7 +6,7 @@
 \usage{
 leaf_control(
   GSS_tol_abs = 0.001,
-  vulnerability_curve_ncontrol = 400,
+  vulnerability_curve_ncontrol = .leaf_ncontrol_default(),
   ci_abs_tol = 0.001,
   ci_niter = 1000,
   integration_rule = 21,
@@ -32,7 +32,9 @@ sharpen a stem-route argmax does nothing.}
 
 \item{vulnerability_curve_ncontrol}{number of control points used to
 pre-integrate the two Weibull vulnerability curves into splines. Higher is
-more accurate and slower to construct; it does not affect solve speed.}
+more accurate and slower to construct; it does not affect solve speed.
+The default, 400, is read from the C++ \code{Leaf::ncontrol_default}, so the R
+and C++ defaults cannot differ.}
 
 \item{ci_abs_tol}{absolute tolerance for root-solving intercellular CO2}
 

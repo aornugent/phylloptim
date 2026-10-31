@@ -292,6 +292,29 @@ test_that("the recorded gradients have not moved", {
   expect_gt(as.numeric(shut$profit), 0)
 })
 
+test_that("a forced method = \"ift\" at a pinned row is refused by name (#147)", {
+  # The batch's own refusal, not leaf_gradient()'s: the two are separate
+  # implementations of the same rule, and test-gradient.R checks only the R one.
+  # The rows are the pinned ones test-gradient.R names -- two wet, one dry -- and
+  # each is checked to be pinned under "auto" first, so the refusal is not read
+  # off a row that never reached the branch.
+  pinned <- list(list(psi_soil = 4, vpd = 2.0, layers = 5L),
+                 list(psi_soil = 3, vpd = 4.0, layers = 3L),
+                 list(psi_soil = 4, vpd = 0.5, layers = 3L))
+  pars <- c("stem_P50", "vcmax_25")
+  for (p in pinned) {
+    lab <- sprintf("psi_soil=%g vpd=%g layers=%d", p$psi_soil, p$vpd, p$layers)
+    b <- do.call(leaf_batch, batch_drivers(p$psi_soil, vpd = p$vpd,
+                                           layers = p$layers))
+    auto <- leaf_gradient_batch(b, pars = pars)
+    expect_identical(auto$status, "pinned", label = lab)
+    ift <- leaf_gradient_batch(b, pars = pars, method = "ift")
+    expect_identical(ift$status, "error", label = lab)
+    expect_match(ift$message, "pinned optimum", label = lab)
+    expect_true(all(is.na(ift$gradient)), label = lab)
+  }
+})
+
 test_that("an unsolvable row costs that row and not the batch", {
   # ⚠️ THE REASON THE BATCH REPORTS A STATUS RATHER THAN THROWING. A proposal
   # during a fit will reach operating points the solve cannot handle -- that is

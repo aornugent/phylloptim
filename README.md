@@ -9,10 +9,13 @@ for both xylem and roots, multi-layer soil, per-layer root resistance,
 gravitational head — and the operating point is chosen by Sperry-style gain-risk
 **profit maximisation** over the root-collar water potential. Automatic differentiation (XAD, through odelia) supplies exact derivatives of profit with respect to that potential, for models that track acclimation, and the derivative of the whole operating point with respect to every trait and soil input, for models that differentiate a run containing the leaf.
 
-A full solve costs about **3 µs**, which is what makes it usable inside a
-demographic model that calls it millions of times. That is the C++ figure; from R
-a solved row costs ~20 µs, nearly all of it the R boundary rather than the model —
-see [Performance from R](#performance-from-r) before optimising anything.
+A residual (cuticular) conductance, the trait `g_min`, runs in parallel with the stomata and is drawn through the same soil-to-leaf path, so a leaf that shuts still loses water. A dry, dark or hot leaf therefore comes back as an ordinary operating point, with its derivatives, rather than as an exception. `g_min` defaults to 0, where every open leaf's result is unchanged.
+
+A full solve costs **a few microseconds** in C++, which is what makes it usable
+inside a demographic model that calls it millions of times. From R a solved row
+costs several times that, nearly all of it the R boundary rather than the model —
+see [Performance from R](#performance-from-r), the one place the costs are quoted,
+before optimising anything.
 
 This code was developed as the TF24 strategy inside
 [traitecoevo/plant](https://github.com/traitecoevo/plant) and is extracted here
@@ -83,11 +86,11 @@ commits to a single hydraulically explicit scheme or to none.
 **One solver, so the comparison is not just fair but cheap.** Every model reaches its
 operating point through the same call: evaluate both interval endpoints, optionally
 scan for the basin, then root-find `dJ/dψ = 0` inside the winning cell. Nothing here
-is per-model except a row in two dispatch tables. That is what keeps a nine-model
-package as fast as a one-model one — the stem entry points run at **2.9 µs** and
-ProfitMax at **5.6 µs**, against 9.3 and 58.2 before the solvers were merged, because
-a basin scan is now used only where multi-modality is measured rather than everywhere
-by default. The residual `|dJ/dψ|` at the returned optimum has a median of **1.2e-15**.
+is per-model except a row in each per-curve dispatch table. That is what keeps a
+nine-model package as fast as a one-model one — merging the solvers made the stem
+entry points about 3× and ProfitMax about 10× cheaper than they were, because a
+basin scan is now used only where multi-modality is measured rather than everywhere
+by default; the per-model costs are the solver table in `vignette("the-models")`. The residual `|dJ/dψ|` at the returned optimum has a median of **1.2e-15**.
 
 **Either supply path, so the comparison is fair.** The gas-exchange core is
 soil-agnostic: the multi-layer soil and root system enter the solve only as a
@@ -98,7 +101,7 @@ is what makes the comparison fair, because the alternative formulations worth
 comparing against are all written for one ψ_soil.
 
 **Fast and differentiable, so it is built for calibration.** A full hydraulic
-solve costs ~3 µs, and derivatives are analytic rather than finite differences:
+solve costs a few microseconds, and derivatives are analytic rather than finite differences:
 forward-mode AD (XAD) for the collar potential, and `leaf_gradient()` for the
 traits, by differentiating the optimality condition. That combination is what
 calibration wants — gradient-based optimisers and Hamiltonian samplers need many
@@ -464,8 +467,8 @@ sixteen on the multi-layer path, which is the most expensive request there is.
 
 **For a fit, use `leaf_gradient_batch()`.** It is the same gradient, composed in C++
 and vectorised over observations, so a likelihood evaluation crosses the R boundary
-once instead of 112 times per observation — **363 → 10.6 µs per observation** at four
-differentiated parameters (`length(pars)`), 22×.
+once instead of 112 times per observation; what that saves against a loop over
+`leaf_gradient()` is in [Performance from R](#performance-from-r).
 
 ```r
 b <- leaf_batch(psi_soil = obs$psi_soil, PPFD = obs$PPFD)   # once per fit
@@ -495,49 +498,58 @@ See `vignette("phylloptim")` for the whole tour.
 
 ### Performance from R
 
-The **~3 µs** quoted at the top of this file is the C++ solve. From R the same
-solved row costs about **20 µs**, and the difference is not the model — it is that
-each call across the R boundary costs ~1.1 µs, and a solved row needs a handful of
-them. Measured on 32 rows, one driver combination per row, default multi-layer
-supply:
+This section is the one place the package quotes what things cost; the
+vignettes, the help pages and the developer guide link here. The figures are
+**ratios to a trivial `.Call`** (reading one field of a `Leaf`) measured in the
+same process, because a ratio travels between machines and runs and a
+microsecond figure does not. They come from the newest row of
+[`tools/cost-baseline.tsv`](tools/cost-baseline.tsv), written by
+`tools/bench_history.sh` at 0.16.2, plus `tests/cpp/bench_gradient` for the C++
+row; re-run those rather than editing a number here.
 
-| | µs per row |
+| one call, from R | × a trivial `.Call` |
 |---|---:|
-| `leaf_solve()`, vectorised | **21.5** |
-| `leaf_model()` once, then `set_drivers()` + `$optimise()` + `operating_point()` per row | 20.3 |
-| the same, reading one field instead of `operating_point()` | 17.1 |
-| the C++ solve inside all three | **2.8** |
+| `$find_root_collar_psi()`: one crossing around the whole C++ solve | **2.9** |
+| driving one leaf by hand: `set_drivers()`, solve, read three fields | 13 |
+| one row of a vectorised `leaf_solve()` | 23 |
+| constructing a `Leaf` with `leaf_model()` | **~275** |
+| `leaf_gradient()`, one parameter, fresh leaf | 410 |
+| `leaf_gradient()`, one parameter, reusing a leaf (`x =`) | 130 |
+| `leaf_gradient_batch()`, per observation, four parameters | **9.9** |
+| the same gradient as an R loop over `leaf_gradient()`, reusing a leaf | 245 |
 
-Three things follow, and the first two are corrections to advice this file used to
-imply:
+Four things follow:
 
-- **Use `leaf_solve()`.** It is within 6% of driving the object by hand. It was
-  **26× slower** until it stopped building a one-row `data.frame` per row and
-  rbinding them (#39) — 344 → 21.5 µs — so if you are reading advice anywhere that
-  says to avoid it for inner loops, that advice has expired.
-- **Reaching into the object is not the lever either.** The stateful interface is
-  for when you want intermediate state, not for speed; it saves ~1 µs a row.
-- **The lever is making fewer R calls per row.** ~18 of the 20 µs is R call
-  overhead and R-side assembly. A loop that solves the same leaf at many drivers
-  should pass them all to one vectorised `leaf_solve()` call rather than looping in
-  R, and if you need a fit's inner loop faster than this, the thing to remove is
-  the boundary — which means C++, not better R.
+- **The model is not where the time goes.** A crossing of the R boundary costs
+  about half as much as a whole C++ solve, and a solved row needs a handful of them,
+  so nearly all of a row's cost is R call overhead and R-side assembly.
+- **Driving one object by hand is now the cheaper route per row**: with
+  `operating_point()` it measured about half of `leaf_solve()`'s cost per row over
+  32 rows. `leaf_solve()` is the convenient route, and much cheaper than it was
+  before it stopped building a one-row `data.frame` per row (#39); the stateful
+  interface is the one to reach for in an inner loop.
+- **The lever is making fewer R calls per row.** If you need a fit's inner loop
+  faster than this, the thing to remove is the boundary — which means C++, or
+  `leaf_gradient_batch()`, which crosses it once per call and is about 25× the
+  R loop per observation.
+- **Construct once and reuse.** Constructing a `Leaf` costs about as much as a
+  hundred solves from R, and most of it is R-side object construction over the
+  active bindings rather than the vulnerability splines. Re-traiting and
+  re-driving an existing leaf costs about four solves, which is why
+  `leaf_solve(reuse = TRUE)` is the default, why [`set_traits()`](#trait-gradients)
+  exists, and why construction is about two-thirds of a one-parameter
+  `leaf_gradient()` on a fresh leaf.
 
-Two costs worth knowing because they surprise people:
+One C++ cost is worth knowing because it surprises people, and batching cannot
+help with it: **`set_traits()` is almost free unless you change `stem_P50`,
+`stem_c`, `root_P50` or `root_c`, and then costs about 16 C++ solves**, because
+those four own the pre-integrated vulnerability splines and it rebuilds one. Most
+of that is the incomplete gamma function seeding the knots, not the spline
+machinery. `leaf_gradient()` sidesteps it for `stem_P50`, because the curve is
+homogeneous of degree 1 in the scale that pair implies: see `fast_stem_curve` in
+`?leaf_gradient`.
 
-- **Constructing a `Leaf` from R costs about 180× a trivial `.Call`** — 45 solves — and only ~32 µs of
-  that is the two vulnerability splines; the rest is R-side object construction
-  over ~60 active bindings. So construct once and reuse. `leaf_solve(reuse = TRUE)`
-  is the default for this reason, and [`set_traits()`](#trait-gradients) exists so
-  that a trait sweep need not reconstruct either.
-- **`set_traits()` is ~0.02 µs unless you change `stem_P50`, `stem_c`, `root_P50`
-  or `root_c`, and 21.8 µs if you do**, because those four own the pre-integrated
-  vulnerability splines and it rebuilds one. That is 8× a solve, in C++, where
-  batching cannot help — worth knowing before writing a sweep over a vulnerability
-  curve. Most of it is the incomplete gamma function seeding 401 knots, not the
-  spline machinery. `leaf_gradient()` sidesteps it for `stem_P50`, because the
-  curve is homogeneous of degree 1 in the scale that pair implies: see
-  `fast_stem_curve` in `?leaf_gradient`.
+The solver's own costs, model by model, are the table in `vignette("the-models")`.
 
 ### As a dependency of another R package
 
@@ -612,12 +624,15 @@ against a model that is exactly right.
 ## API documentation
 
 ```sh
-doxygen        # docs/html/index.html
+doxygen                                    # the C++ API: docs/html/index.html
+Rscript -e 'pkgdown::build_site()'         # the R reference and vignettes: docs/site/
 ```
 
-Doxygen for the C++ API and roxygen for the R one. The headers' comments are the
-substantive documentation here, and `tools/doxygen_filter.awk` presents them to
-Doxygen without modifying a single source file.
+Doxygen for the C++ API and roxygen for the R one; `?phylloptim` is the R side's
+starting page. The headers' comments are the substantive documentation here, and
+`tools/doxygen_filter.awk` presents them to Doxygen without modifying a single
+source file. The two are published together as one site, with the C++ API under
+`cpp/`, once the repository's `PUBLISH_DOCS` variable is set.
 
 The leaf's equations, the parameters each reads and the symbol that evaluates
 it are one record, `inst/model-registry.yml`, which documents are

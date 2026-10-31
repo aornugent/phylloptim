@@ -163,16 +163,16 @@ Take the derivative away and the comparison closes up again. Differencing `dJ/d�
 
 A root-find finds *a* stationary point, not the best one, so where the objective has two humps something has to choose between them. That job falls to a scan: a sweep of the interval on a coarse grid, picking the cell that contains the taller hump, after which the root-find refines inside that cell.
 
-The sweep costs 64 objective evaluations before refinement begins, which is expensive in a package built around a 3 µs solve. So it is switched on only where the objective is measurably two-humped, which over a 1728-row driver sweep is only ever with the energy balance on. With that gate off, which is the default, there is no scan and the solver is endpoints plus a root-find.
+The sweep costs 64 objective evaluations before refinement begins, which is expensive in a package built around a solve of a few microseconds. So it is switched on only where the objective is measurably two-humped, which over a 1728-row driver sweep is only ever with the energy balance on. With that gate off, which is the default, there is no scan and the solver is endpoints plus a root-find.
 
-| entry point | µs/call |
+| entry point | cost per call, relative to `TF24` |
 |---|---:|
-| collar route, `TF24` | 3.06 |
-| stem route, `TF24` | 2.66 |
-| stem route, `CF77` | 2.73 |
-| stem route, `ProfitMax` | 5.24 |
+| stem route, `TF24` | 1 |
+| stem route, `CF77` | 1.05 |
+| stem route, `TF24_floor` | 1.4 |
+| stem route, `ProfitMax` | 2.1 |
 
-: Cost per call on a single soil layer, from `bench_solve`, best of 2000, gate off and so no scan. `ProfitMax` costs about twice the others because it solves for its own `\|A\|max` normaliser before it can evaluate its objective at all.
+: Cost per call on a single soil layer, from `bench_solve` at 0.16.2, best of 2000, all arms in one process, gate off and so no scan. Ratios rather than microseconds because ratios travel between machines. `ProfitMax` costs about twice the others because it solves for its own `\|A\|max` normaliser before it can evaluate its objective at all. This table is the one place these figures are quoted.
 
 ### When the answer is a bound, not a stationary point
 
@@ -447,7 +447,7 @@ cat(sprintf("at psi = 1e-06 MPa:  TF24 %10.3e    TF24_floor %9.1f\n",
             l$lambda_TF24_floor(1e-6)))
 ```
 
-`λ_o` has `CF77_lambda_`'s units and meaning — carbon per unit transpiration — and, like it, no default: at `λ_o = 0` this curve *is* `TF24`, so a caller who omitted it would be running the production model under the new model's name. The solve refuses rather than defaults. An explicit zero is accepted, and is the reduction test's own case. [leaf_solve()] and [leaf_batch()] take it as an argument; on a bare `Leaf`, assign the field.
+`λ_o` has `CF77_lambda_`'s units and meaning — carbon per unit transpiration — but, unlike it, no default: at `λ_o = 0` this curve *is* `TF24`, so a caller who omitted it would be running the production model under the new model's name. The solve refuses rather than defaults. An explicit zero is accepted, and is the reduction test's own case. [leaf_solve()] and [leaf_batch()] take it as an argument; on a bare `Leaf`, assign the field.
 
 ### Pricing the drop is not pricing the potential
 
@@ -482,7 +482,7 @@ As the soil dries, TF24's cost rises while `Δψ` shrinks. The leaf cannot pull 
 
 The sharpest division in the cost table is therefore not any of the individual formulae. It is whether a cost prices the potential the leaf has reached, or the distance it had to pull. That is the one difference no parameter can absorb.
 
-It is also why `JS22_gamma`'s default carries a warning rather than a citation. The default is order-of-magnitude matched to TF24 in the middle of this band, and no single value would be matched across it.
+It is also why `JS22_gamma`'s default carries a warning rather than a citation. The default matches TF24 at one reference soil potential (see [Comparable at their defaults](#comparable-at-their-defaults)), and no single value would be matched across this band.
 
 ## λ is the common currency
 
@@ -651,7 +651,7 @@ The published models map onto that space as follows.
 | @eller2020 | `SOX` | the product objective. Takes no parameter of its own. |
 | @jones2026 | `JW26` | the same product form as `SOX`, with a linear `g`. Takes no parameter of its own; see below. |
 | @sicangco2026 | `ProfitMax` | ProfitMax with the thermal-cost gate on. |
-| @prentice2014 | `LeastCost` | the cost per unit carbon, `(c_E E + c_V V_cmax)/A`, as `log A − log(E + β V_cmax)` under the log link. One parameter, the dimensionless unit-cost ratio `β = c_V/c_E` (`LeastCost_beta`, 146 in the paper), with no default; zero is refused as well as unset, because at zero the objective is water-use efficiency and the optimum is the wet bound. The only cost here that weighs capacity. |
+| @prentice2014 | `LeastCost` | the cost per unit carbon, `(c_E E + c_V V_cmax)/A`, as `log A − log(E + β V_cmax)` under the log link. One parameter, the dimensionless unit-cost ratio `β = c_V/c_E` (`LeastCost_beta`, 146 in the paper, which at this package's default leaf pins the optimum at `ψ_crit` from the reference `ψ_soil` of 1 MPa drier; the default is aligned instead). Zero is refused, because at zero the objective is water-use efficiency and the optimum is the wet bound. The only cost here that weighs capacity. |
 | — | `TF24_floor` | the canonical two-term split, `Θ̃(ψ) + λ_o E`, with `Θ̃` taken to be TF24's own cost. Not a paper's model: the form is Wolf et al.'s case 8, endorsed in a sentence by Buckley (2017) and fitted once in Anderegg et al. (2018)'s supplement, but never argued for. Here so the claim can be tested rather than argued — and attached to TF24 so that the test is about *our* cost. |
 
 : The published models, and the axes they occupy.
@@ -667,6 +667,32 @@ They supply `ψ_crit` as a free parameter, and their supply is linear in the pot
 Deriving `psi_crit` is a deliberate choice. It costs one parameter of theirs, but it is what puts `JW26` and `SOX` on the same two anchors, so the comparison between the two is structural rather than a fitted match. Reproducing the paper's own numbers would need the free `ψ_crit` and the linear supply together, and those two are coupled: flattening the vulnerability curve to recover their supply sends a derived `psi_crit` to infinity and deletes the cost.
 
 Both constraints on the log form are stated where they arise. `log A` needs `A > 0`, which fails at closure, and `C` diverges where `g` reaches zero, which is why no product objective can end up at the dry bound. They apply to `JW26` exactly as to `SOX`.
+
+### Comparable at their defaults
+
+A comparison across curves at each curve's own published defaults mixes two things: how each curve *responds* to the environment, and where its parameters happen to *sit*. So the defaults here are aligned. Each curve with a level parameter takes the value at which its stem optimum has TF24's conductance at one reference environment: a single soil potential of 1 MPa, PPFD 900, a 2 kPa deficit, 25 °C with the energy balance off, and every trait at its default. TF24 is the anchor and does not move. Because the supply is shared, matching the conductance there also matches `ψ_stem`, `E`, `A` and `ci`.
+
+[align_curves()] does the alignment, and the defaults are its answer at its own defaults. Four curves have a level parameter: `CF77` (its price), `JS22` (`JS22_gamma`), `CMax` (`CMax_a`) and `LeastCost` (`LeastCost_beta`). `CF77` aligned to TF24 is an identity rather than a fit, since at TF24's emergent `λ` the two first-order conditions coincide.
+
+```{r}
+#| label: aligned-defaults
+align_curves()
+sp <- leaf_supply_singlelayer()
+curves <- c("TF24", "CF77", "JS22", "CMax", "LeastCost", "SOX", "JW26",
+            "ProfitMax")
+gc <- sapply(curves, function(m) {
+  leaf_solve(psi_soil = c(0.5, 1, 2, 3), model = m, supply = sp)$gc
+})
+rownames(gc) <- paste("psi_soil", c(0.5, 1, 2, 3))
+print(signif(gc, 3))
+```
+
+The first five columns agree at `psi_soil` 1 and part either side of it, which is the comparison an alignment is for. Four curves are left unaligned:
+
+- `SOX`, `JW26` and `ProfitMax` have no level parameter; the supply puts their optimum. Matching them through `kmax` would work, but they would then no longer share the one supply every other curve uses.
+- `TF24_floor` adds a price to TF24's own cost at TF24's own traits, so the only `λ_o` that reaches TF24's conductance is zero, where the curve is TF24. It keeps no default.
+
+Call [align_curves()] with a different reference or `target` to align for a different study, and pass its answer back as traits (`JS22_gamma`, `CMax_a`) or as [leaf_solve()] arguments (`CF77_lambda`, `LeastCost_beta`).
 
 ## The biological components
 

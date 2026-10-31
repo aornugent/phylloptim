@@ -93,12 +93,13 @@ left behind.
 
 Two curves take a PRESCRIBED price of water rather than deriving one:
 \code{CF77} reads \code{CF77_lambda} and \code{TF24_floor} reads \code{TF24_floor_lambda_o},
-both below. Neither has a default, and each curve refuses to solve without
-its own.}
+both below. \code{CF77}'s has a default, aligned to TF24 by \code{\link[=align_curves]{align_curves()}};
+\code{TF24_floor}'s has none, and that curve refuses to solve without one.}
 
 \item{CF77_lambda, TF24_floor_lambda_o}{the prescribed marginal value of water
 for the two curves that take one, in umol C (kg H2O)^-1. \code{NA_real_} (the
-default) leaves the field unset, which every other model wants.
+default) leaves the field as it is: \code{CF77}'s aligned default (see
+\code{\link[=align_curves]{align_curves()}}), or unset for \code{TF24_floor}, which refuses to solve.
 
 ⚠️ \strong{Their scale is set by the leaf, not chosen freely.} At this package's
 defaults the leaf's own marginal cost of water runs 9e4 to 3e5, and a price
@@ -109,9 +110,12 @@ describes the bracket rather than the model. \code{\link[=operating_point]{opera
 \item{LeastCost_beta}{the \code{LeastCost} curve's unit-cost ratio (Prentice et
 al. 2014's beta): the cost of maintaining carboxylation capacity relative to
 the cost of transpiration, dimensionless. Only \code{model = "LeastCost"} reads
-it. That curve refuses to solve without one, and refuses zero as well, since
-at zero the capacity term vanishes and what is left is water-use efficiency,
-which rises without bound as transpiration falls. The published value is 146.}
+it. \code{NA_real_} (the default) keeps the leaf's own default, aligned to TF24
+by \code{\link[=align_curves]{align_curves()}}. Zero is refused, since at zero the capacity term
+vanishes and what is left is water-use efficiency, which rises without bound
+as transpiration falls. The published value is 146, which at this
+package's default leaf pins the stem optimum at \code{psi_crit} from the
+reference \code{psi_soil} of 1 MPa drier.}
 }
 \value{
 A data.frame with one row per driver combination: the drivers, then

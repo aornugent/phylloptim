@@ -12,7 +12,8 @@
 # spline resolution only refines it. Measured: vulnerability_curve_ncontrol at 40
 # rather than 400 moves every field here by 3.0e-06, and at 20 by 5.0e-06 --
 # past `profit`'s tolerance below, but inside the argmax class's. What holds THAT
-# default to the C++ one is plant's test-control.R, one repository away.
+# default to the C++ one is that leaf_control() reads it from
+# `Leaf::ncontrol_default`, which test-surface.R asserts.
 default_leaf <- function() leaf_model()
 
 # --- how exactly to compare -------------------------------------------------

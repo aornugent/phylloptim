@@ -23,6 +23,11 @@
 ^notes$
 ^Doxyfile$
 ^docs$
+
+# The pkgdown site's config and its assets directory. The site itself renders
+# under docs, beside the Doxygen output, and docs is excluded above.
+^_pkgdown\.yml$
+^pkgdown$
 ^phylloptim_.+\.tar\.gz$
 ^.*\.Rcheck$
 

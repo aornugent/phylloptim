@@ -224,22 +224,25 @@ Leaf:
     # The TF24_floor curve's price of water as transpiration goes to zero, umol C
     # (kg H2O)^-1, and the curve's ONLY parameter: the hydraulic half is TF24's own
     # cost at TF24's own traits. An INPUT on exactly the same footing as
-    # `CF77_lambda_`: same units, no default, NA until you set one, and not cleared
-    # by re-driving or by `set_traits()`.
+    # `CF77_lambda_`: same units, and not cleared by re-driving or by
+    # `set_traits()` -- but unlike it, no default, NA until you set one.
     #
     # ⚠️ NO DEFAULT ON PURPOSE. Zero is a valid value and it is the value at which
     # this curve stops being itself -- at `lambda_o = 0` `TF24_floor` IS `TF24` --
     # so omitting it is refused rather than defaulted. An explicit zero is accepted.
+    # It cannot be aligned as the other curves are (`align_curves()`): the only
+    # value that reaches TF24's conductance is that zero.
     # `leaf_solve()` and `leaf_batch()` take it as an argument; on a bare `Leaf`,
     # assign the field.
     TF24_floor_lambda_o: {type: double, access: field}
     # Least-cost's unit-cost ratio, @Prentice-2014's beta: the cost of maintaining
     # carboxylation capacity relative to the cost of transpiration.
     #
-    # ⚠️ NO DEFAULT, FOR A DIFFERENT REASON FROM THE ONE ABOVE. `TF24_floor` has a
-    # curve it collapses into at zero, so a missing value there would be a silent
-    # substitution; `LeastCost` has none, so a missing value is a NaN objective
-    # whose argmax is a property of the bracket and looks entirely plausible.
+    # ⚠️ ITS DEFAULT IS ALIGNED, NOT PUBLISHED: the beta at which LeastCost's stem
+    # optimum has TF24's conductance at the reference environment of
+    # `align_curves()`. At this package's default leaf the published 146 pins the
+    # optimum at psi_crit from the reference psi_soil of 1 MPa drier. Clearing it to NA is refused, since that is a NaN
+    # objective whose argmax is a property of the bracket.
     #
     # ⚠️ DIMENSIONLESS, so both fluxes it weighs are converted to mol m^-2 s^-1
     # first. A beta derived against this package's kg H2O and umol CO2 would be out
@@ -571,10 +574,11 @@ Leaf:
       return_type: void
       args: [root_network: "const phylloptim::RootNetwork&", PPFD: double, psi_soil: "const std::vector<double>&", soil_depth: "const std::vector<double>&", leaf_specific_conductance_max: double, atm_vpd: double, ca: double, leaf_temp: double, atm_o2_kpa: double, atm_kpa: double]
 
-    # Replace the traits on an existing Leaf. Fifteen arguments in the
-    # constructor's own order, minus the four numerical controls.
+    # Replace the traits on an existing Leaf. Sixteen arguments: the
+    # constructor's own order, minus the four numerical controls, plus the five
+    # traits the constructor does not take.
     #
-    # A METHOD, NOT FIFTEEN SETTABLE FIELDS. The traits are public doubles, so
+    # A METHOD, NOT SIXTEEN SETTABLE FIELDS. The traits are public doubles, so
     # `access: field` entries would have worked and would have been wrong: a bare
     # field write bypasses the #25 invariant checks, leaves the two pre-integrated
     # vulnerability splines describing the previous curve, and leaves the solved
@@ -795,9 +799,10 @@ Leaf:
     # Cowan & Farquhar (1977), the model the whole optimality family is measured
     # against: maximise `A - lambda*E`, so the optimum satisfies dA/dE == lambda.
     #
-    # ⚠️ `$CF77_lambda_` IS A REQUIRED INPUT and has no default -- it is the marginal
-    # value of water in umol C (kg H2O)^-1, and this refuses rather than optimise
-    # a NaN objective. Its SCALE is set by the leaf, not chosen freely: at the
+    # ⚠️ `$CF77_lambda_` IS AN INPUT whose default is ALIGNED: TF24's emergent
+    # marginal value of water at the reference environment of `align_curves()`, in
+    # umol C (kg H2O)^-1. Cleared to NA it is refused rather than optimise a NaN
+    # objective. Its SCALE is set by the leaf, not chosen freely: at the
     # package defaults the leaf's own marginal cost of water runs 9e4 to 3e5, and
     # a lambda far outside that band pins the optimum shut or wide open.
     # `$lambda` (that is, `marginal_cost_water()`) reports the same quantity for

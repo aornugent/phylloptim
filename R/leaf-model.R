@@ -48,8 +48,8 @@
   curv_fact_colim = 0.99,
   TF24_cost_scale = 7.5,
   R_d_25 = 1.44,
-  JS22_gamma = 1.0,
-  CMax_a = 0.6,
+  JS22_gamma = 0.4717887793,
+  CMax_a = 0.6385596982,
   CMax_b = 0.0,
   g_min = 0.0
 )
@@ -117,8 +117,9 @@
 ##'   (umol C m^-2 s^-1 MPa^-2), read only by the `JS22` cost curve and returning
 ##'   an exactly zero gradient on every other one.
 ##'
-##'   ⚠️ **The default is not a literature value.** It is order-of-magnitude
-##'   matched to TF24 at this package's defaults, and no single value matches more
+##'   ⚠️ **The default is not a literature value.** It is aligned to TF24 by
+##'   [align_curves()]: the value at which the JS22 stem optimum has TF24's
+##'   conductance at that function's reference environment. No single value matches more
 ##'   than one soil potential: the `JS22_gamma` reproducing TF24's cost at its own
 ##'   optimum runs 0.287 at `psi_soil` 0.5 MPa to 1.761 at 3.0 MPa. TF24's cost
 ##'   tracks the absolute potential and this one tracks the drop, and across a
@@ -126,6 +127,8 @@
 ##' @param CMax_a,CMax_b slope and intercept of the `CMax` marginal cost,
 ##'   `dC/dpsi = CMax_a * psi + CMax_b`, following Wolf et al. (2016) as
 ##'   Anderegg et al. (2018) parameterised it. Read only by the `CMax` curve.
+##'   `CMax_a`'s default is aligned to TF24 by [align_curves()], with `CMax_b` at
+##'   zero; neither default is a literature value.
 ##'
 ##'   ⚠️ **`CMax_b` is signed, and negative in the source convention.** Sabot's
 ##'   `TractLSM` stores it with the sign inverted "so as to get a positive
@@ -184,8 +187,8 @@ leaf_traits <- function(vcmax_25 = 96,
                         curv_fact_colim = 0.99,
                         TF24_cost_scale = 7.5,
                         R_d_25 = 1.44,
-                        JS22_gamma = 1.0,
-                        CMax_a = 0.6,
+                        JS22_gamma = 0.4717887793,
+                        CMax_a = 0.6385596982,
                         CMax_b = 0.0,
                         g_min = 0.0) {
   out <- list(vcmax_25 = vcmax_25, stem_c = stem_c, stem_P50 = stem_P50,
@@ -238,6 +241,8 @@ leaf_traits <- function(vcmax_25 = 96,
 ##' @param vulnerability_curve_ncontrol number of control points used to
 ##'   pre-integrate the two Weibull vulnerability curves into splines. Higher is
 ##'   more accurate and slower to construct; it does not affect solve speed.
+##'   The default, 400, is read from the C++ `Leaf::ncontrol_default`, so the R
+##'   and C++ defaults cannot differ.
 ##' @param ci_abs_tol absolute tolerance for root-solving intercellular CO2
 ##' @param ci_niter maximum iterations for root-solving intercellular CO2
 ##' @param integration_rule accepted and ignored. It selected a Gauss-Kronrod
@@ -254,21 +259,15 @@ leaf_traits <- function(vcmax_25 = 96,
 ##' leaf_control()
 ##' leaf_control(GSS_tol_abs = 1e-5)
 ##' @export
-# ⚠️ `vulnerability_curve_ncontrol` MUST EQUAL `Leaf::ncontrol_default` in
-# leaf_model.hpp. RcppR6 binds only the 15-argument constructor, so R has to pass
-# the number in and cannot read the C++ one -- this literal is the copy. What
-# holds the two together is plant's test-control.R, which compares plant's
-# Control (seated from the constant in plant/src/control.cpp) against
-# `leaf_control()` with expect_identical. It runs in plant's check and not in
-# this package's, so a drift introduced here surfaces one repository away.
-#
-# ⚠️ AND THE GOLDEN FILE DOES NOT CATCH IT, whatever helper-golden.R's note about
-# drifting defaults suggests: that argument holds for a trait, which enters the
-# answer, and not for a spline resolution, which only refines it. Measured on the
-# golden grid's own driver rows, 400 -> 40 moves every field by 3.0e-06 and
-# 400 -> 20 by 5.0e-06, against per-class tolerances of 1e-05 and 5e-03.
+# `vulnerability_curve_ncontrol` defaults to `Leaf::ncontrol_default`, READ from
+# C++ rather than restated: RcppR6 binds only the 15-argument constructor, so R
+# passes the number in, and a literal here would be a second copy that could
+# drift without the golden file noticing (a spline resolution only refines the
+# answer: 400 -> 40 moves every field by ~3e-06). test-surface.R asserts the
+# default is the C++ constant; plant's test-control.R compares plant's own
+# Control against `leaf_control()`.
 leaf_control <- function(GSS_tol_abs = 1e-3,
-                         vulnerability_curve_ncontrol = 400,
+                         vulnerability_curve_ncontrol = .leaf_ncontrol_default(),
                          ci_abs_tol = 1e-3,
                          ci_niter = 1000,
                          integration_rule = 21,
@@ -1011,17 +1010,21 @@ operating_point <- function(x) {
 ##'
 ##'   Two curves take a PRESCRIBED price of water rather than deriving one:
 ##'   `CF77` reads `CF77_lambda` and `TF24_floor` reads `TF24_floor_lambda_o`,
-##'   both below. Neither has a default, and each curve refuses to solve without
-##'   its own.
+##'   both below. `CF77`'s has a default, aligned to TF24 by [align_curves()];
+##'   `TF24_floor`'s has none, and that curve refuses to solve without one.
 ##' @param LeastCost_beta the `LeastCost` curve's unit-cost ratio (Prentice et
 ##'   al. 2014's beta): the cost of maintaining carboxylation capacity relative to
 ##'   the cost of transpiration, dimensionless. Only `model = "LeastCost"` reads
-##'   it. That curve refuses to solve without one, and refuses zero as well, since
-##'   at zero the capacity term vanishes and what is left is water-use efficiency,
-##'   which rises without bound as transpiration falls. The published value is 146.
+##'   it. `NA_real_` (the default) keeps the leaf's own default, aligned to TF24
+##'   by [align_curves()]. Zero is refused, since at zero the capacity term
+##'   vanishes and what is left is water-use efficiency, which rises without bound
+##'   as transpiration falls. The published value is 146, which at this
+##'   package's default leaf pins the stem optimum at `psi_crit` from the
+##'   reference `psi_soil` of 1 MPa drier.
 ##' @param CF77_lambda,TF24_floor_lambda_o the prescribed marginal value of water
 ##'   for the two curves that take one, in umol C (kg H2O)^-1. `NA_real_` (the
-##'   default) leaves the field unset, which every other model wants.
+##'   default) leaves the field as it is: `CF77`'s aligned default (see
+##'   [align_curves()]), or unset for `TF24_floor`, which refuses to solve.
 ##'
 ##'   ⚠️ **Their scale is set by the leaf, not chosen freely.** At this package's
 ##'   defaults the leaf's own marginal cost of water runs 9e4 to 3e5, and a price
@@ -1234,6 +1237,33 @@ leaf_solve <- function(psi_soil,
 .solve_price_fields <- c(CF77 = "CF77_lambda_",
                          TF24_floor = "TF24_floor_lambda_o",
                          LeastCost = "LeastCost_beta")
+
+# The defaults of the owned fields that have one: aligned to TF24 by
+# align_curves(), and the R-side copy of the in-class initialisers in
+# leaf_model.hpp. `test-align-curves.R` asserts both against a fresh Leaf and
+# against a re-run of the alignment. `TF24_floor_lambda_o` has no default (see
+# align_curves()).
+.level_defaults <- c(CF77_lambda_ = 107750.8846,
+                     LeastCost_beta = 51.59667042)
+
+.owns_field <- function(model, field) {
+  model %in% names(.solve_price_fields) &&
+    identical(.solve_price_fields[[model]], field)
+}
+
+# The value an owned field takes in a gradient's theta: off the leaf when there
+# is one, its default when there is not, and NA on every route that does not own
+# it. The NA is what keeps the R reference from writing the field once per
+# perturbation on routes that never read it -- a crossing `test-cost.R` counts.
+.owned_value <- function(model, field, x = NULL) {
+  if (!.owns_field(model, field)) {
+    return(NA_real_)
+  }
+  if (!is.null(x)) {
+    return(x[[field]])
+  }
+  if (field %in% names(.level_defaults)) .level_defaults[[field]] else NA_real_
+}
 
 # ⚠️ THE THIRD ENTRY IS NOT A PRICE, and the message below branches on it
 # rather than calling it one. `CF77_lambda_` and `TF24_floor_lambda_o` are

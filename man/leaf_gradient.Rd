@@ -76,7 +76,7 @@ differentiate at}
 \item{supply}{how water reaches the root collar: \code{\link[=leaf_supply_multilayer]{leaf_supply_multilayer()}}
 (the default) or \code{\link[=leaf_supply_singlelayer]{leaf_supply_singlelayer()}}}
 
-\item{pars}{what to differentiate with respect to. Any of the fifteen
+\item{pars}{what to differentiate with respect to. Any of the sixteen
 \code{\link[=leaf_traits]{leaf_traits()}} names, plus \code{"leaf_specific_conductance_max"}, on the
 single-potential path only \code{"resistance"}, on \code{model = "CF77"} only
 \code{"CF77_lambda_"}, on \code{model = "TF24_floor"} only \code{"TF24_floor_lambda_o"},
@@ -437,13 +437,13 @@ A companion calibration study has \code{N = 1327}, \code{P_fit = 40},
 57-parameter variant costing the same as its 40-parameter one, because
 \code{P_model} is 4 in both.
 
-⚠️ \strong{Always pass \code{pars}.} It is \code{P_model}, so the default — all fifteen on
-the multi-layer path — is the most expensive thing you can ask for, and a fit
-that reads four of them pays for twelve it discards.
+⚠️ \strong{Always pass \code{pars}.} It is \code{P_model}, so the default — every trait plus
+\code{leaf_specific_conductance_max} on the multi-layer path — is the most expensive
+thing you can ask for, and a fit that reads four of them pays for the rest.
 
-The intercept is a fresh \code{Leaf} per call, ~45 solves' worth. Pass \code{x} to reuse one
-across calls (#52); without it, construction is 29\% of the exact gradient in
-the study above.
+The intercept is a fresh \code{Leaf} per call. Pass \code{x} to reuse one across calls
+(#52); without it, construction is 29\% of the exact gradient in the study
+above.
 }
 
 \section{Precision}{
@@ -455,17 +455,11 @@ the intercellular-CO2 root-find.
 
 \section{Reusing a leaf across gradients}{
 
-Constructing a \code{Leaf} costs about \strong{180x a trivial \code{.Call}} — 45 solves — and
-this function does it once per call, which is \strong{61\% of a one-parameter
-gradient}: the largest single term on this surface by some way, and paid once
-per observation by a fit that differentiates per observation.
-
-⚠️ \strong{That share has GROWN, and the reason is worth knowing.} It was quoted at
-40\% when the solvers searched their objectives; they root-find their
-first-order conditions now, so the composite got cheaper while construction did
-not. Re-measure it as a RATIO in one process — absolute microseconds here moved
-by 50\% between machines, and four places in this package quoted the same
-absolute with four different solve counts beside it. Pass \code{x} to reuse one:
+Constructing a \code{Leaf} is the largest single cost on this surface, and this
+function does it once per call: it is \strong{most of a one-parameter gradient} on a
+fresh leaf, paid once per observation by a fit that differentiates per
+observation. The measured ratios are in the README's "Performance from R", the
+one place the package quotes them. Pass \code{x} to reuse one:
 
 \if{html}{\out{<div class="sourceCode r">}}\preformatted{l <- leaf_model(traits, control, supply)
 for (i in seq_len(n)) leaf_gradient(psi_soil = ps[i], x = l, traits = traits, pars = FIT)
@@ -482,8 +476,8 @@ is an error rather than silently resolved.
 
 \strong{\code{x} is left solved at the base point}, not at the last perturbation — the
 state this function seats it in, restored on the way out including on an error.
-The restore costs one re-trait and one solve, about 4 solves against the 45
-saved.
+The restore costs one re-trait and one solve, a small fraction of the
+construction it saves.
 }
 
 \examples{

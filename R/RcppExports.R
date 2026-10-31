@@ -1419,7 +1419,7 @@ Leaf__H2O_CO2_stom_diff_ratio___set <- function(obj_, value) {
 
 #' The differentiable parameters, in the order C++ indexes them
 #'
-#' The fifteen [leaf_traits()] in `set_traits()`'s argument order, then
+#' The sixteen [leaf_traits()] in `set_traits()`'s argument order, then
 #' `leaf_specific_conductance_max`, `resistance` and `CF77_lambda_`. Exported so that R's own
 #' copy of this order can be compared against it in a test: R passes integer
 #' positions into this enumeration, so appending to it is safe and reordering it
@@ -1448,6 +1448,10 @@ gradient_par_names <- function() {
 #' @export
 cost_curve_names <- function() {
     .Call('_phylloptim_cost_curve_names', PACKAGE = 'phylloptim')
+}
+
+.leaf_ncontrol_default <- function() {
+    .Call('_phylloptim_leaf_ncontrol_default', PACKAGE = 'phylloptim')
 }
 
 #' The differentiated outputs, in the order C++ indexes them

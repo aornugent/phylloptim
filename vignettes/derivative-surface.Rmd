@@ -50,16 +50,20 @@ phylloptim::SupplyAt<S> supply{psi_soil, r_R_H_min, r_R_V_sum,
                                pars[phylloptim::par_root_c]};
 
 auto draw = l.supply_draw_at<S>(S(l.opt_root_psi_), supply);
-S    psi  = l.collar_at<K, S>(draw, pars, curvature);
-auto out  = l.outputs_at<K, S>(psi, draw, pars);
+phylloptim::Leaf::HeldCoords<S> held;
+S    psi  = l.collar_at<K, S>(draw, pars, curvature, &held);
+auto out  = l.outputs_at<K, S>(psi, draw, pars, &held);
 // out.profit, out.uptake[j] and out.residual_flux carry their derivatives in pars and supply
 ```
 
 `curvature` is `l.marginal_collar_slope<K>()` at an interior point and is not read at any other kind. `profit_row_at_current_point` in `tests/cpp/test_leaf.cpp` is this sequence in full, compiled.
 
+`held` is optional. At an interior point, `collar_at` solves the stem potential and the intercellular CO2 at the collar on its way to the marginal, and `held` carries them to `outputs_at`, which otherwise solves them again. Passing it moves no number: the forward tangent is bit-identical and the reverse rows agree to rounding. `held` lives on the caller's tape, like the draw, so it must not outlive the recording it was made on. At double and at every other kind `collar_at` leaves it unplaced and `outputs_at` solves its own.
+
 The calls assume, and mostly do not check:
 
 - the draw is taken at the solved collar (`collar_at` refuses another);
+- `held`, if passed, comes from `collar_at` at this point (`outputs_at` refuses one placed at another collar or kind);
 - nothing moves the leaf between the solve and `outputs_at`;
 - `pars` and `supply` hold, in value, the leaf's seated traits (`passive_pars()`) and its seated soil state and root network;
 - the supply path is multi-layer.

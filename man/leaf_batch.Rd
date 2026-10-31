@@ -69,7 +69,7 @@ value rather than a profile.}
 
 \item{CF77_lambda}{Cowan-Farquhar's prescribed marginal value of water, in
 umol C (kg H2O)^-1, one per observation. Only \code{model = "CF77"} reads it;
-\code{NA_real_} (the default) leaves it unset, which every other model wants.}
+\code{NA_real_} (the default) uses its aligned default (see \code{\link[=align_curves]{align_curves()}}).}
 
 \item{TF24_floor_lambda_o}{the \code{TF24_floor} curve's price of water as transpiration
 goes to zero, same units, one per observation. Only \code{model = "TF24_floor"}
@@ -79,8 +79,8 @@ solve without one, deliberately: at zero it is \code{TF24}.}
 \item{LeastCost_beta}{least-cost theory's unit-cost ratio (Prentice et al.
 2014's beta): the cost of maintaining carboxylation capacity relative to the
 cost of transpiration, dimensionless, one per observation. Only
-\code{model = "LeastCost"} reads it; \code{NA_real_} (the default) leaves it unset.
-That curve refuses to solve without one, and refuses zero as well, since at
+\code{model = "LeastCost"} reads it; \code{NA_real_} (the default) uses its aligned
+default (see \code{\link[=align_curves]{align_curves()}}). Zero is refused, since at
 zero the capacity term vanishes and what is left is water-use efficiency,
 which rises without bound as transpiration falls. The published value is 146.}
 }
@@ -99,9 +99,9 @@ costs 60-100 µs to cross the R boundary — some 60 times a trivial \code{.Call
 because it is an \code{RcppR6} \verb{list:} class and every crossing rebuilds a
 five-element named list. Converting 1,327 of them per likelihood evaluation
 would cost ~80 ms and swamp the ~13 ms of gradient it was carrying. The same
-argument applies to the \code{Leaf}: constructing one from R costs about \strong{180x a
-trivial \code{.Call}}, or 45 solves, so a fit builds it once here rather than once
-per gradient (#52).
+argument applies to the \code{Leaf}: constructing one is the largest single cost in
+the R layer (the README's "Performance from R" has the measured ratio), so a fit
+builds it once here rather than once per gradient (#52).
 
 ⚠️ \strong{The result holds a C++ pointer, so it does not survive \code{saveRDS()} or a
 new session.} Rebuild it rather than restoring it; \code{\link[=leaf_gradient_batch]{leaf_gradient_batch()}}

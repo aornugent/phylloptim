@@ -4057,6 +4057,16 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// leaf_ncontrol_default
+double leaf_ncontrol_default();
+RcppExport SEXP _phylloptim_leaf_ncontrol_default() {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    rcpp_result_gen = Rcpp::wrap(leaf_ncontrol_default());
+    return rcpp_result_gen;
+END_RCPP
+}
 // gradient_output_names
 std::vector<std::string> gradient_output_names();
 RcppExport SEXP _phylloptim_gradient_output_names() {
@@ -4491,6 +4501,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_phylloptim_Leaf__H2O_CO2_stom_diff_ratio___set", (DL_FUNC) &_phylloptim_Leaf__H2O_CO2_stom_diff_ratio___set, 2},
     {"_phylloptim_gradient_par_names", (DL_FUNC) &_phylloptim_gradient_par_names, 0},
     {"_phylloptim_cost_curve_names", (DL_FUNC) &_phylloptim_cost_curve_names, 0},
+    {"_phylloptim_leaf_ncontrol_default", (DL_FUNC) &_phylloptim_leaf_ncontrol_default, 0},
     {"_phylloptim_gradient_output_names", (DL_FUNC) &_phylloptim_gradient_output_names, 0},
     {"_phylloptim_gradient_batch_prepare", (DL_FUNC) &_phylloptim_gradient_batch_prepare, 9},
     {"_phylloptim_gradient_batch_check", (DL_FUNC) &_phylloptim_gradient_batch_check, 1},

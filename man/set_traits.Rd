@@ -27,7 +27,7 @@ be called before the next solve. That is not caution: \code{vcmax_}, \code{jmax_
 \code{R_d_} are derived from the traits inside \code{set_physiology()}, so they are
 genuinely unknown until the drivers are re-supplied.
 
-The reason it is a function rather than fifteen assignable fields is that
+The reason it is a function rather than sixteen assignable fields is that
 \code{leaf$vcmax_25 <- x} could not be made correct. Three separate pieces of
 derived state go stale on a bare trait write: the two pre-integrated
 vulnerability splines, the solved operating point, and -- least visibly --

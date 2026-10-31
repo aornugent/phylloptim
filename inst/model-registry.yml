@@ -1238,8 +1238,8 @@ parameters:
     symbol: '\lambda_\mathrm{CF}'
     units: 'µmol C (kg H₂O)⁻¹'
     class: hyperparameter
-    meaning: 'the prescribed marginal value of water of the CF77 curve; an input with no default (NA until set, refused unset), never assigned by model code'
-    source: 'caller input; no default by design'
+    meaning: 'the prescribed marginal value of water of the CF77 curve; an input never assigned by model code, refused if cleared to NA'
+    source: 'caller input; default aligned to TF24 by align_curves() (#156): TF24''s emergent lambda at the reference'
     cite: Cowan-1977
     placeholder: false
     code: phylloptim::Leaf::CF77_lambda_
@@ -1258,7 +1258,7 @@ parameters:
     units: 'µmol C m⁻² s⁻¹ MPa⁻²'
     class: trait
     meaning: 'unit cost of the soil-to-leaf drop in the JS22 hydraulic term; Joshi-2022''s capacity term $\alpha J_{max}$ is not implemented'
-    source: 'code default, "not a literature value": order-of-magnitude matched to TF24 at the package defaults (the matching value runs 0.287–1.761 over psi_soil 0.5–3 MPa)'
+    source: 'code default, "not a literature value": aligned to TF24 at one reference by align_curves() (#156); the value matching TF24''s cost runs 0.287–1.761 over psi_soil 0.5–3 MPa'
     cite: Joshi-2022
     placeholder: true
     code: phylloptim::Leaf::JS22_gamma
@@ -1268,7 +1268,7 @@ parameters:
     units: 'µmol C m⁻² s⁻¹ MPa⁻²'
     class: trait
     meaning: 'slope of the CMax marginal cost, linear in the absolute potential'
-    source: 'code default, "neither default is a literature value": mid-range of the 0.406–0.807 that reproduces TF24''s cost at its optimum; the form is Anderegg-2018''s as TractLSM implements it'
+    source: 'code default, "neither default is a literature value": aligned to TF24 at one reference by align_curves() (#156), with CMax_b 0; the form is Anderegg-2018''s as TractLSM implements it'
     cite: Anderegg-2018
     placeholder: true
     code: phylloptim::Leaf::CMax_a
@@ -1287,7 +1287,7 @@ parameters:
     symbol: '\lambda_o'
     units: 'µmol C (kg H₂O)⁻¹'
     class: hyperparameter
-    meaning: 'the price of water as transpiration goes to zero, the only parameter of TF24_floor; an input with no default, because at 0 the curve is TF24'
+    meaning: 'the price of water as transpiration goes to zero, the only parameter of TF24_floor; an input with no default, because at 0 the curve is TF24 and no other value aligns it to TF24'
     source: 'caller input; no default by design'
     placeholder: false
     code: phylloptim::Leaf::TF24_floor_lambda_o
@@ -1296,8 +1296,8 @@ parameters:
     symbol: '\beta_\mathrm{LC}'
     units: '–'
     class: hyperparameter
-    meaning: 'unit-cost ratio $c_V/c_E$ of least-cost theory, dimensionless because both fluxes are weighed in mol m⁻² s⁻¹; an input with no default, strictly positive'
-    source: 'caller input; Prentice-2014 report 146'
+    meaning: 'unit-cost ratio $c_V/c_E$ of least-cost theory, dimensionless because both fluxes are weighed in mol m⁻² s⁻¹; an input, strictly positive'
+    source: 'caller input; default aligned to TF24 by align_curves() (#156); Prentice-2014 report 146, which at the default leaf pins the optimum at psi_crit from the reference psi_soil of 1 MPa drier'
     cite: Prentice-2014
     placeholder: false
     code: phylloptim::Leaf::LeastCost_beta
