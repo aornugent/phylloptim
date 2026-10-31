@@ -10,7 +10,9 @@ series_resistance(resistance)
 \item{resistance}{the whole soil-to-collar path as one series resistance,
 \strong{per unit leaf area}, MPa s (mol H2O)^-1 m^2 leaf. Must be positive: a
 zero resistance is an infinite flux. Per unit leaf area because the leaf is
-purely intensive — nothing here may scale with plant size.}
+purely intensive — nothing here may scale with plant size. \code{\link[=set_drivers]{set_drivers()}}
+refuses one below 1e-2, where the collar route can no longer resolve the
+flux; the stem routes are the zero-resistance model.}
 }
 \value{
 A \code{\link[=RootNetwork]{RootNetwork()}} with one entry in \code{r_R_V_sum}.

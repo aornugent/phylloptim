@@ -381,7 +381,9 @@ leaf_supply_singlelayer <- function(gravity_head = 0) {
 ##' @param resistance the whole soil-to-collar path as one series resistance,
 ##'   **per unit leaf area**, MPa s (mol H2O)^-1 m^2 leaf. Must be positive: a
 ##'   zero resistance is an infinite flux. Per unit leaf area because the leaf is
-##'   purely intensive — nothing here may scale with plant size.
+##'   purely intensive — nothing here may scale with plant size. [set_drivers()]
+##'   refuses one below 1e-2, where the collar route can no longer resolve the
+##'   flux; the stem routes are the zero-resistance model.
 ##'
 ##' @return A [RootNetwork()] with one entry in `r_R_V_sum`.
 ##' @seealso [leaf_supply_singlelayer()], [root_network_from_carbon()], [set_drivers()]

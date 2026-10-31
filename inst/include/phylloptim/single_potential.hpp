@@ -52,6 +52,13 @@ public:
   // quantity arrived at two different times depending on which path was in force.
   // Now both arrive through set_physiology, out of the same RootNetwork.
   double resistance_ = util::na_value;
+  // The smallest series resistance the collar route resolves. The route reads
+  // the flux as (collar - soil) / r, so the whole range of flux fits in a
+  // collar interval about E*r wide, and a collar placed to collar_root_tol
+  // (1e-12) errs in E by about 1e-12 / (E*r) relative: worst at the dry,
+  // low-light rows where E is smallest, and below 1e-8 a shut leaf. Five
+  // orders below the nominal 1e3, so no physical root path reaches it.
+  static constexpr double resistance_min = 1e-2;
   // Gravitational head to lift water to the collar, MPa. Zero by default: the
   // bare-leaf user is not thinking about rooting depth.
   double grav_head_ = 0.0;
@@ -109,6 +116,13 @@ public:
     if (!std::isfinite(r) || !(r > 0.0)) {
       util::stop("the single-potential path needs a positive, finite series "
                  "resistance per unit leaf area; got " + util::to_string(r));
+    }
+    if (r < resistance_min) {
+      util::stop("the single-potential path needs a series resistance of at "
+                 "least " + util::to_string(resistance_min) +
+                 " MPa s m2 (mol H2O)-1, below which the collar route cannot "
+                 "resolve the flux; got " + util::to_string(r) +
+                 ". The stem routes are the zero-resistance model.");
     }
     resistance_ = r;
   }

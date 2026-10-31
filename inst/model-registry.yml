@@ -1166,7 +1166,7 @@ parameters:
     symbol: 'r'
     units: 'MPa s m² mol⁻¹'
     class: driver
-    meaning: 'series soil-to-collar resistance of the single-potential path, per unit leaf area; read from r_R_V_sum[1] of the network set_drivers() is given, which must carry no horizontal term (default series_resistance(1e3), a stand-in)'
+    meaning: 'series soil-to-collar resistance of the single-potential path, per unit leaf area; read from r_R_V_sum[1] of the network set_drivers() is given, which must carry no horizontal term (default series_resistance(1e3), a stand-in); at least SinglePotential::resistance_min, 1e-2, below which the collar route cannot resolve the flux'
     source: 'set_drivers(root_network = series_resistance()); default 1e3, no citation recorded'
     placeholder: true
     code: phylloptim::SinglePotential::resistance_
@@ -2061,7 +2061,7 @@ equations:
     reads: [psi_soil, single_resistance, single_gravity_head, kg_per_mol_h2o]
     writes: [E_up_, soil_consumption_, single_psi_soil_]
     kind: closed_form
-    note: 'Ohm''s law through one series resistance, with no vulnerability term and no kinks (so its collar derivative never asks for the finite-difference fallback). The one-entry soil_consumption_ holds the molar flux. single_psi_soil_ is the psi_soil driver as this path holds it, seated by set_physiology. The head $h$ is configuration, not derived from a depth (hazard 6); the multi-layer rule for one layer of thickness $d$ is $h = \rho_w g\, d/2$. A zero or non-finite resistance, or a non-zero $r_{H,\min}$, is refused.'
+    note: 'Ohm''s law through one series resistance, with no vulnerability term and no kinks (so its collar derivative never asks for the finite-difference fallback). The one-entry soil_consumption_ holds the molar flux. single_psi_soil_ is the psi_soil driver as this path holds it, seated by set_physiology. The head $h$ is configuration, not derived from a depth (hazard 6); the multi-layer rule for one layer of thickness $d$ is $h = \rho_w g\, d/2$. A zero or non-finite resistance, one below resistance_min (1e-2), or a non-zero $r_{H,\min}$, is refused.'
 
   # --- the solve -----------------------------------------------------------------
   intercellular_co2:

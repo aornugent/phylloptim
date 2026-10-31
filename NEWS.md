@@ -1,3 +1,9 @@
+# phylloptim 0.22.2
+
+## A series resistance below 1e-2 is refused (#176)
+
+The collar route reads the single-potential flux as (collar - soil) / r, so as r falls the whole range of flux fits in a collar interval about E*r wide and a collar placed to `collar_root_tol` no longer resolves it. Measured against the stem route, the r -> 0 model, beyond the difference linear in r, the error was 2e-8 at r = 1e-2, 3.6e-5 at 1e-3 and 2e-3 at 1e-4, and below 1e-8 leaves reported shutdown. `set_physiology` (and so `set_drivers()`) now refuses a single-potential series resistance below `SinglePotential::resistance_min`, 1e-2 MPa s m2 (mol H2O)-1, five orders below the nominal 1e3. Nothing at or above it changes; the golden files are bit-identical.
+
 # phylloptim 0.22.0
 
 ## Refuse rather than clamp; no corner left but the stomatal one (#183)
