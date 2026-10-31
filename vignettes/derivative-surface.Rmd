@@ -26,7 +26,7 @@ The package has two, and they answer different questions.
 | outputs | A, gc, psi_stem, collar, profit | profit, each layer's water uptake, and the residual (cuticular) flux |
 | classification | a status (`interior`, `pinned`, ...) from a stationarity test | a kind (`interior`, `boundary-soil`, ...) written by the branch the solve took |
 
-The two classifications are decided differently and are not interchangeable: a status reads the converged numbers, and a kind records which exit the solve took. Only `prescribed` appears in both. So one kind can be reported under more than one status. On a sweep of 1,536 solved points (`psi_soil` 0.5-14 MPa, PPFD 0-1500, VPD 0.5-4 kPa, 25 and 40 C, 1 and 3 layers, `g_min` 0 and 5e-4) the solving path reported:
+The two classifications are decided differently and are not interchangeable: a status reads the converged numbers, and a kind records which exit the solve took. Only `prescribed` appears in both. So one kind can be reported under more than one status. On a sweep of 1,920 solved points (`psi_soil` 0.5-14 MPa, PPFD 0-1500, VPD 0.5-4 kPa, 25 and 40 C, 1 and 3 layers, `g_min` 0 and 5e-4) the solving path reported:
 
 | kind (C++) | status (R) | points |
 |---|---|---|
@@ -80,7 +80,7 @@ The calls assume, and mostly do not check:
 - `pars` and `supply` hold, in value, the leaf's seated traits (`passive_pars()`) and its seated soil state and root network;
 - the supply path is multi-layer.
 
-## The solve path, and the ten kinds
+## The solve path, and the eight kinds
 
 The solve runs at `double` and is never differentiated. It brackets the collar between the wet bound, where uptake from the soil equals the cuticle's residual flux (zero at `g_min = 0`), and the dry bound, where the stem reaches its critical potential or the root reaches its own; then it root-finds the first-order condition `dprofit/dcollar = 0` inside the bracket, or reports that a bound binds.
 

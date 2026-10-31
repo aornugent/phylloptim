@@ -4762,7 +4762,7 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
 // curvature that is not negative or lies inside the floor, naming the value; the
 // true curvature, one just outside the floor, and the double path (which never
 // reads the curvature) all still answer.
-void test_collar_at_refuses_a_flat_or_rising_curvature() {
+void test_operating_collar_refuses_a_flat_or_rising_curvature() {
   printf("operating_collar refuses a curvature it cannot divide by\n");
   using T = odelia::ode::tangent_scalar<double>;
   using CC = phylloptim::Leaf::CostCurve;
@@ -4814,7 +4814,7 @@ void test_collar_at_refuses_a_flat_or_rising_curvature() {
 
 // Three of the surface's preconditions fail with every number finite, so each is
 // checked by name: the curve the solve was seated on, the supply path the draw
-// walks, and the draw's flux at a shutdown, which supply_draw_at returns before
+// walks, and the draw's E_up at a shutdown, which supply_draw_at returns before
 // writing. The control for each is the same call on the matching leaf.
 void test_surface_refuses_a_curve_or_supply_it_was_not_solved_on() {
   printf("the derivative surface refuses another curve or supply path\n");
@@ -4866,7 +4866,7 @@ void test_surface_refuses_a_curve_or_supply_it_was_not_solved_on() {
   const auto dry =
       shut.supply_draw_at<double>(shut.opt_root_psi_, shut.roots_.held_supply());
   ok(dry.E_up.value == 0.0 && dry.E_up.slope == 0.0,
-     "a shutdown draw's flux is zero, not indeterminate");
+     "a shutdown draw's E_up is zero, not indeterminate");
 }
 
 // A consumer that records each solve and replays it later (plant does, on every
@@ -10679,7 +10679,7 @@ int main(int argc, char **argv) {
   test_held_coordinates_move_no_row();
   test_held_coordinates_are_refused_off_their_point();
   test_supplied_rows_match_a_resolve_at_every_kind();
-  test_collar_at_refuses_a_flat_or_rising_curvature();
+  test_operating_collar_refuses_a_flat_or_rising_curvature();
   test_surface_refuses_a_curve_or_supply_it_was_not_solved_on();
   test_tf24_floor_rows_at_a_price();
   test_set_traits_matches_a_fresh_leaf();

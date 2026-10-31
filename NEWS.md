@@ -1,3 +1,9 @@
+# phylloptim 0.23.1
+
+## Leftovers of the 0.23.0 rename (#149)
+
+No number moves. `MultiLayerRoots::uptake_impl`'s local for a trial collar had been swept into the name `operating_collar`, which means the collar the solve placed; it is `collar_psi`. `vignette("derivative-surface")` now gives its sweep's total as the sum of its rows (1,920) and counts eight kinds, and comments that still called `SupplyDraw::E_up` "flux" use its name.
+
 # phylloptim 0.23.0
 
 ## The derivative surface's names say what they return (#149)

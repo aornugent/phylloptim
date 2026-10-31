@@ -1975,7 +1975,7 @@ public:
   // scalar, because all three re-enter plant's chain.
   //
   // The three fluxes are named so a consumer never takes one's value with
-  // another's rows (plant#655): the soil draw is the draw's flux, the stem
+  // another's rows (plant#655): the soil draw is the draw's E_up, the stem
   // carries the same total on the collar route (the water budget closes,
   // E_up = E), the residual flux is `residual_flux` here, and the stomatal flux
   // is the total less it. Each carries rows that match its own value.
@@ -8331,8 +8331,8 @@ inline S Leaf::wet_bound_at(double bound_x, const SupplyDraw<S>& draw,
   check_draw(bound_x, draw);
   const Leaf& leaf = *this;
 
-  // Both bounds move water, so both slopes are the supply's own conductance at
-  // the bound. The draw carries it as ONE number: where a kink makes the
+  // The bound moves water, so its slope is the supply's own conductance
+  // there. The draw carries it as ONE number: where a kink makes the
   // analytic branch invalid -- a single-layer wet bound is exactly the
   // gravity-balance point -- supply_draw_at has already differenced it, so there
   // is no sentinel to test for here and no second definition of the fallback.
@@ -8497,8 +8497,8 @@ inline S Leaf::operating_collar(const SupplyDraw<S>& draw, const leaf_pars<S>& p
               },
               draw, pars, h);
         } else {
-          // The whole draw, because dprofit_dcollar_at reads more of it than the
-          // flux: SupplyDraw names its own active members for this.
+          // The whole draw, because dprofit_dcollar_at reads more of it than
+          // E_up: SupplyDraw names its own active members for this.
           collar = odelia::implicit_value<S>(
               opt_root_psi_, curvature,
               [&](const S& y) -> S {

@@ -12,8 +12,8 @@
 //   duptake_dp[j]   d(uptake_j)/d(collar), from roots_.duptake_dpsi.
 //                   supply_draw_at takes the draw at a PASSIVE collar and
 //                   supplies this row beside it, so the tape never sees a
-//                   layer's uptake move with the collar. billed_outputs_at closed-form rows it
-//                   as `uptake[j] + duptake_dp[j] * step`.
+//                   layer's uptake move with the collar. billed_outputs_at extends it to the
+//                   active collar as `uptake[j] + duptake_dp[j] * step`.
 //
 // ⚠️ THE AGGREGATE IS NOT THE ROWS. duptake_dpsi's total is refereed against a
 // difference of uptake_at elsewhere, and it passed at 6e-12 while a per-layer
