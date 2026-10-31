@@ -742,7 +742,11 @@ $$g_c=\frac{P\,E\,M_{\rm H_2O}}{1.6\;D_{\rm leaf}}$$
 
 where 1.6 is the ratio of diffusivities of water vapour and CO₂, `P` is atmospheric pressure, and `D_leaf` is the leaf-to-air vapour pressure deficit. Fixing `E` fixes `g_c`, which is the first link of the coordinate chain above.
 
-`$stom_cond_CO2_` is a **total** leaf-to-air conductance rather than a stomatal one. There is no separate boundary-layer term: the relation above is the whole path from leaf interior to bulk air in one conductance, paired with a leaf-to-bulk-air deficit. That is internally consistent, and it is the right quantity for the `c_i` solve below. A measured `g_s`, however, has a boundary layer removed from it, so the two are not the same number and should not be compared directly. Compare it with `$gs_stomatal_H2O` instead, which takes the boundary layer's conductance to vapour, `$gb_H2O`, out of `$gs_H2O` in series. With the energy balance off there is no boundary layer, so `$gb_H2O` is `Inf` and the two are identical.
+`$stom_cond_CO2_` is a **total** leaf-to-air conductance rather than a stomatal one: the relation above is the whole path from leaf interior to bulk air, paired with a leaf-to-bulk-air deficit, which is the right quantity for the `c_i` solve below. With the energy balance on, the leaf has a boundary layer (`$gb_H2O`, its conductance to vapour), and that part of the path diffuses CO₂ at a different ratio from the stoma's, `r_b = r_s^{2/3}` for a laminar layer, as in @sabot2022's equation 10. So the CO₂ conductance is the series of the two, with the stomatal water conductance taken from the total `g_w = $gs_H2O`:
+
+$$\frac{1}{g_c}=\frac{r_s}{g_w}-\frac{r_s-r_b}{g_{bw}}$$
+
+The transpiration itself is unchanged, because the hydraulics set it; the boundary layer changes only how much CO₂ that water buys: a median +0.3% in `A` at 5 m/s of wind and +0.8% at 0.5 m/s, at most +1.4%, measured on the default traits (#122). A measured `g_s` has the boundary layer removed from it, so compare it with `$gs_stomatal_H2O`, which takes `$gb_H2O` out of `$gs_H2O` in series, not with `$gs_H2O`. With the energy balance off there is no boundary layer, so `$gb_H2O` is `Inf`, the two are identical, and the relation above is exact.
 
 ### 4. Closing the loop: supply equals demand
 

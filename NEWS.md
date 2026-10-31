@@ -1,3 +1,11 @@
+# phylloptim 0.24.0
+
+## The boundary layer's share of the CO2 path (#122)
+
+With the energy balance on, the leaf has a boundary layer, and the CO2 conductance treated the whole leaf-to-air path as stomatal (H2O:CO2 ratio `r_s`, 1.67). The boundary layer's share diffuses at `r_b = r_s^(2/3)` (1.407 at the default; the laminar-layer scaling of Sabot et al. 2022, eq 10), so the conductance is now the series `1/g_c = r_s/g_w - (r_s - r_b)/g_bw`, with `g_w` the total conductance to water (`gs_H2O`) and `g_bw` the boundary layer's (`gb_H2O`). The transpiration is set by the hydraulics as before; the boundary layer changes how much CO2 it buys. On the default traits over psi_soil 0.5-4, VPD 0.5-4 kPa, PPFD 500 and 1500, Tair 25 and 35 C, `A` rises by a median 0.3% at 5 m/s of wind and 0.8% at 0.5 m/s, at most 1.4%, and `gc` by at most 4.1%; no solve's profit falls. Off the energy balance nothing changes, bit for bit.
+
+`$stom_cond_CO2_` is the split conductance; `gs_H2O` is still the total to water, recovered from it, so `gs_stomatal_H2O` means what it did. Where a candidate's total conductance passes what the boundary layer can carry (a deficit on `vpd_leaf_min`), the series has a pole; a soft floor (`bl_co2_split_floor`, width `bl_co2_split_floor_width`) keeps it finite and is exact to the last bit at every physical point. Goldens: `operating_points.tsv` and `primitives.tsv` are bit-identical; `psi_stem_optima.tsv` moves on 1,002 of its 2,880 energy-balance rows and none of its others, by at most 2.6% in profit at 25 C, with no status or kind changed. The gate-off solve's cost is unchanged.
+
 # phylloptim 0.23.1
 
 ## Leftovers of the 0.23.0 rename (#149)

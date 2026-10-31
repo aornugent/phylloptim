@@ -88,9 +88,19 @@ inline constexpr double H2O_CO2_stom_diff_ratio = 1.67;
 // Boundary-layer conductance to water vapour over that to heat, for a
 // hypostomatous leaf: the factor plantecophys applies to its two-sided heat
 // conductance (`Gbw = 1.075 * Gbh` in LeafEnergyBalance, at StomatalRatio 1).
-// Read only by the reported boundary-layer and stomatal conductances (#122);
-// nothing in the solve reads it.
+// Read by the boundary-layer conductance, which the CO2 path reads on the
+// energy-balance path (#122).
 inline constexpr double bl_vapour_heat_ratio = 1.075;
+
+// The soft floor under the boundary layer's split of the CO2 path (#122), on
+// d = 1 - (r_s - r_b) g_c,hat / g_bw (Leaf::boundary_layer_split_CO2). Wherever
+// the total conductance is below the boundary layer's own, d >= r_b / r_s
+// (0.84 at the default ratio), 74 widths above the floor, so the split is the
+// plain series there to the last bit. Only a candidate point past what the
+// boundary layer can carry -- a deficit on vpd_leaf_min -- reaches it, and the
+// floor keeps the conductance finite there instead of passing a pole.
+inline constexpr double bl_co2_split_floor = 0.1;
+inline constexpr double bl_co2_split_floor_width = 0.01;
 
 // rho_w * g, as a head in MPa per metre of depth.
 //

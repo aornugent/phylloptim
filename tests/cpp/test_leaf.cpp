@@ -3251,6 +3251,64 @@ void test_energy_balance_stomatal_decoupling() {
      "the leaf-to-air deficit outgrows the flux, so gs falls where E rises");
 }
 
+// The boundary layer's split of the CO2 path (#122): the plain series wherever
+// the total conductance is below the boundary layer's own, which is every
+// physical point; finite and rising past it, where only a candidate on
+// vpd_leaf_min goes; and with the slope the hand-written partials are scaled by.
+void test_boundary_layer_split_of_the_co2_path() {
+  printf("the boundary layer's split of the CO2 path (#122)\n");
+  Drivers d;
+  phylloptim::Leaf l = make_pm_leaf(d, {2.0}, {1.0}, true);
+  const double k = l.boundary_layer_co2_excess();
+  const double g_bw = l.boundary_layer_cond_H2O();
+  const double r_s = l.H2O_CO2_stom_diff_ratio_;
+  near(k, (r_s - std::pow(r_s, 2.0 / 3.0)) / g_bw, 1e-14,
+       "k is (r_s - r_s^(2/3)) / g_bw");
+
+  // Every physical point: total water conductance from zero to g_bw.
+  int exact = 0, rows = 0;
+  double worst_slope = 0.0;
+  for (double frac : {0.0, 1e-3, 0.05, 0.25, 0.5, 0.9, 0.999}) {
+    const double gc_hat = frac * g_bw / r_s;
+    const auto split = l.boundary_layer_split_CO2(gc_hat);
+    exact += split.first == gc_hat / (1.0 - k * gc_hat);
+    const double h = 1e-6 * std::max(gc_hat, 1e-3);
+    const double fd = (l.boundary_layer_split_CO2(gc_hat + h).first -
+                       l.boundary_layer_split_CO2(gc_hat - h).first) /
+                      (2.0 * h);
+    worst_slope = std::max(worst_slope, std::abs(split.second / fd - 1.0));
+    if (gc_hat > 0.0) {
+      near(l.boundary_layer_split_slope_at(split.first), split.second, 1e-12,
+           "the slope at a solved conductance is the split's own");
+    }
+    ++rows;
+  }
+  ok(exact == rows, "at every physical point the split is the plain series, "
+                    "bit for bit (" + std::to_string(exact) + " of " +
+                    std::to_string(rows) + ")");
+  ok(worst_slope < 1e-7, "and its slope is the derivative of its value");
+
+  // Past what the boundary layer can carry the plain series has a pole at
+  // gc_hat = 1/k; the floor keeps the split finite, positive and rising there.
+  double prev = 0.0;
+  bool rising = true, finite = true;
+  for (double mult : {0.5, 0.9, 0.99, 1.0, 1.01, 2.0, 10.0, 1e3}) {
+    const double g = l.boundary_layer_split_CO2(mult / k).first;
+    finite = finite && std::isfinite(g) && g > 0.0;
+    rising = rising && g > prev;
+    prev = g;
+  }
+  ok(finite, "past the boundary layer's capacity the split stays finite");
+  ok(rising, "and rises with the total conductance, through the old pole");
+  const double fd_floor =
+      (l.boundary_layer_split_CO2(1.0 / k * (1.0 + 1e-6)).first -
+       l.boundary_layer_split_CO2(1.0 / k * (1.0 - 1e-6)).first) /
+      (2e-6 / k);
+  near(l.boundary_layer_split_CO2(1.0 / k).second / fd_floor, 1.0, 1e-6,
+       "and its slope is the derivative of its value on the floor too");
+  printf("    %d physical rows, worst slope error %.2e\n", rows, worst_slope);
+}
+
 // The reported conductance is a TOTAL leaf-to-air one on the energy-balance path,
 // and #122's two accessors separate the stoma from the boundary layer in series.
 // Off the path there is no boundary layer, so the stomatal conductance must be the
@@ -6241,12 +6299,22 @@ void test_leaf_to_air_vpd() {
   printf("    Tair %.1f C, Tleaf %.2f C: D_air %.3f kPa -> D_leaf %.3f kPa (x%.2f)\n",
          on.Tair_, Tleaf, on.atm_vpd_, on.vpd_leaf_, on.vpd_leaf_ / on.atm_vpd_);
 
-  // The consequence, stated as an identity rather than a direction: gs is E
-  // rescaled by the deficit, so getting the deficit wrong scales gs by the ratio.
-  near(on.stom_cond_CO2_,
-       on.atm_kpa_ * on.transpiration_ * phylloptim::kg_to_mol_h2o /
-           on.vpd_leaf_ / phylloptim::H2O_CO2_stom_diff_ratio,
-       1e-12, "gs is the transpiration divided by the deficit it sees");
+  // The consequence, stated as an identity rather than a direction: the total
+  // conductance to water is E rescaled by the deficit, so getting the deficit
+  // wrong scales it by the ratio.
+  const double g_w = on.atm_kpa_ * on.transpiration_ *
+                     phylloptim::kg_to_mol_h2o / on.vpd_leaf_;
+  near(on.stom_cond_H2O(), g_w, 1e-12,
+       "the total conductance is the transpiration divided by the deficit it sees");
+  // And to CO2 the boundary layer's share of that series diffuses at
+  // r_s^(2/3), not r_s (#122): 1/g_c = r_s/g_w - (r_s - r_s^(2/3))/g_bw.
+  const double r_s = phylloptim::H2O_CO2_stom_diff_ratio;
+  const double g_bw = on.boundary_layer_cond_H2O();
+  near(1.0 / on.stom_cond_CO2_,
+       r_s / g_w - (r_s - std::pow(r_s, 2.0 / 3.0)) / g_bw, 1e-12,
+       "1/g_c is the series of the stomatal and boundary-layer resistances");
+  ok(on.stom_cond_CO2_ > g_w / r_s,
+     "which conducts more CO2 than the whole path at the stomatal ratio");
 }
 
 // Build a leaf on the single-potential path, which is what the ProfitMax entry
@@ -9444,7 +9512,7 @@ void test_thermal_damage_fd_helpers_restore_the_block() {
   const double term = l.dprofit_energy_balance_term<CC::TF24>(
       l.ci_, l.stom_cond_CO2_, 1.0, 1e-5, 1.0, 0.1, 0.1, 0.1, 1.0, -1e3,
       l.Tleaf_ + 2.0, l.transpiration_ - l.residual_flux_, l.residual_flux_,
-      0.0, 0.0);
+      0.0, 0.0, 1.0);
   ok(std::isfinite(term), "dprofit_energy_balance_term is finite");
   ok(thermal_block(l) == before, "dprofit_energy_balance_term restores the whole block");
   // The linked arm evaluates A after the restore, so it must leave the same
@@ -9452,7 +9520,7 @@ void test_thermal_damage_fd_helpers_restore_the_block() {
   const double linked = l.dprofit_energy_balance_term<CC::SOX>(
       l.ci_, l.stom_cond_CO2_, 1.0, 1e-5, 1.0, 0.1, 0.1, 0.1, 1.0, -1e3,
       l.Tleaf_ + 2.0, l.transpiration_ - l.residual_flux_, l.residual_flux_,
-      0.0, 0.0);
+      0.0, 0.0, 1.0);
   ok(std::isfinite(linked), "the linked dprofit_energy_balance_term is finite");
   ok(thermal_block(l) == before,
      "and the linked arm restores the whole block as well");
@@ -9822,7 +9890,14 @@ void test_water_budget_closes() {
               // flux there is the flux balance's rounding, ~1e-13 of E.
               ok(std::abs(E_s) <= 1e-11 * l.transpiration_,
                  "a leaf at its wet bound moves only the residual flux" + at);
-              near(l.stom_cond_CO2_ / l.cuticular_cond_CO2(), 1.0, 1e-9,
+              // In series with the boundary layer where the energy balance
+              // gives it one (#122).
+              const double cut = l.cuticular_cond_CO2();
+              const double cut_series =
+                  l.use_energy_balance_
+                      ? 1.0 / (1.0 / cut - l.boundary_layer_co2_excess())
+                      : cut;
+              near(l.stom_cond_CO2_ / cut_series, 1.0, 1e-9,
                    "and conducts CO2 through its cuticle alone" + at);
             }
             // The residual at the reported ci: supply == demand on the total
@@ -10657,6 +10732,7 @@ int main(int argc, char **argv) {
   test_energy_balance_collar_solve_is_measured();
   test_energy_balance_gate_off_is_inert();
   test_energy_balance_stomatal_decoupling();
+  test_boundary_layer_split_of_the_co2_path();
   test_stomatal_conductance_excludes_the_boundary_layer();
   test_boundary_layer_bounds_the_total_conductance();
   test_closed_form();

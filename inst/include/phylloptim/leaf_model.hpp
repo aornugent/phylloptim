@@ -2598,7 +2598,7 @@ public:
                                      double dgc_dpsi, double dpsistem_dpsi,
                                      double dT_dE, double Tleaf, double E_s,
                                      double r_star, double drstar_dpsi,
-                                     double dgc_dT_residual);
+                                     double dgc_dT_residual, double bl_slope);
   // The profit-maximising collar potential within [bound_a, bound_b], by a
   // safeguarded root-find on dprofit == 0. Returns a bound when the
   // optimum is pinned to it, which is the case on 42 of the 240 feasible
@@ -3352,8 +3352,15 @@ public:
   //
   // An ACCESSOR, not a member, per hazard 5: nothing in the solve reads it, so it
   // does not earn storage.
+  // With the energy balance on, stom_cond_CO2_ is past the boundary layer's
+  // split (#122), so the total is recovered from it, g_c,hat = g_c / (1 + k g_c).
   double stom_cond_H2O() const {
-    return stom_cond_CO2_ * H2O_CO2_stom_diff_ratio_;
+    if (!use_energy_balance_) {
+      return stom_cond_CO2_ * H2O_CO2_stom_diff_ratio_;
+    }
+    return stom_cond_CO2_ /
+           (1.0 + boundary_layer_co2_excess() * stom_cond_CO2_) *
+           H2O_CO2_stom_diff_ratio_;
   }
   // ⚠️ ON THE ENERGY-BALANCE PATH stom_cond_H2O() IS THE TOTAL LEAF-TO-AIR
   // CONDUCTANCE, not a stomatal one. It is E*P/D_leaf, and E crosses the leaf
@@ -3366,6 +3373,29 @@ public:
   // leaf is at air temperature and coupled to it perfectly, and where ra_ is a
   // fallback nothing validates.
   double boundary_layer_cond_H2O() const;
+  // The boundary layer's share of the CO2 path (#122). Fick's law on E gives a
+  // total leaf-to-air conductance g_c,hat that treats the whole path as stomatal
+  // (ratio r_s). The boundary layer's share diffuses at r_b = r_s^(2/3), the
+  // laminar-layer scaling of Sabot et al. (2022) eq 10 (their 1.35 = 1.57^(2/3)),
+  // so re-splitting the series gives
+  //
+  //   1/g_c = 1/g_c,hat - (r_s - r_b)/g_bw,   i.e.   g_c = g_c,hat / d,
+  //   d = 1 - k g_c,hat,   k = (r_s - r_b)/g_bw,
+  //
+  // under the soft floor bl_co2_split_floor. Returns g_c and dg_c/dg_c,hat, which
+  // is 1/d^2 above the floor; g_bw reads only drivers, so every partial of g_c is
+  // that slope times the same partial of g_c,hat. E is untouched: it is set by
+  // the hydraulics, and the boundary layer changes only what E says about CO2.
+  //
+  // ⚠️ CALLED ONLY WITH THE ENERGY BALANCE ON. Off it g_bw is infinite and the
+  // split is an identity, but every caller gates on use_energy_balance_ and keeps
+  // its old expression, so the gate-off path stays bit-identical.
+  double boundary_layer_co2_excess() const;
+  template <class T> std::pair<T, T> boundary_layer_split_CO2(const T& gc_hat) const;
+  // The split's slope at a SOLVED conductance, (1 + k g_c)^2, for the derivative
+  // surface, which holds g_c rather than g_c,hat. Exact above the floor, which
+  // every solved point is; refused below it.
+  template <class T> T boundary_layer_split_slope_at(const T& gc) const;
   // Stomatal conductance to water vapour with the boundary layer taken out in
   // series, 1/g_s = 1/g_total - 1/g_b, mol H2O m^-2 s^-1. Exactly
   // stom_cond_H2O() off the energy-balance path.
@@ -5672,13 +5702,26 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   // g_min = 0.
   const double gc_const =
       atm_kpa_ * kg_to_mol_h2o / vpd_leaf_ / H2O_CO2_stom_diff_ratio_;
-  const double gc = gc_const * E_s + cuticle;
-  const double dgc_dpsistem =
+  double gc = gc_const * E_s + cuticle;
+  double dgc_dpsistem =
       gc_const * leaf_specific_conductance_max_ * stem_curve_integral_deriv(psi_stem);
   double dgc_dpsi =
       gc_const * leaf_specific_conductance_max_ * (-stem_curve_integral_deriv(psi));
   const double drstar_dpsi = residual_flux_dpsi_upstream(psi, Tleaf_here);
   dgc_dpsi = dgc_dpsi - gc_const * drstar_dpsi;
+  // The boundary layer's share of the CO2 path (#122): the value and every
+  // partial above through the split's one slope.
+  double bl_slope = 1.0;
+  // ⚠️ [[unlikely]] IS MEASURED, NOT DECORATIVE: without it the branch cost
+  // the gate-off collar solve 1.3% (bench_solve, 4.29 -> 4.35 us), with it
+  // nothing; moving the split out of line did not help.
+  if (use_energy_balance_) [[unlikely]] {
+    const std::pair<double, double> split = boundary_layer_split_CO2(gc);
+    gc = split.first;
+    bl_slope = split.second;
+    dgc_dpsistem *= bl_slope;
+    dgc_dpsi *= bl_slope;
+  }
 
   // IFT on g(ci; psi_stem, psi): dci/dp = -(dg/dp)/(dg/dci).
   const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
@@ -5733,7 +5776,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
                     ci, gc, g_ci, inv_atm, gc_const, A_prime, dgc_dpsistem,
                     dgc_dpsi, dpsistem_dpsi, dT_dE, Tleaf_here, E_s, r_star,
                     drstar_dpsi,
-                    residual_cond_temp_deriv(psi, Tleaf_here, gc_const));
+                    residual_cond_temp_deriv(psi, Tleaf_here, gc_const), bl_slope);
 }
 
 
@@ -6009,10 +6052,18 @@ inline double Leaf::dprofit_dpsi_stem(double psi_stem, double psi_upstream,
 
   const double gc_const =
       atm_kpa_ * kg_to_mol_h2o / vpd_leaf_ / H2O_CO2_stom_diff_ratio_;
-  const double gc = gc_const * E_s + cuticle;
-  const double dgc_dpsistem =
+  double gc = gc_const * E_s + cuticle;
+  double dgc_dpsistem =
       gc_const * leaf_specific_conductance_max_ *
       stem_curve_integral_deriv(psi_stem);
+  // The boundary layer's share of the CO2 path (#122), as on the collar route.
+  double bl_slope = 1.0;
+  if (use_energy_balance_) [[unlikely]] {  // as on the collar route
+    const std::pair<double, double> split = boundary_layer_split_CO2(gc);
+    gc = split.first;
+    bl_slope = split.second;
+    dgc_dpsistem *= bl_slope;
+  }
   const double inv_atm = 1.0 / (atm_kpa_ * kPa_to_Pa);
   const double g_ci = A_prime * umol_to_mol + gc * inv_atm;
   const double dci_dpsistem = -(-dgc_dpsistem * (ca_ - ci) * inv_atm) / g_ci;
@@ -6049,7 +6100,8 @@ inline double Leaf::dprofit_dpsi_stem(double psi_stem, double psi_upstream,
   return base + dprofit_energy_balance_term<K>(
                     ci, gc, g_ci, inv_atm, gc_const, A_prime, dgc_dpsistem, 0.0,
                     1.0, dT_dE, Tleaf_here, E_s, r_star, 0.0,
-                    residual_cond_temp_deriv(psi_upstream, Tleaf_here, gc_const));
+                    residual_cond_temp_deriv(psi_upstream, Tleaf_here, gc_const),
+                    bl_slope);
 }
 
 // Evaluate at a prescribed psi_stem rather than optimising one. See the
@@ -6197,7 +6249,7 @@ inline double Leaf::dprofit_energy_balance_term(
     double ci, double gc, double g_ci, double inv_atm, double gc_const,
     double A_prime, double dgc_dpsistem, double dgc_dpsi, double dpsistem_dpsi,
     double dT_dE, double Tleaf, double E_s, double r_star, double drstar_dpsi,
-    double dgc_dT_residual) {
+    double dgc_dT_residual, double bl_slope) {
   if (!use_energy_balance_ || dT_dE == 0.0) {
     return 0.0;
   }
@@ -6253,9 +6305,11 @@ inline double Leaf::dprofit_energy_balance_term(
   // dE/dpsi from the gc partials already in hand -- the stomatal part of gc is
   // gc_const * (E - r*), so dividing by gc_const recovers dE/dpsi less the
   // residual's own slope in the collar, which is put back. Tleaf reads the
-  // TOTAL flux, so this is the slope the balance needs.
+  // TOTAL flux, so this is the slope the balance needs. The partials arrive
+  // through the boundary layer's split (#122), whose slope is divided back out.
   const double dE_dpsi =
-      (dgc_dpsistem * dpsistem_dpsi + dgc_dpsi) / gc_const + drstar_dpsi;
+      (dgc_dpsistem * dpsistem_dpsi + dgc_dpsi) / (gc_const * bl_slope) +
+      drstar_dpsi;
   const double tau = dT_dE * dE_dpsi;
 
   // dgc/dTleaf at fixed E. The stomatal part is K*(E - r*)/D(T) with E
@@ -6265,12 +6319,16 @@ inline double Leaf::dprofit_energy_balance_term(
   // the deficit is on its floor, because the reported value no longer responds
   // to the input there. The residual's part -- a hotter cuticle loses more, which takes
   // conductance from the stomata and adds it to the cuticle -- is appended.
+  // Both are slopes of the conductance before the boundary layer's split, which
+  // reads no leaf temperature (g_bw is at air temperature), so the split's
+  // slope carries them through (#122).
   const double gc_s = gc_const * E_s;
   const double dgc_dT =
-      ((vpd_leaf_ > vpd_leaf_min)
-           ? -gc_s * saturation_vapour_pressure_slope(Tleaf) / vpd_leaf_
-           : 0.0) +
-      dgc_dT_residual;
+      (((vpd_leaf_ > vpd_leaf_min)
+            ? -gc_s * saturation_vapour_pressure_slope(Tleaf) / vpd_leaf_
+            : 0.0) +
+       dgc_dT_residual) *
+      bl_slope;
 
   // What the bracket holds is dA/dTleaf TOTAL, the implicit-function theorem
   // applied to the supply==demand residual with Tleaf moving: the direct A_T and
@@ -7350,8 +7408,13 @@ inline double Leaf:: stom_cond_CO2(double psi_stem, double psi_upstream) {
     clamps.note(CLAMP_STOMATAL_FLUX);
     E_s = 0.0;
   }
-  return atm_kpa_ * E_s * kg_to_mol_h2o / vpd_leaf_ / H2O_CO2_stom_diff_ratio_ +
-         cuticular_cond_CO2();
+  const double gc =
+      atm_kpa_ * E_s * kg_to_mol_h2o / vpd_leaf_ / H2O_CO2_stom_diff_ratio_ +
+      cuticular_cond_CO2();
+  if (use_energy_balance_) [[unlikely]] {  // #122; see dprofit_at_collar_psi
+    return boundary_layer_split_CO2(gc).first;
+  }
+  return gc;
 }
 
 
@@ -7524,6 +7587,9 @@ inline void Leaf::set_leaf_states_rates_from_psi_stem(double psi_stem, double ps
   }
   stom_cond_CO2_ = atm_kpa_ * E_s * kg_to_mol_h2o / vpd_leaf_ / H2O_CO2_stom_diff_ratio_ +
                    cuticular_cond_CO2();
+  if (use_energy_balance_) [[unlikely]] {  // #122; see dprofit_at_collar_psi
+    stom_cond_CO2_ = boundary_layer_split_CO2(stom_cond_CO2_).first;
+  }
   ci_ = solve_ci(stom_cond_CO2_);
   // With no conductance at all (g_min = 0 and the stomata shut) solve_ci's
   // residual IS A(ci), so A at its root is zero by definition, and the root's
@@ -7973,6 +8039,11 @@ inline void Leaf::held_coords_at(double sigma_star, double ci_star,
   gc = stom_cond_CO2_ == 0.0
            ? cuticle
            : S(gc_per_flux) * (stem_flux - r_star) + cuticle;
+  // Through the boundary layer's split as the evaluator formed it (#122), on the
+  // tape, so the rows follow.
+  if (use_energy_balance_) {
+    gc = boundary_layer_split_CO2<S>(gc).first;
+  }
 
   // ⚠️ FOLLOW THE BRANCH THE FORWARD MODEL TOOK. With nothing conducting at all
   // (g_min = 0 and the stomata shut) the residual is A(ci) = 0, which the
@@ -8082,7 +8153,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_channel_at(
   // kmax * f -- already formed above, so read rather than recomputed. The
   // residual flux moves with the collar through its ceiling, appended as the
   // solve's dprofit_at_collar_psi appends it; an exact zero at g_min = 0.
-  const S dgc_dsigma = gc_const * kmax * f_sigma;
+  S dgc_dsigma = gc_const * kmax * f_sigma;
   S dgc_dp = -gc_const * kmax * f_p;
   dgc_dp = dgc_dp - gc_const * S(residual_flux_dpsi_upstream(to_passive(collar),
                                                              Tleaf_));
@@ -8092,6 +8163,13 @@ inline Leaf::CollarCoords<S> Leaf::collar_channel_at(
   // conductance at all places ci by A(ci) = 0, which the collar does not enter.
   S dci_dp = S(0.0);
   if (!no_coordinate && stom_cond_CO2_ != 0.0) {
+    // The partials above are of the conductance before the boundary layer's
+    // split, and gc is after it (#122).
+    if (use_energy_balance_) {
+      const S bl_slope = boundary_layer_split_slope_at<S>(gc);
+      dgc_dsigma = dgc_dsigma * bl_slope;
+      dgc_dp = dgc_dp * bl_slope;
+    }
     const S A_prime = assim_slope_at<S>(ci_h, cap);
     const S g_ci = A_prime * umol_to_mol + gc * inv;
     const S ca_minus_ci = S(ca_) - ci_h;
@@ -8777,6 +8855,51 @@ inline double Leaf::boundary_layer_cond_H2O() const {
   const double air_molar_density =
       atm_kpa_ * kPa_to_Pa / (gas_constant * (Tair_ + C_to_K));
   return bl_vapour_heat_ratio * air_molar_density / ra_;
+}
+
+inline double Leaf::boundary_layer_co2_excess() const {
+  const double r_s = H2O_CO2_stom_diff_ratio_;
+  const double r_b = std::cbrt(r_s * r_s);
+  return (r_s - r_b) / boundary_layer_cond_H2O();
+}
+
+template <class T>
+inline std::pair<T, T> Leaf::boundary_layer_split_CO2(const T& gc_hat) const {
+  using std::exp;
+  using std::log1p;
+  using odelia::util::to_passive;
+  const double k = boundary_layer_co2_excess();
+  const double s = 1.0 / bl_co2_split_floor_width;
+  const T d = T(1.0) - T(k) * gc_hat;
+  // The soft maximum of d and the floor, d + softplus(d0 - d) at width w, and
+  // its slope in d, the logistic of (d - d0)/w. Written so neither overflows:
+  // e = exp(-|z|) is at most 1 whichever side of the floor d is.
+  const T z = T(s) * (T(bl_co2_split_floor) - d);
+  const bool above = to_passive(z) <= 0.0;
+  const T e = above ? T(exp(z)) : T(exp(-z));
+  const T d_s = above ? T(d + log1p(e) / T(s))
+                      : T(T(bl_co2_split_floor) + log1p(e) / T(s));
+  const T dds_dd = above ? T(T(1.0) / (T(1.0) + e)) : T(e / (T(1.0) + e));
+  const T gc = gc_hat / d_s;
+  const T slope = T(1.0) / d_s + gc_hat * T(k) * dds_dd / (d_s * d_s);
+  return {gc, slope};
+}
+
+template <class T>
+inline T Leaf::boundary_layer_split_slope_at(const T& gc) const {
+  using odelia::util::to_passive;
+  const double k = boundary_layer_co2_excess();
+  const T phi = T(1.0) + T(k) * gc;
+  // d = 1/phi above the floor; within 30 widths of it the floor has moved the
+  // value and this form would not be its slope.
+  if (!(1.0 / to_passive(phi) >
+        bl_co2_split_floor + 30.0 * bl_co2_split_floor_width)) {
+    util::stop("the boundary layer's split of the CO2 path is on its soft floor "
+               "at this operating point (g_c = " + util::to_string(to_passive(gc)) +
+               "): the transpiration is more than the boundary layer can carry, "
+               "so the point is not a physical one to differentiate.");
+  }
+  return phi * phi;
 }
 
 inline double Leaf::stom_cond_stomatal_H2O() const {

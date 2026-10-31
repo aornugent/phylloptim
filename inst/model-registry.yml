@@ -493,6 +493,24 @@ parameters:
     placeholder: false
     code: phylloptim::Leaf::H2O_CO2_stom_diff_ratio_
     default_code: phylloptim::H2O_CO2_stom_diff_ratio
+  bl_co2_split_floor:
+    section: vapour
+    symbol: 'd_0'
+    units: '–'
+    class: constant
+    meaning: 'soft floor under the boundary layer''s split of the CO₂ path, on $d = 1 - (r_s - r_b)\hat g_c / g_{bw}$; a physical point has $d \ge r_b / r_s \approx 0.84$, so only a candidate past what the boundary layer can carry reaches it'
+    source: code (#122)
+    placeholder: true
+    code: phylloptim::bl_co2_split_floor
+  bl_co2_split_floor_width:
+    section: vapour
+    symbol: 'w_d'
+    units: '–'
+    class: constant
+    meaning: 'width of the soft floor $d_0$; the split is the plain series to the last bit wherever $d > d_0 + 30\,w_d$'
+    source: code (#122)
+    placeholder: true
+    code: phylloptim::bl_co2_split_floor_width
   kg_to_mol_h2o:
     section: vapour
     symbol: '1/M_w'
@@ -507,7 +525,7 @@ parameters:
     symbol: '1.075'
     units: '–'
     class: constant
-    meaning: 'boundary-layer conductance to water vapour over that to heat, for a hypostomatous leaf; read only by the reported boundary-layer and stomatal conductances, never by the solve'
+    meaning: 'boundary-layer conductance to water vapour over that to heat, for a hypostomatous leaf; read by the boundary-layer conductance, which the CO₂ path reads with the energy balance on (#122)'
     source: 'plantecophys convention (Gbw = 1.075 Gbh in LeafEnergyBalance, at StomatalRatio 1)'
     cite: Duursma-2015
     placeholder: false
@@ -1583,7 +1601,7 @@ equations:
     reads: [atm_kpa, kg_to_mol_h2o, H2O_CO2_stom_diff_ratio_, g_min_co2_ratio_]
     writes: [stom_cond_CO2_]
     kind: closed_form
-    note: 'The TOTAL conductance to CO₂, mol m⁻² s⁻¹: Fick''s law on the STOMATAL flux $E - r^*$ (residual_flux), with $E$ in kg m⁻² s⁻¹, $P$ and $D_\mathrm{leaf}$ in kPa, plus the cuticle''s own conductance (#182). At $g_\min = 0$ the first term is the old expression bit for bit and the second an exact zero. Where $E < r^*$, a candidate below the wet bound that the solve hands the evaluator only by rounding, the stomatal flux reads as zero (the clamp site stomatal_flux). No boundary-layer term (#122): $r_a$ resists heat only.'
+    note: 'The TOTAL conductance to CO₂, mol m⁻² s⁻¹: Fick''s law on the STOMATAL flux $E - r^*$ (residual_flux), with $E$ in kg m⁻² s⁻¹, $P$ and $D_\mathrm{leaf}$ in kPa, plus the cuticle''s own conductance (#182). At $g_\min = 0$ the first term is the old expression bit for bit and the second an exact zero. Where $E < r^*$, a candidate below the wet bound that the solve hands the evaluator only by rounding, the stomatal flux reads as zero (the clamp site stomatal_flux). This is $\hat g_c$; with the energy balance on it passes through boundary_layer_co2_split, and off it is $g_c$ bit for bit.'
 
   boundary_layer_conductance:
     section: vapour
@@ -1595,7 +1613,19 @@ equations:
     writes: []
     kind: closed_form
     cite: Duursma-2015
-    note: 'mol m⁻² s⁻¹; bound as `gb_H2O`. The molar density of air at air temperature over the aerodynamic resistance to heat, scaled to vapour for a hypostomatous leaf. Reported only: the diffusion in the solve has no boundary-layer term (#122).'
+    note: 'mol m⁻² s⁻¹; bound as `gb_H2O`. The molar density of air at air temperature over the aerodynamic resistance to heat, scaled to vapour for a hypostomatous leaf. The CO₂ path reads it through boundary_layer_co2_split.'
+  boundary_layer_co2_split:
+    section: vapour
+    title: The boundary layer's share of the CO₂ path
+    latex: |
+      \frac{1}{g_c} = \frac{1}{\hat g_c} - \frac{r_s - r_b}{g_{bw}}, \qquad r_b = r_s^{2/3}, \qquad g_c = \frac{\hat g_c}{\max_{\mathrm{soft}}(d,\, d_0)}, \quad d = 1 - \frac{(r_s - r_b)\,\hat g_c}{g_{bw}}
+    code: phylloptim::Leaf::boundary_layer_split_CO2
+    also: [phylloptim::Leaf::boundary_layer_co2_excess, phylloptim::Leaf::boundary_layer_split_slope_at, phylloptim::Leaf::boundary_layer_cond_H2O]
+    reads: [H2O_CO2_stom_diff_ratio_, bl_co2_split_floor, bl_co2_split_floor_width]
+    writes: [stom_cond_CO2_]
+    kind: closed_form
+    cite: Sabot-2022
+    note: 'With the energy balance on only (#122). $\hat g_c$ (stomatal_conductance) treats the whole leaf-to-air path as stomatal, at $r_s$; the boundary layer''s share diffuses at $r_b = r_s^{2/3}$, the laminar-layer scaling of Sabot et al. (2022) eq 10 (their 1.35 = 1.57$^{2/3}$). E is unchanged: the hydraulics set it, and the boundary layer changes what it says about CO₂. Every partial of $g_c$ is $d g_c / d\hat g_c$ times the same partial of $\hat g_c$, because $g_{bw}$ reads only drivers. The soft maximum is the plain series to the last bit at every physical point ($d \ge r_b/r_s$); it engages only where the deficit is on vpd_leaf_min.'
   stomatal_conductance_stomatal:
     section: vapour
     title: Stomatal conductance with the boundary layer removed
@@ -2598,12 +2628,13 @@ equations:
     section: marginal_cost
     title: Stomatal conductance to water vapour
     latex: |
-      g_{s,\mathrm{H_2O}} = 1.67\, g_c
+      g_{s,\mathrm{H_2O}} = 1.67\, \hat g_c
     code: phylloptim::Leaf::stom_cond_H2O
-    reads: [H2O_CO2_stom_diff_ratio_]
+    also: [phylloptim::Leaf::boundary_layer_co2_excess]
+    reads: [H2O_CO2_stom_diff_ratio_, use_energy_balance_]
     writes: []
     kind: closed_form
-    note: 'mol H₂O m⁻² s⁻¹ (#56); bound as `gs_H2O`. The ratio is the settable diffusion ratio.'
+    note: 'mol H₂O m⁻² s⁻¹ (#56); bound as `gs_H2O`. The ratio is the settable diffusion ratio. The total leaf-to-air conductance: with the energy balance on, $\hat g_c$ is recovered from the stored $g_c$ as $g_c / (1 + k g_c)$ (boundary_layer_co2_split).'
 
   # --- Medlyn route, soil moisture and the closed form ---------------------------
   # --- medlyn -------------------------------------------------------------------
