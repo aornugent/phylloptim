@@ -94,9 +94,9 @@ using phylloptim::par_PPFD;
 // How long `theta` is: one entry per `par_names()` below, indexed by the same
 // enumeration.
 //
-// ⚠️ NOT `n_pars`, WHICH IS LONGER. The pack the leaf's kernels read also holds
+// ⚠️ NOT `n_leaf_pars`, WHICH IS LONGER. The pack the leaf's kernels read also holds
 // slots a calibration never proposes -- the light a cohort stands in is seated
-// from the drivers -- so reading `theta` out to `n_pars` runs past its end. The
+// from the drivers -- so reading `theta` out to `n_leaf_pars` runs past its end. The
 // proposed slots come FIRST in the enumeration and `par_PPFD` is where they stop,
 // which is why this is spelled as that index rather than as a count to keep in
 // step by hand.
@@ -676,7 +676,7 @@ inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
 // THE THERMAL-DAMAGE LAYER IS CARRIED (Leaf::use_thermal_damage_). Both routes
 // difference the solve's own dprofit and outputs, which read the block the layer
 // writes, so they need nothing of it but its inputs in `theta` -- seated by
-// `apply()` above. The derivative SURFACE (collar_at, outputs_at) still refuses
+// `apply()` above. The derivative SURFACE (operating_collar, billed_outputs_at) still refuses
 // it: those read capacities off the parameter pack, whose kernels do not apply
 // the layer.
 

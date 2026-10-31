@@ -80,8 +80,8 @@ struct Inputs {
     for (A& v : rv) tape.registerInput(v);
     tape.newRecording();
   }
-  pl::SupplyAt<A> supply() const {
-    return pl::SupplyAt<A>{psi_soil, rh, rv, in[pl::par_root_P50],
+  pl::SupplyInputs<A> supply() const {
+    return pl::SupplyInputs<A>{psi_soil, rh, rv, in[pl::par_root_P50],
                            in[pl::par_root_c]};
   }
   std::vector<double> rows() const {
@@ -100,7 +100,7 @@ bool interior(pl::Leaf& l, double& curv) {
   l.find_root_collar_psi();
   if (l.operating_point_kind() != pl::Leaf::OperatingPointKind::Interior)
     return false;
-  try { curv = l.marginal_collar_slope<K>(); } catch (...) { return false; }
+  try { curv = l.profit_curvature_at_collar<K>(); } catch (...) { return false; }
   return curv < 0.0;
 }
 
@@ -122,21 +122,21 @@ Regions measure(int layers, double psi0) {
   Tape tape;
   Inputs io;
   io.register_on(tape, l);
-  const pl::SupplyAt<A> supply = io.supply();
+  const pl::SupplyInputs<A> supply = io.supply();
 
   // The three calls plant makes, in its order, each charged what it added.
   const long s0 = long(tape.getNumStatements()), o0 = long(tape.getNumOperations());
   const auto draw = l.supply_draw_at<A>(A(l.opt_root_psi_), supply);
   const long s1 = long(tape.getNumStatements()), o1 = long(tape.getNumOperations());
-  const A collar = l.collar_at<K, A>(draw, io.in, curv);
+  const A collar = l.operating_collar<K, A>(draw, io.in, curv);
   const long s2 = long(tape.getNumStatements()), o2 = long(tape.getNumOperations());
-  const pl::Leaf::LeafOutputs<A> got = l.outputs_at<K, A>(collar, draw, io.in);
+  const pl::Leaf::BilledOutputs<A> got = l.billed_outputs_at<K, A>(collar, draw, io.in);
   const long s3 = long(tape.getNumStatements()), o3 = long(tape.getNumOperations());
   r.draw = s1 - s0;      r.draw_op = o1 - o0;
   r.collar = s2 - s1;    r.collar_op = o2 - o1;
   r.outputs = s3 - s2;   r.outputs_op = o3 - o2;
-  // ⚠️ collar_at REWINDS, and resetTo TRUNCATES BOTH COUNTERS, so its figures are
-  // what SURVIVED and not what it pushed. marginal_at below is the same region
+  // ⚠️ operating_collar REWINDS, and resetTo TRUNCATES BOTH COUNTERS, so its figures are
+  // what SURVIVED and not what it pushed. dprofit_dcollar_at below is the same region
   // measured before the rewind, which is why the two disagree by 30-fold.
 
   // The same coordinates twice: once at the collar profit is actually handed at
@@ -165,7 +165,7 @@ Regions measure(int layers, double psi0) {
   }
   const long c3 = long(tape.getNumStatements());
   {
-    const A m = l.marginal_at<K, A>(collar, draw, io.in);
+    const A m = l.dprofit_dcollar_at<K, A>(collar, draw, io.in);
     sink += odelia::util::to_passive(m);
   }
   const long c4 = long(tape.getNumStatements());
@@ -216,12 +216,12 @@ void placements(int n, int layers) {
   Tape tape;
   Inputs io;
   io.register_on(tape, l);
-  const pl::SupplyAt<A> supply = io.supply();
+  const pl::SupplyInputs<A> supply = io.supply();
   volatile double sink = 0.0;
   for (int i = 0; i < n; ++i) {
     const auto draw = l.supply_draw_at<A>(A(l.opt_root_psi_), supply);
-    const A collar = l.collar_at<K, A>(draw, io.in, curv);
-    const pl::Leaf::LeafOutputs<A> got = l.outputs_at<K, A>(collar, draw, io.in);
+    const A collar = l.operating_collar<K, A>(draw, io.in, curv);
+    const pl::Leaf::BilledOutputs<A> got = l.billed_outputs_at<K, A>(collar, draw, io.in);
     sink += odelia::util::to_passive(got.profit);
   }
   printf("%d placements at %d layers, %u statements, %u operations, sink %.17g\n",
@@ -237,7 +237,7 @@ void kernels() {
   Tape tape;
   Inputs io;
   io.register_on(tape, l);
-  const pl::SupplyAt<A> supply = io.supply();
+  const pl::SupplyInputs<A> supply = io.supply();
   const A collar(l.opt_root_psi_), sigma(l.opt_psi_stem_), ci(l.ci_);
   volatile double sink = 0.0;
   long s0 = 0, o0 = 0;
@@ -259,10 +259,10 @@ void kernels() {
   mark(); keep(l.stem_integral_at<A>(sigma, io.in));         say("stem_integral_at(psi, pars)");
   mark(); keep(l.transpiration_at<A>(sigma, collar, io.in)); say("transpiration_at(sigma, collar, pars)");
   mark(); keep(l.hydraulic_cost_TF_kernel<A>(sigma, io.in)); say("hydraulic_cost_TF_kernel(sigma, pars)");
-  mark(); keep(pl::closed_form_curve<A>(l.stem_curve_integral_deriv(l.opt_psi_stem_),
-                                        sigma, io.in[pl::par_stem_P50],
-                                        io.in[pl::par_stem_c]));
-                                                             say("closed_form_curve(table, psi, P50, c)");
+  mark(); keep(pl::curve_with_closed_form_rows<A>(l.stem_curve_integral_deriv(l.opt_psi_stem_),
+                                                  sigma, io.in[pl::par_stem_P50],
+                                                  io.in[pl::par_stem_c]));
+                                                             say("curve_with_closed_form_rows(table, psi, P50, c)");
   mark(); keep(l.assim_slope_at<A>(ci, cap));                say("assim_slope_at(ci, capacity)  <- SUPPLIED");
   mark(); keep(l.cost_slope_at<A>(sigma, io.in));            say("cost_slope_at(sigma, pars)    <- SUPPLIED");
   (void)sink;
@@ -278,7 +278,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   printf("leaf boundary per placement, statements/operations by region\n"
-         "(collar_at REWINDS, so its pair is what SURVIVED; marginal_at is the\n"
+         "(operating_collar REWINDS, so its pair is what SURVIVED; dprofit_dcollar_at is the\n"
          " same region measured before the rewind)\n\n");
   printf("%-6s %-5s %14s %14s %14s | %9s %9s %9s %9s\n", "layers", "psi0",
          "draw stmt/op", "collar stmt/op", "outputs stmt/op", "cd@held",

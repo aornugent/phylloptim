@@ -16,9 +16,9 @@ namespace phylloptim {
 //
 // THE QUERY ROW IS THE ONE THE REST OF THE ASSEMBLY ALREADY FORMS: dG/dpsi is
 // formed by stem_curve_integral_deriv and root_vuln_integral_deriv_at, so
-// closed_form_integral takes it as an argument rather than forming a second
-// value of it; df/dpsi is formed nowhere else, so closed_form_curve uses the
-// curve's own. Both are closed forms now, so the two could not disagree in any
+// integral_with_closed_form_rows takes it as an argument rather than forming a
+// second value of it; df/dpsi is formed nowhere else, so
+// curve_with_closed_form_rows uses the curve's own. Both are closed forms now, so the two could not disagree in any
 // case, but the argument keeps there being one value of each.
 //
 // Every bracket below is exactly zero in VALUE at the recording point, so the
@@ -34,8 +34,9 @@ namespace phylloptim {
 // rows are G(inf)'s, which cumulative_vulnerability_integral_derivatives_at
 // returns there.
 template <class S>
-inline S closed_form_integral(double table_value, double table_slope, const S& psi,
-                        const S& P50, const S& c) {
+inline S integral_with_closed_form_rows(double table_value, double table_slope,
+                                        const S& psi, const S& P50,
+                                        const S& c) {
   using odelia::util::to_passive;
   const double at = to_passive(psi);
   const double P50_0 = to_passive(P50);
@@ -50,8 +51,8 @@ inline S closed_form_integral(double table_value, double table_slope, const S& p
 
 // f(psi): the surviving conductivity, the curve itself.
 template <class S>
-inline S closed_form_curve(double value, const S& psi, const S& P50,
-                     const S& c) {
+inline S curve_with_closed_form_rows(double value, const S& psi, const S& P50,
+                                     const S& c) {
   using odelia::util::to_passive;
   const double at = to_passive(psi);
   const double P50_0 = to_passive(P50);

@@ -29,7 +29,7 @@
 // relative size e a residual of order e whatever the pairing does, which is the
 // sensitivity this is here for.
 //
-// ⚠️ THE CONTROL IS THE POINT. The collar is LIVE -- placed by collar_at, so it
+// ⚠️ THE CONTROL IS THE POINT. The collar is LIVE -- placed by operating_collar, so it
 // carries the rows of whatever condition pins it -- and the second arm holds it
 // passive on the REVERSE side only, which is exactly the envelope mistake. That
 // arm MUST fail: a test that passes both ways is measuring nothing, so the
@@ -125,7 +125,7 @@ struct Inputs {
     for (S& v : r_R_V_sum) out.push_back(&v);
     return out;
   }
-  pl::SupplyAt<S> supply() const {
+  pl::SupplyInputs<S> supply() const {
     return {psi_soil, r_R_H_min, r_R_V_sum, pars[pl::par_root_P50],
             pars[pl::par_root_c]};
   }
@@ -158,11 +158,11 @@ double forward_side(pl::Leaf l, const std::vector<double>& u,
   pl::Leaf::HeldCoords<T> held;
   pl::Leaf::HeldCoords<T>* h = handoff ? &held : nullptr;
   const T collar =
-      l.collar_at<pl::Leaf::CostCurve::TF24, T>(draw, in.pars, curvature, h);
+      l.operating_collar<pl::Leaf::CostCurve::TF24, T>(draw, in.pars, curvature, h);
   const auto o =
-      l.outputs_at<pl::Leaf::CostCurve::TF24, T>(collar, draw, in.pars, h);
+      l.billed_outputs_at<pl::Leaf::CostCurve::TF24, T>(collar, draw, in.pars, h);
 
-  double acc = v[2] * odelia::ode::derivative_along(draw.flux.value) +
+  double acc = v[2] * odelia::ode::derivative_along(draw.E_up.value) +
                v[3] * odelia::ode::derivative_along(o.profit);
   if (has_coords) {
     const auto co =
@@ -198,10 +198,10 @@ Pairing reverse_side(pl::Leaf l, const std::vector<double>& u,
   pl::Leaf::HeldCoords<A> held;
   pl::Leaf::HeldCoords<A>* h = handoff ? &held : nullptr;
   A collar =
-      l.collar_at<pl::Leaf::CostCurve::TF24, A>(draw, in.pars, curvature, h);
+      l.operating_collar<pl::Leaf::CostCurve::TF24, A>(draw, in.pars, curvature, h);
   // The control: strip the collar's rows on THIS side only.
   if (hold_collar) collar = A(odelia::util::to_passive(collar));
-  auto o = l.outputs_at<pl::Leaf::CostCurve::TF24, A>(collar, draw, in.pars, h);
+  auto o = l.billed_outputs_at<pl::Leaf::CostCurve::TF24, A>(collar, draw, in.pars, h);
 
   if (has_coords) {
     auto co = l.collar_coords_at<A>(l.opt_psi_stem_, l.ci_, collar, draw,
@@ -212,8 +212,8 @@ Pairing reverse_side(pl::Leaf l, const std::vector<double>& u,
     tape.registerOutput(co.ci.value);
     xad::derivative(co.ci.value) = v[1];
   }
-  tape.registerOutput(draw.flux.value);
-  xad::derivative(draw.flux.value) = v[2];
+  tape.registerOutput(draw.E_up.value);
+  xad::derivative(draw.E_up.value) = v[2];
   tape.registerOutput(o.profit);
   xad::derivative(o.profit) = v[3];
   for (std::size_t i = 0; i < o.uptake.size(); ++i) {
@@ -268,20 +268,20 @@ Arm arm_of(pl::Leaf::OperatingPointKind kind) {
 // for the reason the identity is.
 const double kControlFloor = 1e-7;
 int seen_carry = 0, seen_shut = 0, seen_residual = 0;
-// The handoff against solving the coordinates again in outputs_at: the same rows
+// The handoff against solving the coordinates again in billed_outputs_at: the same rows
 // summed in another order on the reverse side, so equal to rounding there and
 // bit for bit on the forward side, where the arithmetic is the same.
 double worst_handoff = 0.0;
 int handoff_forward_differs = 0;
 // Compared points per kind, by name. The identity is evidence only about the
-// kinds it ran on, and collar_at places each by a different condition, so every
+// kinds it ran on, and operating_collar places each by a different condition, so every
 // kind that carries rows is asserted reached, not just the arm.
 std::map<std::string, int> seen_kind;
 
 void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
   const std::size_t layers = std::size_t(l.supply_n_layers());
   Stream rng{seed};
-  const std::size_t nin = pl::n_pars + 3 * layers;
+  const std::size_t nin = pl::n_leaf_pars + 3 * layers;
   // The residual flux is the last output, and its weight is drawn last of all,
   // for the reason the comment below gives about draw order.
   const std::size_t nout = 5 + layers;
@@ -297,7 +297,7 @@ void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
   // rows are exact zeros and their draws change nothing.
   for (int k = 0; k < pl::par_A; ++k) u[k] = rng.next();
   u[pl::par_PPFD] = rng.next();
-  for (std::size_t k = pl::n_pars; k < nin; ++k) u[k] = rng.next();
+  for (std::size_t k = pl::n_leaf_pars; k < nin; ++k) u[k] = rng.next();
   for (std::size_t k = 0; k + 1 < nout; ++k) v[k] = rng.next();
   for (int k = pl::par_A; k < pl::par_PPFD; ++k) u[k] = rng.next();
   v[nout - 1] = rng.next();
@@ -306,16 +306,16 @@ void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
   if (arm == Arm::Refuses) return;
   const double curvature =
       l.operating_point_kind() == pl::Leaf::OperatingPointKind::Interior
-          ? l.marginal_collar_slope<pl::Leaf::CostCurve::TF24>()
+          ? l.profit_curvature_at_collar<pl::Leaf::CostCurve::TF24>()
           : std::numeric_limits<double>::quiet_NaN();
   if (l.operating_point_kind() == pl::Leaf::OperatingPointKind::Interior &&
       !std::isfinite(curvature)) {
-    return;  // no curvature to divide by; collar_at would refuse too
+    return;  // no curvature to divide by; operating_collar would refuse too
   }
 
   const bool has_coords =
       l.operating_point_kind() != pl::Leaf::OperatingPointKind::HydraulicShutdown;
-  // Through the coordinates collar_at hands to outputs_at, which is how plant
+  // Through the coordinates operating_collar hands to billed_outputs_at, which is how plant
   // calls the surface.
   const double fwd = forward_side(l, u, v, curvature, has_coords, true);
   const Pairing rev = reverse_side(l, u, v, curvature, false, has_coords, true);

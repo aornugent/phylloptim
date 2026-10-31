@@ -971,8 +971,9 @@ void test_gradient_reports_feasibility() {
   // with the stem at psi_crit.
   const double wettest = 2.0;
   const double root_zero_E = l.find_root_psi(wettest, l.roots_.psi_soil_, 0);
-  const double root_crit = l.find_root_psi(wettest, l.roots_.psi_soil_, 1);
-  const double bound_b = root_crit;
+  const double collar_at_dry_end =
+      l.find_root_psi(wettest, l.roots_.psi_soil_, 1);
+  const double bound_b = collar_at_dry_end;
   ok(root_zero_E < bound_b, "the bracket is non-empty");
 
   // At the wet end: 0.0, and NOT a stationary point. Taken just wetter than the
@@ -1561,7 +1562,7 @@ void test_root_rows_past_the_dry_end_match_the_table() {
       std::vector<AD> soil{AD(psi_soil)}, r_h{AD(1.0)}, r_v{AD(0.0)};
       AD* along[3] = {&a_P50, &a_c, &soil[0]};
       xad::derivative(*along[k]) = 1.0;
-      const phylloptim::SupplyAt<AD> supply{soil, r_h, r_v, a_P50, a_c};
+      const phylloptim::SupplyInputs<AD> supply{soil, r_h, r_v, a_P50, a_c};
       std::vector<AD> consumption(1, AD(0.0));
       AD E_up = 0.0;
       std::string threw;
@@ -1611,11 +1612,11 @@ void test_stem_rows_past_the_dry_end_are_the_closed_forms() {
       xad::derivative(k == 0 ? a_P50 : a_c) = 1.0;
       const std::string at = std::string(" d/d") + (k == 0 ? "stem_P50" : "stem_c") +
                              " at psi=" + std::to_string(psi);
-      const AD g = phylloptim::closed_form_integral<AD>(
+      const AD g = phylloptim::integral_with_closed_form_rows<AD>(
           G(psi, P50, c), f(psi, P50, c), AD(psi), a_P50, a_c);
       near(xad::derivative(g), want_G[k], 1e-6 * std::abs(want_G[k]) + 1e-9,
            "G's row is the closed form's" + at);
-      const AD fc = phylloptim::closed_form_curve<AD>(
+      const AD fc = phylloptim::curve_with_closed_form_rows<AD>(
           f(psi, P50, c), AD(psi), a_P50, a_c);
       near(xad::derivative(fc), want_f[k], 1e-6 * std::abs(want_f[k]) + 1e-12,
            "f's row is the closed form's" + at);
@@ -3971,7 +3972,7 @@ void test_conductivity_row_against_the_tables_own() {
       const double psi = end * i / 1000.0;
       AD a_P50 = P50, a_c = c;
       xad::derivative(a_P50) = 1.0;
-      const double row = xad::derivative(phylloptim::closed_form_curve<AD>(
+      const double row = xad::derivative(phylloptim::curve_with_closed_form_rows<AD>(
           l.stem_curve_integral_deriv(psi), AD(psi), a_P50, a_c));
       const double table = (up.stem_curve_integral_deriv(psi) -
                             down.stem_curve_integral_deriv(psi)) / (2.0 * h);
@@ -4392,12 +4393,12 @@ void test_every_answered_point_hands_over_finite_rows() {
           r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
           r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
         }
-        const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
+        const phylloptim::SupplyInputs<T> supply{soil, r_h, r_v,
                                              pars[phylloptim::par_root_P50],
                                              pars[phylloptim::par_root_c]};
         const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
         ++draws;
-        ok(std::isfinite(odelia::util::to_passive(draw.flux.slope)),
+        ok(std::isfinite(odelia::util::to_passive(draw.E_up.slope)),
            "the draw's collar slope is finite" + at);
         for (std::size_t j = 0; j < draw.duptake_dp.size(); ++j) {
           ok(std::isfinite(draw.duptake_dp[j]),
@@ -4406,16 +4407,16 @@ void test_every_answered_point_hands_over_finite_rows() {
 
         const double curvature =
             kind == phylloptim::Leaf::OperatingPointKind::Interior
-                ? l.marginal_collar_slope<phylloptim::Leaf::CostCurve::TF24>()
+                ? l.profit_curvature_at_collar<phylloptim::Leaf::CostCurve::TF24>()
                 : std::numeric_limits<double>::quiet_NaN();
         if (kind == phylloptim::Leaf::OperatingPointKind::Interior &&
             !std::isfinite(curvature)) {
           continue;
         }
         const T collar =
-            l.collar_at<phylloptim::Leaf::CostCurve::TF24, T>(draw, pars, curvature);
+            l.operating_collar<phylloptim::Leaf::CostCurve::TF24, T>(draw, pars, curvature);
         const auto out =
-            l.outputs_at<phylloptim::Leaf::CostCurve::TF24, T>(collar, draw, pars);
+            l.billed_outputs_at<phylloptim::Leaf::CostCurve::TF24, T>(collar, draw, pars);
         ++uptakes;
         ok(std::isfinite(odelia::ode::derivative_along(out.profit)),
            "profit's row is finite" + at);
@@ -4423,7 +4424,7 @@ void test_every_answered_point_hands_over_finite_rows() {
           ok(std::isfinite(odelia::ode::derivative_along(out.uptake[j])),
              "layer " + std::to_string(j) + "'s uptake row is finite" + at);
         }
-        // The coordinates are refused by name at a shutdown; outputs_at answers
+        // The coordinates are refused by name at a shutdown; billed_outputs_at answers
         // there instead, which the branch above just exercised.
         if (kind != phylloptim::Leaf::OperatingPointKind::HydraulicShutdown) {
           const auto cap = l.photo_capacity_at<T>(pars);
@@ -4476,7 +4477,7 @@ void test_every_answered_point_hands_over_finite_rows() {
 // ⚠️ THE TWO ROWS FAIL DIFFERENTLY, which is why both are asserted. The profit row
 // is the envelope theorem, so it is right only if the solve's collar is stationary
 // in the profit it reports; the collar row is the implicit function theorem on
-// marginal_at, so it is right only if marginal_at is the FOC the solve drove to
+// dprofit_dcollar_at, so it is right only if dprofit_dcollar_at is the FOC the solve drove to
 // zero. The floor's price reads the collar directly, so a solve or a marginal
 // missing that term fails one row or the other -- and a difference taken through
 // the same solve cannot see it, because it re-solves the same wrong condition.
@@ -4518,13 +4519,13 @@ void test_tf24_floor_rows_at_a_price() {
         r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
         r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
       }
-      const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
+      const phylloptim::SupplyInputs<T> supply{soil, r_h, r_v,
                                            pars[phylloptim::par_root_P50],
                                            pars[phylloptim::par_root_c]};
       const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
-      const double curvature = l.marginal_collar_slope<K::TF24_floor>();
-      const T collar = l.collar_at<K::TF24_floor, T>(draw, pars, curvature);
-      const auto out = l.outputs_at<K::TF24_floor, T>(collar, draw, pars);
+      const double curvature = l.profit_curvature_at_collar<K::TF24_floor>();
+      const T collar = l.operating_collar<K::TF24_floor, T>(draw, pars, curvature);
+      const auto out = l.billed_outputs_at<K::TF24_floor, T>(collar, draw, pars);
 
       const double h = 1e-4 * price;
       const phylloptim::Leaf up = solved(price + h), dn = solved(price - h);
@@ -4577,18 +4578,18 @@ double profit_row_at_current_point(phylloptim::Leaf &l, int par,
     r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
     r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
   }
-  const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
+  const phylloptim::SupplyInputs<T> supply{soil, r_h, r_v,
                                        pars[phylloptim::par_root_P50],
                                        pars[phylloptim::par_root_c]};
   const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
   const double curvature =
       l.operating_point_kind() == phylloptim::Leaf::OperatingPointKind::Interior
-          ? l.marginal_collar_slope<phylloptim::Leaf::CostCurve::TF24>()
+          ? l.profit_curvature_at_collar<phylloptim::Leaf::CostCurve::TF24>()
           : std::numeric_limits<double>::quiet_NaN();
   phylloptim::Leaf::HeldCoords<T> held;
-  const T collar = l.collar_at<phylloptim::Leaf::CostCurve::TF24, T>(
+  const T collar = l.operating_collar<phylloptim::Leaf::CostCurve::TF24, T>(
       draw, pars, curvature, &held);
-  const auto out = l.outputs_at<phylloptim::Leaf::CostCurve::TF24, T>(
+  const auto out = l.billed_outputs_at<phylloptim::Leaf::CostCurve::TF24, T>(
       collar, draw, pars, &held);
   if (residual_row != nullptr) {
     *residual_row = odelia::ode::derivative_along(out.residual_flux);
@@ -4597,7 +4598,7 @@ double profit_row_at_current_point(phylloptim::Leaf &l, int par,
 }
 
 // The supplied rows against a central difference of the SOLVE, at every kind
-// collar_at places by a condition: the in-tree form of the referee behind #136's
+// operating_collar places by a condition: the in-tree form of the referee behind #136's
 // bound-polish fix, which lived outside the repository. A difference re-solves,
 // so it re-derives the bound or the stationarity condition from scratch and
 // shares nothing with the rows but the model -- which is what makes it a
@@ -4683,7 +4684,7 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
            l.operating_point_kind_name(l.operating_point_kind()));
     if (l.operating_point_kind() != fx.want) continue;
     const double curvature = fx.want == Kind::Interior
-                                 ? l.marginal_collar_slope<CC::TF24>()
+                                 ? l.profit_curvature_at_collar<CC::TF24>()
                                  : std::numeric_limits<double>::quiet_NaN();
     for (int k : pars) {
       pl::leaf_pars<T> tp;
@@ -4695,11 +4696,11 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
         r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
         r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
       }
-      const pl::SupplyAt<T> supply{soil, r_h, r_v, tp[pl::par_root_P50],
+      const pl::SupplyInputs<T> supply{soil, r_h, r_v, tp[pl::par_root_P50],
                                    tp[pl::par_root_c]};
       const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
-      const T collar = l.collar_at<CC::TF24, T>(draw, tp, curvature);
-      const auto out = l.outputs_at<CC::TF24, T>(collar, draw, tp);
+      const T collar = l.operating_collar<CC::TF24, T>(draw, tp, curvature);
+      const auto out = l.billed_outputs_at<CC::TF24, T>(collar, draw, tp);
       std::vector<double> rows{odelia::ode::derivative_along(collar),
                                odelia::ode::derivative_along(out.profit)};
       for (const T& u : out.uptake) rows.push_back(odelia::ode::derivative_along(u));
@@ -4762,7 +4763,7 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
 // true curvature, one just outside the floor, and the double path (which never
 // reads the curvature) all still answer.
 void test_collar_at_refuses_a_flat_or_rising_curvature() {
-  printf("collar_at refuses a curvature it cannot divide by\n");
+  printf("operating_collar refuses a curvature it cannot divide by\n");
   using T = odelia::ode::tangent_scalar<double>;
   using CC = phylloptim::Leaf::CostCurve;
   Drivers d;
@@ -4781,17 +4782,17 @@ void test_collar_at_refuses_a_flat_or_rising_curvature() {
     r_h.push_back(T(l.roots_.network_.r_R_H_min[std::size_t(i)]));
     r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
   }
-  const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
+  const phylloptim::SupplyInputs<T> supply{soil, r_h, r_v,
                                        pars[phylloptim::par_root_P50],
                                        pars[phylloptim::par_root_c]};
   const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
   const double floor = phylloptim::Leaf::interior_curvature_floor;
-  const double k = l.marginal_collar_slope<CC::TF24>();
+  const double k = l.profit_curvature_at_collar<CC::TF24>();
   printf("    curvature at the fixture %.3g, floor %.3g\n", k, floor);
   ok(k < -floor, "the fixture's own curvature is outside the floor");
   auto row = [&](double curvature) {
     return odelia::ode::derivative_along(
-        l.collar_at<CC::TF24, T>(draw, pars, curvature));
+        l.operating_collar<CC::TF24, T>(draw, pars, curvature));
   };
   ok(std::isfinite(row(k)), "the true curvature answers");
   ok(std::isfinite(row(-2.0 * floor)), "a curvature just outside the floor answers");
@@ -4807,7 +4808,7 @@ void test_collar_at_refuses_a_flat_or_rising_curvature() {
      "a zero curvature is refused as not negative");
   const auto draw_d =
       l.supply_draw_at<double>(l.opt_root_psi_, l.roots_.held_supply());
-  ok(l.collar_at<CC::TF24, double>(draw_d, seated, -1e-300) == l.opt_root_psi_,
+  ok(l.operating_collar<CC::TF24, double>(draw_d, seated, -1e-300) == l.opt_root_psi_,
      "the double path reads no curvature, so refuses none");
 }
 
@@ -4827,19 +4828,19 @@ void test_surface_refuses_a_curve_or_supply_it_was_not_solved_on() {
   const phylloptim::leaf_pars<double> pars = l.passive_pars();
   const auto draw =
       l.supply_draw_at<double>(l.opt_root_psi_, l.roots_.held_supply());
-  ok(l.collar_at<CC::TF24, double>(draw, pars) == l.opt_root_psi_,
-     "control: collar_at answers on the seated curve");
-  ok(std::isfinite(l.outputs_at<CC::TF24, double>(l.opt_root_psi_, draw, pars).profit),
-     "control: outputs_at answers on the seated curve");
+  ok(l.operating_collar<CC::TF24, double>(draw, pars) == l.opt_root_psi_,
+     "control: operating_collar answers on the seated curve");
+  ok(std::isfinite(l.billed_outputs_at<CC::TF24, double>(l.opt_root_psi_, draw, pars).profit),
+     "control: billed_outputs_at answers on the seated curve");
   const std::string wrong =
       "asked for the TF24_floor curve, and the leaf is seated on TF24";
-  ok(throws_with([&] { l.collar_at<CC::TF24_floor, double>(draw, pars); },
-                 "Leaf::collar_at: " + wrong),
-     "collar_at refuses a curve the leaf is not seated on");
+  ok(throws_with([&] { l.operating_collar<CC::TF24_floor, double>(draw, pars); },
+                 "Leaf::operating_collar: " + wrong),
+     "operating_collar refuses a curve the leaf is not seated on");
   ok(throws_with([&] {
-       l.outputs_at<CC::TF24_floor, double>(l.opt_root_psi_, draw, pars);
-     }, "Leaf::outputs_at: " + wrong),
-     "outputs_at refuses a curve the leaf is not seated on");
+       l.billed_outputs_at<CC::TF24_floor, double>(l.opt_root_psi_, draw, pars);
+     }, "Leaf::billed_outputs_at: " + wrong),
+     "billed_outputs_at refuses a curve the leaf is not seated on");
 
   phylloptim::Leaf single;
   single.setup_transpiration(100);
@@ -4864,7 +4865,7 @@ void test_surface_refuses_a_curve_or_supply_it_was_not_solved_on() {
      "the dry fixture is a hydraulic shutdown");
   const auto dry =
       shut.supply_draw_at<double>(shut.opt_root_psi_, shut.roots_.held_supply());
-  ok(dry.flux.value == 0.0 && dry.flux.slope == 0.0,
+  ok(dry.E_up.value == 0.0 && dry.E_up.slope == 0.0,
      "a shutdown draw's flux is zero, not indeterminate");
 }
 
@@ -4922,7 +4923,7 @@ void test_a_replay_hands_over_the_rows_its_solve_did() {
   ok(differ == 0, "every replayed collar and row equals its solve's, bit for bit");
 }
 
-// The coordinates collar_at hands to outputs_at must be the ones outputs_at
+// The coordinates operating_collar hands to billed_outputs_at must be the ones billed_outputs_at
 // would have solved for itself, so handing them over moves no number and no row.
 // Asserted bit for bit on the tangent, where both routes run the same arithmetic
 // on the same values; the adjoint, where the rows are summed in another order,
@@ -4938,7 +4939,7 @@ void compare_held_handoff(phylloptim::Leaf &l, const std::string &at,
   using Kind = phylloptim::Leaf::OperatingPointKind;
   const Kind kind = l.operating_point_kind();
   const double curvature = kind == Kind::Interior
-                               ? l.marginal_collar_slope<K>()
+                               ? l.profit_curvature_at_collar<K>()
                                : std::numeric_limits<double>::quiet_NaN();
   if (kind == Kind::Interior && !std::isfinite(curvature)) {
     return;
@@ -4965,15 +4966,15 @@ void compare_held_handoff(phylloptim::Leaf &l, const std::string &at,
     }
     odelia::ode::set_direction(direction < 0 ? soil[0] : pars[std::size_t(direction)],
                                1.0);
-    const phylloptim::SupplyAt<T> supply{soil, r_h, r_v,
+    const phylloptim::SupplyInputs<T> supply{soil, r_h, r_v,
                                          pars[phylloptim::par_root_P50],
                                          pars[phylloptim::par_root_c]};
     const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
-    const T solved_collar = l.collar_at<K, T>(draw, pars, curvature);
-    const auto solved = l.outputs_at<K, T>(solved_collar, draw, pars);
+    const T solved_collar = l.operating_collar<K, T>(draw, pars, curvature);
+    const auto solved = l.billed_outputs_at<K, T>(solved_collar, draw, pars);
     phylloptim::Leaf::HeldCoords<T> held;
-    const T handed_collar = l.collar_at<K, T>(draw, pars, curvature, &held);
-    const auto handed = l.outputs_at<K, T>(handed_collar, draw, pars, &held);
+    const T handed_collar = l.operating_collar<K, T>(draw, pars, curvature, &held);
+    const auto handed = l.billed_outputs_at<K, T>(handed_collar, draw, pars, &held);
     if (held.placed() != (kind == Kind::Interior)) {
       ++tally.misplaced;
       printf("    placed=%d at %s\n", int(held.placed()), at.c_str());
@@ -4999,7 +5000,7 @@ void compare_held_handoff(phylloptim::Leaf &l, const std::string &at,
 }
 
 void test_held_coordinates_move_no_row() {
-  printf("the coordinates collar_at hands to outputs_at move no number and no row\n");
+  printf("the coordinates operating_collar hands to billed_outputs_at move no number and no row\n");
   using K = phylloptim::Leaf::CostCurve;
   HandoffTally tally;
   for (int layers : {1, 3}) {
@@ -5036,7 +5037,7 @@ void test_held_coordinates_move_no_row() {
          tally.interior, tally.other);
   ok(tally.interior > 0 && tally.other > 0,
      "the sweep reaches interior points and other kinds (test is not vacuous)");
-  ok(tally.misplaced == 0, "collar_at places coordinates at interior points only");
+  ok(tally.misplaced == 0, "operating_collar places coordinates at interior points only");
   ok(tally.differ == 0,
      "every collar, profit and uptake, value and row, is the same with the "
      "coordinates handed over");
@@ -5053,7 +5054,7 @@ void test_held_coordinates_are_refused_off_their_point() {
   struct Seat {
     phylloptim::leaf_pars<T> pars;
     std::vector<T> soil, r_h, r_v;
-    phylloptim::SupplyAt<T> supply() const {
+    phylloptim::SupplyInputs<T> supply() const {
       return {soil, r_h, r_v, pars[phylloptim::par_root_P50],
               pars[phylloptim::par_root_c]};
     }
@@ -5085,9 +5086,9 @@ void test_held_coordinates_are_refused_off_their_point() {
 
   const Seat si = seat(in);
   const auto draw = in.supply_draw_at<T>(T(in.opt_root_psi_), si.supply());
-  const double curvature = in.marginal_collar_slope<CC::TF24>();
+  const double curvature = in.profit_curvature_at_collar<CC::TF24>();
   phylloptim::Leaf::HeldCoords<T> held;
-  const T collar = in.collar_at<CC::TF24, T>(draw, si.pars, curvature, &held);
+  const T collar = in.operating_collar<CC::TF24, T>(draw, si.pars, curvature, &held);
   ok(held.placed() && held.at == in.opt_root_psi_,
      "the interior arm places the coordinates at its own collar");
 
@@ -5095,43 +5096,43 @@ void test_held_coordinates_are_refused_off_their_point() {
   // the coordinates are out of place.
   const double off = in.opt_root_psi_ + 0.01;
   const auto draw_off = in.supply_draw_at<T>(T(off), si.supply());
-  ok(throws_with([&] { in.outputs_at<CC::TF24, T>(T(off), draw_off, si.pars, &held); },
-                 "Leaf::outputs_at: the held coordinates were placed at a collar of"),
-     "outputs_at refuses coordinates placed at another collar");
+  ok(throws_with([&] { in.billed_outputs_at<CC::TF24, T>(T(off), draw_off, si.pars, &held); },
+                 "Leaf::billed_outputs_at: the held coordinates were placed at a collar of"),
+     "billed_outputs_at refuses coordinates placed at another collar");
 
   // Read at a point of another kind.
   const Seat sb = seat(bound);
   const auto draw_b = bound.supply_draw_at<T>(T(bound.opt_root_psi_), sb.supply());
   ok(throws_with([&] {
-       bound.outputs_at<CC::TF24, T>(T(bound.opt_root_psi_), draw_b, sb.pars, &held);
+       bound.billed_outputs_at<CC::TF24, T>(T(bound.opt_root_psi_), draw_b, sb.pars, &held);
      },
                  "were placed at an interior point and are being read at one that is"),
-     "outputs_at refuses coordinates placed at an interior point at another kind");
+     "billed_outputs_at refuses coordinates placed at an interior point at another kind");
 
-  // collar_at unplaces what it is handed before deciding, so coordinates left
+  // operating_collar unplaces what it is handed before deciding, so coordinates left
   // from the interior point cannot survive a call at the bound.
-  bound.collar_at<CC::TF24, T>(draw_b, sb.pars,
-                               std::numeric_limits<double>::quiet_NaN(), &held);
-  ok(!held.placed(), "collar_at at a bound leaves the coordinates unplaced");
+  bound.operating_collar<CC::TF24, T>(draw_b, sb.pars,
+                                      std::numeric_limits<double>::quiet_NaN(), &held);
+  ok(!held.placed(), "operating_collar at a bound leaves the coordinates unplaced");
   ok(std::isfinite(odelia::util::to_passive(
-         bound.outputs_at<CC::TF24, T>(T(bound.opt_root_psi_), draw_b, sb.pars,
-                                       &held).profit)),
-     "outputs_at solves its own with unplaced coordinates");
+         bound.billed_outputs_at<CC::TF24, T>(T(bound.opt_root_psi_), draw_b, sb.pars,
+                                              &held).profit)),
+     "billed_outputs_at solves its own with unplaced coordinates");
 
   // At double the interior arm records nothing, so there is nothing to hand over.
   phylloptim::leaf_pars<double> pd = in.passive_pars();
   std::vector<double> soil_d(in.roots_.psi_soil_), rh_d(in.roots_.network_.r_R_H_min),
       rv_d(in.roots_.network_.r_R_V_sum);
-  const phylloptim::SupplyAt<double> supply_d{soil_d, rh_d, rv_d,
+  const phylloptim::SupplyInputs<double> supply_d{soil_d, rh_d, rv_d,
                                               pd[phylloptim::par_root_P50],
                                               pd[phylloptim::par_root_c]};
   const auto draw_d = in.supply_draw_at<double>(in.opt_root_psi_, supply_d);
   phylloptim::Leaf::HeldCoords<double> held_d;
-  const double collar_d = in.collar_at<CC::TF24, double>(draw_d, pd, curvature, &held_d);
-  ok(!held_d.placed(), "collar_at at double leaves the coordinates unplaced");
-  ok(in.outputs_at<CC::TF24, double>(collar_d, draw_d, pd, &held_d).profit ==
+  const double collar_d = in.operating_collar<CC::TF24, double>(draw_d, pd, curvature, &held_d);
+  ok(!held_d.placed(), "operating_collar at double leaves the coordinates unplaced");
+  ok(in.billed_outputs_at<CC::TF24, double>(collar_d, draw_d, pd, &held_d).profit ==
          in.profit_,
-     "outputs_at at double with unplaced coordinates is the solve's profit");
+     "billed_outputs_at at double with unplaced coordinates is the solve's profit");
   (void)collar;
 }
 
@@ -8948,7 +8949,7 @@ void benchmark() {
 
 // What plant reads, against what the solve itself left.
 //
-// outputs_at and marginal_at ASSEMBLE the leaf's answers from kernels, where the
+// billed_outputs_at and dprofit_dcollar_at ASSEMBLE the leaf's answers from kernels, where the
 // solve reaches the same numbers by a different route entirely -- through
 // set_leaf_states_rates and the members. So agreement is a statement about the
 // assembly rather than a tautology, and it is asserted BIT-FOR-BIT because
@@ -8962,7 +8963,7 @@ void benchmark() {
 // part of the result -- a fixture reaching only one of them has narrowed the
 // check without narrowing what it claims.
 void test_outputs_agree_with_the_solve() {
-  printf("outputs_at and marginal_at against the solve's own numbers\n");
+  printf("billed_outputs_at and dprofit_dcollar_at against the solve's own numbers\n");
   using K = phylloptim::Leaf::CostCurve;
   const std::vector<std::vector<double>> soils = {
       {2.0}, {1.0, 2.0, 3.0}, {0.5, 1.0, 1.5, 2.0, 2.5}};
@@ -8996,13 +8997,13 @@ void test_outputs_agree_with_the_solve() {
         const auto pars = l.passive_pars();
         const double p0 = l.opt_root_psi_;
         const auto draw = l.supply_draw_at<double>(p0, l.roots_.held_supply());
-        const auto got = l.outputs_at<K::TF24, double>(p0, draw, pars);
-        ok(got.profit == l.profit_, "outputs_at's profit IS the solve's");
+        const auto got = l.billed_outputs_at<K::TF24, double>(p0, draw, pars);
+        ok(got.profit == l.profit_, "billed_outputs_at's profit IS the solve's");
         ok(got.uptake.size() == l.soil_consumption_.size(),
            "one uptake per layer");
         for (std::size_t j = 0; j < got.uptake.size(); ++j) {
           ok(got.uptake[j] == l.soil_consumption_[j],
-             "outputs_at's layer draw IS the solve's");
+             "billed_outputs_at's layer draw IS the solve's");
         }
         if (kind == phylloptim::Leaf::OperatingPointKind::Interior) {
           bool feasible = false;
@@ -9014,8 +9015,8 @@ void test_outputs_agree_with_the_solve() {
           if (feasible && std::isfinite(up)) {
             ++n_marg;
             const auto d2 = l.supply_draw_at<double>(p0, l.roots_.held_supply());
-            ok(l.marginal_at<K::TF24, double>(p0, d2, pars) == up,
-               "marginal_at IS upstream's dprofit_at_collar_psi");
+            ok(l.dprofit_dcollar_at<K::TF24, double>(p0, d2, pars) == up,
+               "dprofit_dcollar_at IS upstream's dprofit_at_collar_psi");
           }
         }
       }
@@ -9498,20 +9499,20 @@ void test_thermal_damage_refusals() {
      "control: the derivative surface answers with the gate off");
 
   ok(throws_with([&] { profit_row_at_current_point(on, phylloptim::par_vcmax_25); },
-                 "Leaf::collar_at: " + refused),
-     "collar_at refuses");
+                 "Leaf::operating_collar: " + refused),
+     "operating_collar refuses");
   const phylloptim::leaf_pars<double> pars = on.passive_pars();
   const auto draw = on.supply_draw_at<double>(on.opt_root_psi_,
                                               on.roots_.held_supply());
-  ok(std::isfinite(draw.flux.value), "supply_draw_at reads no capacity, and runs");
-  ok(std::isfinite(on.marginal_collar_slope<CC::TF24>()),
-     "marginal_collar_slope differences the solve's own dprofit, and runs");
-  ok(throws_with([&] { on.collar_at<CC::TF24, double>(draw, pars); },
-                 "Leaf::collar_at: " + refused),
-     "collar_at refuses at double too");
-  ok(throws_with([&] { on.outputs_at<CC::TF24, double>(on.opt_root_psi_, draw, pars); },
-                 "Leaf::outputs_at: " + refused),
-     "outputs_at refuses");
+  ok(std::isfinite(draw.E_up.value), "supply_draw_at reads no capacity, and runs");
+  ok(std::isfinite(on.profit_curvature_at_collar<CC::TF24>()),
+     "profit_curvature_at_collar differences the solve's own dprofit, and runs");
+  ok(throws_with([&] { on.operating_collar<CC::TF24, double>(draw, pars); },
+                 "Leaf::operating_collar: " + refused),
+     "operating_collar refuses at double too");
+  ok(throws_with([&] { on.billed_outputs_at<CC::TF24, double>(on.opt_root_psi_, draw, pars); },
+                 "Leaf::billed_outputs_at: " + refused),
+     "billed_outputs_at refuses");
   ok(throws_with([&] { on.vcmax_at<double>(pars); }, "Leaf::vcmax_at: " + refused),
      "vcmax_at refuses");
   ok(throws_with([&] { on.jmax_at<double>(pars); }, "Leaf::jmax_at: " + refused),

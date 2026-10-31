@@ -155,9 +155,9 @@ and `LeastCost_beta`, and the fourteen inputs of the thermal-damage layer that
 reach the solve. `g::par_names()` is that order and every position has a name
 (`g::par_vcmax_25`, `g::par_R_d_25`, `g::par_kmax`, ...); `pars` holds positions
 into it. R indexes these positions, so reordering the enumeration silently
-differentiates the wrong parameter. `phylloptim::n_pars` is **36**, one longer:
+differentiates the wrong parameter. `phylloptim::n_leaf_pars` is **36**, one longer:
 the pack the kernels read also holds `par_PPFD`, seated per observation from the
-drivers and never fitted. Size `theta` by `n_theta`; read it out to `n_pars` and
+drivers and never fitted. Size `theta` by `n_theta`; read it out to `n_leaf_pars` and
 you run past its end.
 
 **Count the initialiser against `g::n_theta` rather than against this

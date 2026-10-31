@@ -38,9 +38,9 @@ Family context lives in [`plant-meta`](https://github.com/traitecoevo/plant-meta
 | `quadrature.hpp`, `uniroot.hpp`, `optimize.hpp` | adaptive Simpson; Boost root-finders; `maximise_over_closed_interval_foc`, the one solver |
 | `vulnerability.hpp` | `VulnerabilityTable` (the C2 table both curves read), the closed-form integral and its inverse, `vulnerability_derivatives_at` |
 | `closed_form_rows.hpp` | a table's value with the closed form's trait rows, for both curves |
-| `roots.hpp` | `RootNetwork`, `root_network_from_carbon`, `SupplyAt`, `CollarConductance`, `MultiLayerRoots` (the one uptake walk), `layer_thickness()` (the dz both sides share). Nothing here calls `root_network_from_carbon`: since #33 the caller runs the root model and hands `set_physiology` the resistances |
+| `roots.hpp` | `RootNetwork`, `root_network_from_carbon`, `SupplyInputs`, `CollarConductance`, `MultiLayerRoots` (the one uptake walk), `layer_thickness()` (the dz both sides share). Nothing here calls `root_network_from_carbon`: since #33 the caller runs the root model and hands `set_physiology` the resistances |
 | `single_potential.hpp` | `SinglePotential`, the other supply path |
-| `leaf_model.hpp` | the `par_*` enumeration and `leaf_pars`, `Leaf`, `CostCurve`, `OperatingPointKind`, the solve, and the derivative surface (`supply_draw_at`, `collar_at`, `outputs_at`) |
+| `leaf_model.hpp` | the `par_*` enumeration and `leaf_pars`, `Leaf`, `CostCurve`, `OperatingPointKind`, the solve, and the derivative surface (`supply_draw_at`, `operating_collar`, `billed_outputs_at`) |
 | `closed_form.hpp` | `Leaf::optimise_closed`, out of line, legal only because `<phylloptim.hpp>` includes it after `leaf_model.hpp` |
 | `gradient.hpp` | `n_theta`, the IFT composite and `batch`, the bit-for-bit twin of `R/gradient.R` |
 

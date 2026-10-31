@@ -353,7 +353,7 @@ layer_thicknesses(const std::vector<double>& soil_depth) {
 // set_traits re-derives it, so a row in it reaches nothing -- closed_form_rows.hpp carries
 // the chain.
 template <class T>
-struct SupplyAt {
+struct SupplyInputs {
   const std::vector<T>& psi_soil;
   const std::vector<T>& r_R_H_min;
   const std::vector<T>& r_R_V_sum;
@@ -655,7 +655,7 @@ public:
   // nullptr on the path that reads no slope; the forward solve calls this ~10^3
   // times per collar and is that path.
   template <class T>
-  void uptake_at(const T& T_collar, const SupplyAt<T>& at,
+  void uptake_at(const T& T_collar, const SupplyInputs<T>& at,
                  std::vector<T>& soil_consumption, T& E_up,
                  CollarConductance<T>* conductance = nullptr) const {
     const bool cache = std::is_same_v<T, double> &&
@@ -716,7 +716,7 @@ public:
 private:
   // This object's members as a view over a caller's soil vector, so the double
   // entries reach the same body without copying their own state.
-  SupplyAt<double> supply_over(const std::vector<double>& psi_soil) const {
+  SupplyInputs<double> supply_over(const std::vector<double>& psi_soil) const {
     return {psi_soil, network_.r_R_H_min, network_.r_R_V_sum, root_P50, root_c};
   }
 
@@ -737,7 +737,7 @@ private:
 
 public:
   // This object's own state as a view, for the double path.
-  SupplyAt<double> held_supply() const {
+  SupplyInputs<double> held_supply() const {
     return {psi_soil_, network_.r_R_H_min, network_.r_R_V_sum, root_P50, root_c};
   }
 
@@ -753,7 +753,7 @@ public:
   // through the same closed form as the uptake walk, and G(inf) through the
   // curve's limit. kg H2O m^-2 leaf s^-1, the unit of E_up.
   template <class T>
-  T uptake_limit(const SupplyAt<T>& at) const {
+  T uptake_limit(const SupplyInputs<T>& at) const {
     using odelia::util::to_passive;
     T G_lim;
     if constexpr (std::is_same_v<T, double>) {
@@ -777,9 +777,9 @@ public:
       if constexpr (std::is_same_v<T, double>) {
         G_i = root_vuln_integral_at(q);
       } else {
-        G_i = closed_form_integral<T>(root_vuln_integral_at(q),
-                                      root_vuln_integral_deriv_at(q), psi_i,
-                                      at.root_P50, at.root_c);
+        G_i = integral_with_closed_form_rows<T>(root_vuln_integral_at(q),
+                                                root_vuln_integral_deriv_at(q), psi_i,
+                                                at.root_P50, at.root_c);
       }
       if (!(to_passive(G_lim) - to_passive(G_i) > 0.0)) {
         continue;
@@ -854,22 +854,22 @@ public:
   // instantiation is the original arithmetic; the integral cache is taken where
   // the caller asks for it (use_integral_cache), which duptake_dpsi does not.
   template <class T>
-  void uptake_impl(const T& T_collar, const SupplyAt<T>& at,
+  void uptake_impl(const T& T_collar, const SupplyInputs<T>& at,
                    bool use_integral_cache, std::vector<T>& soil_consumption,
                    T& E_up, CollarConductance<T>* conductance) const {
     using odelia::util::to_passive;
     const std::vector<T>& psi_soil = at.psi_soil;
-    const double collar_at = to_passive(T_collar);
+    const double operating_collar = to_passive(T_collar);
     // The band in which two potentials count as equal. It is the uptake's
     // branch width AND the slope's kink width because they are the same
     // condition: where the span vanishes the general branch divides by nothing,
     // and the derivative of the branch that replaces it is not the derivative
     // of this one.
     const double kink_tol = 1e-8;
-    if (!std::isfinite(collar_at)) {
+    if (!std::isfinite(operating_collar)) {
       util::stop_infeasible("uptake",
           "E_from_Soil_to_Root_Collar invalid input; T_collar=" +
-          util::to_string(collar_at));
+          util::to_string(operating_collar));
     }
     E_up = T(0.0);
     // ⚠️ ONE ENTRY PER SOIL LAYER, NOT PER ROOTED LAYER, which is the convention
@@ -878,7 +878,7 @@ public:
     // it stay zero, because a layer no root reaches draws nothing and its collar
     // slope is nothing. Sized by the rooted count instead, a shallow-rooted plant
     // hands back a shorter vector than its own uptake, and the supplied row in
-    // outputs_at pairs a row with the wrong layer or refuses on the length.
+    // billed_outputs_at pairs a row with the wrong layer or refuses on the length.
     // Measured: plant's gradient ladder refused a whole sweep on
     // "expected 5, received 2".
     //
@@ -912,11 +912,11 @@ public:
     auto curve = [&](const T& x) -> T {
       const double q = to_passive(x);
       if constexpr (std::is_same_v<T, double>) { return root_vuln_at(q); }
-      else { return closed_form_curve<T>(root_vuln_at(q), x, at.root_P50, at.root_c); }
+      else { return curve_with_closed_form_rows<T>(root_vuln_at(q), x, at.root_P50, at.root_c); }
     };
 
     const double G_at_T_collar =
-        use_integral_cache ? root_vuln_integral_at(collar_at) : 0.0;
+        use_integral_cache ? root_vuln_integral_at(operating_collar) : 0.0;
 
     // Raw pointers taken once: the walk writes soil_consumption, which the
     // compiler cannot prove is not one of the vectors it reads, so indexing
@@ -940,9 +940,9 @@ public:
       // rather than in a second walk, because the layer that fails is the layer
       // whose span, integral and resistance are being formed anyway.
       if (conductance != nullptr &&
-          (std::abs(collar_at - soil_at) < kink_tol ||
-           std::abs((collar_at - soil_at) - zg_p[i]) < kink_tol ||
-           std::abs(collar_at) < kink_tol)) {
+          (std::abs(operating_collar - soil_at) < kink_tol ||
+           std::abs((operating_collar - soil_at) - zg_p[i]) < kink_tol ||
+           std::abs(operating_collar) < kink_tol)) {
         at_a_kink = true;
       }
       const bool want_slope = conductance != nullptr && !at_a_kink;
@@ -951,10 +951,10 @@ public:
       // one is a recorded statement that the sweep then walks once per census
       // metric for nothing. Four of these a layer was 20 statements a placement
       // at five layers.
-      hold_t T_src_min = (collar_at < soil_at) ? Tc : psi_i;
-      hold_t T_src_max = (soil_at < collar_at) ? Tc : psi_i;
+      hold_t T_src_min = (operating_collar < soil_at) ? Tc : psi_i;
+      hold_t T_src_max = (soil_at < operating_collar) ? Tc : psi_i;
 
-      if (std::abs(collar_at - soil_at) < kink_tol) {
+      if (std::abs(operating_collar - soil_at) < kink_tol) {
         const T f_ri = curve(T_src_max);
         if (!std::isfinite(to_passive(f_ri)) || to_passive(f_ri) < 0.0) {
           util::stop_infeasible("uptake",
@@ -975,7 +975,7 @@ public:
         out_p[i] = E_i;
         E_up += E_i;
       } else if (std::is_same_v<T, double> &&
-                 std::abs((collar_at - soil_at) - zg_p[i]) < kink_tol) {
+                 std::abs((operating_collar - soil_at) - zg_p[i]) < kink_tol) {
         out_p[i] = T(0.0);
       } else {
         // Named so both arms are lvalues and the selection binds rather than
@@ -988,12 +988,12 @@ public:
           const double q = to_passive(arg);
           if constexpr (std::is_same_v<T, double>) {
             if (use_integral_cache) {
-              if (q == collar_at) return G_at_T_collar;
+              if (q == operating_collar) return G_at_T_collar;
               if (q == soil_at) return Gs_p[i];
             }
             return root_vuln_integral_at(q);
           } else {
-            return closed_form_integral<T>(root_vuln_integral_at(q),
+            return integral_with_closed_form_rows<T>(root_vuln_integral_at(q),
                                      root_vuln_integral_deriv_at(q), arg,
                                      at.root_P50, at.root_c);
           }
@@ -1032,16 +1032,16 @@ public:
           //               sign_var, since f_r is 1 there,
           //   dnum/dT   = 1,
           // and only r_R_H depends on the collar.
-          const double sign_var = (collar_at > soil_at) ? 1.0 : -1.0;
+          const double sign_var = (operating_collar > soil_at) ? 1.0 : -1.0;
           // The moving bound's integrand is the integral's own derivative,
-          // f_r(T_collar), in closed form; closed_form_curve supplies its rows.
+          // f_r(T_collar), in closed form; curve_with_closed_form_rows supplies its rows.
           T fr_at = T(1.0);
-          if (collar_at > 0.0) {
-            const double table = root_vuln_integral_deriv_at(collar_at);
+          if (operating_collar > 0.0) {
+            const double table = root_vuln_integral_deriv_at(operating_collar);
             if constexpr (std::is_same_v<T, double>) {
               fr_at = table;
             } else {
-              fr_at = closed_form_curve<T>(table, T_collar, at.root_P50, at.root_c);
+              fr_at = curve_with_closed_form_rows<T>(table, T_collar, at.root_P50, at.root_c);
             }
           }
           const T dinteg_dT = T(sign_var) * fr_at;

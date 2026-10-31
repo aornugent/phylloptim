@@ -12,7 +12,7 @@
 //   duptake_dp[j]   d(uptake_j)/d(collar), from roots_.duptake_dpsi.
 //                   supply_draw_at takes the draw at a PASSIVE collar and
 //                   supplies this row beside it, so the tape never sees a
-//                   layer's uptake move with the collar. outputs_at closed-form rows it
+//                   layer's uptake move with the collar. billed_outputs_at closed-form rows it
 //                   as `uptake[j] + duptake_dp[j] * step`.
 //
 // ⚠️ THE AGGREGATE IS NOT THE ROWS. duptake_dpsi's total is refereed against a
@@ -28,7 +28,7 @@
 // ⚠️ dM/dp IS NO LONGER A SUPPLIED ROW and is not checked here. It is a central
 // difference of the model's own marginal, so differencing it against the model
 // would compare a difference with itself. The conditioning measurement that made
-// it a difference is at marginal_collar_slope.
+// it a difference is at profit_curvature_at_collar.
 //
 // ⚠️ THE BUDGET IS WHAT THE DIFFERENCE CAN SEE. A central difference cannot
 // resolve arbitrarily small numbers, so each row is differenced at TWO steps and

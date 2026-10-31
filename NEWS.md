@@ -1,3 +1,19 @@
+# phylloptim 0.23.0
+
+## The derivative surface's names say what they return (#149)
+
+C++ API only; no number moves, and every golden file is bit-identical. The R layer and every R-visible string (statuses, kind names) are unchanged.
+
+- `n_pars` is now `n_leaf_pars`, so code that sized `theta` by the old name fails to compile rather than overrunning it. A `static_assert` ties it to `par_PPFD`.
+- `Leaf::collar_at` is `operating_collar`: it takes no point, it returns the collar the solve placed. `Leaf::outputs_at` and `Leaf::LeafOutputs` are `billed_outputs_at` and `BilledOutputs`, apart from the unrelated `gradient::outputs_at`.
+- `Leaf::marginal_at` is `dprofit_dcollar_at` (and `marginal_from_coords` is `dprofit_dcollar_from_coords`), since "marginal" means lambda everywhere else; `marginal_collar_slope` is `profit_curvature_at_collar`, which is what it returns.
+- `Leaf::bound_at(bool wet, ...)` is two functions: `wet_bound_at<S>` (uptake meets the residual flux; it reads no cost, so it takes no curve) and `dry_end_collar_at<K, S>`.
+- `SupplyDraw::flux` is `SupplyDraw::E_up`, the name the uptake has everywhere else. `SupplyAt` is `SupplyInputs`.
+- `closed_form_integral` and `closed_form_curve` are `integral_with_closed_form_rows` and `curve_with_closed_form_rows`: the value is the table's and only the trait rows are the closed form's.
+- `vignette("derivative-surface")` tabulates which R status each C++ kind is reported under.
+
+Migration for plant: `tf24_strategy.h` renames `SupplyAt`, `LeafOutputs`, `marginal_collar_slope`, `collar_at`, `outputs_at` and `draw.flux`.
+
 # phylloptim 0.22.2
 
 ## A series resistance below 1e-2 is refused (#176)

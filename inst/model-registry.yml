@@ -2158,7 +2158,7 @@ equations:
     reads: [psi_crit]
     writes: []
     kind: identity
-    note: '$\psi_{r,\mathrm{crit}}$ (root_crit) is the collar at which the soil supplies what the stem carries with the stem at its critical potential, the dry end of the bracket; $\psi_{r,0}$ (root_zero_E) the collar at which uptake is zero, the wet end. $E_\mathrm{up}$ and $E$ are the hydraulics section''s, read through their bindings. TOMS748 stops at 1e-4 absolute plus relative: plenty for a bracket, and a bound that turns out to BE the answer is re-solved to 1e-15 first (polish_bracket_bound).'
+    note: '$\psi_{r,\mathrm{crit}}$ (collar_at_dry_end) is the collar at which the soil supplies what the stem carries with the stem at its critical potential, the dry end of the bracket; $\psi_{r,0}$ (root_zero_E) the collar at which uptake is zero, the wet end. $E_\mathrm{up}$ and $E$ are the hydraulics section''s, read through their bindings. TOMS748 stops at 1e-4 absolute plus relative: plenty for a bracket, and a bound that turns out to BE the answer is re-solved to 1e-15 first (polish_bracket_bound).'
 
   stem_from_collar:
     section: solve

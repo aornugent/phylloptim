@@ -26,16 +26,28 @@ The package has two, and they answer different questions.
 | outputs | A, gc, psi_stem, collar, profit | profit, each layer's water uptake, and the residual (cuticular) flux |
 | classification | a status (`interior`, `pinned`, ...) from a stationarity test | a kind (`interior`, `boundary-soil`, ...) written by the branch the solve took |
 
-The two classifications are decided differently and are not interchangeable: a status reads the converged numbers, and a kind records which exit the solve took. Only `prescribed` appears in both. The rest of this vignette is about the second route.
+The two classifications are decided differently and are not interchangeable: a status reads the converged numbers, and a kind records which exit the solve took. Only `prescribed` appears in both. So one kind can be reported under more than one status. On a sweep of 1,536 solved points (`psi_soil` 0.5-14 MPa, PPFD 0-1500, VPD 0.5-4 kPa, 25 and 40 C, 1 and 3 layers, `g_min` 0 and 5e-4) the solving path reported:
+
+| kind (C++) | status (R) | points |
+|---|---|---|
+| `interior` | `interior` | 453 |
+| `interior` | `pinned` | 12 |
+| `boundary-soil` | `pinned` | 1086 |
+| `boundary-soil` | `no-gradient` | 155, all with `g_min > 0` |
+| `boundary-dry` | `pinned` | 94 |
+| `hydraulic-shutdown` | `pinned` | 60 |
+| `hydraulic-shutdown` | `no-gradient` | 60 |
+
+An `interior` kind reads as `pinned` where the implied Newton step exceeds `stationarity_tol` or the stencil about the collar leaves the feasible interval; a bound reads as `no-gradient` where the curvature there is not negative. `solver-refused` and `non-finite-gradient` were not reached on the sweep, and `unsolved` is never reported. `prescribed`, `refused` and `no-gradient` are the statuses of the path that takes `psi`: there the kind is always `prescribed`, and `refused` means the collar, or the stencil about it, fell outside the feasible interval. The rest of this vignette is about the second route.
 
 ## Terms
 
 - **row**: one output's derivatives against a list of inputs.
 - **supplied row**: a row computed here and handed to the caller as data, with nothing recorded behind it. The caller's tape gets one statement per output, however long the leaf's arithmetic is.
-- **kind**: `Leaf::OperatingPointKind`, which condition placed the operating point. There are ten.
-- **draw**: `SupplyDraw<S>`, the soil's water draw at one collar potential: the total flux and its slope in the collar, and each layer's uptake. It records the collar it was taken at.
+- **kind**: `Leaf::OperatingPointKind`, which condition placed the operating point. There are eight.
+- **draw**: `SupplyDraw<S>`, the soil's water draw at one collar potential: the total uptake `E_up` and its slope in the collar, and each layer's uptake. It records the collar it was taken at.
 - **the three scalars**: the leaf's derivative surface is a set of member templates on a scalar `S`. At `double` they are an ordinary evaluation; at `odelia::ode::tangent_scalar<double>` they carry a directional derivative; at `odelia::ode::adjoint_scalar<double>` they record onto the caller's reverse tape. One source, not three copies.
-- **the pack**: `leaf_pars<S>`, the twenty differentiable parameters as one array indexed by `par_*`. The first nineteen are what a calibration fits (`gradient::n_theta`); the twentieth, `par_PPFD`, is the light the leaf stands in, seated per observation.
+- **the pack**: `leaf_pars<S>`, the differentiable parameters as one array of `n_leaf_pars` indexed by `par_*`. All but the last are what a calibration fits (`gradient::n_theta`); the last, `par_PPFD`, is the light the leaf stands in, seated per observation.
 
 ## The three calls
 
@@ -45,26 +57,26 @@ After the ordinary solve at `double`, a consumer at scalar `S` makes three calls
 l.find_root_collar_psi();                                   // the solve, at double
 
 phylloptim::leaf_pars<S> pars = /* the seated traits, at S, with directions set as needed */;
-phylloptim::SupplyAt<S> supply{psi_soil, r_R_H_min, r_R_V_sum,
-                               pars[phylloptim::par_root_P50],
-                               pars[phylloptim::par_root_c]};
+phylloptim::SupplyInputs<S> supply{psi_soil, r_R_H_min, r_R_V_sum,
+                                   pars[phylloptim::par_root_P50],
+                                   pars[phylloptim::par_root_c]};
 
 auto draw = l.supply_draw_at<S>(S(l.opt_root_psi_), supply);
 phylloptim::Leaf::HeldCoords<S> held;
-S    psi  = l.collar_at<K, S>(draw, pars, curvature, &held);
-auto out  = l.outputs_at<K, S>(psi, draw, pars, &held);
+S    psi  = l.operating_collar<K, S>(draw, pars, curvature, &held);
+auto out  = l.billed_outputs_at<K, S>(psi, draw, pars, &held);
 // out.profit, out.uptake[j] and out.residual_flux carry their derivatives in pars and supply
 ```
 
-`curvature` is `l.marginal_collar_slope<K>()` at an interior point and is not read at any other kind. `profit_row_at_current_point` in `tests/cpp/test_leaf.cpp` is this sequence in full, compiled.
+`curvature` is `l.profit_curvature_at_collar<K>()` at an interior point and is not read at any other kind. `profit_row_at_current_point` in `tests/cpp/test_leaf.cpp` is this sequence in full, compiled.
 
-`held` is optional. At an interior point, `collar_at` solves the stem potential and the intercellular CO2 at the collar on its way to the marginal, and `held` carries them to `outputs_at`, which otherwise solves them again. Passing it moves no number: the forward tangent is bit-identical and the reverse rows agree to rounding. `held` lives on the caller's tape, like the draw, so it must not outlive the recording it was made on. At double and at every other kind `collar_at` leaves it unplaced and `outputs_at` solves its own.
+`held` is optional. At an interior point, `operating_collar` solves the stem potential and the intercellular CO2 at the collar on its way to the marginal, and `held` carries them to `billed_outputs_at`, which otherwise solves them again. Passing it moves no number: the forward tangent is bit-identical and the reverse rows agree to rounding. `held` lives on the caller's tape, like the draw, so it must not outlive the recording it was made on. At double and at every other kind `operating_collar` leaves it unplaced and `billed_outputs_at` solves its own.
 
 The calls assume, and mostly do not check:
 
-- the draw is taken at the solved collar (`collar_at` refuses another);
-- `held`, if passed, comes from `collar_at` at this point (`outputs_at` refuses one placed at another collar or kind);
-- nothing moves the leaf between the solve and `outputs_at`;
+- the draw is taken at the solved collar (`operating_collar` refuses another);
+- `held`, if passed, comes from `operating_collar` at this point (`billed_outputs_at` refuses one placed at another collar or kind);
+- nothing moves the leaf between the solve and `billed_outputs_at`;
 - `pars` and `supply` hold, in value, the leaf's seated traits (`passive_pars()`) and its seated soil state and root network;
 - the supply path is multi-layer.
 
@@ -86,10 +98,10 @@ The solve runs at `double` and is never differentiated. It brackets the collar b
         +--> solver-refused        the stationary point is a minimum
         +--> non-finite-gradient   no usable gradient at an endpoint
         v
-  supply_draw_at -> collar_at -> outputs_at
+  supply_draw_at -> operating_collar -> billed_outputs_at
 ```
 
-What `collar_at` does at each kind:
+What `operating_collar` does at each kind:
 
 | kind | the collar is placed by | rows |
 |---|---|---|
@@ -97,7 +109,7 @@ What `collar_at` does at each kind:
 | `boundary-soil` | the wet bound: uptake equals the residual flux | yes |
 | `boundary-dry` | the stem reaching its dry end: the end of the stem curve under TF24, where its potential is held (#183) | yes |
 | `hydraulic-shutdown` | the same wet bound, with the stem at the collar | yes, as `boundary-soil` |
-| `unsolved`, `prescribed`, `solver-refused`, `non-finite-gradient` | refused | none; `collar_at` throws |
+| `unsolved`, `prescribed`, `solver-refused`, `non-finite-gradient` | refused | none; `operating_collar` throws |
 
 A narrow interval is polished, and a closed one is shut. When the feasible interval is narrower than `bracket_tol_at(bound_b)`, both of its ends are solved to collar precision before anything is decided on it; one no wider than `collar_root_tol` is `hydraulic-shutdown`, as is a soil from which the stem can carry less than `stem_capacity_floor` of `G(inf)`. Every open leaf therefore takes its stem from continuity. The collar route loses precision as the root resistance goes to zero (#176).
 
@@ -119,7 +131,7 @@ Both partials are of the residual, which is a closed form, so neither needs anyt
     dPi*/du  =  dPi/du |_p  -  sum_j mu_j dc_j/du |_p
 ```
 
-At an interior optimum every multiplier `mu_j` is zero and this is the envelope theorem: differentiate the objective holding the optimum fixed. At a bound the multiplier term is exactly the correction the envelope theorem leaves out, and `outputs_at` supplies it by letting profit see the collar move through the bound's own implicit function.
+At an interior optimum every multiplier `mu_j` is zero and this is the envelope theorem: differentiate the objective holding the optimum fixed. At a bound the multiplier term is exactly the correction the envelope theorem leaves out, and `billed_outputs_at` supplies it by letting profit see the collar move through the bound's own implicit function.
 
 ## Why the kind is recorded, not inferred
 
@@ -139,7 +151,7 @@ A consumer branches on `operating_point_kind()` and never on a returned value. A
 
 **`for_each_active` is a silent-zero hazard.** odelia walks an aggregate's active members through its `for_each_active`, and does nothing for an aggregate that has none. `PhotoCapacity` and `SupplyDraw` declare it. A member added to either without being visited contributes no rows: its columns read exactly zero, every number stays finite, and nothing is raised. Visit every scalar member.
 
-**Another curve** is a branch in `profit_at` and `marginal_at`, which `static_assert` against curves without one.
+**Another curve** is a branch in `profit_at` and `dprofit_dcollar_at`, which `static_assert` against curves without one.
 
 **A new fitted parameter** goes before `par_PPFD`, because `gradient::n_theta` is `par_PPFD`; a slot appended last falls outside every caller's `theta`.
 
@@ -149,7 +161,7 @@ A consumer branches on `operating_point_kind()` and never on a returned value. A
 - `test_transpose`: a forward tangent against the reverse sweep through the same rows, at 122 operating points. It cannot see a row that is wrong both ways.
 - `test_leaf`: finite rows at every answered kind on a grid; a replay hands over its solve's rows bit for bit; TF24_floor's collar and profit rows against a re-solve; profit continuous, and every open leaf transpiring what its roots supply, across hydraulic shutdown and the light-compensation point; a second-difference sweep over soil potential, light, deficit and air temperature, with the energy balance off and on, one and three layers and the thermal-damage layer, finding no slope jump in profit, `A`, `E`, `psi_stem`, `lambda` or two derivative rows at `g_min > 0`; the water budget `E = E_s + r` and `E_up = E`; the residual conductance's rows against a difference of the solve; the root curve's rows far along it against the closed form.
 
-Not yet tested: the supplied trait rows at the pinned kinds against a finite difference of the solve (that referee exists outside the repository); `boundary-dry` driven through `collar_at` on a tape beyond `test_transpose`'s one fixture.
+Not yet tested: the supplied trait rows at the pinned kinds against a finite difference of the solve (that referee exists outside the repository); `boundary-dry` driven through `operating_collar` on a tape beyond `test_transpose`'s one fixture.
 
 ## Deliberately not built
 
