@@ -3552,6 +3552,56 @@ void test_leaf_on_single_potential() {
      "the supply path defaults to multi-layer");
 }
 
+// A collar interval narrower than find_root_psi's bracket tolerance
+// (bracket_tol_at, ~1e-3 MPa at these potentials) arises wherever E times the
+// series resistance is small: a fast supply, or a dry soil. Extending the first
+// bracket to the end of the stem curve must keep that interval's width, or the
+// leaf is reported shut while profit still rises across it. Asserted against a
+// scan of the prescribed collar, which no solve may beat.
+void test_narrow_extended_bracket_is_not_shut() {
+  printf("a narrow extended collar bracket keeps its width\n");
+  Drivers d;
+  std::vector<double> depth{1.0};
+  int reached = 0;
+  double worst = 0.0;
+  for (double r : {1e-2, 1.0, 10.0}) {
+    for (double ps : {4.5, 4.8, 5.5}) {
+      std::vector<double> psi_soil{ps};
+      auto make = [&](phylloptim::Leaf& l) {
+        l.setup_transpiration(100);
+        l.setup_root_vulnerability(100);
+        l.set_supply_single();
+        l.set_physiology(fixture::series_resistance(r), d.PPFD, psi_soil, depth,
+                         d.K_s * d.theta / d.h, d.atm_vpd, d.ca, d.leaf_temp,
+                         d.atm_o2_kpa, d.atm_kpa);
+      };
+      phylloptim::Leaf l, scan;
+      make(l);
+      make(scan);
+      l.find_root_collar_psi();
+      double best = -std::numeric_limits<double>::infinity();
+      for (double dx = 1e-12; dx < 1.0; dx *= 1.25) {
+        try {
+          best = std::max(best, scan.evaluate_root_collar_psi(ps + dx));
+        } catch (const std::exception&) {
+          // outside the feasible interval
+        }
+      }
+      ok(std::isfinite(best), "the scan reaches a feasible collar at r = " +
+                                  std::to_string(r) +
+                                  ", psi_soil = " + std::to_string(ps));
+      ok(l.transpiration_ > 0.0, "the leaf opens at r = " + std::to_string(r) +
+                                     ", psi_soil = " + std::to_string(ps));
+      ok(l.profit_ >= best - 1e-9 * std::abs(best),
+         "no feasible collar beats the solve at r = " + std::to_string(r) +
+             ", psi_soil = " + std::to_string(ps));
+      worst = std::max(worst, (best - l.profit_) / std::abs(best));
+      ++reached;
+    }
+  }
+  printf("    %d rows | worst (scan - solve) / |scan|: %.3e\n", reached, worst);
+}
+
 void test_single_potential() {
   printf("single-potential supply path\n");
   phylloptim::SinglePotential sp;
@@ -10611,6 +10661,7 @@ int main(int argc, char **argv) {
   test_closed_form();
   test_single_potential();
   test_leaf_on_single_potential();
+  test_narrow_extended_bracket_is_not_shut();
   test_root_network_from_carbon();
   test_root_network_template_is_the_double_overload();
   test_stem_curve_inverse_round_trips();

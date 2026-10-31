@@ -4933,7 +4933,21 @@ inline double Leaf::extend_collar_bracket(double bound_a) {
       bracket_wettest_, supply_psi_soil(), 1,
       bracket_E_up_at_wettest_ - transpiration(end, bracket_wettest_), E_at_end,
       end);
-  return std::max(root_crit, bound_a);
+  // ⚠️ THE DRY END IS POLISHED HERE TOO, as prepare_collar_solve polishes a
+  // narrow first bracket. find_root_psi places the root only to within
+  // bracket_tol_at of it, so where the whole interval is narrower than that (a
+  // small E times the series resistance) the unpolished root can fall on the
+  // wet bound, and a leaf whose profit still rises is reported shut. The wet
+  // end is not re-polished: it was polished already wherever the first bracket
+  // was narrow, a wide first bracket only widens when its dry end moves drier,
+  // and moving the wet end here would strand the caller's `lo`, stepped in
+  // from it before this call.
+  const double bound_b = std::max(root_crit, bound_a);
+  if (bound_b - bound_a < bracket_tol_at(bound_b)) {
+    return std::max(polish_bracket_bound(bound_b, supply_psi_soil(), 1),
+                    bound_a);
+  }
+  return bound_b;
 }
 
 // The profit-maximising collar potential, by solving the first-order condition

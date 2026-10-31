@@ -1,8 +1,13 @@
 # phylloptim 0.22.2
 
 ## A series resistance below 1e-2 is refused (#176)
-
 The collar route reads the single-potential flux as (collar - soil) / r, so as r falls the whole range of flux fits in a collar interval about E*r wide and a collar placed to `collar_root_tol` no longer resolves it. Measured against the stem route, the r -> 0 model, beyond the difference linear in r, the error was 2e-8 at r = 1e-2, 3.6e-5 at 1e-3 and 2e-3 at 1e-4, and below 1e-8 leaves reported shutdown. `set_physiology` (and so `set_drivers()`) now refuses a single-potential series resistance below `SinglePotential::resistance_min`, 1e-2 MPa s m2 (mol H2O)-1, five orders below the nominal 1e3. Nothing at or above it changes; the golden files are bit-identical.
+
+# phylloptim 0.22.1
+
+## A narrow collar bracket keeps its width when extended (#193)
+
+On a curve not bounded at psi_crit, a collar interval narrower than `find_root_psi`'s bracket tolerance (`bracket_tol_at`, 1.5e-4 (1 + |psi|) MPa, so about 1e-3 at these potentials; reached where E times the series resistance is small) was extended to the end of the stem curve onto its own wet bound, and the leaf was reported shut while profit still rose across the interval: at psi_soil 4.8 and a series resistance of 1, profit -5.63 shut against -5.05 open. `extend_collar_bracket` now polishes a narrow extension as `prepare_collar_solve` polishes its first bracket. Measured on the single-potential path, rows open at r <= 10 over psi_soil 4.5-5.8 (profit up by as much as 1.14) and nothing moves at r >= 100; on the multi-layer path nothing moves at the default root carbon or 10x it, and six rows move by 1e-14 at 100x. The golden files are bit-identical.
 
 # phylloptim 0.22.0
 
