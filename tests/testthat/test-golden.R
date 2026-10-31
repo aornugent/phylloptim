@@ -52,6 +52,15 @@
 # ci, assim and profit only: a leaf moving no gas nets min(0, A(ci = ca)), which
 # at 100 umol m-2 s-1 is 0 rather than -R_d.
 #
+# Then for the residual conductance (#182), which moved the shut-down row's
+# psi_stem, opt_root_psi, profit, e_up and uptake: the shut leaf sits at its wet
+# bound, the zero-uptake collar (6.34 MPa here, past psi_crit's 5.87), with the
+# stem AT it rather than held at psi_crit, so the hydraulic cost is the curve's
+# there; e_up and uptake are the polished bound's residue (~1e-20) rather than
+# assigned zeros, compared against an absolute floor off macOS. assim is the root
+# of A(ci) = 0, which is zero by definition, and ci and the two exact zeros
+# (transpiration, gc) did not move.
+#
 # Before that, #92 (the indexed knot grid) moved 27, the psi_stem_to_ci tolerance
 # 18, and the collar root-find 27.
 
@@ -64,8 +73,9 @@
 #                    whole vector across in the right order -- a transposed or
 #                    reversed soil profile is invisible at one layer
 #   the last row     a SHUT-DOWN point (psi_soil 6 MPa, low light, high VPD):
-#                    transpiration and gc are exactly zero, assimilation is
-#                    min(0, A(ca)) and the collar sits at psi_stem. This is the
+#                    transpiration and gc are exactly zero, assimilation is the
+#                    root of A(ci) = 0 and the stem sits at the zero-uptake
+#                    collar (#182). This is the
 #                    branch #15 fixed, and it is the one where an output a code
 #                    path declines to write becomes the previous leaf's value.
 #                    Pinning it here means the R layer is checked on the exit
@@ -116,15 +126,15 @@ golden_rows <- list(
   list(
     inputs = list(psi_soil = 6.0, ppfd = 100, vpd = 4.0, layers = 5L),
     expected = list(
-      psi_stem      = "0x1.77b2b65270b19p+2",
-      opt_root_psi  = "0x1.77b2b65270b19p+2",
+      psi_stem      = "0x1.960cce048d520p+2",
+      opt_root_psi  = "0x1.960cce048d520p+2",
       ci            = "0x1.ec6f9e7580bddp+2",
-      assim         = "0x0p+0",
+      assim         = "0x0.0p+0",
       transpiration = "0x0.0p+0",
       gc            = "0x0.0p+0",
-      profit        = "-0x1.bc742dafc9b9fp+2",
-      e_up          = "0x0.0p+0",
-      uptake        = "0x0.0p+0"
+      profit        = "-0x1.ce1e653284966p+2",
+      e_up          = "-0x1.ed7785729b281p-68",
+      uptake        = "-0x1.ac00000000000p-62"
     )
   )
 )

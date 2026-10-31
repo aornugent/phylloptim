@@ -24,7 +24,7 @@ A \code{Leaf} R6 object.
 \description{
 The recommended way to construct a leaf. \code{\link[=Leaf]{Leaf()}} is the raw C++ constructor,
 with all fifteen arguments positional and no defaults; this splits them into
-traits and numerical settings, defaults both, assigns the four traits the
+traits and numerical settings, defaults both, assigns the five traits the
 constructor does not take, and initialises the integrator.
 }
 \details{

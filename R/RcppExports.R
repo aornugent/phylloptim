@@ -25,8 +25,8 @@ Leaf__perturb_stem_P50 <- function(obj_, stem_P50) {
     invisible(.Call('_phylloptim_Leaf__perturb_stem_P50', PACKAGE = 'phylloptim', obj_, stem_P50))
 }
 
-Leaf__set_traits <- function(obj_, vcmax_25, stem_c, stem_P50, root_c, root_P50, TF24_beta2, jmax_25, phi_J, curv_fact_elec_trans, curv_fact_colim, TF24_cost_scale, R_d_25, JS22_gamma, CMax_a, CMax_b) {
-    invisible(.Call('_phylloptim_Leaf__set_traits', PACKAGE = 'phylloptim', obj_, vcmax_25, stem_c, stem_P50, root_c, root_P50, TF24_beta2, jmax_25, phi_J, curv_fact_elec_trans, curv_fact_colim, TF24_cost_scale, R_d_25, JS22_gamma, CMax_a, CMax_b))
+Leaf__set_traits <- function(obj_, vcmax_25, stem_c, stem_P50, root_c, root_P50, TF24_beta2, jmax_25, phi_J, curv_fact_elec_trans, curv_fact_colim, TF24_cost_scale, R_d_25, JS22_gamma, CMax_a, CMax_b, g_min) {
+    invisible(.Call('_phylloptim_Leaf__set_traits', PACKAGE = 'phylloptim', obj_, vcmax_25, stem_c, stem_P50, root_c, root_P50, TF24_beta2, jmax_25, phi_J, curv_fact_elec_trans, curv_fact_colim, TF24_cost_scale, R_d_25, JS22_gamma, CMax_a, CMax_b, g_min))
 }
 
 Leaf__proportion_of_conductivity <- function(obj_, psi) {
@@ -43,6 +43,22 @@ Leaf__peak_arrh_curve <- function(obj_, Ea, ref_value, leaf_temp, H_d, d_S) {
 
 Leaf__transpiration <- function(obj_, psi_stem, psi_upstream) {
     .Call('_phylloptim_Leaf__transpiration', PACKAGE = 'phylloptim', obj_, psi_stem, psi_upstream)
+}
+
+Leaf__g_min_factor <- function(obj_, leaf_temp) {
+    .Call('_phylloptim_Leaf__g_min_factor', PACKAGE = 'phylloptim', obj_, leaf_temp)
+}
+
+Leaf__g_min_at <- function(obj_, leaf_temp) {
+    .Call('_phylloptim_Leaf__g_min_at', PACKAGE = 'phylloptim', obj_, leaf_temp)
+}
+
+Leaf__stem_wet_bound <- function(obj_, psi_upstream) {
+    .Call('_phylloptim_Leaf__stem_wet_bound', PACKAGE = 'phylloptim', obj_, psi_upstream)
+}
+
+Leaf__supply_ceiling <- function(obj_, psi_upstream) {
+    .Call('_phylloptim_Leaf__supply_ceiling', PACKAGE = 'phylloptim', obj_, psi_upstream)
 }
 
 Leaf__transpiration_full_integration <- function(obj_, psi_stem, psi_upstream) {
@@ -393,6 +409,14 @@ Leaf__transpiration___set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__transpiration___set', PACKAGE = 'phylloptim', obj_, value))
 }
 
+Leaf__residual_flux___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__residual_flux___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__g_min_leaf___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__g_min_leaf___get', PACKAGE = 'phylloptim', obj_)
+}
+
 Leaf__soil_consumption___get <- function(obj_) {
     .Call('_phylloptim_Leaf__soil_consumption___get', PACKAGE = 'phylloptim', obj_)
 }
@@ -727,6 +751,54 @@ Leaf__CMax_b__get <- function(obj_) {
 
 Leaf__CMax_b__set <- function(obj_, value) {
     invisible(.Call('_phylloptim_Leaf__CMax_b__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__g_min__get <- function(obj_) {
+    .Call('_phylloptim_Leaf__g_min__get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__g_min__set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__g_min__set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__g_min_co2_ratio___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__g_min_co2_ratio___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__g_min_co2_ratio___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__g_min_co2_ratio___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__g_min_k_low___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__g_min_k_low___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__g_min_k_low___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__g_min_k_low___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__g_min_k_high___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__g_min_k_high___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__g_min_k_high___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__g_min_k_high___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__g_min_T_trans___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__g_min_T_trans___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__g_min_T_trans___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__g_min_T_trans___set', PACKAGE = 'phylloptim', obj_, value))
+}
+
+Leaf__g_min_T_width___get <- function(obj_) {
+    .Call('_phylloptim_Leaf__g_min_T_width___get', PACKAGE = 'phylloptim', obj_)
+}
+
+Leaf__g_min_T_width___set <- function(obj_, value) {
+    invisible(.Call('_phylloptim_Leaf__g_min_T_width___set', PACKAGE = 'phylloptim', obj_, value))
 }
 
 Leaf__rd_q10_intercept___get <- function(obj_) {

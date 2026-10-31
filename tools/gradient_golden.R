@@ -118,11 +118,11 @@ cases <- list(
   list(label = "pinned-dry-3layer",
        args = grid_drivers(4.0, vpd = 0.5, layers = 3L),
        pars = c("vcmax_25", "stem_P50", "stem_c", "R_d_25")),
-  # ⚠️ root_P50 4.0, NOT the default. A shut stem holds at whichever critical
-  # potential the drying soil reaches first, and at the default traits the stem's
-  # and the root's are EQUAL, so the held stem has a kink in stem_P50 and stem_c
-  # exactly there and a central difference records the average of its two sides.
-  # A wetter-failing root leaves the stem's limit binding on both sides.
+  # root_P50 4.0, NOT the default, kept from when a shut stem held at whichever
+  # critical potential the drying soil reached first (and the two are equal at
+  # the defaults, a kink). Since #182 the shut leaf sits at its wet bound, the
+  # zero-uptake collar, with the stem AT it, so no critical potential places it;
+  # the case keeps its traits so its rows stay comparable across that change.
   list(label = "shutdown-1layer",
        args = c(grid_drivers(6.0), list(traits = leaf_traits(root_P50 = 4.0))),
        pars = c("vcmax_25", "stem_P50", "stem_c", "R_d_25")),

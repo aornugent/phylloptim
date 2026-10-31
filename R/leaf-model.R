@@ -12,7 +12,7 @@
 #      vulnerability_curve_ncontrol -- are numerical settings sitting among the
 #      physiology. A trait-calibration loop should not have to know which four of
 #      the fifteen are not traits. `leaf_traits()` and `leaf_control()` split
-#      them -- and four more traits (R_d_25, JS22_gamma, CMax_a, CMax_b) are not
+#      them -- and five more traits (R_d_25, JS22_gamma, CMax_a, CMax_b, g_min) are not
 #      constructor arguments at all and have to be assigned afterwards, which is
 #      the second thing a caller should not have to know.
 #   2. A one-call entry point. `leaf_solve()` takes drivers and returns a
@@ -50,7 +50,8 @@
   R_d_25 = 1.44,
   JS22_gamma = 1.0,
   CMax_a = 0.6,
-  CMax_b = 0.0
+  CMax_b = 0.0,
+  g_min = 0.0
 )
 
 ##' Physiological traits for a leaf
@@ -135,6 +136,22 @@
 ##'   reproducing TF24's cost at its own optimum runs 0.406 at `psi_soil` 0.5 MPa
 ##'   to 0.807 at 3.0 MPa — a 2.0x range against `JS22_gamma`'s 6.1x, which is the
 ##'   absolute-versus-drop distinction as a number.
+##' @param g_min the residual (cuticular) conductance to water vapour at 25 C
+##'   (mol H2O m^-2 s^-1). A leaf keeps losing water through its cuticle after
+##'   its stomata have shut, and the cuticle lets CO2 through as well (at the
+##'   ratio `$g_min_co2_ratio_`, 0.05 by default). The leaf optimises its
+##'   STOMATAL flux; the xylem carries the total, `E = E_s + E_r` with
+##'   `E_r = g_min(T_leaf) D_leaf / P_atm`, and every cost that reads the flux
+##'   charges the total. Default 0, at which nothing moves.
+##'
+##'   ⚠️ **A measured cuticular conductance, not a fitted `g0`.** A `g0` fitted
+##'   to gas exchange is an order of magnitude larger and is mostly stomata that
+##'   have not finished closing; measured cuticular conductances run
+##'   0.25-0.8 mmol m^-2 s^-1 (2.5e-4 to 8e-4 here). The Medlyn route's `$g0` is
+##'   the fitted quantity and is untouched by this trait. `g_min` rises with
+##'   leaf temperature on a smooth curve whose three parameters are fields on
+##'   the `Leaf` (`$g_min_k_low_`, `$g_min_k_high_`, `$g_min_T_trans_`,
+##'   `$g_min_T_width_`); their defaults are placeholders, inert at 25 C.
 ##'
 ##' @section Where the two root-resistance constants went:
 ##' `beta_R_H` and `beta_R_V` were traits here until #33. They parameterise the
@@ -169,7 +186,8 @@ leaf_traits <- function(vcmax_25 = 96,
                         R_d_25 = 1.44,
                         JS22_gamma = 1.0,
                         CMax_a = 0.6,
-                        CMax_b = 0.0) {
+                        CMax_b = 0.0,
+                        g_min = 0.0) {
   out <- list(vcmax_25 = vcmax_25, stem_c = stem_c, stem_P50 = stem_P50,
               root_c = root_c, root_P50 = root_P50, TF24_beta2 = TF24_beta2,
               jmax_25 = jmax_25, phi_J = phi_J,
@@ -177,10 +195,13 @@ leaf_traits <- function(vcmax_25 = 96,
               curv_fact_colim = curv_fact_colim,
               TF24_cost_scale = TF24_cost_scale,
               R_d_25 = R_d_25, JS22_gamma = JS22_gamma,
-              CMax_a = CMax_a, CMax_b = CMax_b)
+              CMax_a = CMax_a, CMax_b = CMax_b, g_min = g_min)
   .check_scalars(out, "leaf_traits")
   if (R_d_25 < 0) {
     stop("leaf_traits(): R_d_25 must be non-negative", call. = FALSE)
+  }
+  if (g_min < 0) {
+    stop("leaf_traits(): g_min must be non-negative", call. = FALSE)
   }
   structure(out, class = c("leaf_traits", "list"))
 }
@@ -404,7 +425,7 @@ leaf_supply_multilayer <- function() {
 ##'
 ##' The recommended way to construct a leaf. [Leaf()] is the raw C++ constructor,
 ##' with all fifteen arguments positional and no defaults; this splits them into
-##' traits and numerical settings, defaults both, assigns the four traits the
+##' traits and numerical settings, defaults both, assigns the five traits the
 ##' constructor does not take, and initialises the integrator.
 ##'
 ##' The result is a stateful R6 object: set drivers with [set_drivers()], choose a
@@ -469,6 +490,8 @@ leaf_model <- function(traits = leaf_traits(), control = leaf_control(),
   l$JS22_gamma <- traits$JS22_gamma
   l$CMax_a <- traits$CMax_a
   l$CMax_b <- traits$CMax_b
+  # The residual conductance (#182), the sixteenth trait, for the same reason.
+  l$g_min <- traits$g_min
   l$initialize_integrator(control$integration_rule, control$integration_tol)
   # After the integrator, because set_supply_single clears the solved state --
   # not the integrator tolerance, but relying on that ordering would be a
@@ -900,7 +923,11 @@ operating_point <- function(x) {
   # that `lambda` carries only the hydraulic half and adding the price floor back
   # by hand -- which is exactly the kind of correction a package should not leave
   # to its callers, and it read 6.8e+04 against a floor of 1.5e+05.
-  "lambda_emergent"
+  "lambda_emergent",
+  # kg H2O m^-2 s^-1: the residual (cuticular) flux the leaf realised (#182),
+  # APPENDED for the same reason as the three above. `E` stays the TOTAL flux;
+  # the stomatal flux is `E - residual_flux`.
+  "residual_flux"
 )
 
 ##' Solve a leaf, in one call

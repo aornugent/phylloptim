@@ -86,10 +86,18 @@ struct Stream {
 
 const double kTheta = 0.5, kKs = 2.0, kH = 5.0, kAreaLeaf = 1.0;
 
-pl::Leaf set_up(int layers, double psi0, double ppfd, double leaf_temp) {
+pl::Leaf set_up(int layers, double psi0, double ppfd, double leaf_temp,
+                double g_min = 0.0) {
   pl::Leaf l;
   l.setup_transpiration(100);
   l.setup_root_vulnerability(100);
+  // The residual conductance is a trait (#182): seated through set_traits so
+  // the g_min rows the pack carries are exercised at a non-zero value as well
+  // as at the default.
+  l.set_traits(l.vcmax_25, l.stem_c, l.stem_P50, l.roots_.root_c,
+               l.roots_.root_P50, l.TF24_beta2, l.jmax_25, l.phi_J,
+               l.curv_fact_elec_trans, l.curv_fact_colim, l.TF24_cost_scale,
+               l.R_d_25, l.JS22_gamma, l.CMax_a, l.CMax_b, g_min);
   std::vector<double> root, psi_soil, depth;
   for (int i = 0; i < layers; ++i) {
     root.push_back(1.0 / kAreaLeaf / layers);
@@ -162,6 +170,7 @@ double forward_side(pl::Leaf l, const std::vector<double>& u,
   for (std::size_t i = 0; i < o.uptake.size(); ++i) {
     acc += v[4 + i] * odelia::ode::derivative_along(o.uptake[i]);
   }
+  acc += v[4 + o.uptake.size()] * odelia::ode::derivative_along(o.residual_flux);
   return acc;
 }
 
@@ -204,6 +213,8 @@ Pairing reverse_side(pl::Leaf l, const std::vector<double>& u,
     tape.registerOutput(o.uptake[i]);
     xad::derivative(o.uptake[i]) = v[4 + i];
   }
+  tape.registerOutput(o.residual_flux);
+  xad::derivative(o.residual_flux) = v[4 + o.uptake.size()];
   tape.computeAdjoints();
 
   Pairing out;
@@ -217,26 +228,25 @@ Pairing reverse_side(pl::Leaf l, const std::vector<double>& u,
 
 // Whether the collar carries rows on this arm, which is what decides what the
 // control MUST do. Holding it passive has to change the answer wherever the
-// collar is placed by a rule that reads the inputs, and has to change nothing
-// where the collar does not move at all.
+// collar is placed by a rule that reads the inputs. Every solved kind is one
+// now: a shut leaf sits on its wet bound (#182), which reads the soil state and
+// the traits through the residual flux, so there is no arm left whose collar
+// does not move; the sweep still asserts it reaches a shutdown.
 //
 // No `default:`, so -Werror=switch refuses a new kind until someone says which
-// of the three it is.
-enum class Arm { CarriesRows, NoRows, Refuses };
+// of the two it is.
+enum class Arm { CarriesRows, Refuses };
 
 Arm arm_of(pl::Leaf::OperatingPointKind kind) {
   switch (kind) {
     // Placed by a rule that reads the inputs: the interior condition, or one of
-    // the two bounds.
+    // the bounds, the shut leaf's wet bound among them.
     case pl::Leaf::OperatingPointKind::Interior:
     case pl::Leaf::OperatingPointKind::BoundarySoil:
     case pl::Leaf::OperatingPointKind::BoundaryCrit:
     case pl::Leaf::OperatingPointKind::BoundaryRootCrit:
-    case pl::Leaf::OperatingPointKind::ShadeDeath:
-      return Arm::CarriesRows;
-    // The stem holds at psi_crit and nothing defines the collar at all.
     case pl::Leaf::OperatingPointKind::HydraulicShutdown:
-      return Arm::NoRows;
+      return Arm::CarriesRows;
     case pl::Leaf::OperatingPointKind::Unsolved:
     case pl::Leaf::OperatingPointKind::Prescribed:
     case pl::Leaf::OperatingPointKind::SolverRefused:
@@ -251,13 +261,15 @@ Arm arm_of(pl::Leaf::OperatingPointKind kind) {
 // sits three orders above what the check can resolve. Scaled by the terms too,
 // for the reason the identity is.
 const double kControlFloor = 1e-7;
-int seen_carry = 0, seen_norows = 0;
+int seen_carry = 0, seen_shut = 0, seen_residual = 0;
 
 void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
   const std::size_t layers = std::size_t(l.supply_n_layers());
   Stream rng{seed};
   const std::size_t nin = pl::n_pars + 3 * layers;
-  const std::size_t nout = 4 + layers;
+  // The residual flux is the last output, and its weight is drawn last of all,
+  // for the reason the comment below gives about draw order.
+  const std::size_t nout = 5 + layers;
   std::vector<double> u(nin), v(nout);
   // ⚠️ DRAWN IN A FIXED ORDER, NOT SLOT ORDER: the parameters before the
   // thermal-damage layer, then PPFD, the soil state and v, and the layer's
@@ -271,8 +283,9 @@ void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
   for (int k = 0; k < pl::par_A; ++k) u[k] = rng.next();
   u[pl::par_PPFD] = rng.next();
   for (std::size_t k = pl::n_pars; k < nin; ++k) u[k] = rng.next();
-  for (double& x : v) x = rng.next();
+  for (std::size_t k = 0; k + 1 < nout; ++k) v[k] = rng.next();
   for (int k = pl::par_A; k < pl::par_PPFD; ++k) u[k] = rng.next();
+  v[nout - 1] = rng.next();
 
   const Arm arm = arm_of(l.operating_point_kind());
   if (arm == Arm::Refuses) return;
@@ -294,21 +307,17 @@ void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
   const Pairing held = reverse_side(l, u, v, curvature, true, has_coords);
   const double moved =
       std::abs(rev.value - held.value) / std::max(rev.terms, 1e-300);
-  if (arm == Arm::CarriesRows) {
-    ++seen_carry;
-    ok(moved > kControlFloor,
-       "CONTROL: holding the collar must change the answer where it is placed "
-       "by a rule -- kind=" +
-           std::string(l.operating_point_kind_name(l.operating_point_kind())) +
-           " moved=" + std::to_string(moved));
-  } else {
-    ++seen_norows;
-    ok(moved <= kControlFloor,
-       "CONTROL: holding the collar must change nothing where it does not move "
-       "-- kind=" +
-           std::string(l.operating_point_kind_name(l.operating_point_kind())) +
-           " moved=" + std::to_string(moved));
+  ++seen_carry;
+  if (l.operating_point_kind() == pl::Leaf::OperatingPointKind::HydraulicShutdown) {
+    ++seen_shut;
   }
+  if (l.g_min > 0.0) ++seen_residual;
+  ok(moved > kControlFloor,
+     "CONTROL: holding the collar must change the answer where it is placed "
+     "by a rule -- kind=" +
+         std::string(l.operating_point_kind_name(l.operating_point_kind())) +
+         " g_min=" + std::to_string(l.g_min) +
+         " moved=" + std::to_string(moved));
   const double rel = (rev.terms > 0.0)
                          ? std::abs(fwd - rev.value) / rev.terms
                          : 0.0;
@@ -321,13 +330,14 @@ void check_solved(pl::Leaf l, const std::string& at, unsigned long seed) {
 }
 
 void check(int layers, double psi0, double ppfd, double leaf_temp,
-           unsigned long seed) {
-  pl::Leaf l = set_up(layers, psi0, ppfd, leaf_temp);
+           unsigned long seed, double g_min) {
+  pl::Leaf l = set_up(layers, psi0, ppfd, leaf_temp, g_min);
   l.find_root_collar_psi();
   check_solved(l,
                "layers=" + std::to_string(layers) + " psi_soil=" +
                    std::to_string(psi0) + " ppfd=" + std::to_string(ppfd) +
-                   " T=" + std::to_string(leaf_temp),
+                   " T=" + std::to_string(leaf_temp) +
+                   " g_min=" + std::to_string(g_min),
                seed);
 }
 
@@ -336,13 +346,17 @@ void check(int layers, double psi0, double ppfd, double leaf_temp,
 int main() {
   printf("the transpose identity, with the collar live\n");
   unsigned long seed = 12345;
-  for (int layers : {1, 3, 5}) {
-    // Dry enough to reach a hydraulic shutdown, which is the arm the control's
-    // other half needs -- the sweep asserts below that it got there.
-    for (double psi0 : {0.5, 1.0, 2.0, 3.0, 5.0, 7.0}) {
-      for (double ppfd : {100.0, 1500.0}) {
-        for (double leaf_temp : {25.0, 40.0}) {
-          check(layers, psi0, ppfd, leaf_temp, seed += 7919);
+  // At g_min = 0 and at a measured cuticular conductance (0.5 mmol), so the
+  // g_min row and the residual's rows in kmax and the stem pair are covered.
+  for (double g_min : {0.0, 5e-4}) {
+    for (int layers : {1, 3, 5}) {
+      // Dry enough to reach a hydraulic shutdown, which the sweep asserts
+      // below that it got to.
+      for (double psi0 : {0.5, 1.0, 2.0, 3.0, 5.0, 7.0}) {
+        for (double ppfd : {100.0, 1500.0}) {
+          for (double leaf_temp : {25.0, 40.0}) {
+            check(layers, psi0, ppfd, leaf_temp, seed += 7919, g_min);
+          }
         }
       }
     }
@@ -354,13 +368,13 @@ int main() {
   printf("    worst cancellation in the pairing: %.3gx\n", worst_cancel);
   // The identity is only evidence about the points it ran on, so a fixture that
   // stops reaching them has narrowed the check without narrowing the claim.
-  printf("    arms reached: %d placed by a rule, %d with no collar to move\n",
-         seen_carry, seen_norows);
-  // The identity is only evidence about the arms it ran on, and the control is
-  // only evidence where both expectations were exercised.
+  printf("    arms reached: %d placed by a rule, %d of them shut, %d with a "
+         "residual conductance\n",
+         seen_carry, seen_shut, seen_residual);
+  // The identity is only evidence about the arms it ran on.
   ok(compared >= 20, "the sweep reached at least 20 operating points");
-  ok(seen_carry > 0, "the sweep reached an arm whose collar carries rows");
-  ok(seen_norows > 0, "the sweep reached an arm whose collar does not move");
-  printf("%d checks, %d failures\n", compared + seen_carry + seen_norows + 3, failures);
+  ok(seen_shut > 0, "the sweep reached a shut leaf");
+  ok(seen_residual > 0, "the sweep reached a leaf with a residual conductance");
+  printf("%d checks, %d failures\n", compared + seen_carry + 3, failures);
   return failures == 0 ? 0 : 1;
 }

@@ -824,6 +824,17 @@ inline void Leaf::optimise_closed() {
                "and its validity guard was measured without them. Use method "
                "\"exact\", or set use_thermal_damage_ to false.");
   }
+  // The closed forms invert the USO form for the STOMATAL flux and read the
+  // cost at it, which is the whole flux only without a cuticle. With a residual
+  // conductance the cost is read at the total flux and the conductance at the
+  // stomatal one (#182), and the shifted forms have not been derived.
+  if (g_min != 0.0) {
+    util::stop("the closed form is refused with a residual conductance: it "
+               "assumes the stomatal flux is the whole flux, and with g_min = " +
+               util::to_string(g_min) +
+               " the cost is read at the total. Use method \"exact\", or set "
+               "g_min to 0.");
+  }
   with_curve(cost_curve_, [&](auto tag) {
     closed_form::optimise_into<tag.value>(*this);
   });

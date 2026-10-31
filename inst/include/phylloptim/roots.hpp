@@ -821,6 +821,110 @@ public:
     return {psi_soil_, network_.r_R_H_min, network_.r_R_V_sum, root_P50, root_c};
   }
 
+  // The most the soil can deliver through the roots: the uptake's limit as the
+  // collar dries without bound. A layer's flux (T - psi_i - z_i) /
+  // (r_H span / I + r_V) tends to I_inf / r_H as the span grows, where
+  // I_inf = G(inf) - G(psi_i) is the area left under the conductivity curve
+  // past the layer's potential. A layer with none left (its whole span past the
+  // root integral's cap, #85) contributes nothing, and one with no horizontal
+  // resistance makes the limit infinite. The leaf caps the residual flux below
+  // this on the collar route (#182, #184), so a soil the roots can barely draw
+  // from is never asked for more than it can give. Rows on the tape: each G
+  // through the same closed form as the uptake walk, and G(inf) through the
+  // curve's limit. kg H2O m^-2 leaf s^-1, the unit of E_up.
+  template <class T>
+  T uptake_limit(const SupplyAt<T>& at) const {
+    using odelia::util::to_passive;
+    T G_lim;
+    if constexpr (std::is_same_v<T, double>) {
+      G_lim = root_vuln_integral_limit_;
+    } else {
+      const double P50_0 = to_passive(at.root_P50);
+      const double c_0 = to_passive(at.root_c);
+      const double b = weibull_b_from_P50(P50_0, c_0);
+      const VulnerabilityIntegralDerivatives d =
+          cumulative_vulnerability_integral_limit_derivatives(b, c_0);
+      const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
+      G_lim = T(root_vuln_integral_limit_) +
+              T(rows.dP50) * (at.root_P50 - T(P50_0)) +
+              T(rows.dc) * (at.root_c - T(c_0));
+    }
+    T total = T(0.0);
+    for (int i = 0; i < max_soil_layer; ++i) {
+      const T& psi_i = at.psi_soil[i];
+      const double q = to_passive(psi_i);
+      T G_i;
+      if constexpr (std::is_same_v<T, double>) {
+        G_i = root_vuln_integral_at(q);
+      } else {
+        G_i = closed_form_integral<T>(root_vuln_integral_at(q),
+                                      root_vuln_integral_deriv_at(q), psi_i,
+                                      at.root_P50, at.root_c,
+                                      PastLastKnot::HoldsLastKnot);
+      }
+      if (!(to_passive(G_lim) - to_passive(G_i) > 0.0)) {
+        continue;
+      }
+      if (!(to_passive(at.r_R_H_min[i]) > 0.0)) {
+        return T(std::numeric_limits<double>::infinity());
+      }
+      total += (G_lim - G_i) / at.r_R_H_min[i];
+    }
+    // In kg, as E_up leaves the walk; the per-layer draws are in mol.
+    return total * T(kg_per_mol_h2o);
+  }
+
+  // The wet bound's floor: each layer's draw changes sign at its own gravity
+  // balance, psi_i + z_i, so at the lowest balance among the layers that still
+  // conduct every layer draws nothing or less, and the wet bound lies at or
+  // above it. Where no layer conducts (every rooted potential past the root
+  // integral's cap, #85) the uptake is zero at every collar, the wet bound has
+  // nothing to place it, and it is the balance of the wettest layer: the last
+  // to stop conducting, so the limit the bound reaches from the wet side. That
+  // is what makes a shut leaf continuous through the cap (#184). Returns the
+  // layer whose balance it is; `conducts` says which case.
+  int wet_floor_layer(const std::vector<double>& psi_soil, bool& conducts) const {
+    int lowest = -1, wettest = -1;
+    for (int i = 0; i < max_soil_layer; ++i) {
+      const double s = psi_soil[static_cast<std::size_t>(i)];
+      if (wettest < 0 || s < psi_soil[static_cast<std::size_t>(wettest)]) {
+        wettest = i;
+      }
+      if (!(root_vuln_integral_limit_ - root_vuln_integral_at(s) > 0.0)) {
+        continue;
+      }
+      const double b = s + grav_head_z_[static_cast<std::size_t>(i)];
+      if (lowest < 0 ||
+          b < psi_soil[static_cast<std::size_t>(lowest)] +
+                  grav_head_z_[static_cast<std::size_t>(lowest)]) {
+        lowest = i;
+      }
+    }
+    conducts = lowest >= 0;
+    return conducts ? lowest : wettest;
+  }
+
+  // The other end: the highest gravity balance among the layers that still
+  // conduct, at which every one of them draws water or none, so uptake is at
+  // least zero there. The bound lies between the two at g_min = 0. The floor's
+  // value where none conducts.
+  double wet_ceiling(const std::vector<double>& psi_soil) const {
+    double highest = -std::numeric_limits<double>::infinity();
+    for (int i = 0; i < max_soil_layer; ++i) {
+      const double s = psi_soil[static_cast<std::size_t>(i)];
+      if (!(root_vuln_integral_limit_ - root_vuln_integral_at(s) > 0.0)) {
+        continue;
+      }
+      highest = std::max(highest, s + grav_head_z_[static_cast<std::size_t>(i)]);
+    }
+    if (std::isinf(highest)) {
+      bool conducts = false;
+      const std::size_t k = static_cast<std::size_t>(wet_floor_layer(psi_soil, conducts));
+      return psi_soil[k] + grav_head_z_[k];
+    }
+    return highest;
+  }
+
   // The uptake, at any scalar. Upstream's function line for line, with one
   // discipline added: ⚠️ EVERY COMPARISON READS PASSIVE. std::min on two active
   // values branches on a taped comparison and manufactures a discontinuity the
@@ -979,6 +1083,16 @@ public:
           integral += (T_neg_hi - T_src_min);
         }
 
+        // A layer whose whole span lies past the root integral's cap (#85: the
+        // table holds G(inf) beyond its last knot) has no conductance left and
+        // draws nothing. At double that fell out of the arithmetic as
+        // num / inf; on the tape it was inf * 0, so the layer is skipped
+        // explicitly, with no flux and no rows. A shut leaf's collar can sit
+        // there now that it is no longer held at a critical potential (#182).
+        if (!(to_passive(integral) > 0.0)) {
+          out_p[i] = T(0.0);
+          continue;
+        }
         const T span = T_src_max - T_src_min;
         const T r_R = rH_p[i] * span / integral +
                       rV_p[i];

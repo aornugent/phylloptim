@@ -113,7 +113,7 @@ inline const std::vector<std::string>& par_names() {
       "root_c",    "root_P50",            "TF24_beta2",
       "jmax_25",   "phi_J",               "curv_fact_elec_trans",
       "curv_fact_colim", "TF24_cost_scale", "R_d_25",
-      "JS22_gamma", "CMax_a", "CMax_b",
+      "JS22_gamma", "CMax_a", "CMax_b", "g_min",
       "leaf_specific_conductance_max",
       "resistance",
       "CF77_lambda_",
@@ -295,6 +295,16 @@ inline double step_for(int par, double value, double step) {
   const double floor =
       (par == par_kmax || par == par_resistance) ? 0.0 : 1.0;
   return std::max(std::abs(value), floor) * step;
+}
+
+// Where the stencil is centred. `g_min` is refused below zero and defaults to
+// zero, so a central difference about its base value would step onto a negative
+// residual conductance; the stencil is shifted up by one step there, so both
+// of its points are admissible and the difference is the derivative at
+// `g_min = h`. Any other parameter is centred on its value. The twin of
+// `.gradient_centre()` in R/gradient.R, bit for bit.
+inline double centre_for(int par, double value, double h) {
+  return (par == par_g_min && value - h < 0.0) ? value + h : value;
 }
 
 // --- one observation's drivers ------------------------------------------------
@@ -487,7 +497,7 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
                theta[par_phi_J], theta[par_curv_fact_elec_trans],
                theta[par_curv_fact_colim], theta[par_TF24_cost_scale],
                theta[par_R_d_25], theta[par_JS22_gamma],
-               theta[par_CMax_a], theta[par_CMax_b]);
+               theta[par_CMax_a], theta[par_CMax_b], theta[par_g_min]);
   // Not traits, so they are set directly rather than through set_traits -- and
   // nothing is derived from either, so a bare write leaves no stale state behind.
   l.CF77_lambda_ = theta[par_CF77_lambda];
@@ -582,11 +592,12 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
     }
     at_base = false;
     const double h = step_for(p, theta[p], s.step);
+    const double centre = centre_for(p, theta[p], h);
     for (int side = 0; side < 2; ++side) {
       // Up first, then down: R evaluates `up <- side(1)` before `dn <- side(-1)`
       // and both mutate the leaf.
       std::copy(theta, theta + n_theta, th);
-      th[p] = side == 0 ? theta[p] + h : theta[p] - h;
+      th[p] = side == 0 ? centre + h : centre - h;
       apply(l, th, d, single, p, s.fast_stem_curve);
       double* dst = side == 0 ? up : dn;
       // Evaluate first, then read dprofit at the same fixed collar -- R's order,
@@ -664,9 +675,10 @@ inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
     }
     at_base = false;
     const double h = step_for(p, theta[p], s.fd_step);
+    const double centre = centre_for(p, theta[p], h);
     for (int side = 0; side < 2; ++side) {
       std::copy(theta, theta + n_theta, th);
-      th[p] = side == 0 ? theta[p] + h : theta[p] - h;
+      th[p] = side == 0 ? centre + h : centre - h;
       apply(l, th, d, single, p, s.fast_stem_curve);
       route_solve(l, s.curve);
       outputs(l, side == 0 ? up : dn);

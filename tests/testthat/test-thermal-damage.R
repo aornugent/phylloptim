@@ -233,15 +233,16 @@ test_that("impaired and damaged area discount BOTH capacities by F = 1 - I - D",
   drive_at(crushed, 30)
   expect_equal(crushed$vcmax_ / undamaged$vcmax_, 1e-6, tolerance = 1e-12)
   expect_equal(crushed$jmax_ / undamaged$jmax_, 1e-6, tolerance = 1e-12)
-  # A leaf this damaged cannot cover its respiration, so the solve takes the
-  # no-flow exit a dark leaf takes -- and completes there, with finite carbon:
-  # what its remaining capacity fixes at ambient CO2, less respiration.
-  # (lambda_emergent is NaN at that exit by design, as it is for a dark leaf.)
+  # A leaf this damaged cannot cover its respiration, so it is a net source of
+  # CO2, as a dark leaf is -- and the solve completes there with finite carbon.
+  # It is an ordinary optimum (#182): the CO2 it respires leaves through its
+  # conductance, so ci sits ABOVE ca, where its remaining capacity fixes a
+  # little more than at ambient CO2, and the leaf still nets a loss.
   crushed$find_root_collar_psi()
   expect_true(is.finite(crushed$profit_))
-  expect_identical(crushed$assim_colimited_,
-                   crushed$assim_colimited(crushed$ca_))
+  expect_gt(crushed$ci_, crushed$ca_)
   expect_lt(crushed$assim_colimited_, 0)
+  expect_gte(crushed$assim_colimited_, crushed$assim_colimited(crushed$ca_))
 })
 
 test_that("a thermostability offset moves the whole response up in temperature", {

@@ -38,6 +38,11 @@ enum clamp_site {
   // dprofit_droot_collar_psi_checked -- which refuses instead; this one is for a
   // tracked collar being nudged.
   CLAMP_COLLAR_POTENTIAL,
+  // The stomatal flux read as zero where the hydraulic flux falls short of the
+  // residual flux: a candidate below the wet bound, which the solve hands the
+  // evaluator only by rounding (a prescribed collar at the bound inverts the
+  // pair by ~1e-14 MPa). The corner E_s >= 0 the solve keeps (#183).
+  CLAMP_STOMATAL_FLUX,
   CLAMP_SITE_COUNT
 };
 
@@ -47,6 +52,7 @@ inline const char* clamp_site_name(int site) {
   case CLAMP_ROOT_VULN_ARGUMENT:     return "root_vuln_argument";
   case CLAMP_LEAF_TEMPERATURE:       return "leaf_temperature";
   case CLAMP_COLLAR_POTENTIAL:       return "collar_potential";
+  case CLAMP_STOMATAL_FLUX:          return "stomatal_flux";
   }
   return "unknown";
 }

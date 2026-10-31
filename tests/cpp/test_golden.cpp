@@ -146,9 +146,8 @@ std::vector<Row> run_grid() {
 // not reproduce this split, because dprofit's shut-down sentinel is exactly 0.0
 // and would move all 48 shutdown points into `interior`.
 //
-// Six kinds are expected to be EMPTY here, and the table below asserts each:
-// `shade-death` because assim_max_ never gets there (it is reached by light, not by
-// drying, and not by heat either at 40 C); `solver-refused` and
+// Five kinds are expected to be EMPTY here, and the table below asserts each:
+// `solver-refused` and
 // `non-finite-gradient` because both bracket endpoints admit a usable gradient on
 // every feasible row; `boundary-root-crit` because the continuity root never
 // reaches the root's own limit at these traits; and `prescribed` and `unsolved` because
@@ -199,7 +198,6 @@ int check_operating_kinds(const std::vector<Row> &rows) {
         // this list is a kind the golden file stops covering.
         {Kind::BoundaryRootCrit, 0},
         {Kind::HydraulicShutdown, e.shutdown},
-        {Kind::ShadeDeath, 0},
         {Kind::Prescribed, 0},        {Kind::SolverRefused, 0},
         {Kind::NonFiniteGradient, 0}, {Kind::Unsolved, 0},
     };
@@ -309,6 +307,19 @@ bool same(double got, double want) {
 // matters and a relative comparison against it is meaningless. Justified by a
 // measured empty band -- see the use site in compare_optima.
 constexpr double kOptNegligible = 1e-12;
+
+// The same idea for operating_points.tsv's water fluxes, kg H2O m^-2 s^-1. A
+// shut leaf at g_min = 0 sits on a bound polished to collar precision, and the
+// uptake there is that polish's residue: ~1e-20 in e_up and ~1e-18 summed over
+// layers, of either sign on either platform (#182). The smallest flux an open
+// leaf on the grid reports is 7.6e-12, so the floor sits in a measured empty
+// band four decades from each side. Tolerant mode only; macOS stays bit-exact.
+constexpr double kFluxNegligible = 1e-15;
+
+bool is_water_flux_field(const char* name) {
+  return std::strcmp(name, "transpiration") == 0 || std::strcmp(name, "gc") == 0 ||
+         std::strcmp(name, "e_up") == 0 || std::strcmp(name, "uptake") == 0;
+}
 
 double rel_diff(double a, double b) {
   if (std::isnan(a) && std::isnan(b)) {
@@ -438,7 +449,10 @@ int compare(Tolerance tol) {
                             {"e_up", r.e_up, g.e_up},
                             {"uptake", r.uptake, g.uptake}};
     for (const Field &fd : fields) {
-      const double rd = rel_diff(fd.got, fd.want);
+      const bool negligible = tol.argmax >= 0.0 && is_water_flux_field(fd.name) &&
+                              std::fabs(fd.got) < kFluxNegligible &&
+                              std::fabs(fd.want) < kFluxNegligible;
+      const double rd = negligible ? 0.0 : rel_diff(fd.got, fd.want);
       const bool is_max = is_maximum_field(fd.name);
       const double rtol = is_max ? tol.maximum : tol.argmax;
       // Track the worst deviation in each class over the whole grid regardless

@@ -90,7 +90,7 @@ set_traits <- function(x, traits) {
                traits$root_c, traits$root_P50, traits$TF24_beta2,
                traits$jmax_25, traits$phi_J, traits$curv_fact_elec_trans,
                traits$curv_fact_colim, traits$TF24_cost_scale, traits$R_d_25,
-               traits$JS22_gamma, traits$CMax_a, traits$CMax_b)
+               traits$JS22_gamma, traits$CMax_a, traits$CMax_b, traits$g_min)
   invisible(x)
 }
 
@@ -1452,6 +1452,16 @@ leaf_gradient <- function(psi_soil,
   max(abs(value), floor) * step
 }
 
+# Where the stencil is centred. `g_min` is refused below zero and defaults to
+# zero, so a central difference about its base value would step onto a negative
+# residual conductance; the stencil is shifted up by one step there, so both of
+# its points are admissible and the difference is the derivative at `g_min = h`.
+# Any other parameter is centred on its value. Mirrored bit-for-bit in
+# `gradient::centre_for()`.
+.gradient_centre <- function(par, value, h) {
+  if (identical(par, "g_min") && value - h < 0) value + h else value
+}
+
 # Parameters whose setter takes a SHORTCUT that leaves the rest of the object
 # alone, and which therefore require the object to be at the base point before
 # they run. See `.gradient_reseat_base()`.
@@ -1510,9 +1520,10 @@ leaf_gradient <- function(psi_soil,
     p <- pars[[k]]
     seat(k)
     h <- .gradient_step(p, theta[[p]], step)
+    centre <- .gradient_centre(p, theta[[p]], h)
     side <- function(sign) {
       th <- theta
-      th[[p]] <- th[[p]] + sign * h
+      th[[p]] <- centre + sign * h
       reset(th, only = p)
       y <- .gradient_outputs_at(l, psi_star, route)
       if (is.null(y)) {
@@ -1660,9 +1671,10 @@ leaf_gradient <- function(psi_soil,
     p <- pars[[k]]
     seat(k)
     h <- .gradient_step(p, theta[[p]], step)
+    centre <- .gradient_centre(p, theta[[p]], h)
     side <- function(sign) {
       th <- theta
-      th[[p]] <- th[[p]] + sign * h
+      th[[p]] <- centre + sign * h
       reset(th, only = p)
       route$solve()
       .gradient_outputs(l)

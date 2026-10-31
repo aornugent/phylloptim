@@ -203,6 +203,11 @@ Leaf:
     stom_cond_CO2_: {type: double, access: field}
     assim_colimited_: {type: double, access: field}
     transpiration_: {type: double, access: field}
+    # The residual flux the leaf realised, kg H2O m^-2 s^-1, and g_min at the
+    # operating point's leaf temperature (#182). `transpiration_` is the TOTAL;
+    # the stomatal flux is their difference. Outputs, written by every solve.
+    residual_flux_: {type: double, access: field, readonly: true}
+    g_min_leaf_: {type: double, access: field, readonly: true}
     soil_consumption_: {type: "std::vector<double>", access: field}
     profit_: {type: double, access: field}
     CF77_lambda_: {type: double, access: field}
@@ -324,6 +329,23 @@ Leaf:
     # Wolf/Anderegg CMax. Fields for the same reason. ⚠️ CMax_b is SIGNED.
     CMax_a: {type: double, access: field}
     CMax_b: {type: double, access: field}
+    # The residual (cuticular) conductance at 25 C, mol H2O m^-2 s^-1 (#182):
+    # the sixteenth trait, a `set_traits()` argument, and a field for the
+    # reason R_d_25 is one (the constructor is pinned by arity, so leaf_model()
+    # assigns it after construction). Default 0, at which every term it enters
+    # is an exact zero.
+    g_min: {type: double, access: field}
+    # The cuticle's CO2:H2O conductance ratio and the three numbers of its
+    # temperature response (a low slope, an extra slope above a transition, the
+    # transition and its width). Parameters, not traits: no gradient row, and
+    # the response is normalised to 1 at 25 C so the trait is the reference
+    # value. See the members for the form and for why the defaults are
+    # placeholders.
+    g_min_co2_ratio_: {type: double, access: field}
+    g_min_k_low_: {type: double, access: field}
+    g_min_k_high_: {type: double, access: field}
+    g_min_T_trans_: {type: double, access: field}
+    g_min_T_width_: {type: double, access: field}
     # The Tjoelker (2001) declining-Q10 coefficients:
     #   Q10(T) = rd_q10_intercept_ - rd_q10_slope_ * (T + 25) / 2
     # Set the slope to zero and the intercept IS a constant Q10.
@@ -589,7 +611,7 @@ Leaf:
       args: [stem_P50: double]
     set_traits:
       return_type: void
-      args: [vcmax_25: double, stem_c: double, stem_P50: double, root_c: double, root_P50: double, TF24_beta2: double, jmax_25: double, phi_J: double, curv_fact_elec_trans: double, curv_fact_colim: double, TF24_cost_scale: double, R_d_25: double, JS22_gamma: double, CMax_a: double, CMax_b: double]
+      args: [vcmax_25: double, stem_c: double, stem_P50: double, root_c: double, root_P50: double, TF24_beta2: double, jmax_25: double, phi_J: double, curv_fact_elec_trans: double, curv_fact_colim: double, TF24_cost_scale: double, R_d_25: double, JS22_gamma: double, CMax_a: double, CMax_b: double, g_min: double]
 
     # --- transpiration and conductance ---------------------------------------
     proportion_of_conductivity:
@@ -604,6 +626,23 @@ Leaf:
     transpiration:
       return_type: double
       args: [psi_stem: double, psi_upstream: double]
+    # The residual conductance's temperature factor (1 at 25 C exactly) and the
+    # conductance itself at a leaf temperature; the stem potential at which the
+    # stem carries exactly the residual flux from a pinned upstream potential
+    # (the wet end of a stem route, psi_upstream itself at g_min = 0); and the
+    # stem's flux ceiling from an upstream potential, kmax (G(inf) - G(psi)).
+    g_min_factor:
+      return_type: double
+      args: [leaf_temp: double]
+    g_min_at:
+      return_type: double
+      args: [leaf_temp: double]
+    stem_wet_bound:
+      return_type: double
+      args: [psi_upstream: double]
+    supply_ceiling:
+      return_type: double
+      args: [psi_upstream: double]
     transpiration_full_integration:
       return_type: double
       args: [psi_stem: double, psi_upstream: double]

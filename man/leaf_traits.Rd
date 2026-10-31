@@ -19,7 +19,8 @@ leaf_traits(
   R_d_25 = 1.44,
   JS22_gamma = 1,
   CMax_a = 0.6,
-  CMax_b = 0
+  CMax_b = 0,
+  g_min = 0
 )
 }
 \arguments{
@@ -81,6 +82,23 @@ against it must have its sign checked rather than assumed.
 reproducing TF24's cost at its own optimum runs 0.406 at \code{psi_soil} 0.5 MPa
 to 0.807 at 3.0 MPa — a 2.0x range against \code{JS22_gamma}'s 6.1x, which is the
 absolute-versus-drop distinction as a number.}
+
+\item{g_min}{the residual (cuticular) conductance to water vapour at 25 C
+(mol H2O m^-2 s^-1). A leaf keeps losing water through its cuticle after
+its stomata have shut, and the cuticle lets CO2 through as well (at the
+ratio \verb{$g_min_co2_ratio_}, 0.05 by default). The leaf optimises its
+STOMATAL flux; the xylem carries the total, \code{E = E_s + E_r} with
+\verb{E_r = g_min(T_leaf) D_leaf / P_atm}, and every cost that reads the flux
+charges the total. Default 0, at which nothing moves.
+
+⚠️ \strong{A measured cuticular conductance, not a fitted \code{g0}.} A \code{g0} fitted
+to gas exchange is an order of magnitude larger and is mostly stomata that
+have not finished closing; measured cuticular conductances run
+0.25-0.8 mmol m^-2 s^-1 (2.5e-4 to 8e-4 here). The Medlyn route's \verb{$g0} is
+the fitted quantity and is untouched by this trait. \code{g_min} rises with
+leaf temperature on a smooth curve whose three parameters are fields on
+the \code{Leaf} (\verb{$g_min_k_low_}, \verb{$g_min_k_high_}, \verb{$g_min_T_trans_},
+\verb{$g_min_T_width_}); their defaults are placeholders, inert at 25 C.}
 }
 \value{
 A \code{leaf_traits} object; a named list.

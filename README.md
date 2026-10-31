@@ -206,7 +206,7 @@ A model that differentiates a run containing the leaf (plant's stand gradient is
 l.find_root_collar_psi();                                    // the solve, at double
 auto draw = l.supply_draw_at<S>(S(l.opt_root_psi_), supply);  // the soil's draw at the solved collar
 S    psi  = l.collar_at<K, S>(draw, pars, curvature);         // the collar, carrying its rows
-auto out  = l.outputs_at<K, S>(psi, draw, pars);              // profit and per-layer uptake
+auto out  = l.outputs_at<K, S>(psi, draw, pars);              // profit, per-layer uptake, residual flux
 ```
 
 `l.operating_point_kind()` says which condition placed the point, and decides what `collar_at` does; a consumer branches on it. The preconditions, the kinds, and a compiled example are at the top of `inst/include/phylloptim/leaf_model.hpp`; `vignette("derivative-surface")` explains the design. The surface is implemented for the TF24 and TF24_floor curves and the multi-layer supply.

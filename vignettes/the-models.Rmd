@@ -180,14 +180,14 @@ Where profit is still climbing as it reaches the end of the feasible interval, `
 
 A solver therefore has to test the derivative's sign at each end and say explicitly that the answer is a bound. Handed no sign change, a bracketing root-find cannot on its own distinguish "the answer is the endpoint" from "I failed", so the operating-point kind is what carries the distinction.
 
-The feasible interval runs from `ψ_soil`, where there is no tension gradient and so no flow and closed stomata, to `ψ_crit`, the most tension the stem is allowed. Constrained answers are named for the bound that binds:
+The feasible interval runs from the wet bound, where the stomata are closed and the stem carries only the cuticle's residual flux (`ψ_soil` itself, with no flow, at the default `g_min = 0`), to `ψ_crit`, the most tension the stem is allowed. Constrained answers are named for the bound that binds:
 
 | kind | where | what it means |
 |---|---|---|
 | `interior` | strictly inside | `dJ/dψ = 0`, the stationary case |
-| `boundary-soil` | `ψ_stem = ψ_soil` | no interior point earns its water, and the leaf declines to open |
+| `boundary-soil` | `ψ_stem` at the wet bound | no interior point earns its water, and the leaf declines to open; a leaf in the dark, or too hot to fix carbon, lands here too |
 | `boundary-crit` | `ψ_stem = ψ_crit` | still worth pulling harder, and the hydraulic limit is what stops it |
-| `hydraulic-shutdown` | no interval exists | the soil is drier than `ψ_crit`, so nothing is optimised |
+| `hydraulic-shutdown` | no interval exists | the soil is drier than `ψ_crit`, so nothing is optimised and the leaf sits shut at its wet bound |
 
 : The four kinds of operating point the reference grid reaches, and what each says about the leaf.
 
@@ -303,7 +303,7 @@ So a product objective is a difference objective with a transformed benefit. The
 - Its λ carries a factor of `A`, because the cost is levied on proportional rather than absolute carbon. The section on λ derives this in one line, and shows that it is a property of the product form rather than of this particular `g`.
 - **It can never be boundary-crit.** `g(psi_crit)` is exactly zero, so `C` diverges there. Water becomes infinitely expensive before the bound is reached, and no parameter of the model's own is involved in arranging that.
 
-**The link states the cost; it is not how the optimum is found.** At full closure `A = min(0, A(c_a)) ≤ 0`, so `log A` does not exist, and that endpoint has to be a candidate. The optimiser therefore maximises the product directly, which is exact because `log` is monotone, while the *derivative* uses the log form.
+**The link states the cost; it is not how the optimum is found.** At full closure `A ≤ 0` (zero in light at `g_min = 0`, negative in the dark), so `log A` does not exist, and that endpoint has to be a candidate. The optimiser therefore maximises the product directly, which is exact because `log` is monotone, while the *derivative* uses the log form.
 
 `LeastCost` reaches the same link from the other side. @prentice2014 minimise the cost of acquiring a unit of carbon, $(c_E E + c_V V_{c\max})/A$, which is a *ratio*; minimising it is maximising $\log A-\log\big(E+\beta_{\rm LC}V_{c\max}\big)$, so its log-cost is $+\log W$ where a product's is $-\log g$, and the sign lands in the marginal cost rather than in the link. Two things follow. Its penalty is the only one in the table that weighs something other than water — photosynthetic capacity, against transpiration — so a light sweep on this curve measures acclimation rather than the price of water. And its λ does **not** vanish at the wet end: as `E → 0` the denominator tends to the capacity term and λ to a finite value set by it, where a product curve's `g` carries λ to zero. Its first-order condition is the paper's own, $(c_i-\Gamma^*)/(c_a-c_i)=\xi/\sqrt{D}$ with $\xi=\sqrt{\beta_{\rm LC}(K_m+\Gamma^*)/1.6}$, and the C++ suite checks the solved $c_i/c_a$ against it to 1e-11 on the Rubisco-limited branch. The widely quoted $\chi=\xi/(\xi+\sqrt{D})$ is that condition with $\Gamma^*$ dropped from the numerator, and understates $\chi$ by 4–8% over `D` = 1–4 kPa; the suite predicts that gap rather than tolerating it.
 
@@ -611,7 +611,9 @@ The thermal cost is inert on its own, without the energy balance. With a prescri
 
 ## When the leaf cannot transpire
 
-Where the soil is drier than the stem's critical potential there is no flow, and the only feasible operating point is the no-flow one. The package evaluates the objective there rather than zeroing the reported fields, so every output describes one consistent state. A leaf moving no gas nets `min(0, A(c_a))`: zero in light, which is what a transpiring leaf tends to as `E → 0`, and `A(c_a) < 0` in the dark. For Cowan-Farquhar the result is exactly predictable: `E` is zero, so the cost is zero, so in light profit is zero whatever λ is.
+Where the soil is drier than the stem's critical potential there is no interval to optimise over, and the leaf sits at its wet bound with its stomata shut: the stem potential at which the supply delivers exactly what the cuticle loses. The package evaluates the objective there with the same expressions as an open leaf, so every output describes one consistent state and the shut leaf cannot disagree with the open one next to it.
+
+What the shut leaf nets depends on its residual conductance `g_min` (a trait, default 0). With `g_min > 0` the cuticle still passes CO₂, at `ρ g_min` with `ρ` = 0.05, so `c_i` is an ordinary root of the supply–demand balance: below `c_a` in light, above it in the dark or when too hot to fix carbon, where the CO₂ the leaf respires leaves through its cuticle. At `g_min = 0` there is no conductance, and the shut leaf takes the `g_min → 0` limit of that: the root of `A(c_i) = 0`, which is zero in light, as a transpiring leaf tends to as `E → 0`; and, where `A` has no root, its value as `c_i → ∞`, which is `−R_d` in the dark. For Cowan-Farquhar at `g_min = 0` the result is exactly predictable: `E` is zero, so the cost is zero, so in light profit is zero whatever λ is.
 
 ```{r}
 d <- leaf_model()                       # psi_soil drier than psi_crit
@@ -689,7 +691,7 @@ $$A=\frac{A_c+A_j-\sqrt{(A_c+A_j)^{2}-4\,\theta_c A_c A_j}}{2\theta_c}-R_d$$
 
 $$K_m=K_c\Big(1+\frac{O_2}{K_o}\Big)$$
 
-`A` here is **net** assimilation. `R_d` is inside it, which is why `A` can be negative. A leaf with its stomata closed nets `min(0, A(c_a))`: zero in light, where the transpiring leaf tends to `A = 0` as `E → 0`, and `−R_d` in the dark.
+`A` here is **net** assimilation. `R_d` is inside it, which is why `A` can be negative. A leaf with its stomata closed exchanges CO₂ only through its cuticle, at `ρ g_min`; at the default `g_min = 0` it nets zero in light, where the transpiring leaf tends to `A = 0` as `E → 0`, and `−R_d` in the dark.
 
 ### 2. Temperature responses
 

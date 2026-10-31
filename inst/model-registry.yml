@@ -56,6 +56,7 @@ sections:
   biochemistry: Photosynthetic biochemistry
   respiration: Respiration
   vapour: Water vapour and the leaf-to-air deficit
+  residual: The residual (cuticular) conductance
   energy_balance: Energy balance
   solve: Solving for the operating point
   costs: Cost curves and the objective
@@ -1301,6 +1302,83 @@ parameters:
     placeholder: false
     code: phylloptim::Leaf::LeastCost_beta
 
+  # --- the residual (cuticular) conductance, #182 --------------------------------
+  g_min:
+    section: residual
+    symbol: 'g_\min'
+    units: 'mol H₂O m⁻² s⁻¹'
+    class: trait
+    meaning: 'residual (cuticular) conductance to water vapour at 25 °C: the water a leaf keeps losing after its stomata have shut, and the pathway through which CO₂ moves at the ratio ρ below; default 0, at which every term it enters is an exact zero'
+    source: 'default 0 by design; measured cuticular conductances run 0.25–0.8 mmol m⁻² s⁻¹ (De Kauwe et al. 2022, cited in the companion manuscript); not a fitted Medlyn g₀, which is an order of magnitude larger'
+    placeholder: false
+    code: phylloptim::Leaf::g_min
+  g_min_co2_ratio_:
+    section: residual
+    symbol: '\rho'
+    units: '–'
+    class: hyperparameter
+    meaning: 'the cuticle''s conductance to CO₂ as a fraction of its conductance to water vapour; stomata are at 1/1.67'
+    source: 'Boyer (2015, J. Exp. Bot. 66:2625, doi:10.1093/jxb/erv065): the cuticle''s conductance to CO₂ is 1/20 to 1/40 of its conductance to water vapour in grape and sunflower, in line with Boyer et al. (1997); 0.05 is the upper end'
+    placeholder: false
+    code: phylloptim::Leaf::g_min_co2_ratio_
+  g_min_k_low_:
+    section: residual
+    symbol: 'k_\mathrm{lo}'
+    units: 'K⁻¹'
+    class: hyperparameter
+    meaning: 'slope of log g_min in leaf temperature below the transition (Q10 ≈ 1.35 at the default)'
+    source: 'placeholder: cuticular permeance rises with temperature, steeply above a wax phase transition near 35–45 °C (Riederer & Schreiber 2001; Schuster et al. 2016, reviewed in Duursma et al. 2018); inert at 25 °C and at g_min = 0'
+    cite: Duursma-2018
+    placeholder: true
+    code: phylloptim::Leaf::g_min_k_low_
+  g_min_k_high_:
+    section: residual
+    symbol: 'k_\mathrm{hi}'
+    units: 'K⁻¹'
+    class: hyperparameter
+    meaning: 'the EXTRA slope of log g_min above the transition'
+    source: 'placeholder, as k_lo'
+    cite: Duursma-2018
+    placeholder: true
+    code: phylloptim::Leaf::g_min_k_high_
+  g_min_T_trans_:
+    section: residual
+    symbol: 'T_t'
+    units: '°C'
+    class: hyperparameter
+    meaning: 'the transition temperature at which the two slopes blend'
+    source: 'placeholder, as k_lo'
+    cite: Duursma-2018
+    placeholder: true
+    code: phylloptim::Leaf::g_min_T_trans_
+  g_min_T_width_:
+    section: residual
+    symbol: 'w'
+    units: 'K'
+    class: hyperparameter
+    meaning: 'the width over which the two slopes blend; the response is one smooth curve, never two slopes meeting at a point'
+    source: 'placeholder, as k_lo'
+    placeholder: true
+    code: phylloptim::Leaf::g_min_T_width_
+  residual_cap_power:
+    section: residual
+    symbol: 'p'
+    units: '–'
+    class: constant
+    meaning: 'power of the soft minimum that caps the realised residual flux at what the stem can carry'
+    source: 'chosen so the cap is inert to 5e-4 at half the cap and never a kink; a placeholder for the regime #183 leaves to a later step'
+    placeholder: true
+    code: phylloptim::Leaf::residual_cap_power
+  residual_cap_fraction:
+    section: residual
+    symbol: '\phi'
+    units: '–'
+    class: constant
+    meaning: 'the fraction of the stem''s flux ceiling the realised residual flux is capped at; below 1 so the shut stem''s potential stays finite'
+    source: 'placeholder, as p'
+    placeholder: true
+    code: phylloptim::Leaf::residual_cap_fraction
+
   # --- Medlyn route, soil moisture and the closed form ---------------------------
   # --- medlyn -------------------------------------------------------------------
   g0:
@@ -1499,21 +1577,22 @@ equations:
       D_\mathrm{leaf} = \begin{cases} D_\mathrm{air} & g_\mathrm{EB} = 0 \\
       \max\!\big(D_\mathrm{air} + [e_s(T_\mathrm{leaf}) - e_s(T_\mathrm{air})],\; D_\min\big) & g_\mathrm{EB} = 1 \end{cases}
     code: phylloptim::Leaf::set_leaf_vpd
+    also: [phylloptim::Leaf::leaf_vpd_at]
     reads: [use_energy_balance_, atm_vpd, vpd_leaf_min]
-    writes: [vpd_leaf_]
+    writes: [vpd_leaf_, g_min_leaf_]
     kind: closed_form
     note: 'The bracketing is deliberate: at $T_\mathrm{leaf} = T_\mathrm{air}$ it is an exact zero and the prescribed path is bit-identical.'
   stomatal_conductance:
     section: vapour
-    title: Stomatal conductance to CO₂ from the transpiration
+    title: Conductance to CO₂ from the transpiration
     latex: |
-      g_c = \frac{P\, E / M_w}{D_\mathrm{leaf}\; \times 1.67}
+      g_c = \frac{P\, (E - r^*) / M_w}{D_\mathrm{leaf}\; \times 1.67} + \rho\, g_\min(T_\mathrm{leaf})
     code: phylloptim::Leaf::stom_cond_CO2
-    also: [phylloptim::Leaf::set_leaf_states_rates_from_psi_stem]
-    reads: [atm_kpa, kg_to_mol_h2o, H2O_CO2_stom_diff_ratio_]
+    also: [phylloptim::Leaf::set_leaf_states_rates_from_psi_stem, phylloptim::Leaf::cuticular_cond_CO2]
+    reads: [atm_kpa, kg_to_mol_h2o, H2O_CO2_stom_diff_ratio_, g_min_co2_ratio_]
     writes: [stom_cond_CO2_]
     kind: closed_form
-    note: 'Fick''s law with $E$ in kg m⁻² s⁻¹, $P$ and $D_\mathrm{leaf}$ in kPa; mol CO₂ m⁻² s⁻¹. No boundary-layer term (#122): $r_a$ resists heat only.'
+    note: 'The TOTAL conductance to CO₂, mol m⁻² s⁻¹: Fick''s law on the STOMATAL flux $E - r^*$ (residual_flux), with $E$ in kg m⁻² s⁻¹, $P$ and $D_\mathrm{leaf}$ in kPa, plus the cuticle''s own conductance (#182). At $g_\min = 0$ the first term is the old expression bit for bit and the second an exact zero. Where $E < r^*$, a candidate below the wet bound that the solve hands the evaluator only by rounding, the stomatal flux reads as zero (the clamp site stomatal_flux). No boundary-layer term (#122): $r_a$ resists heat only.'
 
   boundary_layer_conductance:
     section: vapour
@@ -1537,6 +1616,62 @@ equations:
     writes: []
     kind: closed_form
     note: 'mol m⁻² s⁻¹; bound as `gs_stomatal_H2O`. Equal to the total, bit for bit, with the gate off or a shut leaf. Refused where $g_w \ge g_{bw}$: the transpiration is then more than the boundary layer can carry at that deficit and no finite stomatal conductance exists.'
+
+  # --- the residual (cuticular) conductance, #182 --------------------------------
+  g_min_temperature:
+    section: residual
+    title: The residual conductance at a leaf temperature
+    latex: |
+      g_\min(T) = g_\min \exp\!\Big( k_\mathrm{lo} (T - 25) + w\, k_\mathrm{hi} \big[\mathrm{sp}\big(\tfrac{T - T_t}{w}\big) - \mathrm{sp}\big(\tfrac{25 - T_t}{w}\big)\big] \Big),
+      \qquad \mathrm{sp}(x) = \log(1 + e^{x})
+    code: phylloptim::Leaf::g_min_factor
+    also: [phylloptim::Leaf::g_min_at, phylloptim::Leaf::g_min_factor_temp_deriv, phylloptim::Leaf::set_leaf_vpd]
+    reads: [g_min, g_min_k_low_, g_min_k_high_, g_min_T_trans_, g_min_T_width_]
+    writes: []
+    kind: closed_form
+    cite: Duursma-2018
+    note: 'One C∞ curve: slope $k_\mathrm{lo}$ below $T_t$, $k_\mathrm{lo} + k_\mathrm{hi}$ above it, blended over about $w$ degrees by a softplus, and exactly 1 at 25 °C so the trait is the reference value. Seated with the leaf-to-air deficit at every leaf temperature the solve establishes (set_leaf_vpd), so the two belong to one temperature; under the energy balance that is $T_\mathrm{leaf}(E)$ with $E$ the total flux, which the stem potential fixes, so the balance stays explicit without a linearisation. Its slope enters the energy-balance first-order condition beside the deficit''s (energy_balance_foc).'
+  residual_flux:
+    section: residual
+    title: The residual (cuticular) flux, and its cap
+    latex: |
+      r = \frac{g_\min(T_\mathrm{leaf})\, D_\mathrm{leaf}}{P}\, M_w, \qquad
+      E_\infty = k_{\max}\,[G(\infty) - G(\psi_\mathrm{up})], \qquad
+      U_\infty = \sum_i \frac{G_r(\infty) - G_r(\psi_{\mathrm{soil},i})}{r_{H,i}}, \\
+      \kappa(x, C) = x \Big(1 + \big(\tfrac{x}{\phi C}\big)^{8}\Big)^{-1/8}, \qquad
+      C_U = U_\infty \Big(\frac{U_\infty}{U_\infty + r}\Big)^{2}, \qquad
+      r^* = \kappa\big(\kappa(r, E_\infty),\, C_U\big);
+      \qquad E = E_s + r^*
+    code: phylloptim::Leaf::residual_flux
+    also: [phylloptim::Leaf::residual_demand_at, phylloptim::Leaf::residual_cap, phylloptim::Leaf::supply_ceiling, phylloptim::Leaf::residual_demand_dT, phylloptim::Leaf::residual_cap_ddemand, phylloptim::Leaf::residual_cap_dceiling, phylloptim::Leaf::residual_root_cap, phylloptim::Leaf::residual_root_cap_ddemand, phylloptim::Leaf::residual_root_cap_dceiling_dr, phylloptim::Leaf::residual_root_ceiling_at, phylloptim::residual_cap_factor, phylloptim::MultiLayerRoots::uptake_limit, phylloptim::Leaf::residual_flux_dpsi_upstream, phylloptim::Leaf::residual_cond_temp_deriv, phylloptim::Leaf::residual_flux_at, phylloptim::Leaf::stem_integral_limit_at]
+    reads: [g_min, atm_kpa, kg_to_mol_h2o, leaf_specific_conductance_max, residual_cap_fraction]
+    writes: [residual_flux_]
+    kind: closed_form
+    note: 'The demand $r$ is what the cuticle loses at the leaf''s temperature and deficit, in kg m⁻² s⁻¹. $E_\infty$ is the most the stem can ever carry from its upstream potential ($G(\infty) = (b/c)\Gamma(1/c)$, cached), and the soft minimum $\kappa$ caps the realised flux at $\phi E_\infty$ where the soil cannot supply the cuticle: inert while $r \ll \phi E_\infty$ ($(r/\phi E_\infty)^p/p$: 5e-4 at half the cap), never a min(), which would put a kink into $\psi_\mathrm{soil}$. The power is fixed at 8 by residual_cap_factor, which takes the eighth root by three square roots (residual_cap_power is asserted equal to it). On the collar route a second soft cap holds it below $\phi C_U$, where $U_\infty$ is the most the ROOTS can deliver from this soil: each layer''s uptake tends to $(G_r(\infty) - G_r(\psi_{\mathrm{soil},i}))/r_{H,i}$ as the collar dries (in kg, as $E_\mathrm{up}$), seated per solve (residual_root_ceiling_) and carried on the tape by the draw with its rows. Without it, as a layer approached the root integral''s cap the uptake''s limit fell to zero under a flux only the stem bounded, and the wet bound jumped ~10 MPa (#184). $C_U \approx U_\infty$ in every ordinary soil and falls as $U_\infty^3/r^2$ as the roots stop conducting, so the shut leaf reaches the dead soil''s gravity balance with a continuous value and slope (residual_root_ceiling_at). It is infinite, and inert bit for bit, on the stem routes and at $g_\min = 0$. The leaf optimises the STOMATAL flux $E_s$; the xylem carries the total, which the stem potential fixes through the supply relation as always, and every cost that reads the flux (cost_CF77, cost_TF24_floor, leastcost_flux, the ProfitMax normalisers) charges the total. Exactly zero at $g_\min = 0$. The regime $r > \phi E_\infty$, a leaf the soil cannot keep supplied, is the one a steady-state leaf has no answer for; #183 leaves it to a later step and this cap is a placeholder for it.'
+  wet_bound:
+    section: residual
+    title: The wet bound, where uptake meets the residual flux
+    latex: |
+      E_\mathrm{up}(\psi_a) = r^*(\psi_a) \quad \text{(collar route)}, \qquad
+      E(\psi_w; \psi_\mathrm{soil}) = r^*(\psi_\mathrm{soil}) \quad \text{(stem route)}
+    code: phylloptim::Leaf::find_wet_bound
+    also: [phylloptim::Leaf::stem_wet_bound, phylloptim::Leaf::find_shut_wet_bound, phylloptim::Leaf::supply_wet_floor, phylloptim::Leaf::supply_wet_ceiling, phylloptim::MultiLayerRoots::wet_floor_layer, phylloptim::MultiLayerRoots::wet_ceiling, phylloptim::Leaf::polish_bracket_bound, phylloptim::Leaf::prepare_collar_solve, phylloptim::Leaf::optimise_psi_stem_single]
+    reads: [psi_crit]
+    writes: []
+    kind: identity
+    note: 'The wet end of every solve: the collar (or, on a stem route, the stem potential) at which the water the supply delivers is exactly the cuticle''s loss, so the stomata are shut. At $g_\min = 0$ it is the zero-uptake collar $\psi_{r,0}$ (continuity_root), found by the same call with the same bracket, so that path is bit-identical. With $g_\min > 0$ the target is uptake less the realised residual flux, which rises with the collar; it can lie past $\psi_\mathrm{crit}$ when the soil is too dry to supply the cuticle inside it, and the bracket is widened until it changes sign. With a residual conductance the bound is a regular point (the cuticle still conducts CO₂), so a leaf that declines to open sits exactly on it, which removes the boundary-soil artefact #183 recorded; at $g_\min = 0$ it has no conductance, and the solve steps 1e-6 of the bracket inside as before.'
+  shut_state:
+    section: residual
+    title: The shut leaf
+    latex: |
+      \psi_r^* = \psi_a, \qquad \psi_\mathrm{stem}^* = G^{-1}\!\big(E_\mathrm{up}(\psi_a)/k_{\max} + G(\psi_a)\big), \qquad
+      E = r^*,\ E_s = 0,\ g_c = \rho\, g_\min(T_\mathrm{leaf}),\ J = h(A(c_i)) - C
+    code: phylloptim::Leaf::set_shut_state
+    also: [phylloptim::Leaf::prepare_collar_solve, phylloptim::Leaf::find_shut_wet_bound, phylloptim::Leaf::set_leaf_states_rates_from_psi_stem, phylloptim::Leaf::solve_ci, phylloptim::Leaf::assim_saturated]
+    reads: [psi_crit]
+    writes: [opt_psi_stem_, opt_root_psi_, profit_, transpiration_, stom_cond_CO2_, ci_, assim_colimited_, E_up_, residual_flux_]
+    kind: closed_form
+    note: 'Where the collar solve has no interval to optimise over (wettest layer at or past $\psi_\mathrm{crit}$; uptake at a collar held at $\psi_\mathrm{crit}$ below the residual flux; continuity root at or past $\psi_\mathrm{crit}$; a closed or inverted bracket), the leaf sits at its wet bound with its stomata shut, and every output is the ordinary evaluator''s there (leaf_state_chain): nothing is written by hand, so the shut leaf and the open leaf next to it are one function. At $g_\min = 0$ the collar is the zero-uptake collar and the stem sits AT it, the $E \to 0$ limit of the open leaf; the stem is no longer held at a critical potential, so it keeps equilibrating with a drying soil past $\psi_\mathrm{crit}$ (#183 decision 1). The bound is solved once, to collar precision, on the bracket between the lowest and highest gravity balance $\psi_i + z_i$ of the layers that still conduct; where none does (every layer past the root integral''s cap) it is the wettest layer''s balance, the limit it reaches from the wet side, so the shut leaf is continuous through the cap. With nothing conducting at all, $A$ is the root''s zero exactly. Light and heat shut no leaf: with the cuticle''s CO₂ pathway the supply–demand residual has a root for every leaf (intercellular_co2), and a leaf in the dark or too hot to fix carbon is an ordinary optimum, a net source whose $c_i$ sits above $c_a$. The kind `shade-death` and the no-flow family (`min(0, A(c_a))`, $c_i = c_a$) are gone.'
 
   # --- energy balance ----------------------------------------------------------
   atmospheric_emissivity:
@@ -1943,14 +2078,15 @@ equations:
     section: solve
     title: Intercellular CO₂, where diffusive supply meets demand
     latex: |
-      g(c_i) = 10^{-6}\, A(c_i) - \frac{g_c\,(c_a - c_i)}{10^{3}\, P} = 0, \qquad c_i \in [\Gamma^* c_P,\; c_a];
-      \qquad c_i = c_a \ \text{ if } g(\Gamma^* c_P)\, g(c_a) > 0
-    code: phylloptim::Leaf::psi_stem_to_ci
-    also: [phylloptim::Leaf::assim_minus_stom_cond_CO2, phylloptim::Leaf::ci_assigned]
+      g(c_i) = 10^{-6}\, A(c_i) - \frac{g_c\,(c_a - c_i)}{10^{3}\, P} = 0, \qquad
+      c_i \in [\Gamma^* c_P,\; c_a] \ \text{if } A(c_a) \ge 0, \quad
+      c_i \in \big[c_a,\; c_a + 2|A(c_a)|\,10^{-6}\, 10^{3} P / g_c\big] \ \text{otherwise}
+    code: phylloptim::Leaf::solve_ci
+    also: [phylloptim::Leaf::psi_stem_to_ci, phylloptim::Leaf::assim_minus_stom_cond_CO2, phylloptim::Leaf::assim_saturated, phylloptim::Leaf::assim_saturated_kernel]
     reads: [ca, atm_kpa, umol_to_mol, kPa_to_Pa]
     writes: [ci_]
     kind: closed_form
-    note: '$A$ in µmol m⁻² s⁻¹ (net, the assimilation entry), $g_c$ in mol m⁻² s⁻¹ (the stomatal_conductance entry), $c_i$, $c_a$ in Pa, $P$ in kPa. TOMS748 to 1e-13 absolute plus relative in $c_i$. $g$ is negative at $\Gamma^* c_P$, so a root exists exactly when $A(c_a) > 0$; otherwise $c_i$ is put at $c_a$ and the leaf nets $A(c_a)$, as a leaf moving no gas does, so the open branch tends to the shut one as $E \to 0$. Only a genuine absence of a root reaches that fallback, on either temperature path; a solver failure stops instead, since $c_a$ would net the largest $A$ on offer.'
+    note: '$A$ in µmol m⁻² s⁻¹ (net, the assimilation entry), $g_c$ in mol m⁻² s⁻¹ (the TOTAL conductance, stomatal_conductance), $c_i$, $c_a$ in Pa, $P$ in kPa. TOMS748 to 1e-13 absolute plus relative in $c_i$. $g$ rises with $c_i$ and is negative at $\Gamma^* c_P$. With $A(c_a) \ge 0$ the root lies in the old bracket; with $A(c_a) < 0$ the leaf is a net source and the root lies ABOVE $c_a$, where the CO₂ it respires leaves through its conductance (#182) -- the upper end is placed where the supply term exceeds the demand''s shortfall. With no conductance at all ($g_\min = 0$ and the stomata shut) the residual degenerates to $A(c_i) = 0$: its root where it has one, which is the $g_\min \to 0$ limit of the shut leaf, and otherwise $c_i = +\infty$ with the leaf netting its saturated assimilation $A(c_i \to \infty)$ (assim_saturated). No $c_i$ is assigned at $c_a$ any more; a solver failure stops.'
 
   assim_max:
     section: solve
@@ -1962,40 +2098,26 @@ equations:
     reads: [ca]
     writes: [assim_max_]
     kind: closed_form
-    note: 'Seated once per set_physiology at the DRIVER temperature, with the energy balance on as well as off (the air-temperature baseline): it is the condition, by the sign argument in intercellular_co2, for the $c_i$ root to exist at that temperature. The collar solve''s light and heat shut-down (kind `shade-death`) is decided separately, by $A(c_a) < 0$ at the shut leaf''s own temperature $T_\mathrm{leaf}(0)$ (no_flow_assim), which is the driver temperature with the energy balance off.'
+    note: 'Seated once per set_physiology at the DRIVER temperature, with the energy balance on as well as off (the air-temperature baseline). Its sign says whether the leaf is a sink or a net source at ambient CO₂, which decides which bracket intercellular_co2 solves in; it shuts no leaf (#182).'
 
   leaf_state_chain:
     section: solve
     title: The operating point at a candidate stem potential
     latex: |
-      \psi_\mathrm{stem} \;\to\; E = E(\psi_\mathrm{stem};\psi_\mathrm{up}) \;\to\; T_\mathrm{leaf}(E),\ D_\mathrm{leaf} \;\to\; g_c \;\to\; c_i \;\to\; A(c_i)
-      \quad (\psi_\mathrm{up} < \psi_\mathrm{stem});
-      \qquad E = g_c = 0,\ A = \min(0,\, A(c_a)),\ c_i = c_a \text{ if } A(c_a) < 0 \text{ else the root of } A(c_i) = 0 \quad (\psi_\mathrm{up} \ge \psi_\mathrm{stem})
+      \psi_\mathrm{stem} \;\to\; E = E(\psi_\mathrm{stem};\psi_\mathrm{up}) \;\to\; T_\mathrm{leaf}(E),\ D_\mathrm{leaf},\ g_\min(T_\mathrm{leaf}) \;\to\; r^* \;\to\; E_s = E - r^* \;\to\; g_c \;\to\; c_i \;\to\; A(c_i)
     code: phylloptim::Leaf::set_leaf_states_rates_from_psi_stem
+    also: [phylloptim::Leaf::operating_point_flux]
     reads: [atm_kpa, use_energy_balance_]
-    writes: [transpiration_, stom_cond_CO2_, ci_, assim_colimited_]
+    writes: [transpiration_, stom_cond_CO2_, ci_, assim_colimited_, residual_flux_]
     kind: closed_form
-    note: 'One forward pass, no iteration: $E$ is the hydraulic supply at the candidate potential whatever photosynthesis is doing; with the energy balance on, the temperature block and the deficit are re-seated at $T_\mathrm{leaf}(E)$ before $c_i$ is solved, and at $T_\mathrm{leaf}(0)$ on the zero-flow branch. Potentials are positive magnitudes, so $\psi_\mathrm{up} \ge \psi_\mathrm{stem}$ is no flow or a reversed gradient.'
-
-  no_flow_state:
-    section: solve
-    title: The no-flow exits of the collar solve
-    latex: |
-      \psi_\mathrm{stem}^* = \begin{cases} \min(\psi_\mathrm{crit},\, \psi_{\mathrm{crit},\mathrm{supply}}) & \text{hydraulic shut-down} \\ \psi_r^* & \text{shade death} \end{cases},
-      \qquad E = g_c = E_\mathrm{up} = 0,\quad A = \min(0,\, A(c_a)),\quad J = A - C(\psi_\mathrm{stem}^*)
-    code: phylloptim::Leaf::set_shutdown_state
-    also: [phylloptim::Leaf::prepare_collar_solve, phylloptim::Leaf::no_flow_profit, phylloptim::Leaf::polish_bracket_bound, phylloptim::Leaf::no_flow_assim_at, phylloptim::Leaf::ci_no_flow, phylloptim::Leaf::root_limit_binds_first]
-    reads: [psi_crit]
-    writes: [opt_psi_stem_, opt_root_psi_, profit_, transpiration_, stom_cond_CO2_, ci_, assim_colimited_, E_up_]
-    kind: closed_form
-    note: 'Hydraulic shut-down: no collar potential both moves water and stays inside the critical potentials (wettest layer at or past $\psi_\mathrm{crit}$; uptake negative even at $\psi_\mathrm{crit}$; continuity root at or past $\psi_\mathrm{crit}$; inverted bracket). The recorded collar $\psi_r^*$ is $\psi_\mathrm{crit}$, the supply''s critical potential, the continuity root and the supply''s critical potential respectively. The shut stem holds at the root''s critical potential when the drying soil reaches it before the stem''s $\psi_\mathrm{crit}$, and at $\psi_\mathrm{crit}$ otherwise; with the default traits the two are equal, so the held stem has a kink in the stem and root traits there. Shade death ($A(c_a) < 0$ at $T_\mathrm{leaf}(0)$): both potentials sit at the zero-uptake collar, polished to 1e-15, and the leaf respires. A leaf moving no gas nets $\min(0, A(c_a))$: zero in light, where the transpiring leaf tends to $A = 0$ as $E \to 0$, and $A(c_a) < 0$ in the dark or too hot to fix carbon; $c_i$ is where $A$ is zero, or $c_a$ when it is negative there. With the energy balance on, everything is taken at $T_\mathrm{leaf}(0)$, the hottest the leaf gets. $C$ is the seated curve''s cost (TF24 here), read through its binding. The stem route''s no-flow point is in profit.'
+    note: 'One forward pass, no iteration and no branch on the flow (#182): $E$ is the hydraulic supply at the candidate potential whatever photosynthesis is doing, zero where the pair is reversed ($\psi_\mathrm{up} \ge \psi_\mathrm{stem}$, potentials being positive magnitudes); with the energy balance on, the temperature block, the deficit and $g_\min$ are re-seated at $T_\mathrm{leaf}(E)$ before $c_i$ is solved. A shut leaf ($E_s = 0$) is the same expressions with the stomatal term zero, so its outputs cannot disagree with the open leaf''s next to it.'
 
   profit:
     section: solve
     title: The objective at a prescribed potential
     latex: |
       J = h(A) - C(\psi_\mathrm{stem}, \psi_\mathrm{up}), \quad h(A) = A \text{ for a difference curve};
-      \qquad \psi_\mathrm{stem} = \mathrm{clamp}_{[\psi_\mathrm{soil},\,\psi_\mathrm{crit}]}(\psi) \ \text{(stem route)}, \qquad
+      \qquad \psi_\mathrm{stem} = \mathrm{clamp}_{[\psi_w,\,\psi_\mathrm{crit}]}(\psi) \ \text{(stem route)}, \qquad
       \psi_r = \mathrm{clamp}_{[\psi_a,\,\psi_b]}(\psi) \ \text{(collar route)}
     code: phylloptim::Leaf::profit_psi_stem_for
     also: [phylloptim::Leaf::profit_psi_stem_TF, phylloptim::Leaf::evaluate_psi_stem, phylloptim::Leaf::evaluate_psi_stem_at, phylloptim::Leaf::evaluate_root_collar_psi, phylloptim::Leaf::evaluate_root_collar_psi_for, phylloptim::Leaf::profit_at_collar_psi]
@@ -2003,7 +2125,7 @@ equations:
     writes: [profit_, opt_psi_stem_, opt_root_psi_]
     kind: closed_form
     cite: Wolf-2016
-    note: '$A$ is the net assimilation of leaf_state_chain at the operating point and $C$ the seated curve''s cost (the costs section), so $J$ is in µmol m⁻² s⁻¹ for the five difference curves (TF24, CF77, JS22, CMax, TF24_floor). SOX and JW26 report the product $A\,g(\psi)$ (their first-order condition is the log link, $h = \log$) and ProfitMax a normalised profit; those are the costs section''s. Stem route: the upstream potential is $\psi_\mathrm{soil}$, and soil drier than $\psi_\mathrm{crit}$ has the one feasible point $\psi_\mathrm{soil}$. Collar route: $[\psi_a, \psi_b]$ is the collar_bracket and $\psi_\mathrm{stem}$ follows by stem_from_collar. Not an optimum: the kind is `prescribed`.'
+    note: '$A$ is the net assimilation of leaf_state_chain at the operating point and $C$ the seated curve''s cost (the costs section), so $J$ is in µmol m⁻² s⁻¹ for the five difference curves (TF24, CF77, JS22, CMax, TF24_floor). SOX and JW26 report the product $A\,g(\psi)$ (their first-order condition is the log link, $h = \log$) and ProfitMax a normalised profit; those are the costs section''s. Stem route: the upstream potential is $\psi_\mathrm{soil}$, the interval runs from the wet bound $\psi_w$ (wet_bound; $\psi_\mathrm{soil}$ itself at $g_\min = 0$) to $\psi_\mathrm{crit}$, and a wet bound past $\psi_\mathrm{crit}$ leaves it as the one feasible point. Collar route: $[\psi_a, \psi_b]$ is the collar_bracket and $\psi_\mathrm{stem}$ follows by stem_from_collar. Not an optimum: the kind is `prescribed`.'
 
   foc_stem:
     section: solve
@@ -2018,7 +2140,7 @@ equations:
     reads: [ca, atm_kpa, umol_to_mol, kPa_to_Pa, leaf_specific_conductance_max, use_energy_balance_]
     writes: []
     kind: derivative
-    note: '$dc_i/d\psi$ by the implicit function theorem on the residual of intercellular_co2, so the derivative never passes through the $c_i$ iteration; $A''$ by forward AD of the assimilation kernel. Upstream potential fixed at $\psi_\mathrm{soil}$. Returns (value, feasible): feasible is 0 on the no-flow exit ($\psi_\mathrm{up} \ge \psi_\mathrm{stem}$, a 0.0 sentinel) and on the compensation-point branch, where the residual is not zero and only the cost term survives. The energy-balance term is energy_balance_foc.'
+    note: '$dc_i/d\psi$ by the implicit function theorem on the residual of intercellular_co2, so the derivative never passes through the $c_i$ iteration; $A''$ by forward AD of the assimilation kernel. Upstream potential fixed at $\psi_\mathrm{soil}$. Returns (value, feasible): feasible is 0 on the no-flow exit ($\psi_\mathrm{up} \ge \psi_\mathrm{stem}$, a 0.0 sentinel), where nothing conducts at all ($g_\min = 0$ with the stomata shut), and under a log link at a net source ($A \le 0$), where $1/A$ has no derivative. The conductance is the total (stomatal_conductance), formed on $E - r^*$; its slope in $\psi_\mathrm{stem}$ is unchanged, since $r^*$ reads $\psi_\mathrm{stem}$ only through the leaf temperature, which the energy-balance term carries (energy_balance_foc).'
 
   foc_collar:
     section: solve
@@ -2033,7 +2155,7 @@ equations:
     reads: [ca, atm_kpa, umol_to_mol, kPa_to_Pa, leaf_specific_conductance_max, use_energy_balance_]
     writes: []
     kind: derivative
-    note: 'The collar potential is the decision variable and $\psi_\mathrm{stem}$ follows by continuity (stem_from_collar), whose slope is the second fraction: $E_\mathrm{up}''$ is the soil-to-collar conductance (analytic, with a 1e-6 central difference of the transport at a layer kink). $\partial C/\partial \psi_r$ is non-zero only for a curve whose cost reads the upstream potential (JS22). The same two sentinels as the stem route: no flow ($\psi_r \ge \psi_\mathrm{stem}$) returns 0.0 with feasible 0, and the compensation-point branch drops the assimilation term.'
+    note: 'The collar potential is the decision variable and $\psi_\mathrm{stem}$ follows by continuity (stem_from_collar), whose slope is the second fraction: $E_\mathrm{up}''$ is the soil-to-collar conductance (analytic, with a 1e-6 central difference of the transport at a layer kink). $\partial C/\partial \psi_r$ is non-zero only for a curve whose cost reads the upstream potential (JS22). The same sentinels as the stem route. The residual flux reads the collar through its ceiling, so $\partial g_c/\partial \psi_r$ gains $-\frac{g_c}{E}\,\partial r^*/\partial \psi_r$ (residual_flux), appended; an exact zero at $g_\min = 0$.'
 
   continuity_root:
     section: solve
@@ -2065,21 +2187,21 @@ equations:
     section: solve
     title: The feasible collar interval
     latex: |
-      [\psi_a, \psi_b] = \big[\psi_{r,0},\ \min(\psi_{r,\mathrm{crit}},\ \psi_{\mathrm{crit},\mathrm{supply}})\big];
-      \quad \text{shut down if } \min_i \psi_{\mathrm{soil},i} \ge \psi_\mathrm{crit},\ E_\mathrm{col}(\psi_\mathrm{crit}) < 0,\ \psi_{r,\mathrm{crit}} \ge \psi_\mathrm{crit} \text{ or } \psi_b < \psi_a;
+      [\psi_a, \psi_b] = \big[\psi_a,\ \min(\psi_{r,\mathrm{crit}},\ \psi_{\mathrm{crit},\mathrm{supply}})\big], \quad E_\mathrm{up}(\psi_a) = r^*(\psi_a);
+      \quad \text{shut if } \min_i \psi_{\mathrm{soil},i} \ge \psi_\mathrm{crit},\ E_\mathrm{col}(\psi_\mathrm{crit}) < r^*,\ \psi_{r,\mathrm{crit}} \ge \psi_\mathrm{crit} \text{ or } \psi_b - \psi_a \le \epsilon;
       \quad \psi_r = \tfrac{1}{2}(\psi_a + \psi_b) \text{ if } \psi_b - \psi_a \le \epsilon_\mathrm{GSS}
     code: phylloptim::Leaf::prepare_collar_solve
-    also: [phylloptim::Leaf::supply_psi_crit, phylloptim::Leaf::set_shutdown_state]
+    also: [phylloptim::Leaf::supply_psi_crit, phylloptim::Leaf::set_shut_state, phylloptim::Leaf::find_wet_bound]
     reads: [psi_crit, root_psi_crit, collar_root_tol]
     writes: []
     kind: closed_form
-    note: '$\psi_{\mathrm{crit},\mathrm{supply}}$ is the root''s own 5%-conductivity potential on the multi-layer supply and $\psi_\mathrm{crit}$ on the single one. The dry end is whichever limit binds first: the continuity root (kind `boundary-crit` if the optimum pins there) or the root limit (`boundary-root-crit`); the clamp can invert the interval, which is a shut-down, not an optimisation over an empty set. An interval narrower than bracket_tol_at(bound_b) has both ends polished to collar precision, and one no wider than collar_root_tol is a shut-down too. Shade death ($A_\max < 0$) is no_flow_state.'
+    note: '$\psi_{\mathrm{crit},\mathrm{supply}}$ is the root''s own 5%-conductivity potential on the multi-layer supply and $\psi_\mathrm{crit}$ on the single one. The dry end is whichever limit binds first: the continuity root (kind `boundary-crit` if the optimum pins there) or the root limit (`boundary-root-crit`); the clamp can invert the interval, which is a shut-down, not an optimisation over an empty set. An interval narrower than bracket_tol_at(bound_b) has both ends polished to collar precision, and one no wider than collar_root_tol is a shut-down too. The wet end is wet_bound and every shut exit is shut_state; nothing shuts a leaf on light or heat (#182).'
 
   operating_point_kind:
     section: solve
     title: Which condition placed the optimum
     latex: |
-      \text{hydraulic-shutdown or shade-death at the bracket (collar\_bracket, no\_flow\_state); otherwise}\quad
+      \text{hydraulic-shutdown at the bracket (collar\_bracket, shut\_state); otherwise}\quad
       \text{interior if } J'(\psi_a^+) > 0 > J'(\psi_b), \text{ with } J'(\psi^*) = 0;\quad
       \text{boundary-soil if } J'(\psi_a^+) \le 0;\quad
       \text{boundary-crit or boundary-root-crit if } J'(\psi_b) \ge 0;\quad
@@ -2089,7 +2211,7 @@ equations:
     reads: [collar_root_tol, GSS_tol_abs]
     writes: [opt_root_psi_, opt_psi_stem_, profit_]
     kind: identity
-    note: 'The collar solve root-finds $J'' = 0$ (foc_collar) to collar_root_tol inside the bracket rather than searching $J$, so a bound that binds has to be detected by the sign of $J''$ at each end: $\psi_a^+$ is the wet end stepped in by 1e-6 of the width (the wet end itself is the no-flow sentinel), $\psi_b$ the dry end. A pinned bound is polished to 1e-15 before it is returned. Codes follow the enum: 1 interior, 2 boundary-soil, 3 boundary-crit, 4 boundary-root-crit, 5 hydraulic-shutdown, 6 shade-death, 8 solver-refused. The kind is not bound: operating_point_kind() is C++ only.'
+    note: 'The collar solve root-finds $J'' = 0$ (foc_collar) to collar_root_tol inside the bracket rather than searching $J$, so a bound that binds has to be detected by the sign of $J''$ at each end: $\psi_a^+$ is the wet end stepped in by 1e-6 of the width (the wet end itself is the no-flow sentinel), $\psi_b$ the dry end. A pinned bound is polished to 1e-15 before it is returned; with a residual conductance the wet bound is a regular point and is returned as the optimum, at $g_\min = 0$ the solve steps 1e-6 of the width inside it. Codes follow the enum: 1 interior, 2 boundary-soil, 3 boundary-crit, 4 boundary-root-crit, 5 hydraulic-shutdown, 6 prescribed, 7 solver-refused, 8 non-finite-gradient. The kind is not bound: operating_point_kind() is C++ only.'
 
   # --- cost curves and the marginal cost of water --------------------------------
   # --- the cost curves ---------------------------------------------------------
@@ -2226,7 +2348,7 @@ equations:
     writes: []
     kind: identity
     cite: Sperry-2017
-    note: 'Found by maximisation (endpoints plus a root-find of $dA/d\psi$), not by Sperry-2017''s scan; the closure point $\psi_s$ itself, where no gas moves and $A = \min(0, A(c_a))$, is excluded. The maximum can sit at the dry bound (energy balance off, where $A$ rises monotonically) or inside the stream (energy balance on in cold air, where transpiration cooling turns $A$ over). Held constant in the gradient (a partial at fixed normaliser).'
+    note: 'Found by maximisation (endpoints plus a root-find of $dA/d\psi$), not by Sperry-2017''s scan; the closure point itself, the wet bound where the stomata are shut, is excluded. The maximum can sit at the dry bound (energy balance off, where $A$ rises monotonically) or inside the stream (energy balance on in cold air, where transpiration cooling turns $A$ over). Held constant in the gradient (a partial at fixed normaliser).'
   profitmax_normalisers:
     section: costs
     title: ProfitMax conductance normaliser
@@ -2261,7 +2383,7 @@ equations:
     reads: []
     writes: []
     kind: closed_form
-    note: 'The value `profit_` reports. The product and ratio curves are evaluated in that form, not as $\log A \pm \log(\cdot)$, because at closure $A = \min(0, A(c_a)) \le 0$ and the endpoint must stay a candidate; `log` is monotone so the argmax is shared. Only the five difference curves are carbon fluxes; the product, ratio and normalised values must not be compared with them. The product and ratio curves set `hydraulic_cost_` to NA.'
+    note: 'The value `profit_` reports. The product and ratio curves are evaluated in that form, not as $\log A \pm \log(\cdot)$, because at closure $A \le 0$ can hold (a net source, or zero in light at $g_\min = 0$) and the endpoint must stay a candidate; `log` is monotone so the argmax is shared. Only the five difference curves are carbon fluxes; the product, ratio and normalised values must not be compared with them. The product and ratio curves set `hydraulic_cost_` to NA.'
   benefit_link_deriv:
     section: costs
     title: Slope of the benefit link

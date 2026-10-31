@@ -92,6 +92,9 @@ leaf_infeasible_codes <- function() {
     uptake =
       paste("the soil-to-root-collar flux is non-finite, or a layer's",
             "vulnerability weighting is unusable, at this candidate collar"),
+    stem_wet_bound =
+      paste("no stem potential carries the residual (cuticular) flux from this",
+            "upstream potential, so a stem route has no wet bound to start from"),
     root_find_iterations =
       paste("a one-dimensional solver hit max_iterations without converging"),
     gradient_active_set =

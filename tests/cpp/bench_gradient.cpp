@@ -111,7 +111,8 @@ void apply_traits(phylloptim::Leaf &l, const Traits &t) {
   // configuration.
   l.set_traits(t.v[0], t.v[1], t.v[2], t.v[3], t.v[4], t.v[5],
                t.v[6], t.v[7], t.v[8], t.v[9], t.v[10], 1.44,
-               /*JS22_gamma=*/1.0, /*CMax_a=*/0.6, /*CMax_b=*/0.0);
+               /*JS22_gamma=*/1.0, /*CMax_a=*/0.6, /*CMax_b=*/0.0,
+               /*g_min=*/0.0);
 }
 
 // One interior operating point. Drivers from plant's tests/testthat/test-leaf.r,
@@ -339,14 +340,14 @@ int main(int argc, char **argv) {
         // ⚠️ POSITIONAL and silently short-fillable -- see test_leaf.cpp's copy of
         // this array for what adding a trait did to it. Count against `n_theta`.
         kBase.v[10], 1.44,      /*JS22_gamma=*/1.0,
-        /*CMax_a=*/0.6, /*CMax_b=*/0.0, kmax, 0.0};
+        /*CMax_a=*/0.6, /*CMax_b=*/0.0, /*g_min=*/0.0, kmax, 0.0};
     // ⚠️ THE ZERO-FILLED TAIL IS `resistance`, THE THREE MODEL-OWNED SLOTS
     // (`CF77_lambda_`, `TF24_floor_lambda_o`, `LeastCost_beta`) AND THE FIFTEEN
     // THERMAL-DAMAGE INPUTS. This benchmark differentiates `vcmax_25` on the
     // collar route with the layer off, which reads none of them. The short
     // initialiser zero-fills the rest, which is why the assertion below is what
     // makes it safe.
-    static_assert(phylloptim::gradient::n_theta == 34,
+    static_assert(phylloptim::gradient::n_theta == 35,
                   "theta above is positional and deliberately short; recount it "
                   "against n_theta and update this assertion together");
 

@@ -47,6 +47,14 @@ golden_tolerance <- function(field) {
   if (identical(field, "profit")) 1.0e-9 else 1.0e-5
 }
 
+# The water fluxes' absolute floor, mirroring kFluxNegligible in
+# tests/cpp/test_golden.cpp: a shut leaf's uptake is the polished bound's
+# residue, ~1e-20 kg m^-2 s^-1 of either sign on either platform (#182), and the
+# smallest flux an open leaf reports is 7.6e-12. Below the floor on both sides
+# the two are the same zero. Tolerant platforms only.
+golden_flux_negligible <- 1.0e-15
+golden_water_flux_fields <- c("transpiration", "gc", "e_up", "uptake")
+
 # THE RECORDED GRADIENTS HAVE THEIR OWN TOLERANCE, because their floor is not the
 # solved outputs'. Even the IFT route takes its mixed partial and curvature as
 # central differences of `dprofit` (`.gradient_ift`), so a gradient carries the
@@ -77,6 +85,10 @@ expect_golden <- function(actual, expected_hex, field, label,
   expected <- as.numeric(expected_hex)
   if (golden_bit_exact_platform()) {
     expect_identical(actual, expected, label = paste(label, field))
+  } else if (field %in% golden_water_flux_fields &&
+             abs(actual) < golden_flux_negligible &&
+             abs(expected) < golden_flux_negligible) {
+    succeed()
   } else {
     expect_equal(actual, expected, tolerance = tolerance,
                  label = paste(label, field))

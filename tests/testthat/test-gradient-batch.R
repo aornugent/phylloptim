@@ -90,11 +90,11 @@ test_that("the parameter enumeration is the same order in R and in C++", {
               "c_repair_flux_")
   expect_identical(gradient_par_names(), r_side)
   # And the count, which is what a positional trait call would silently break:
-  # fifteen traits, the five that are not traits (two drivers, three model-owned
+  # sixteen traits, the five that are not traits (two drivers, three model-owned
   # slots), then the fourteen inputs of the thermal-damage layer that reach the
   # solve.
-  expect_length(gradient_par_names(), 34L)
-  expect_identical(gradient_par_names()[1:15], names(leaf_traits()))
+  expect_length(gradient_par_names(), 35L)
+  expect_identical(gradient_par_names()[1:16], names(leaf_traits()))
 })
 
 test_that("the batch reproduces leaf_gradient() bit-for-bit across the grid", {
@@ -132,13 +132,20 @@ test_that("the batch reproduces leaf_gradient() bit-for-bit across the grid", {
   # ⚠️ The grid has to REACH all three classes, or the loop above is only testing
   # the happy path while looking thorough -- which is the way a comparison test
   # fails silently. Asserted by WHERE the classes fall rather than by bare counts,
-  # so the claim survives adding a row to the grid: the shut-down rows are exactly
-  # the ones drier than psi_crit, and the pinned ones are at the dry end a drought
-  # calibration visits.
+  # so the claim survives adding a row to the grid: the rows drier than psi_crit
+  # are shut, and the pinned ones are at the dry end a drought calibration visits.
+  #
+  # A shut leaf sits at its wet bound, the zero-uptake collar, and dprofit there
+  # is a derivative rather than a sentinel. With one layer that collar IS the soil
+  # potential, so the curvature's central difference steps into the reversed
+  # pair and the point reports `no-gradient`; with three or five the collar sits
+  # between the layers' potentials, the curvature is real and the point is a
+  # constrained optimum, `pinned`. Both take the difference of the solve.
   expect_length(seen, 15L)
-  expect_identical(seen[rows$psi_soil == 6], rep("no-gradient", 3L))
-  expect_true(all(rows$psi_soil[seen == "pinned"] %in% c(3, 4)))
-  expect_gt(sum(seen == "pinned"), 0L)
+  expect_true(all(seen[rows$psi_soil == 6] %in% c("no-gradient", "pinned")))
+  expect_identical(seen[rows$psi_soil == 6 & rows$layers == 1L], "no-gradient")
+  expect_true(all(rows$psi_soil[seen == "pinned"] %in% c(3, 4, 6)))
+  expect_gt(sum(seen == "pinned" & rows$psi_soil < 6), 0L)
   expect_identical(sum(seen == "interior"), 11L)
 })
 
@@ -263,24 +270,26 @@ test_that("the recorded gradients have not moved", {
   #     dpsi_crit/dstem_P50 = (log2(1/0.05))^(1/stem_c)
   #
   # That is the term a derived psi_crit adds to every stem gradient, and the one a
-  # hand-written chain rule would be most likely to drop. It is exact, it is the
-  # SAME number at the pinned and shut-down rows because both sit on that bound,
-  # and it is NOT the number at an interior optimum -- which is what makes the
-  # comparison a test of the routes rather than of the algebra.
+  # hand-written chain rule would be most likely to drop. It is exact at the
+  # pinned row, and it is NOT the number at an interior optimum -- which is what
+  # makes the comparison a test of the routes rather than of the algebra.
   ratio <- (log(1 / 0.05) / log(2))^(1 / leaf_traits()$stem_c)
-  for (case in c("pinned-dry-3layer", "shutdown-1layer")) {
-    row <- gold[gold$case == case & gold$par == "stem_P50", ]
-    expect_equal(as.numeric(row$psi_stem), ratio, tolerance = 1e-6,
-                 label = paste("dpsi_stem/dstem_P50 at", case))
-  }
+  row <- gold[gold$case == "pinned-dry-3layer" & gold$par == "stem_P50", ]
+  expect_equal(as.numeric(row$psi_stem), ratio, tolerance = 1e-6,
+               label = "dpsi_stem/dstem_P50 at pinned-dry-3layer")
   interior <- gold[gold$case == "interior-1layer" & gold$par == "stem_P50", ]
   expect_false(isTRUE(all.equal(as.numeric(interior$psi_stem), ratio,
                                 tolerance = 1e-3)))
 
-  # The shut-down row carries that term and nothing else: no flow, so no
-  # assimilation gradient, but the bound still moves with the trait.
+  # The shut-down row sits at its wet bound, the zero-uptake collar, which no
+  # stem trait moves (#182): its stem and collar rows in stem_P50 are exactly
+  # zero, it moves no gas, and the trait reaches it only through the hydraulic
+  # cost of the stem at that potential.
   shut <- gold[gold$case == "shutdown-1layer" & gold$par == "stem_P50", ]
   expect_identical(as.numeric(shut$A), 0)
+  expect_identical(as.numeric(shut$psi_stem), 0)
+  expect_identical(as.numeric(shut$collar), 0)
+  expect_gt(as.numeric(shut$profit), 0)
 })
 
 test_that("an unsolvable row costs that row and not the batch", {
