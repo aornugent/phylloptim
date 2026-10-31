@@ -31,14 +31,23 @@ with measurements (Fv/Fm, say) belongs to the caller.
 The dynamics, per day, with \eqn{T} the leaf temperature and \eqn{F = 1 - I - D}:
 
 \preformatted{
-  dA/dt = acclim_alpha * softplus(T - acclim_T; acclim_s) - acclim_beta * A
-  dI/dt = k_imp(T) * F - (k_rec(T) + k_mat) * I
-  dD/dt = k_mat * I
-  k_imp(T) = k_i * exp[(k_i_Ea/R)(1/T_ref - 1/T)] * K/(1 + K),
-  K = exp[(impair_H/R)(1/Tmid - 1/T)],  Tmid shifted by the acclimation
+  dA/dt    = acclim_alpha * softplus(T - acclim_T; acclim_s) - acclim_beta * A
+  dI/dt    = k_imp(T) * F - (k_rec(T) + k_mat(T)) * I
+  dD/dt    = k_mat(T) * I
+  k_imp(T) = k_i   * exp[(k_i_Ea/R)(1/T_iso - 1/T)]
+  k_rec(T) = k_rec * exp[(k_rec_Ea/R)(1/T_25 - 1/T)]
+  k_mat(T) = k_mat * exp[(k_mat_Ea/R)(1/T_25 - 1/T)]
 }
 
-Every parameter is a field of \code{x} (\verb{$k_i_}, \verb{$impair_Tmid_}, \verb{$acclim_beta_},
+with \eqn{T_{iso}} = \code{k_i_Tiso_} shifted by \code{topt_offset_} and the
+acclimation, and \eqn{T_{25}} = 25 C. The impairment rate is the first-order
+PSII heat inactivation of Bison & Michaletz (2026, Nature Ecology & Evolution,
+\doi{10.1038/s41559-026-03196-x}), and its defaults their 177-species fit:
+the rate common to every species at the isokinetic temperature (276 per day,
+at 50.5 C) and the mean activation energy (316 kJ/mol), so it rises tenfold
+about every 6 K. Nothing switches the rates on or off.
+
+Every parameter is a field of \code{x} (\verb{$k_i_}, \verb{$k_i_Tiso_}, \verb{$acclim_beta_},
 ...); set them on the leaf before calling. Neither the gate
 \code{use_thermal_damage_} nor the drivers are read. The rates themselves are
 \code{x$damage_rates(leaf_temp, A, I, D)}.

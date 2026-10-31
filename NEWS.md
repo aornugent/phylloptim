@@ -1,3 +1,21 @@
+# phylloptim 0.18.0
+
+## Thermal impairment takes Bison & Michaletz's kinetics; every damage rate is one Arrhenius form
+
+The impairment rate was `k_i_` times a saturating switch K/(1+K), so it levelled off at `k_i_` (0.5 per day) above about 40 °C: a leaf at 50 °C took over a day to half-impair, where measured PSII inactivation takes minutes. It is now the first-order heat inactivation of Bison & Michaletz (2026, Nature Ecology & Evolution, doi:10.1038/s41559-026-03196-x), written about the isokinetic temperature their Meyer–Neldel relation makes common to every species:
+
+```
+k_imp(T) = k_i_   * exp[(k_i_Ea_/R)(1/T_iso - 1/T)],  T_iso = k_i_Tiso_ + topt_offset_ + dTimpair_max_ * A/(A + K_A_)
+k_rec(T) = k_rec_ * exp[(k_rec_Ea_/R)(1/T_25 - 1/T)]
+k_mat(T) = k_mat_ * exp[(k_mat_Ea_/R)(1/T_25 - 1/T)]
+```
+
+The defaults are their 177-species fit: `k_i_` = 276 per day (3.2e-3 s⁻¹, from the corrected A values, Zenodo 10.5281/zenodo.23752859 v3), `k_i_Tiso_` = 50.5 °C and `k_i_Ea_` = 316 kJ mol⁻¹, so impairment rises tenfold about every 6 K: 0.012 per day at 25 °C, 5.4 at 40 °C, 230 at 50 °C. First-order damage at a constant temperature then halves a leaf in a minute at 54 °C, an hour at 43 °C and a day at 35 °C, as their figures show. Repair no longer shuts off when hot. Impairment outruns the default repair above about 32 °C, so the logistic shut-off had nothing left to do.
+
+**Breaking.** Removed: `impair_H_`, `impair_Tmid_`, `k_i_Tref_`, `m_rep_`, `t_rep_cut_` and `$logistic_()`. Added: `k_i_Tiso_`, `k_rec_Ea_`, `k_mat_Ea_`, all at their defaults inert except `k_i_Tiso_`. `k_i_` and `k_i_baseline_` move from 0.5 to 276. A negative `k_i_Ea_` is refused. In the gradient enumeration `m_rep_` and `t_rep_cut_` give way to `k_rec_Ea_`, so `n_theta` is 34 and `n_pars` 35, and a C++ caller filling `theta` by hand must recount. `damage_par_names()` has fourteen dynamics parameters.
+
+Off by default, and off it reads none of its inputs: every golden file and `gradient_golden.tsv` is bit-identical.
+
 # phylloptim 0.17.0
 
 ## A leaf's profit is continuous where it shuts (#175)

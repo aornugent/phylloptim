@@ -684,40 +684,20 @@ parameters:
     symbol: '\delta_0'
     units: '°C'
     class: trait
-    meaning: 'constitutive shift of both $T_\mathrm{opt}$ and the switch midpoint'
+    meaning: 'constitutive shift of both $T_\mathrm{opt}$ and the impairment isokinetic temperature'
     source: placeholder
     placeholder: true
     code: phylloptim::Leaf::topt_offset_
     aliases: [phylloptim::damage::dp_topt_offset]
-  impair_H_:
-    section: damage
-    symbol: 'H_\mathrm{imp}'
-    units: 'J mol⁻¹'
-    class: trait
-    meaning: 'enthalpy of the impairment switch: how sharply it turns on'
-    source: placeholder (copies the Jmax curve $H_d$)
-    placeholder: true
-    code: phylloptim::Leaf::impair_H_
-    default_code: phylloptim::jmax_H_d
-    aliases: [phylloptim::damage::dp_impair_H]
-  impair_Tmid_:
-    section: damage
-    symbol: 'T_\mathrm{mid}'
-    units: '°C'
-    class: trait
-    meaning: 'midpoint of the impairment switch before shifts'
-    source: placeholder (copies $H_d/\Delta S$ of Jmax)
-    placeholder: true
-    code: phylloptim::Leaf::impair_Tmid_
-    aliases: [phylloptim::damage::dp_impair_Tmid]
   k_i_:
     section: damage
     symbol: 'k_i'
     units: 'day⁻¹'
     class: trait
-    meaning: 'impairment rate $F \to I$ at $T_\mathrm{ref}$ with the switch on'
-    source: placeholder
-    placeholder: true
+    meaning: 'impairment rate $F \to I$ at the isokinetic temperature, where the Meyer–Neldel relation makes it common to every species'
+    source: 'Bison & Michaletz (2026): $e^b$ = 3.2e-3 s⁻¹ (corrected A, Zenodo v3), × 86400'
+    placeholder: false
+    cite: Bison-2026
     code: phylloptim::Leaf::k_i_
     aliases: [phylloptim::damage::dp_k_i]
   k_i_Ea_:
@@ -725,28 +705,30 @@ parameters:
     symbol: 'E_{a,i}'
     units: 'J mol⁻¹'
     class: trait
-    meaning: 'activation energy of $k_i$; 0 is constant'
-    source: placeholder
-    placeholder: true
+    meaning: 'activation energy of impairment: its steepness, tenfold per $\ln 10\, R T^2 / E_{a,i}$ degrees; 0 is constant'
+    source: 'Bison & Michaletz (2026): mean of 177 species, 316 kJ mol⁻¹ (range 116–619)'
+    placeholder: false
+    cite: Bison-2026
     code: phylloptim::Leaf::k_i_Ea_
     aliases: [phylloptim::damage::dp_k_i_Ea]
-  k_i_Tref_:
+  k_i_Tiso_:
     section: damage
-    symbol: 'T_\mathrm{ref}'
+    symbol: 'T_\mathrm{iso}'
     units: '°C'
-    class: hyperparameter
-    meaning: 'reference temperature of the Arrhenius scale of $k_i$'
-    source: placeholder
-    placeholder: true
-    code: phylloptim::Leaf::k_i_Tref_
-    aliases: [phylloptim::damage::dp_k_i_Tref]
+    class: trait
+    meaning: 'isokinetic temperature of impairment before shifts: where $k_\mathrm{imp} = k_i$ whatever $E_{a,i}$'
+    source: 'Bison & Michaletz (2026): 50.5 °C across 177 species (Extended Data Table 2); 44 °C in spring and 54.5 °C in summer and autumn at one site'
+    placeholder: false
+    cite: Bison-2026
+    code: phylloptim::Leaf::k_i_Tiso_
+    aliases: [phylloptim::damage::dp_k_i_Tiso]
   k_i_baseline_:
     section: damage
     symbol: 'k_{i,\mathrm{base}}'
     units: 'day⁻¹'
     class: hyperparameter
-    meaning: 'no-extra-protection baseline for the protection cost; a rate, not a reference temperature'
-    source: placeholder
+    meaning: 'no-extra-protection baseline for the protection cost'
+    source: placeholder (= the default $k_i$)
     placeholder: true
     code: phylloptim::Leaf::k_i_baseline_
   k_rec_:
@@ -754,41 +736,50 @@ parameters:
     symbol: 'k_\mathrm{rec}'
     units: 'day⁻¹'
     class: trait
-    meaning: 'repair rate $I \to F$ when cool'
+    meaning: 'repair rate $I \to F$ at 25 °C'
     source: placeholder
     placeholder: true
     code: phylloptim::Leaf::k_rec_
     aliases: [phylloptim::damage::dp_k_rec]
-  m_rep_:
+  k_rec_Ea_:
     section: damage
-    symbol: 'm_\mathrm{rep}'
-    units: '°C⁻¹'
+    symbol: 'E_{a,\mathrm{rec}}'
+    units: 'J mol⁻¹'
     class: trait
-    meaning: 'slope of the repair shut-off logistic'
+    meaning: 'activation energy of repair; 0 is constant'
     source: placeholder
     placeholder: true
-    code: phylloptim::Leaf::m_rep_
-    aliases: [phylloptim::damage::dp_m_rep]
-  t_rep_cut_:
-    section: damage
-    symbol: 'T_\mathrm{rep,cut}'
-    units: '°C'
-    class: trait
-    meaning: 'midpoint of the repair shut-off'
-    source: placeholder
-    placeholder: true
-    code: phylloptim::Leaf::t_rep_cut_
-    aliases: [phylloptim::damage::dp_t_rep_cut]
+    code: phylloptim::Leaf::k_rec_Ea_
+    aliases: [phylloptim::damage::dp_k_rec_Ea]
   k_mat_:
     section: damage
     symbol: 'k_\mathrm{mat}'
     units: 'day⁻¹'
     class: trait
-    meaning: 'maturation $I \to D$, constant in temperature'
+    meaning: 'maturation $I \to D$ at 25 °C'
     source: placeholder (July runs used 0.00125)
     placeholder: true
     code: phylloptim::Leaf::k_mat_
     aliases: [phylloptim::damage::dp_k_mat]
+  k_mat_Ea_:
+    section: damage
+    symbol: 'E_{a,\mathrm{mat}}'
+    units: 'J mol⁻¹'
+    class: trait
+    meaning: 'activation energy of maturation; 0 is constant'
+    source: placeholder
+    placeholder: true
+    code: phylloptim::Leaf::k_mat_Ea_
+    aliases: [phylloptim::damage::dp_k_mat_Ea]
+  damage_Tref:
+    section: damage
+    symbol: 'T_{25}'
+    units: '°C'
+    class: constant
+    meaning: 'reference temperature of the repair and maturation rates'
+    source: code
+    placeholder: false
+    code: phylloptim::damage::damage_Tref
   acclim_alpha_:
     section: damage
     symbol: '\alpha_A'
@@ -843,7 +834,7 @@ parameters:
     symbol: '\Delta T_{\mathrm{imp},\max}'
     units: '°C'
     class: trait
-    meaning: 'acclimated rise in the switch midpoint as $A \to \infty$'
+    meaning: 'acclimated rise in the impairment isokinetic temperature as $A \to \infty$'
     source: placeholder (= $\Delta T_{\max}$)
     placeholder: true
     code: phylloptim::Leaf::dTimpair_max_
@@ -935,31 +926,31 @@ parameters:
     symbol: '\pm 30'
     units: '–'
     class: constant
-    meaning: 'clamp on every exponent argument in the layer (the logistic, the softplus, the switch and the Arrhenius scale), so an extreme temperature stays finite'
+    meaning: 'clamp on every exponent argument in the layer (the softplus and every Arrhenius rate), so an extreme temperature stays finite'
     source: code
     placeholder: false
     literal: 30
-    code: phylloptim::damage::logistic
+    code: phylloptim::damage::centred_arrhenius
   topt_clamp_min:
     section: damage
     symbol: '250'
     units: 'K'
     class: constant
-    meaning: 'lower clamp on a shifted optimum or switch midpoint'
+    meaning: 'lower clamp on a shifted optimum or isokinetic temperature'
     source: code
     placeholder: false
     literal: 250
-    code: phylloptim::damage::impair_switch
+    code: phylloptim::damage::k_imp
   topt_clamp_max:
     section: damage
     symbol: '350'
     units: 'K'
     class: constant
-    meaning: 'upper clamp on a shifted optimum or switch midpoint'
+    meaning: 'upper clamp on a shifted optimum or isokinetic temperature'
     source: code
     placeholder: false
     literal: 350
-    code: phylloptim::damage::impair_switch
+    code: phylloptim::damage::k_imp
   rk_rate_step:
     section: damage
     symbol: '0.1'
@@ -1658,15 +1649,6 @@ equations:
     writes: [R_d_]
     kind: closed_form
     note: 'Added after the $Q_{10}$ response, so the gate-off arithmetic is untouched; all four prices default to zero on the leaf.'
-  logistic:
-    section: damage
-    title: Guarded logistic
-    latex: |
-      \mathrm{logistic}(x) = \frac{1}{1 + e^{-x}}, \qquad x \text{ clamped to } \pm 30
-    code: phylloptim::damage::logistic
-    reads: [exp_clamp]
-    writes: []
-    kind: closed_form
   softplus:
     section: damage
     title: Guarded softplus
@@ -1679,7 +1661,7 @@ equations:
     note: 'Softplus only for $x < 30/s$ and constant at $30/s$ above.'
   delta_impair:
     section: damage
-    title: Acclimation shift of the switch midpoint
+    title: Acclimation shift of the impairment isokinetic temperature
     latex: |
       \delta_\mathrm{imp} = \delta_0 + \Delta T_{\mathrm{imp},\max}\, \frac{A}{A + K_A}, \qquad A \ge 0
     code: phylloptim::damage::delta_impair
@@ -1687,56 +1669,60 @@ equations:
     reads: [topt_offset_, dTimpair_max_, K_A_, A_]
     writes: []
     kind: closed_form
-  impair_switch:
+  centred_arrhenius:
     section: damage
-    title: Impairment switch
+    title: The layer's one rate form
     latex: |
-      \frac{K}{1 + K}, \qquad K = \exp\!\left[\frac{H_\mathrm{imp}}{R}\left(\frac{1}{T'_{\mathrm{mid},K}} - \frac{1}{T_K}\right)\right]_{[-30,\,30]}, \qquad
-      T'_{\mathrm{mid},K} = \mathrm{clamp}_{[250,\,350]}(T_\mathrm{mid} + T_0 + \delta_\mathrm{imp})
-    code: phylloptim::damage::impair_switch
-    reads: [impair_H_, impair_Tmid_, gas_constant, C_to_K, topt_clamp_min, topt_clamp_max, exp_clamp]
+      k(T) = k\, \exp\!\left[\frac{E_a}{R}\left(\frac{1}{T_{\mathrm{ref},K}} - \frac{1}{T_K}\right)\right]_{[-30,\,30]}
+    code: phylloptim::damage::centred_arrhenius
+    reads: [gas_constant, C_to_K, exp_clamp]
     writes: []
     kind: closed_form
-    note: 'Exactly ½ at the shifted midpoint; its own parameters, and nothing of the $J_{max}$ curve, though the defaults copy that curve''s $H_d$ and $H_d/\Delta S$.'
-  k_i_eff:
-    section: damage
-    title: Arrhenius scale of the impairment rate
-    latex: |
-      k_{i,\mathrm{eff}}(T) = k_i\, \exp\!\left[\frac{E_{a,i}}{R}\left(\frac{1}{T_{\mathrm{ref},K}} - \frac{1}{T_K}\right)\right]_{[-30,\,30]}
-    code: phylloptim::damage::k_i_eff
-    reads: [k_i_, k_i_Ea_, k_i_Tref_, gas_constant, C_to_K, exp_clamp]
-    writes: []
-    kind: closed_form
-    note: 'At $E_{a,i} = 0$ the argument is an exact zero and the scale is exactly $k_i$.'
+    note: 'Exactly $k$ at $T_\mathrm{ref}$ and at $E_a = 0$, where the argument is an exact zero. Impairment, repair and maturation all take it; nothing in the layer switches on or off.'
   impairment_rate:
     section: damage
     title: Impairment rate
     latex: |
-      k_\mathrm{imp}(T) = k_{i,\mathrm{eff}}(T)\, \frac{K}{1 + K}
-    code: phylloptim::Leaf::k_imp_eff
-    reads: []
+      k_\mathrm{imp}(T) = k_i\, \exp\!\left[\frac{E_{a,i}}{R}\left(\frac{1}{T'_{\mathrm{iso},K}} - \frac{1}{T_K}\right)\right], \qquad
+      T'_{\mathrm{iso},K} = \mathrm{clamp}_{[250,\,350]}(T_\mathrm{iso} + T_0 + \delta_\mathrm{imp})
+    code: phylloptim::damage::k_imp
+    also: [phylloptim::Leaf::k_imp_eff, phylloptim::damage::centred_arrhenius]
+    reads: [k_i_, k_i_Ea_, k_i_Tiso_, C_to_K, gas_constant, topt_clamp_min, topt_clamp_max, exp_clamp]
     writes: [k_imp_eff_]
     kind: closed_form
-    note: 'Reported at the temperature the block is seated at; enters no objective.'
+    cite: Bison-2026
+    note: 'First-order PSII heat inactivation written about the Meyer–Neldel isokinetic temperature, so $E_{a,i}$ pivots the curve about $T_\mathrm{iso}$ rather than moving it. Unbounded in temperature. Reported at the temperature the block is seated at; enters no objective.'
   k_rec_eff:
     section: damage
-    title: Repair rate, gated off when hot
+    title: Repair rate
     latex: |
-      k_\mathrm{rec,eff}(T) = k_\mathrm{rec}\, \mathrm{logistic}\!\big(-m_\mathrm{rep}\,(T - T_\mathrm{rep,cut})\big)
+      k_\mathrm{rec,eff}(T) = k_\mathrm{rec}\, \exp\!\left[\frac{E_{a,\mathrm{rec}}}{R}\left(\frac{1}{T_{25,K}} - \frac{1}{T_K}\right)\right]
     code: phylloptim::damage::k_rec_eff
-    reads: [k_rec_, m_rep_, t_rep_cut_]
+    also: [phylloptim::Leaf::k_rec_eff, phylloptim::damage::centred_arrhenius]
+    reads: [k_rec_, k_rec_Ea_, damage_Tref, C_to_K, gas_constant, exp_clamp]
     writes: [k_rec_eff_]
+    kind: closed_form
+    note: 'Does not shut off when hot: impairment outruns the default repair above about 32 °C.'
+  k_mat_eff:
+    section: damage
+    title: Maturation rate
+    latex: |
+      k_\mathrm{mat,eff}(T) = k_\mathrm{mat}\, \exp\!\left[\frac{E_{a,\mathrm{mat}}}{R}\left(\frac{1}{T_{25,K}} - \frac{1}{T_K}\right)\right]
+    code: phylloptim::damage::k_mat_eff
+    also: [phylloptim::damage::centred_arrhenius]
+    reads: [k_mat_, k_mat_Ea_, damage_Tref, C_to_K, gas_constant, exp_clamp]
+    writes: []
     kind: closed_form
   damage_rates:
     section: damage
     title: The dynamics
     latex: |
       \frac{dA}{dt} = \alpha_A\, \mathrm{softplus}(T - T_\mathrm{accl};\, s) - \beta_A\, A, \qquad
-      \frac{dI}{dt} = k_\mathrm{imp}(T)\, F - \big(k_\mathrm{rec,eff}(T) + k_\mathrm{mat}\big)\, I, \qquad
-      \frac{dD}{dt} = k_\mathrm{mat}\, I, \qquad F = 1 - I - D
+      \frac{dI}{dt} = k_\mathrm{imp}(T)\, F - \big(k_\mathrm{rec,eff}(T) + k_\mathrm{mat,eff}(T)\big)\, I, \qquad
+      \frac{dD}{dt} = k_\mathrm{mat,eff}(T)\, I, \qquad F = 1 - I - D
     code: phylloptim::damage::rates
     also: [phylloptim::Leaf::damage_rates]
-    reads: [acclim_alpha_, acclim_beta_, acclim_T_, acclim_s_, k_mat_]
+    reads: [acclim_alpha_, acclim_beta_, acclim_T_, acclim_s_]
     writes: []
     kind: closed_form
     note: 'Per day, $T$ the leaf temperature. $F$ confines fresh impairment to functional leaf, so $I + D \le 1$ without a clamp. A detached leaf has no sink for $D$; TF24t adds one.'
@@ -1747,10 +1733,10 @@ equations:
       \text{RK4 on a piecewise-linear } T(t),\ \text{each interval cut into } m = \max\!\Big(1,\ \Big\lceil \frac{\Delta t\, k_\mathrm{fastest}}{0.1} \Big\rceil,\ \Big\lceil \frac{|\Delta T|}{0.25} \Big\rceil\Big) \text{ sub-steps}
     code: phylloptim::damage::trajectory
     also: [phylloptim::Leaf::damage_trajectory]
-    reads: [rk_rate_step, rk_temp_step, acclim_beta_, k_mat_]
+    reads: [rk_rate_step, rk_temp_step, acclim_beta_, topt_offset_, dTimpair_max_]
     writes: []
     kind: integrator
-    note: '$k_\mathrm{fastest}$ is the largest of $k_{i,\mathrm{eff}} + k_\mathrm{rec,eff} + k_\mathrm{mat} + \beta_A$ at the two ends of the interval. The sub-step count is chosen from values, so a gradient through it is the derivative of the discrete map.'
+    note: '$k_\mathrm{fastest}$ is the largest of $k_\mathrm{imp} + k_\mathrm{rec,eff} + k_\mathrm{mat,eff} + \beta_A$ at the two ends of the interval, impairment at its smallest isokinetic shift. The sub-step count is chosen from values, so a gradient through it is the derivative of the discrete map.'
 
   # --- vulnerability and supply --------------------------------------------------
   # --- vulnerability -----------------------------------------------------------

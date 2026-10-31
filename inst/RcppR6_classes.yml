@@ -386,25 +386,24 @@ Leaf:
     # on, the Vcmax and Jmax optima shift by topt_offset_ + dTopt_max_ * A/(A + K_A_),
     # both capacities are scaled by F (floored at 1e-6), and four maintenance costs
     # are added to R_d_. The dynamics are $damage_rates() and $damage_trajectory();
-    # see leaf_damage_trajectory(). The impairment rate is k_i_ (at k_i_Tref_,
-    # sensitivity k_i_Ea_) times a switch K/(1+K) with its OWN impair_H_ and
-    # impair_Tmid_ (moved by topt_offset_ + dTimpair_max_ * A/(A + K_A_)),
-    # independent of the Vcmax and Jmax curves. Every rate is per DAY and every
-    # temperature the LEAF's. leaf_gradient(), leaf_gradient_batch() and the closed
+    # see leaf_damage_trajectory(). Every rate is a centred Arrhenius: impairment
+    # is Bison & Michaletz (2026)'s, k_i_ at the isokinetic temperature k_i_Tiso_
+    # (moved by topt_offset_ + dTimpair_max_ * A/(A + K_A_)) with activation
+    # energy k_i_Ea_, independent of the Vcmax and Jmax curves; repair and
+    # maturation are k_rec_ and k_mat_ at 25 C with k_rec_Ea_ and k_mat_Ea_. Every
+    # rate is per DAY and every temperature the LEAF's. leaf_gradient(), leaf_gradient_batch() and the closed
     # form refuse a leaf with the gate on. See `use_thermal_damage_` in
     # leaf_model.hpp.
     use_thermal_damage_: {type: bool, access: field}
     topt_offset_: {type: double, access: field}
-    impair_H_: {type: double, access: field}
-    impair_Tmid_: {type: double, access: field}
     k_i_: {type: double, access: field}
     k_i_Ea_: {type: double, access: field}
-    k_i_Tref_: {type: double, access: field}
+    k_i_Tiso_: {type: double, access: field}
     k_i_baseline_: {type: double, access: field}
     k_rec_: {type: double, access: field}
-    m_rep_: {type: double, access: field}
-    t_rep_cut_: {type: double, access: field}
+    k_rec_Ea_: {type: double, access: field}
     k_mat_: {type: double, access: field}
+    k_mat_Ea_: {type: double, access: field}
     acclim_alpha_: {type: double, access: field}
     acclim_beta_: {type: double, access: field}
     acclim_T_: {type: double, access: field}
@@ -931,12 +930,9 @@ Leaf:
     damage_par_names:
       return_type: "std::vector<std::string>"
 
-    # --- the ATLS thermal-damage layer's two smooth switches -----------------
-    # Argument-clamped so they stay finite. Static in C++; bound so a caller's
-    # acclimation forcing can use the functions the leaf does.
-    logistic_:
-      return_type: double
-      args: [x: double]
+    # --- the ATLS thermal-damage layer's acclimation forcing ------------------
+    # Argument-clamped so it stays finite. Static in C++; bound so a caller's
+    # acclimation forcing can use the function the leaf does.
     softplus_:
       return_type: double
       args: [x: double, s: double]

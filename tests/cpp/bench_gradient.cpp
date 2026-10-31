@@ -346,7 +346,7 @@ int main(int argc, char **argv) {
     // collar route with the layer off, which reads none of them. The short
     // initialiser zero-fills the rest, which is why the assertion below is what
     // makes it safe.
-    static_assert(phylloptim::gradient::n_theta == 35,
+    static_assert(phylloptim::gradient::n_theta == 34,
                   "theta above is positional and deliberately short; recount it "
                   "against n_theta and update this assertion together");
 

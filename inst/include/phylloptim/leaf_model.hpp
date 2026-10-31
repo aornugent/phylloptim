@@ -90,17 +90,17 @@ namespace phylloptim {
 // The fifteen traits in `Leaf::set_traits`' argument order, then the slots that
 // are not traits: `kmax` (the conductance driver), `resistance` (the
 // single-potential path's series resistance), the three model-owned slots
-// (`CF77_lambda`, `TF24_floor_lambda_o`, `LeastCost_beta`), the fifteen inputs of
+// (`CF77_lambda`, `TF24_floor_lambda_o`, `LeastCost_beta`), the fourteen inputs of
 // the thermal-damage layer that reach the solve, and `PPFD`. Everything before
-// `PPFD` is what a calibration fits, `gradient::n_theta` (35); `PPFD` is seated
-// per observation from the drivers and is never fitted, and `n_pars` (36) counts
+// `PPFD` is what a calibration fits, `gradient::n_theta` (34); `PPFD` is seated
+// per observation from the drivers and is never fitted, and `n_pars` (35) counts
 // it.
 //
 // ⚠️ R INDEXES THESE POSITIONS, so a reordering silently differentiates the wrong
 // parameter. `test-gradient-batch.R` reads the names back out of C++ and compares
 // them with R's, so the two cannot drift apart without a failure.
 inline constexpr int n_traits = 15;
-inline constexpr int n_pars = 36;
+inline constexpr int n_pars = 35;
 
 // Every index by name, so nothing below indexes `theta` with a bare integer.
 // The first `n_traits` are `set_traits`' arguments in its order, which is also
@@ -154,7 +154,7 @@ inline constexpr int par_TF24_floor_lambda_o = 18;
 // `.gradient_model_pars()` offers it for `LeastCost` alone and refuses it
 // elsewhere, naming the model. Inserted here rather than appended after the
 // thermal-damage block so the three slots one curve each owns stay contiguous,
-// which costs the fifteen slots below a renumbering -- safe, because every
+// which costs the slots below a renumbering -- safe, because every
 // consumer reads them by name (plant's `tf24_strategy.h` included).
 //
 // ⚠️ IT IS NOT A PRICE, unlike the other two model-owned slots, and the message
@@ -179,11 +179,12 @@ inline constexpr int par_LeastCost_beta = 19;
 // reads them.
 //
 // ⚠️ THE LAYER'S DYNAMICS PARAMETERS ARE NOT HERE, AND MUST NOT BE ADDED. The
-// impairment switch (impair_H_, impair_Tmid_, dTimpair_max_), the impairment
-// rate's Arrhenius (k_i_Ea_, k_i_Tref_), k_mat_ and the acclimation kinetics move
-// only damage_rates(), never a solved output, so a slot here would report an exact
-// zero that reads as an answer. Their gradient is the trajectory's
-// (damage_trajectory_gradient).
+// impairment rate's Arrhenius (k_i_Ea_, k_i_Tiso_, dTimpair_max_), maturation
+// (k_mat_, k_mat_Ea_) and the acclimation kinetics move only damage_rates(),
+// never a solved output, so a slot here would report an exact zero that reads as
+// an answer. Their gradient is the trajectory's (damage_trajectory_gradient).
+// Repair is here because the repair-flux cost reads k_rec_eff(T), so both of its
+// parameters reach R_d_.
 inline constexpr int par_A = 20;
 inline constexpr int par_I = 21;
 inline constexpr int par_D = 22;
@@ -193,12 +194,11 @@ inline constexpr int par_K_A = 25;
 inline constexpr int par_k_i = 26;
 inline constexpr int par_k_i_baseline = 27;
 inline constexpr int par_k_rec = 28;
-inline constexpr int par_m_rep = 29;
-inline constexpr int par_t_rep_cut = 30;
-inline constexpr int par_c_acclim_maint = 31;
-inline constexpr int par_c_repair_maint = 32;
-inline constexpr int par_c_protect_maint = 33;
-inline constexpr int par_c_repair_flux = 34;
+inline constexpr int par_k_rec_Ea = 29;
+inline constexpr int par_c_acclim_maint = 30;
+inline constexpr int par_c_repair_maint = 31;
+inline constexpr int par_c_protect_maint = 32;
+inline constexpr int par_c_repair_flux = 33;
 // The light the leaf is standing in: the INTERCEPTED PPFD per unit leaf area,
 // the photon flux incident on the leaf before its absorptance. A DRIVER rather
 // than a trait, on the same footing as `kmax`: the consumer seats it per cohort
@@ -209,7 +209,7 @@ inline constexpr int par_c_repair_flux = 34;
 // that moves the light a cohort stands in -- the extinction coefficient, the leaf
 // area a stem carries -- reaches assimilation with no row at all and reads as an
 // exact zero, which is the signature of a missing accumulator.
-inline constexpr int par_PPFD = 35;
+inline constexpr int par_PPFD = 34;
 
 
 // The differentiable parameters, as one array indexed by the enumeration above.
@@ -287,50 +287,62 @@ template <class T> inline T clamp(const T& x, double lo, double hi) {
 // the names back, so a reordering fails there rather than differentiating the
 // wrong parameter. The three initial states follow them in a gradient request.
 enum : int {
-  dp_impair_H, dp_impair_Tmid, dp_k_i, dp_k_i_Ea, dp_k_i_Tref, dp_k_rec,
-  dp_m_rep, dp_t_rep_cut, dp_k_mat, dp_acclim_alpha, dp_acclim_beta,
-  dp_acclim_T, dp_acclim_s, dp_dTimpair_max, dp_K_A, dp_topt_offset,
+  dp_k_i, dp_k_i_Ea, dp_k_i_Tiso, dp_k_rec, dp_k_rec_Ea, dp_k_mat, dp_k_mat_Ea,
+  dp_acclim_alpha, dp_acclim_beta, dp_acclim_T, dp_acclim_s, dp_dTimpair_max,
+  dp_K_A, dp_topt_offset,
   n_dyn_pars
 };
 template <class T> using dyn_pars = std::array<T, n_dyn_pars>;
 
-template <class T> inline T logistic(const T& x) {
-  const T z = clamp(x, -30.0, 30.0);
-  return 1.0 / (1.0 + exp(-z));
-}
+// The reference temperature of the repair and maturation rates, deg C: the
+// temperature at which k_rec_ and k_mat_ are stated. Impairment has its own,
+// the isokinetic temperature k_i_Tiso_.
+inline constexpr double damage_Tref = 25.0;
 
 template <class T> inline T softplus(const T& x, const T& s) {
   const T z = clamp(s * x, -30.0, 30.0);
   return log1p(exp(z)) / s;
 }
 
-// The acclimation shift of the impairment switch's midpoint. Negative A is read
-// as zero.
+// Every rate in the layer: k at the reference temperature Tref_K (kelvin), on a
+// centred Arrhenius with activation energy Ea (J mol^-1). At Ea = 0 the argument
+// is an exact zero and the rate exactly k.
+template <class T, class U>
+inline T centred_arrhenius(const T& k, const T& Ea, const U& Tref_K,
+                           double leaf_temp) {
+  const T arg = clamp(
+      (Ea / gas_constant) * (1.0 / Tref_K - 1.0 / (leaf_temp + C_to_K)), -30.0,
+      30.0);
+  return k * exp(arg);
+}
+
+// The acclimation shift of the impairment's isokinetic temperature. Negative A
+// is read as zero.
 template <class T> inline T delta_impair(const T& A, const dyn_pars<T>& p) {
   const T a = val(A) < 0.0 ? T(0.0) : A;
   return p[dp_topt_offset] + p[dp_dTimpair_max] * a / (a + p[dp_K_A]);
 }
 
+// Impairment, functional -> impaired: Bison & Michaletz (2026)'s first-order
+// PSII inactivation, written about the isokinetic temperature their
+// Meyer-Neldel relation makes common to every species, so k_i_ is the rate there
+// and k_i_Ea_ alone sets the steepness. Unbounded in temperature by design.
 template <class T>
-inline T impair_switch(double leaf_temp, const T& delta, const dyn_pars<T>& p) {
-  const T mid_K = clamp(p[dp_impair_Tmid] + C_to_K + delta, 250.0, 350.0);
-  const double T_K = leaf_temp + C_to_K;
-  const T arg = clamp((p[dp_impair_H] / gas_constant) * (1.0 / mid_K - 1.0 / T_K),
-                      -30.0, 30.0);
-  const T K = exp(arg);
-  return K / (1.0 + K);
+inline T k_imp(double leaf_temp, const T& delta, const dyn_pars<T>& p) {
+  const T Tiso_K = clamp(p[dp_k_i_Tiso] + C_to_K + delta, 250.0, 350.0);
+  return centred_arrhenius(p[dp_k_i], p[dp_k_i_Ea], Tiso_K, leaf_temp);
 }
 
-template <class T> inline T k_i_eff(double leaf_temp, const dyn_pars<T>& p) {
-  const T arg = clamp((p[dp_k_i_Ea] / gas_constant) *
-                          (1.0 / (p[dp_k_i_Tref] + C_to_K) -
-                           1.0 / (leaf_temp + C_to_K)),
-                      -30.0, 30.0);
-  return p[dp_k_i] * exp(arg);
-}
-
+// Repair, impaired -> functional.
 template <class T> inline T k_rec_eff(double leaf_temp, const dyn_pars<T>& p) {
-  return p[dp_k_rec] * logistic(-p[dp_m_rep] * (leaf_temp - p[dp_t_rep_cut]));
+  return centred_arrhenius(p[dp_k_rec], p[dp_k_rec_Ea], damage_Tref + C_to_K,
+                           leaf_temp);
+}
+
+// Maturation, impaired -> damaged.
+template <class T> inline T k_mat_eff(double leaf_temp, const dyn_pars<T>& p) {
+  return centred_arrhenius(p[dp_k_mat], p[dp_k_mat_Ea], damage_Tref + C_to_K,
+                           leaf_temp);
 }
 
 // {dA/dt, dI/dt, dD/dt}, per day.
@@ -338,14 +350,14 @@ template <class T>
 inline std::array<T, 3> rates(double leaf_temp, const T& A, const T& I,
                               const T& D, const dyn_pars<T>& p) {
   const T F = 1.0 - I - D;
-  const T k_imp = k_i_eff(leaf_temp, p) *
-                  impair_switch(leaf_temp, delta_impair(A, p), p);
+  const T k_i = k_imp(leaf_temp, delta_impair(A, p), p);
   const T k_rec = k_rec_eff(leaf_temp, p);
+  const T k_mat = k_mat_eff(leaf_temp, p);
   const T dA = p[dp_acclim_alpha] *
                    softplus(T(leaf_temp) - p[dp_acclim_T], p[dp_acclim_s]) -
                p[dp_acclim_beta] * A;
-  const T dI = k_imp * F - (k_rec + p[dp_k_mat]) * I;
-  const T dD = p[dp_k_mat] * I;
+  const T dI = k_i * F - (k_rec + k_mat) * I;
+  const T dD = k_mat * I;
   return {dA, dI, dD};
 }
 
@@ -363,16 +375,22 @@ inline void trajectory(const std::vector<double>& times,
     const double t0 = times[i - 1], dt_all = times[i] - t0;
     const double T0 = leaf_temp[i - 1], T1 = leaf_temp[i];
     // The stiffest rate on the interval bounds the sub-step. Both ends, because
-    // the impairment and repair rates are monotone in temperature.
-    double fastest = val(p[dp_acclim_beta]) + val(p[dp_k_mat]);
+    // every rate is monotone in temperature; impairment at the smallest shift
+    // its isokinetic temperature can take, because it falls as that rises.
+    const T delta_min =
+        p[dp_topt_offset] +
+        (val(p[dp_dTimpair_max]) < 0.0 ? p[dp_dTimpair_max] : T(0.0));
+    double fastest = val(p[dp_acclim_beta]);
     for (double Tx : {T0, T1}) {
-      fastest = std::max(fastest, val(k_i_eff(Tx, p)) + val(k_rec_eff(Tx, p)) +
-                                      val(p[dp_k_mat]) + val(p[dp_acclim_beta]));
+      fastest = std::max(fastest, val(k_imp(Tx, delta_min, p)) +
+                                      val(k_rec_eff(Tx, p)) +
+                                      val(k_mat_eff(Tx, p)) +
+                                      val(p[dp_acclim_beta]));
     }
     // Two bounds on the sub-step: the fastest rate times the step below 0.1, and
-    // at most 0.25 K of temperature change per step, because the switch and the
-    // Arrhenius scale are steep in temperature and a forcing swept across them in
-    // one step is under-resolved however slow the rates are.
+    // at most 0.25 K of temperature change per step, because the impairment rate
+    // is steep in temperature and a forcing swept across it in one step is
+    // under-resolved however slow the rates are.
     const int m = std::max({1, static_cast<int>(std::ceil(dt_all * fastest / 0.1)),
                             static_cast<int>(std::ceil(std::abs(T1 - T0) / 0.25))});
     const double h = dt_all / m;
@@ -950,16 +968,17 @@ public:
   //   functional F  <=>  impaired I  -->  damaged D,      F = 1 - I - D
   //
   //   dA/dt = acclim_alpha_ * softplus(T - acclim_T_; acclim_s_) - acclim_beta_ * A
-  //   dI/dt = k_imp(T) * F - (k_rec_eff(T) + k_mat_) * I
-  //   dD/dt = k_mat_ * I
-  //   k_imp(T) = k_i_eff(T) * K/(1 + K),  K = exp[(impair_H_/R)(1/Tmid - 1/T)]
+  //   dI/dt = k_imp(T) * F - (k_rec(T) + k_mat(T)) * I
+  //   dD/dt = k_mat(T) * I
+  //   k(T)  = k * exp[(Ea/R)(1/T_ref - 1/T)]   for each of the three rates
   //
-  // with T the LEAF temperature throughout and every rate per DAY. Impaired area
-  // returns to functional only by repair, at k_rec_eff; damaged area does not
-  // return. K/(1 + K) is a temperature SWITCH on the impairment rate, one half at
-  // the (acclimation-shifted) midpoint -- not a state and not a fraction of the
-  // leaf. damage_rates() evaluates the right-hand side and damage_trajectory()
-  // integrates it over a leaf-temperature series, so a leaf experiment can be
+  // with T the LEAF temperature throughout and every rate per DAY. Every rate has
+  // the one form, a centred Arrhenius, and nothing switches on or off: repair and
+  // maturation are stated at 25 C, and impairment at its isokinetic temperature
+  // k_i_Tiso_ moved by the acclimation shift. Impaired area returns to functional
+  // only by repair; damaged area does not return. damage_rates() evaluates the
+  // right-hand side and damage_trajectory() integrates it over a
+  // leaf-temperature series, so a leaf experiment can be
   // fitted with this class alone; a caller that integrates the states itself (plant's
   // TF24t, which adds dilution by leaf turnover and growth to dD/dt) calls
   // damage_rates() and seats A_, I_ and D_ before each set_physiology.
@@ -977,7 +996,7 @@ public:
   // curves are the INSTANTANEOUS, fully reversible temperature response, and
   // nothing about them persists past the call; impairment is rate-and-state and
   // lasts until repaired. They share no parameter, so recalibrating the
-  // photosynthetic response cannot move the impairment switch. A hot leaf loses
+  // photosynthetic response cannot move the impairment rate. A hot leaf loses
   // capacity both ways, by different mechanisms on different timescales, and that
   // is intended rather than a double count.
   //
@@ -1004,42 +1023,42 @@ public:
   // damage_trajectory_gradient().
   bool use_thermal_damage_ = false;
   // Constitutive thermostability shift, deg C. Moves BOTH the photosynthetic
-  // optimum (through the entropy term) and the impairment switch's midpoint by
-  // the same amount; the acclimated shifts below are separate.
+  // optimum (through the entropy term) and the impairment's isokinetic
+  // temperature by the same amount; the acclimated shifts below are separate.
   double topt_offset_ = 0.0;
-  // The impairment switch, K = exp[(impair_H_/R)(1/Tmid - 1/T)] with Tmid in
-  // kelvin, so K/(1 + K) is one half at impair_Tmid_ (deg C) and impair_H_
-  // (J mol^-1) sets how sharply it turns on: K changes 10-fold over
-  // ln(10)*R*T^2/impair_H_ degrees, 9.7 K at the default near 45 C.
+  // Impairment, functional -> impaired, Bison & Michaletz (2026)'s first-order
+  // PSII inactivation k = A exp(-Ea/RT) under their Meyer-Neldel relation
+  // ln A = m Ea + b, which pins every species' rate to one value exp(b) at the
+  // isokinetic temperature T_iso = 1/(m R). Written about that point,
   //
-  // ⚠️ THE DEFAULTS ARE THE JMAX CURVE'S DEACTIVATION TERM, H_d = 200 kJ mol^-1
-  // and H_d/d_S = 200000/650 K, which is where the original layer put the onset.
-  // They are COPIES, not references: moving jmax_H_d_ or jmax_d_S_ does not move
-  // the switch.
-  double impair_H_ = phylloptim::jmax_H_d;
-  double impair_Tmid_ = phylloptim::jmax_H_d / phylloptim::jmax_d_S - C_to_K;
-  // The impairment rate's scale, a centred Arrhenius:
+  //     k_imp = k_i_ * exp[(k_i_Ea_/R)(1/T_iso - 1/T)],
+  //     T_iso = k_i_Tiso_ + topt_offset_ + dTimpair_max_ * A/(A + K_A_)  (deg C),
   //
-  //     k_i_eff = k_i_ * exp[(k_i_Ea_/R)(1/T_ref - 1/T)],  T_ref = k_i_Tref_ (deg C)
+  // k_i_ (day^-1) is that common rate and k_i_Ea_ (J mol^-1) the species'
+  // steepness, tenfold per ln(10)*R*T^2/k_i_Ea_ degrees (6.1 K at the default near
+  // 45 C). A different Ea pivots the curve about T_iso rather than moving it.
   //
-  // so k_i_ (day^-1) is the rate at k_i_Tref_ with the switch fully on, and
-  // k_i_Ea_ (J mol^-1) its temperature sensitivity. Default k_i_Ea_ = 0 is a
-  // constant scale EXACTLY: the exponent is an exact zero and exp(0) is one.
-  double k_i_ = 0.5;
-  double k_i_Ea_ = 0.0;
-  double k_i_Tref_ = 25.0;
+  // The defaults are their 177-species fit: exp(b) = 3.2e-3 s^-1, T_iso = 50.5 C
+  // (Extended Data Table 2) and the mean Ea, 316 kJ mol^-1 (Extended Data Table 1;
+  // species span 116-619). ⚠️ THEIR A IS PER MINUTE IN THE PAPER AS FIRST
+  // PUBLISHED, mislabelled per second (author correction, Zenodo
+  // 10.5281/zenodo.23752859 v3 corrects it): exp(b) here is the per-second value
+  // times 86400. Their Ea is kJ mol^-1, and these are J mol^-1.
+  double k_i_ = 276.0;
+  double k_i_Ea_ = 316.0e3;
+  double k_i_Tiso_ = 50.5;
   // The no-extra-protection baseline k_i_ is costed against, day^-1: protection
-  // bought is max(0, k_i_baseline_ - k_i_). A rate, not a temperature: the
-  // Arrhenius reference above is k_i_Tref_.
-  double k_i_baseline_ = 0.5;
-  // Repair, impaired -> functional: k_rec_eff = k_rec_ * logistic(-m_rep_ *
-  // (T - t_rep_cut_)), the cool-temperature rate (day^-1) shut off when hot with
-  // slope m_rep_ (deg C^-1) about t_rep_cut_ (deg C).
+  // bought is max(0, k_i_baseline_ - k_i_).
+  double k_i_baseline_ = 276.0;
+  // Repair, impaired -> functional, and maturation, impaired -> damaged: each a
+  // rate at 25 C (day^-1) on a centred Arrhenius with its own activation energy
+  // (J mol^-1). Neither shuts off when hot: impairment outruns the default repair
+  // above about 32 C and keeps rising tenfold every ~6 K, so a hot leaf is
+  // impaired whatever repair does.
   double k_rec_ = 0.25;
-  double m_rep_ = 0.4;
-  double t_rep_cut_ = 45.0;
-  // Maturation, impaired -> damaged, day^-1. Temperature-independent.
+  double k_rec_Ea_ = 0.0;
   double k_mat_ = 0.02;
+  double k_mat_Ea_ = 0.0;
   // Acclimation kinetics: dA/dt = acclim_alpha_ * softplus(T - acclim_T_;
   // acclim_s_) - acclim_beta_ * A, with T the LEAF temperature. acclim_alpha_
   // (day^-1 deg C^-1) is the gain, acclim_beta_ (day^-1) the decay, so 1/beta is
@@ -1050,8 +1069,8 @@ public:
   double acclim_T_ = 30.0;
   double acclim_s_ = 1.0;
   // What acclimation buys: the most the photosynthetic optimum can rise, and the
-  // most the impairment switch's midpoint can rise, deg C, both saturating in A
-  // with half-saturation K_A_. Neither is a hard cap on anything but the shift.
+  // most the impairment's isokinetic temperature can rise, deg C, both
+  // saturating in A with half-saturation K_A_. Neither is a hard cap on anything but the shift.
   double dTopt_max_ = 6.0;
   double dTimpair_max_ = 6.0;
   double K_A_ = 1.0;
@@ -3050,37 +3069,33 @@ public:
 
   // --- the ATLS thermal-damage layer's pieces (see use_thermal_damage_) --------
   // Every exponential argument is clamped to [-30, 30], and every shifted optimum
-  // or onset to [250, 350] K, so no driver or trait makes them non-finite.
+  // or isokinetic temperature to [250, 350] K, so no driver or trait makes them
+  // non-finite.
   //
-  // 1/(1 + exp(-x)), and the smooth max(0, x), log1p(exp(s*x))/s. Static: a
-  // caller's acclimation forcing uses them too.
-  static double logistic_(double x);
+  // The smooth max(0, x), log1p(exp(s*x))/s. Static: a caller's acclimation
+  // forcing uses it too.
   static double softplus_(double x, double s);
   // The entropy term that moves a peaked Arrhenius optimum,
   // Topt = H_d / (d_S - R*ln(Ea/(H_d - Ea))), by delta_topt degrees.
   double d_S_shifted(double Ea, double H_d, double d_S_base,
                      double delta_topt) const;
-  // The impairment switch K/(1+K), K = exp[(impair_H_/R)(1/Tmid - 1/T)], with
-  // the midpoint impair_Tmid_ moved by delta_impair degrees (clamped to [250, 350]
-  // K). Its own parameters: it reads nothing of the Vcmax or Jmax curves.
-  double impair_switch(double leaf_temp, double delta_impair) const;
-  // The impairment rate's Arrhenius scale, k_i_ at k_i_Tref_, day^-1.
-  double k_i_eff(double leaf_temp) const;
-  // The impairment rate, functional -> impaired: k_i_eff * impair_switch, day^-1.
+  // The impairment rate, functional -> impaired, day^-1: k_i_ at the isokinetic
+  // temperature k_i_Tiso_ moved by delta_impair degrees (clamped to [250, 350] K).
+  // Its own parameters: it reads nothing of the Vcmax or Jmax curves.
   double k_imp_eff(double leaf_temp, double delta_impair) const;
   // The repair rate, impaired -> functional, day^-1.
   double k_rec_eff(double leaf_temp) const;
-  // The acclimation shift of the impairment switch's midpoint at a state A.
+  // The acclimation shift of the impairment's isokinetic temperature at a state A.
   double delta_impair_at(double A) const;
 
   // The layer's parameters, packed for the templates in `damage`, and the
-  // refusal of a non-positive impair_H_ every entry point applies.
+  // refusal of a negative k_i_Ea_ every entry point applies.
   damage::dyn_pars<double> damage_pars() const;
   void check_damage_pars() const;
   void check_damage_series(const std::vector<double>& times,
                            const std::vector<double>& leaf_temp) const;
   // The names of damage_trajectory_gradient()'s inputs, in index order: the
-  // sixteen dynamics parameters, then the three initial states.
+  // fourteen dynamics parameters, then the three initial states.
   std::vector<std::string> damage_par_names() const;
   // d(state)/d(input) along the trajectory, exact by forward-mode differentiation
   // of the same RK4: 3 * times.size() * which.size() numbers, time fastest, then
@@ -3599,8 +3614,7 @@ inline leaf_pars<double> Leaf::passive_pars() const {
   p[par_k_i] = k_i_;
   p[par_k_i_baseline] = k_i_baseline_;
   p[par_k_rec] = k_rec_;
-  p[par_m_rep] = m_rep_;
-  p[par_t_rep_cut] = t_rep_cut_;
+  p[par_k_rec_Ea] = k_rec_Ea_;
   p[par_c_acclim_maint] = c_acclim_maint_;
   p[par_c_repair_maint] = c_repair_maint_;
   p[par_c_protect_maint] = c_protect_maint_;
@@ -5685,8 +5699,8 @@ inline void Leaf::update_temperature_dependent_params(double leaf_temp) {
   photo_temp_ = leaf_temp;
   if (use_thermal_damage_) {
     // The ATLS layer (see use_thermal_damage_). One shift moves both capacity
-    // optima; the impairment midpoint has its own, sharing only the constitutive
-    // offset and the acclimation state.
+    // optima; the impairment's isokinetic temperature has its own, sharing only
+    // the constitutive offset and the acclimation state.
     const double A = std::max(A_, 0.0);
     const double delta_topt = topt_offset_ + dTopt_max_ * A / (A + K_A_);
     const double vcmax_dS =
@@ -5752,8 +5766,6 @@ inline void Leaf::update_temperature_dependent_params(double leaf_temp) {
 // --- the ATLS thermal-damage layer ------------------------------------------
 
 
-inline double Leaf::logistic_(double x) { return damage::logistic(x); }
-
 inline double Leaf::softplus_(double x, double s) {
   return damage::softplus(x, s);
 }
@@ -5780,15 +5792,13 @@ inline double Leaf::d_S_shifted(double Ea, double H_d, double d_S_base,
 // `damage` above.
 inline damage::dyn_pars<double> Leaf::damage_pars() const {
   damage::dyn_pars<double> p{};
-  p[damage::dp_impair_H] = impair_H_;
-  p[damage::dp_impair_Tmid] = impair_Tmid_;
   p[damage::dp_k_i] = k_i_;
   p[damage::dp_k_i_Ea] = k_i_Ea_;
-  p[damage::dp_k_i_Tref] = k_i_Tref_;
+  p[damage::dp_k_i_Tiso] = k_i_Tiso_;
   p[damage::dp_k_rec] = k_rec_;
-  p[damage::dp_m_rep] = m_rep_;
-  p[damage::dp_t_rep_cut] = t_rep_cut_;
+  p[damage::dp_k_rec_Ea] = k_rec_Ea_;
   p[damage::dp_k_mat] = k_mat_;
+  p[damage::dp_k_mat_Ea] = k_mat_Ea_;
   p[damage::dp_acclim_alpha] = acclim_alpha_;
   p[damage::dp_acclim_beta] = acclim_beta_;
   p[damage::dp_acclim_T] = acclim_T_;
@@ -5799,40 +5809,24 @@ inline damage::dyn_pars<double> Leaf::damage_pars() const {
   return p;
 }
 
-// ⚠️ A NON-POSITIVE impair_H_ IS REFUSED: the switch would then turn OFF with
-// temperature. A NaN passes through rather than throwing, so an unset input
-// poisons the outputs where a test can see it.
+// ⚠️ A NEGATIVE k_i_EA_ IS REFUSED: impairment would then slow as the leaf
+// heats. Zero is a temperature-independent rate, and allowed. A NaN passes
+// through rather than throwing, so an unset input poisons the outputs where a
+// test can see it.
 inline void Leaf::check_damage_pars() const {
-  if (impair_H_ <= 0.0) {
-    util::stop("the thermal-damage layer needs impair_H_ > 0, so that "
-               "impairment switches on with temperature; got impair_H_ = " +
-               util::format_double(impair_H_));
+  if (k_i_Ea_ < 0.0) {
+    util::stop("the thermal-damage layer needs k_i_Ea_ >= 0, so that "
+               "impairment does not slow with temperature; got k_i_Ea_ = " +
+               util::format_double(k_i_Ea_));
   }
 }
 
-// A centred Arrhenius K through a saturating link: below the midpoint the switch
-// is ~K, a plain Arrhenius rise with activation energy impair_H_; above it the
-// switch saturates at one, which is what keeps the impairment rate bounded by
-// k_i_eff.
-//
 // ⚠️ ITS OWN PARAMETERS, AND NOTHING OF THE JMAX CURVE. Do not read jmax_H_d_ or
 // jmax_d_S_ here: that would make recalibrating the instantaneous photosynthetic
-// response silently move the impairment onset. The DEFAULTS equal those values:
-// (d_S*T - H_d)/(R*T) and (H_d/R)(1/Tmid - 1/T) are the same expression at
-// Tmid = H_d/d_S, differently associated.
-inline double Leaf::impair_switch(double leaf_temp, double delta_impair) const {
-  check_damage_pars();
-  return damage::impair_switch(leaf_temp, delta_impair, damage_pars());
-}
-
-// k_i_ at k_i_Tref_, on a centred Arrhenius. At k_i_Ea_ = 0 the argument is an
-// exact (signed) zero and exp of it exactly one, so the default IS k_i_.
-inline double Leaf::k_i_eff(double leaf_temp) const {
-  return damage::k_i_eff(leaf_temp, damage_pars());
-}
-
+// response silently move the impairment rate.
 inline double Leaf::k_imp_eff(double leaf_temp, double delta_impair) const {
-  return k_i_eff(leaf_temp) * impair_switch(leaf_temp, delta_impair);
+  check_damage_pars();
+  return damage::k_imp(leaf_temp, delta_impair, damage_pars());
 }
 
 inline double Leaf::delta_impair_at(double A) const {
@@ -5885,10 +5879,9 @@ inline std::vector<double> Leaf::damage_trajectory(
 }
 
 inline std::vector<std::string> Leaf::damage_par_names() const {
-  return {"impair_H_", "impair_Tmid_", "k_i_", "k_i_Ea_", "k_i_Tref_", "k_rec_",
-          "m_rep_", "t_rep_cut_", "k_mat_", "acclim_alpha_", "acclim_beta_",
-          "acclim_T_", "acclim_s_", "dTimpair_max_", "K_A_", "topt_offset_",
-          "A0", "I0", "D0"};
+  return {"k_i_", "k_i_Ea_", "k_i_Tiso_", "k_rec_", "k_rec_Ea_", "k_mat_",
+          "k_mat_Ea_", "acclim_alpha_", "acclim_beta_", "acclim_T_", "acclim_s_",
+          "dTimpair_max_", "K_A_", "topt_offset_", "A0", "I0", "D0"};
 }
 
 // One forward-mode pass per requested input, each setting a dual number's

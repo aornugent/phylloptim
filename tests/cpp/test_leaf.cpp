@@ -4632,12 +4632,12 @@ void test_stem_curve_shortcut_needs_no_rebuild() {
       96.0,   2.680147, P50_0, 2.680147, P50_0, 1.5,
       157.44, 0.30 / 0.85,     0.7,   0.99,     7.5,   kRd25, kGammaJS22,
       kCMaxA, kCMaxB,  kmax,      0.0};
-  // The three model-owned slots and the fifteen thermal-damage inputs are left
+  // The three model-owned slots and the fourteen thermal-damage inputs are left
   // zero-filled: this test differentiates the collar route with the layer off,
   // which reads none of them. ⚠️ THE ASSERTION IS WHAT MAKES THE SHORT
   // INITIALISER SAFE -- without it the next appended parameter shifts `kmax`
   // silently, which is the failure the comment above describes.
-  static_assert(phylloptim::gradient::n_theta == 35,
+  static_assert(phylloptim::gradient::n_theta == 34,
                 "theta above is positional and deliberately short; recount it "
                 "against n_theta and update this assertion together");
 
@@ -8134,15 +8134,12 @@ void test_outputs_agree_with_the_solve() {
 // Every input of the layer at a value other than its default.
 void set_atls_inputs(phylloptim::Leaf &l) {
   l.topt_offset_ = 2.5;
-  l.impair_H_ = 2.6e5;
-  l.impair_Tmid_ = 37.0;
-  l.m_rep_ = 0.7;
-  l.t_rep_cut_ = 41.0;
-  l.k_i_ = 0.2;
-  l.k_i_Ea_ = 8e4;
-  l.k_i_Tref_ = 30.0;
-  l.k_i_baseline_ = 0.6;
+  l.k_i_ = 5.0;
+  l.k_i_Ea_ = 2.5e5;
+  l.k_i_Tiso_ = 47.0;
+  l.k_i_baseline_ = 8.0;
   l.k_rec_ = 0.4;
+  l.k_rec_Ea_ = 3e4;
   l.dTopt_max_ = 4.0;
   l.dTimpair_max_ = 2.5;
   l.K_A_ = 2.0;
@@ -8150,6 +8147,7 @@ void set_atls_inputs(phylloptim::Leaf &l) {
   l.I_ = 0.2;
   l.D_ = 0.15;
   l.k_mat_ = 0.05;
+  l.k_mat_Ea_ = 2e4;
   l.acclim_alpha_ = 0.03;
   l.acclim_beta_ = 0.2;
   l.acclim_T_ = 28.0;
@@ -8164,15 +8162,12 @@ void set_atls_inputs(phylloptim::Leaf &l) {
 void poison_atls_inputs(phylloptim::Leaf &l) {
   const double nan = std::numeric_limits<double>::quiet_NaN();
   l.topt_offset_ = nan;
-  l.impair_H_ = nan;
-  l.impair_Tmid_ = nan;
-  l.m_rep_ = nan;
-  l.t_rep_cut_ = nan;
   l.k_i_ = nan;
   l.k_i_Ea_ = nan;
-  l.k_i_Tref_ = nan;
+  l.k_i_Tiso_ = nan;
   l.k_i_baseline_ = nan;
   l.k_rec_ = nan;
+  l.k_rec_Ea_ = nan;
   l.dTopt_max_ = nan;
   l.dTimpair_max_ = nan;
   l.K_A_ = nan;
@@ -8180,6 +8175,7 @@ void poison_atls_inputs(phylloptim::Leaf &l) {
   l.I_ = nan;
   l.D_ = nan;
   l.k_mat_ = nan;
+  l.k_mat_Ea_ = nan;
   l.acclim_alpha_ = nan;
   l.acclim_beta_ = nan;
   l.acclim_T_ = nan;
@@ -8446,12 +8442,12 @@ void test_thermal_damage_fd_helpers_restore_the_block() {
      "and the linked arm restores the whole block as well");
 
   // The repair-flux cost reads k_rec_eff(T), so it reaches dR_d/dT: the
-  // derivative moves with that coefficient, at a temperature where repair is
-  // switching off.
+  // derivative moves with that coefficient wherever repair has an activation
+  // energy, as the fixture's does.
   phylloptim::Leaf no_flux = l;
   no_flux.c_repair_flux_ = 0.0;
-  ok(no_flux.temp_deriv(l.t_rep_cut_, [&] { return no_flux.R_d_; }) !=
-         l.temp_deriv(l.t_rep_cut_, [&] { return l.R_d_; }),
+  ok(no_flux.temp_deriv(40.0, [&] { return no_flux.R_d_; }) !=
+         l.temp_deriv(40.0, [&] { return l.R_d_; }),
      "the repair-flux cost's temperature response reaches dR_d/dT");
 }
 

@@ -240,16 +240,15 @@ jobs:
                 0.0,                    // topt_offset_
                 6.0,                    // dTopt_max_
                 1.0,                    // K_A_
-                0.5,                    // k_i_
-                0.5,                    // k_i_baseline_
+                276.0,                  // k_i_
+                276.0,                  // k_i_baseline_
                 0.25,                   // k_rec_
-                0.4,                    // m_rep_
-                45.0,                   // t_rep_cut_
+                0.0,                    // k_rec_Ea_
                 0.0,                    // c_acclim_maint_
                 0.0,                    // c_repair_maint_
                 0.0,                    // c_protect_maint_
                 0.0};                   // c_repair_flux_
-            static_assert(phylloptim::gradient::n_theta == 35,
+            static_assert(phylloptim::gradient::n_theta == 34,
                           "theta above is written out element by element; update "
                           "it and this assertion together");
             const int pars[1] = {0};  // vcmax_25

@@ -84,8 +84,8 @@ and on \code{model = "LeastCost"} only \code{"LeastCost_beta"}.
 On a reused leaf \code{x} with \code{use_thermal_damage_} on, also the layer's inputs
 that reach the solve: its states \code{"A_"}, \code{"I_"}, \code{"D_"}, the optimum shift
 \code{"topt_offset_"}, \code{"dTopt_max_"}, \code{"K_A_"}, and every quantity a maintenance
-cost multiplies (\code{"k_i_"}, \code{"k_i_baseline_"}, \code{"k_rec_"}, \code{"m_rep_"},
-\code{"t_rep_cut_"}, \code{"c_acclim_maint_"}, \code{"c_repair_maint_"},
+cost multiplies (\code{"k_i_"}, \code{"k_i_baseline_"}, \code{"k_rec_"}, \code{"k_rec_Ea_"},
+\code{"c_acclim_maint_"}, \code{"c_repair_maint_"},
 \code{"c_protect_maint_"}, \code{"c_repair_flux_"}). The layer's dynamics parameters
 move no solved output and are refused; their gradient is
 \code{\link[=leaf_damage_gradient]{leaf_damage_gradient()}}'s. Defaults to all the route allows.

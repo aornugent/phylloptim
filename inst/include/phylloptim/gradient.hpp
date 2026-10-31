@@ -80,8 +80,8 @@ using phylloptim::par_A;          using phylloptim::par_I;
 using phylloptim::par_D;          using phylloptim::par_topt_offset;
 using phylloptim::par_dTopt_max;  using phylloptim::par_K_A;
 using phylloptim::par_k_i;        using phylloptim::par_k_i_baseline;
-using phylloptim::par_k_rec;      using phylloptim::par_m_rep;
-using phylloptim::par_t_rep_cut;  using phylloptim::par_c_acclim_maint;
+using phylloptim::par_k_rec;      using phylloptim::par_k_rec_Ea;
+using phylloptim::par_c_acclim_maint;
 using phylloptim::par_c_repair_maint; using phylloptim::par_c_protect_maint;
 using phylloptim::par_c_repair_flux;
 using phylloptim::par_PPFD;
@@ -120,7 +120,7 @@ inline const std::vector<std::string>& par_names() {
       "TF24_floor_lambda_o",
       "LeastCost_beta",
       "A_", "I_", "D_", "topt_offset_", "dTopt_max_", "K_A_", "k_i_",
-      "k_i_baseline_", "k_rec_", "m_rep_", "t_rep_cut_", "c_acclim_maint_",
+      "k_i_baseline_", "k_rec_", "k_rec_Ea_", "c_acclim_maint_",
       "c_repair_maint_", "c_protect_maint_", "c_repair_flux_"};
   return names;
 }
@@ -506,8 +506,7 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
     l.k_i_ = theta[par_k_i];
     l.k_i_baseline_ = theta[par_k_i_baseline];
     l.k_rec_ = theta[par_k_rec];
-    l.m_rep_ = theta[par_m_rep];
-    l.t_rep_cut_ = theta[par_t_rep_cut];
+    l.k_rec_Ea_ = theta[par_k_rec_Ea];
     l.c_acclim_maint_ = theta[par_c_acclim_maint];
     l.c_repair_maint_ = theta[par_c_repair_maint];
     l.c_protect_maint_ = theta[par_c_protect_maint];

@@ -148,14 +148,14 @@ hand a prescribed caller the solving path's indirect term on top of their partia
 `at()` materialises the zeros so no consumer has to know that. For one
 observation, use `g::at()` with a `g::Prescribed`.
 
-`theta` is `g::n_theta` = **35** doubles: the fifteen traits in `set_traits`'
+`theta` is `g::n_theta` = **34** doubles: the fifteen traits in `set_traits`'
 argument order, then `leaf_specific_conductance_max`, the single-potential path's
 `resistance`, the three model-owned slots `CF77_lambda_`, `TF24_floor_lambda_o`
-and `LeastCost_beta`, and the fifteen inputs of the thermal-damage layer that
+and `LeastCost_beta`, and the fourteen inputs of the thermal-damage layer that
 reach the solve. `g::par_names()` is that order and every position has a name
 (`g::par_vcmax_25`, `g::par_R_d_25`, `g::par_kmax`, ...); `pars` holds positions
 into it. R indexes these positions, so reordering the enumeration silently
-differentiates the wrong parameter. `phylloptim::n_pars` is **36**, one longer:
+differentiates the wrong parameter. `phylloptim::n_pars` is **35**, one longer:
 the pack the kernels read also holds `par_PPFD`, seated per observation from the
 drivers and never fitted. Size `theta` by `n_theta`; read it out to `n_pars` and
 you run past its end.

@@ -85,15 +85,15 @@ test_that("the parameter enumeration is the same order in R and in C++", {
               "resistance", "CF77_lambda_", "TF24_floor_lambda_o",
               "LeastCost_beta",
               "A_", "I_", "D_", "topt_offset_", "dTopt_max_", "K_A_", "k_i_",
-              "k_i_baseline_", "k_rec_", "m_rep_", "t_rep_cut_",
+              "k_i_baseline_", "k_rec_", "k_rec_Ea_",
               "c_acclim_maint_", "c_repair_maint_", "c_protect_maint_",
               "c_repair_flux_")
   expect_identical(gradient_par_names(), r_side)
   # And the count, which is what a positional trait call would silently break:
   # fifteen traits, the five that are not traits (two drivers, three model-owned
-  # slots), then the fifteen inputs of the thermal-damage layer that reach the
+  # slots), then the fourteen inputs of the thermal-damage layer that reach the
   # solve.
-  expect_length(gradient_par_names(), 35L)
+  expect_length(gradient_par_names(), 34L)
   expect_identical(gradient_par_names()[1:15], names(leaf_traits()))
 })
 

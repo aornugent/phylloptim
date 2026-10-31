@@ -408,8 +408,8 @@ set_traits <- function(x, traits) {
 ##'   On a reused leaf `x` with `use_thermal_damage_` on, also the layer's inputs
 ##'   that reach the solve: its states `"A_"`, `"I_"`, `"D_"`, the optimum shift
 ##'   `"topt_offset_"`, `"dTopt_max_"`, `"K_A_"`, and every quantity a maintenance
-##'   cost multiplies (`"k_i_"`, `"k_i_baseline_"`, `"k_rec_"`, `"m_rep_"`,
-##'   `"t_rep_cut_"`, `"c_acclim_maint_"`, `"c_repair_maint_"`,
+##'   cost multiplies (`"k_i_"`, `"k_i_baseline_"`, `"k_rec_"`, `"k_rec_Ea_"`,
+##'   `"c_acclim_maint_"`, `"c_repair_maint_"`,
 ##'   `"c_protect_maint_"`, `"c_repair_flux_"`). The layer's dynamics parameters
 ##'   move no solved output and are refused; their gradient is
 ##'   [leaf_damage_gradient()]'s. Defaults to all the route allows.
@@ -1133,20 +1133,21 @@ leaf_gradient <- function(psi_soil,
                           # .gradient_damage_pars, spelled out because this file
                           # is collated before the definition below is needed
                           "A_", "I_", "D_", "topt_offset_", "dTopt_max_", "K_A_",
-                          "k_i_", "k_i_baseline_", "k_rec_", "m_rep_",
-                          "t_rep_cut_", "c_acclim_maint_", "c_repair_maint_",
+                          "k_i_", "k_i_baseline_", "k_rec_", "k_rec_Ea_",
+                          "c_acclim_maint_", "c_repair_maint_",
                           "c_protect_maint_", "c_repair_flux_")
 
 # The thermal-damage layer's inputs that reach the solve, in enumeration order: its
 # three states, the acclimated shift of the Vcmax/Jmax optima, and every quantity a
 # maintenance cost multiplies. Leaf FIELDS, read off and written back by name.
 # Available only on a leaf with `use_thermal_damage_` on, and refused by name
-# elsewhere. The layer's DYNAMICS parameters (the impairment switch, the impairment
-# rate's Arrhenius, `k_mat_`, the acclimation kinetics) move no solved output and
-# are deliberately absent: their gradient is leaf_damage_gradient()'s.
+# elsewhere. The layer's DYNAMICS parameters (the impairment rate's Arrhenius,
+# maturation, the acclimation kinetics) move no solved output and are deliberately
+# absent: their gradient is leaf_damage_gradient()'s. Repair's two are here because
+# the repair-flux cost reads its rate.
 .gradient_damage_pars <- c("A_", "I_", "D_", "topt_offset_", "dTopt_max_", "K_A_",
-                           "k_i_", "k_i_baseline_", "k_rec_", "m_rep_",
-                           "t_rep_cut_", "c_acclim_maint_", "c_repair_maint_",
+                           "k_i_", "k_i_baseline_", "k_rec_", "k_rec_Ea_",
+                           "c_acclim_maint_", "c_repair_maint_",
                            "c_protect_maint_", "c_repair_flux_")
 
 # Their current values, off a leaf, in that order.

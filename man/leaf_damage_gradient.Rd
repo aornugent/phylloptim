@@ -31,12 +31,12 @@ trajectory runs -- one pass per input -- so it is the derivative of the
 numbers \code{\link[=leaf_damage_trajectory]{leaf_damage_trajectory()}} returns, not of an idealised solution.
 }
 \details{
-The inputs, named as the leaf's fields: the impairment switch (\code{impair_H_},
-\code{impair_Tmid_}), the impairment rate (\code{k_i_}, \code{k_i_Ea_}, \code{k_i_Tref_}), repair
-(\code{k_rec_}, \code{m_rep_}, \code{t_rep_cut_}), maturation (\code{k_mat_}), acclimation
-(\code{acclim_alpha_}, \code{acclim_beta_}, \code{acclim_T_}, \code{acclim_s_}), the switch's
-acclimated shift (\code{dTimpair_max_}, \code{K_A_}) and the constitutive offset
-(\code{topt_offset_}), then the initial states \code{A0}, \code{I0} and \code{D0}.
+The inputs, named as the leaf's fields: the impairment rate (\code{k_i_},
+\code{k_i_Ea_}, \code{k_i_Tiso_}), repair (\code{k_rec_}, \code{k_rec_Ea_}), maturation (\code{k_mat_},
+\code{k_mat_Ea_}), acclimation (\code{acclim_alpha_}, \code{acclim_beta_}, \code{acclim_T_},
+\code{acclim_s_}), the acclimated shift of the isokinetic temperature
+(\code{dTimpair_max_}, \code{K_A_}) and the constitutive offset (\code{topt_offset_}), then
+the initial states \code{A0}, \code{I0} and \code{D0}.
 
 ⚠️ The sub-step count is chosen from the parameter VALUES, so it is piecewise
 constant in them: the gradient is exact for the discrete map at that count,
@@ -47,6 +47,6 @@ integrator's own error (~1e-8 relative).
 l <- leaf_model()
 t <- seq(0, 2, by = 1 / 24)
 g <- leaf_damage_gradient(l, t, ifelse(t < 0.25, 46, 25),
-                          pars = c("impair_Tmid_", "k_rec_"))
+                          pars = c("k_i_Tiso_", "k_rec_"))
 g$gradient[length(t), , ]
 }

@@ -9,14 +9,23 @@
 ##' The dynamics, per day, with \eqn{T} the leaf temperature and \eqn{F = 1 - I - D}:
 ##'
 ##' \preformatted{
-##'   dA/dt = acclim_alpha * softplus(T - acclim_T; acclim_s) - acclim_beta * A
-##'   dI/dt = k_imp(T) * F - (k_rec(T) + k_mat) * I
-##'   dD/dt = k_mat * I
-##'   k_imp(T) = k_i * exp[(k_i_Ea/R)(1/T_ref - 1/T)] * K/(1 + K),
-##'   K = exp[(impair_H/R)(1/Tmid - 1/T)],  Tmid shifted by the acclimation
+##'   dA/dt    = acclim_alpha * softplus(T - acclim_T; acclim_s) - acclim_beta * A
+##'   dI/dt    = k_imp(T) * F - (k_rec(T) + k_mat(T)) * I
+##'   dD/dt    = k_mat(T) * I
+##'   k_imp(T) = k_i   * exp[(k_i_Ea/R)(1/T_iso - 1/T)]
+##'   k_rec(T) = k_rec * exp[(k_rec_Ea/R)(1/T_25 - 1/T)]
+##'   k_mat(T) = k_mat * exp[(k_mat_Ea/R)(1/T_25 - 1/T)]
 ##' }
 ##'
-##' Every parameter is a field of `x` (`$k_i_`, `$impair_Tmid_`, `$acclim_beta_`,
+##' with \eqn{T_{iso}} = `k_i_Tiso_` shifted by `topt_offset_` and the
+##' acclimation, and \eqn{T_{25}} = 25 C. The impairment rate is the first-order
+##' PSII heat inactivation of Bison & Michaletz (2026, Nature Ecology & Evolution,
+##' \doi{10.1038/s41559-026-03196-x}), and its defaults their 177-species fit:
+##' the rate common to every species at the isokinetic temperature (276 per day,
+##' at 50.5 C) and the mean activation energy (316 kJ/mol), so it rises tenfold
+##' about every 6 K. Nothing switches the rates on or off.
+##'
+##' Every parameter is a field of `x` (`$k_i_`, `$k_i_Tiso_`, `$acclim_beta_`,
 ##' ...); set them on the leaf before calling. Neither the gate
 ##' `use_thermal_damage_` nor the drivers are read. The rates themselves are
 ##' `x$damage_rates(leaf_temp, A, I, D)`.
@@ -67,12 +76,12 @@ leaf_damage_trajectory <- function(x, times, leaf_temp, A0 = 0, I0 = 0, D0 = 0) 
 ##' trajectory runs -- one pass per input -- so it is the derivative of the
 ##' numbers [leaf_damage_trajectory()] returns, not of an idealised solution.
 ##'
-##' The inputs, named as the leaf's fields: the impairment switch (`impair_H_`,
-##' `impair_Tmid_`), the impairment rate (`k_i_`, `k_i_Ea_`, `k_i_Tref_`), repair
-##' (`k_rec_`, `m_rep_`, `t_rep_cut_`), maturation (`k_mat_`), acclimation
-##' (`acclim_alpha_`, `acclim_beta_`, `acclim_T_`, `acclim_s_`), the switch's
-##' acclimated shift (`dTimpair_max_`, `K_A_`) and the constitutive offset
-##' (`topt_offset_`), then the initial states `A0`, `I0` and `D0`.
+##' The inputs, named as the leaf's fields: the impairment rate (`k_i_`,
+##' `k_i_Ea_`, `k_i_Tiso_`), repair (`k_rec_`, `k_rec_Ea_`), maturation (`k_mat_`,
+##' `k_mat_Ea_`), acclimation (`acclim_alpha_`, `acclim_beta_`, `acclim_T_`,
+##' `acclim_s_`), the acclimated shift of the isokinetic temperature
+##' (`dTimpair_max_`, `K_A_`) and the constitutive offset (`topt_offset_`), then
+##' the initial states `A0`, `I0` and `D0`.
 ##'
 ##' ⚠️ The sub-step count is chosen from the parameter VALUES, so it is piecewise
 ##' constant in them: the gradient is exact for the discrete map at that count,
@@ -88,7 +97,7 @@ leaf_damage_trajectory <- function(x, times, leaf_temp, A0 = 0, I0 = 0, D0 = 0) 
 ##' l <- leaf_model()
 ##' t <- seq(0, 2, by = 1 / 24)
 ##' g <- leaf_damage_gradient(l, t, ifelse(t < 0.25, 46, 25),
-##'                           pars = c("impair_Tmid_", "k_rec_"))
+##'                           pars = c("k_i_Tiso_", "k_rec_"))
 ##' g$gradient[length(t), , ]
 ##' @export
 leaf_damage_gradient <- function(x, times, leaf_temp, A0 = 0, I0 = 0, D0 = 0,
