@@ -34,7 +34,7 @@ Family context lives in [`plant-meta`](https://github.com/traitecoevo/plant-meta
 | header | holds |
 |---|---|
 | `util.hpp`, `constants.hpp` | R-free `stop()` and sentinels; physical constants |
-| `clamp_sites.hpp` | the `clamp_site` enum: every place the model substitutes a bound, counted |
+| `clamp_sites.hpp` | the `clamp_site` enum: the one bound a solved path keeps, the stomatal corner `E_s >= 0`, counted |
 | `quadrature.hpp`, `uniroot.hpp`, `optimize.hpp` | adaptive Simpson; Boost root-finders; `maximise_over_closed_interval_foc`, the one solver |
 | `vulnerability.hpp` | `VulnerabilityTable` (the C2 table both curves read), the closed-form integral and its inverse, `vulnerability_derivatives_at` |
 | `closed_form_rows.hpp` | a table's value with the closed form's trait rows, for both curves |
@@ -63,6 +63,7 @@ Family context lives in [`plant-meta`](https://github.com/traitecoevo/plant-meta
 ```sh
 make -C tests/cpp                    # builds and runs the five programs
 make -C tests/cpp bench              # bench_solve and bench_gradient (not in `make all`)
+make -C tests/cpp smoothness         # #183's acceptance sweep alone; run it on every PR that touches the solve
 make -C tests/cpp golden             # regenerate operating_points.tsv -- deliberately only
 make -C tests/cpp psi-stem-golden    # regenerate psi_stem_optima.tsv -- same
 make -C tests/cpp primitives-golden  # regenerate primitives.tsv -- same
@@ -187,6 +188,7 @@ YAML 1.1 reads `1e-3` as a string: write a float with a point and a signed expon
 - **The generated RcppR6 files** (old comments: "PLAN item 6c"): never hand-edit them, and keep RcppR6 undeclared.
 - **`gradient.hpp`'s arithmetic order**, which must match `R/gradient.R` bit-for-bit.
 - **`psi_stem_to_ci`'s tolerance** and **`basin_scan_cells()`'s gate**, both set by measurement.
+- **No clamp, `min`, `max` or branch on a physical quantity inside the solved range** (#183, decided). A driver or state outside the model's range is refused at its entry point, by name and limit; a reachable bound gets a smooth form with a registered width. The kept exceptions are the stomatal corner `E_s >= 0`, `vpd_leaf_min`, SOX's and JW26's reduction factors held at zero past psi_crit (without it a dark leaf's negative A times a negative factor reports a positive profit), and the published forms (Medlyn's beta, CF77's soil price), each with its reason in the registry. `make -C tests/cpp smoothness` is the check.
 - **The `supply_kind_` enum**, which measured free where `std::variant` did not (hazard 6).
 - **Public `Leaf` members**, which plant binds by name (hazard 7).
 - **`tsv_to_hex.c`**, which is live: `test-golden.R`'s regeneration recipe needs it.

@@ -205,6 +205,22 @@ inline void route_evaluate(Leaf& l, int curve, double psi) {
   }
 }
 
+// The same, false where the leaf refuses `psi` as outside its feasible interval.
+// Only that refusal is caught: anything else is a failure of the evaluation and
+// propagates.
+inline bool route_evaluate_feasible(Leaf& l, int curve, double psi) {
+  try {
+    route_evaluate(l, curve, psi);
+  } catch (const util::infeasible_error& e) {
+    const std::string token = util::infeasible_token("prescribed_potential");
+    if (std::string(e.what()).compare(0, token.size(), token) != 0) {
+      throw;
+    }
+    return false;
+  }
+  return true;
+}
+
 // ⚠️ THE FLAG IS THE POINT; the unchecked form is this with a null. Both routes
 // return a hard 0.0 SENTINEL on their shut-down and reversed-gradient exits, and a
 // bare zero is indistinguishable from a stationary point -- see
@@ -243,18 +259,12 @@ inline void outputs(const Leaf& l, double* y) {
 }
 
 // The outputs with the collar held at `psi` rather than optimised. False when
-// the clamp moved the target, because then this is not the evaluation that was
-// asked for.
-//
-// ⚠️ EXACT EQUALITY IS THE RIGHT TEST AND THE ONLY ONE THAT WORKS.
-// `evaluate_root_collar_psi` CLAMPS its target into the feasible interval, so a
-// clamped evaluation is silently a one-sided difference over a shorter interval
-// -- the same class of error as differentiating at a pinned optimum, and just as
-// plausible-looking. The clamp is a min/max, so an unclamped target comes back
-// bit-identical and a tolerance would only blur the detector.
+// the leaf refuses `psi` as outside the feasible interval, so that a stencil
+// reaching past an end is detected rather than differenced one-sidedly over a
+// shorter interval -- the same class of error as differentiating at a pinned
+// optimum, and just as plausible-looking.
 inline bool outputs_at(Leaf& l, double psi, double* y, int curve = kCollar) {
-  route_evaluate(l, curve, psi);
-  if (!util::identical(route_psi(l, curve), psi)) {
+  if (!route_evaluate_feasible(l, curve, psi)) {
     return false;
   }
   outputs(l, y);
@@ -331,26 +341,26 @@ enum class Method { Auto, Ift, Fd };
 // What the OPERATING POINT is, not whether the call worked -- except for `Error`,
 // which is the batch's per-row failure and is the reason this is a status rather
 // than an exception (see `batch` below).
-// `Prescribed` and `Clamped` are the two the caller-supplied-psi path can end in
-// (#88): the collar was imposed, and in the second case the feasible interval
-// moved it, so the derivative belongs to the BOUND and is not reported.
+// `Prescribed` and `Refused` are the two the caller-supplied-psi path can end in
+// (#88): the collar was imposed, and in the second case it, or the stencil
+// about it, fell outside the feasible interval, so no derivative is reported.
 // ⚠️ APPEND AFTER `Error`, DO NOT INSERT BEFORE IT. The names are
 // source-compatible either way, but the VALUES are not: a consumer holding the
 // integer would break quietly if `Error` moved from 3 to 5. `Prescribed` and
-// `Clamped` are therefore last, out of narrative order, on purpose.
-enum class Status { Interior, Pinned, NoGradient, Error, Prescribed, Clamped };
+// `Refused` are therefore last, out of narrative order, on purpose.
+enum class Status { Interior, Pinned, NoGradient, Error, Prescribed, Refused };
 
 // ⚠️ NO `default:`. An exhaustive switch turns the next member added here into a
 // compiler diagnostic; a `default: return "error"` would silently LABEL it
 // "error" instead, which is exactly the kind of quiet mislabelling `Prescribed`
-// and `Clamped` were added to avoid.
+// and `Refused` were added to avoid.
 inline std::string status_name(Status s) {
   switch (s) {
     case Status::Interior:   return "interior";
     case Status::Pinned:     return "pinned";
     case Status::NoGradient: return "no-gradient";
     case Status::Prescribed: return "prescribed";
-    case Status::Clamped:    return "clamped";
+    case Status::Refused:    return "refused";
     case Status::Error:      return "error";
   }
   return "error";  // unreachable; silences -Wreturn-type on a bad cast
@@ -407,9 +417,8 @@ struct Result {
   // (traitecoevo/plant#614), and they cannot be recovered once divided.
   std::vector<double> M;
   double dY_dpsi[n_outputs];
-  // The collar the outputs were evaluated at -- psi* when solved, and when
-  // prescribed the value actually USED, which differs from the requested one
-  // exactly when `status` is Clamped.
+  // The collar the outputs were evaluated at -- psi* when solved, the requested
+  // one when prescribed (refused or not).
   double psi = util::na_value;
   std::string message;
 
@@ -695,11 +704,17 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
   // ⚠️ `psi_star` keeps its name on both paths and is no longer always the
   // argmax. It is "the collar the outputs were evaluated at", which is what
   // every use of it below actually means.
-  bool clamped = false;
   if (prescribed != nullptr) {
-    route_evaluate(l, s.curve, prescribed->psi);
-    // Exact equality, for the reason `outputs_at` documents above.
-    clamped = !util::identical(route_psi(l, s.curve), prescribed->psi);
+    // ⚠️ A PRESCRIBED PSI OUTSIDE THE FEASIBLE INTERVAL IS REFUSED BY THE LEAF,
+    // and reported here rather than thrown: a fit visits these points routinely
+    // -- a trait perturbation moves the interval past a fixed psi -- and
+    // `status` is how a batch tells its caller which rows to distrust. There is
+    // no operating point to describe, so everything but `psi` stays NA.
+    if (!route_evaluate_feasible(l, s.curve, prescribed->psi)) {
+      out.status = Status::Refused;
+      out.psi = prescribed->psi;
+      return;
+    }
   } else {
     route_solve(l, s.curve);
   }
@@ -757,11 +772,7 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
     // caller-chosen collar has no business satisfying: a prescribed psi away from
     // the optimum may sit where profit is convex, and that is fine because
     // nothing here divides by `H`. What disables the point is INFEASIBILITY.
-    // Almost every such point is already Clamped -- the shut-down state seats a
-    // collar of its own choosing -- but a caller can pass exactly that collar
-    // back, so "almost" is not a guarantee.
-    out.status = clamped ? Status::Clamped
-                 : (resid_feasible ? Status::Prescribed : Status::NoGradient);
+    out.status = resid_feasible ? Status::Prescribed : Status::NoGradient;
   } else {
     out.status = !usable ? Status::NoGradient
                  : (out.stationarity > s.stationarity_tol ? Status::Pinned
@@ -771,7 +782,7 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
   // `status` describes the POINT and is reported whichever route runs;
   // `use_ift` is the route. They differ only when the caller has forced one.
   bool use_ift = prescribed != nullptr
-                     ? (!clamped && resid_feasible)
+                     ? resid_feasible
                      : (s.method == Method::Auto
                             ? out.status == Status::Interior
                             : s.method == Method::Ift);
@@ -805,15 +816,14 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
     const bool lo_ok = outputs_at(l, psi_star - h_psi, lo, s.curve);
     if (!hi_ok || !lo_ok) {
       if (prescribed != nullptr) {
-        // The same reasoning as the clamp on psi itself, one step out: a psi
+        // The same reasoning as the refusal of psi itself, one step out: a psi
         // inside the interval but within h_psi of an end cannot have dY/dpsi
         // centred on it, and a one-sided difference over a shortened interval is
         // exactly what this detector exists to refuse. No fallback to offer --
         // differencing the solve would answer about the optimum -- so the row is
-        // reported clamped.
-        clamped = true;
+        // reported refused, with the point's value but no gradient.
         use_ift = false;
-        out.status = Status::Clamped;
+        out.status = Status::Refused;
       } else if (s.method == Method::Ift) {
         util::stop("leaf_gradient(): method = \"ift\" was asked for at a point "
                    "whose feasible collar interval is narrower than one step, "
@@ -881,18 +891,10 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
     gradient_ift(l, theta, d, single, pars, npars, psi_star, H, dY_dpsi, s,
                  d_psi, envelope, out.M.data(), out.grad.data());
   } else if (prescribed != nullptr) {
-    // ⚠️ A CLAMPED PRESCRIBED PSI GETS NO GRADIENT, RATHER THAN THE DIRECT TERM.
-    // Not a failure -- the outputs at the clamped collar are perfectly good, and
-    // TF24f relies on the clamp to pull an out-of-range tracked state back
-    // inside. It is that the derivative is not the one this can compute: the
-    // collar used is min(max(psi, a(theta)), b(theta)), so it moves with the
-    // BOUND, and dY/dtheta picks up the bound's derivative rather than the
-    // caller's dpsi_dtheta. That is the active-set problem arriving through the
-    // clamp instead of through the optimiser, and the direct term alone would be
-    // plausible and wrong in the documented way.
-    //
-    // `reset` already left grad, M and dY_dpsi as NA; value, H, stationarity and
-    // psi stay, because they describe the point rather than the derivative.
+    // ⚠️ A PSI WITHIN ONE STEP OF AN END GETS NO GRADIENT, RATHER THAN THE
+    // DIRECT TERM: dY/dpsi cannot be centred on it. `reset` already left grad, M
+    // and dY_dpsi as NA; value, H, stationarity and psi stay, because they
+    // describe the point rather than the derivative.
     //
     // The same holds for an INFEASIBLE one, where `dprofit` is a sentinel rather
     // than a derivative -- see the status block above.

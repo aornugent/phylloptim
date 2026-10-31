@@ -903,8 +903,9 @@ Leaf:
         Uses the model `set_model()` seated, so seat a STEM route first. Leaves
         the same outputs a solve would and returns `profit_`.
         @param target_psi_stem stem water potential to evaluate at, MPa as a
-          positive magnitude. Clamped into `[psi_soil, psi_crit]`; compare the
-          resulting `$opt_psi_stem_` with what you asked for to detect it.
+          positive magnitude. Must lie in the model's feasible interval, from
+          the wet bound to the dry end of its curve; outside it the call is
+          refused with the infeasibility code `prescribed_potential`.
         @export
       return_type: double
       args: [target_psi_stem: double]
@@ -972,7 +973,7 @@ Leaf:
       return_type: "std::vector<std::string>"
 
     # --- the ATLS thermal-damage layer's acclimation forcing ------------------
-    # Argument-clamped so it stays finite. Static in C++; bound so a caller's
+    # Overflow-safe and unclamped. Static in C++; bound so a caller's
     # acclimation forcing can use the function the leaf does.
     softplus_:
       return_type: double

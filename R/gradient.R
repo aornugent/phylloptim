@@ -249,16 +249,14 @@ set_traits <- function(x, traits) {
 ##' reversed-gradient exits rather than a derivative, and this path never divides
 ##' by `H`, so it would otherwise adopt that zero as the real thing.
 ##'
-##' ⚠️ **A clamped `psi` gets no gradient, and that is the interesting case.**
-##' The collar actually used is `psi` clamped into the feasible interval, so it
-##' moves with the *bound* rather than with `dpsi_dtheta` — the active-set
-##' problem, arriving through the clamp instead of through the optimiser. The
-##' direct term alone would be plausible and wrong. `status` reports `"clamped"`
-##' and the gradient is all `NA`; `psi` in the result is the collar that was
-##' used. This is reported rather than thrown because a tracking model reaches
-##' these points routinely — the clamp is how TF24f pulls an out-of-range state
-##' back inside — and it fires for a `psi` within one step of an end too, since
-##' `dY/dpsi` cannot be centred there.
+##' ⚠️ **A `psi` outside the feasible interval is refused, and gets no
+##' gradient.** The leaf does not project it onto the interval's end, which
+##' would make the outputs move with the *bound* rather than with `dpsi_dtheta`.
+##' `status` reports `"refused"`, `psi` in the result is the one you gave, and
+##' everything else is `NA`. This is reported rather than thrown because a fit
+##' reaches these points routinely: a trait perturbation moves the interval past
+##' a fixed `psi`. A `psi` inside the interval but within one step of an end is
+##' `"refused"` too, with its value, because `dY/dpsi` cannot be centred there.
 ##'
 ##' @section The active set, which is the reason this function is careful:
 ##' Stationarity is the premise of the whole derivation, and it fails when the
@@ -293,7 +291,8 @@ set_traits <- function(x, traits) {
 ##'
 ##' There is a second guard behind that one, found by measurement rather than
 ##' designed: a pinned optimum sits so close to its bound that the difference in
-##' `psi` cannot be centred there without being clamped, and that is detected too.
+##' `psi` cannot be centred there without stepping out of the interval, and that is
+##' detected too.
 ##' Over this package's grid it catches every pinned point on its own, so forcing
 ##' `method = "ift"` at one fails loudly instead of returning the wrong number.
 ##' Do not read that as making the stationarity test redundant -- it fires only
@@ -317,7 +316,7 @@ set_traits <- function(x, traits) {
 ##' ⚠️ **Both move the feasible collar interval, not just the profit function** —
 ##' `resistance` directly and `leaf_specific_conductance_max` through the supply
 ##' curve — so a perturbation can push a bound past `psi*` more readily than a
-##' trait perturbation can. That is the case the clamp detector below exists for,
+##' trait perturbation can. That is the case the refusal detector below exists for,
 ##' and it fails loudly rather than quietly.
 ##'
 ##' @section What it costs, and when that beats differencing:
@@ -411,8 +410,9 @@ set_traits <- function(x, traits) {
 ##'   ⚠️ At 25 C the peaked Arrhenius is normalised to its reference, so
 ##'   `topt_offset_` and `dTopt_max_` have an exactly zero effect there -- a true
 ##'   zero, not a missing row.
-##'   `max(0, k_i_baseline_ - k_i_)` has a kink at equality (the default), where
-##'   the two columns report the difference's average slope.
+##'   The protection cost is signed, `k_i_baseline_ - k_i_`, so its columns are
+##'   the same linear slope on both sides of the default, where the two are
+##'   equal.
 ##'
 ##'   `dY/dvcmax_25` is a PARTIAL at fixed respiration: `R_d_25` is its own trait,
 ##'   so a fit that wants respiration to follow Vcmax moves both and adds the two
@@ -466,7 +466,7 @@ set_traits <- function(x, traits) {
 ##'     \item{`method`}{`"ift"` if the implicit-function composite was used,
 ##'       `"fd"` if the fallback was, `"prescribed"` if `psi` was given}
 ##'     \item{`status`}{`"interior"`, `"pinned"` or `"no-gradient"` on the
-##'       solving path; `"prescribed"`, `"clamped"` or `"no-gradient"` with
+##'       solving path; `"prescribed"`, `"refused"` or `"no-gradient"` with
 ##'       `psi`}
 ##'     \item{`H`}{the curvature of profit in the collar potential}
 ##'     \item{`stationarity`}{the implied Newton step, in MPa: what `method` was
@@ -478,9 +478,8 @@ set_traits <- function(x, traits) {
 ##'       entry is the analytic zero at a stationary point and the exact
 ##'       `dprofit/dpsi` elsewhere -- see the envelope section}
 ##'     \item{`psi`}{the collar the outputs were evaluated at: `psi*` on the
-##'       solving path, and on the prescribed path the value actually used,
-##'       which differs from the `psi` argument exactly when `status` is
-##'       `"clamped"`}
+##'       solving path, and the `psi` argument on the prescribed path, refused
+##'       or not}
 ##'   }
 ##'
 ##' @seealso [leaf_solve()] for the operating point itself, [set_traits()].
@@ -530,11 +529,10 @@ leaf_gradient <- function(psi_soil,
   if (!missing(step)) {
     attr(step, "user_set") <- TRUE
   }
-  # ⚠️ THE RETURN IS THE POINT, NOT JUST THE CHECK. `psi` is compared against
-  # `opt_root_psi_` to detect the clamp, and a caller writing `psi = 3L` -- or the
-  # entirely ordinary `for (p in 2:5)`, since `2:5` is integer -- would otherwise
-  # be reported CLAMPED at a collar it was given exactly. The checker coerces;
-  # discarding what it returns was the bug.
+  # ⚠️ THE RETURN IS THE POINT, NOT JUST THE CHECK. The checker coerces an
+  # integer `psi` -- the entirely ordinary `for (p in 2:5)` -- to the double C++
+  # receives, so the R and C++ paths see one value; discarding what it returns
+  # was a bug.
   psi <- .gradient_check_psi(psi, dpsi_dtheta, method)
 
   # --- reusing a Leaf (#52) -------------------------------------------------
@@ -620,7 +618,7 @@ leaf_gradient <- function(psi_soil,
   # about which parameters exist or explain a rejection differently.
   .gradient_check_pars(pars, identical(supply$kind, "single"), model, damage)
   # ⚠️ HERE, NOT WHERE IT IS USED. `dpsi_dtheta` is only READ inside the
-  # composite, which a clamped or shut-down operating point never reaches -- so
+  # composite, which a refused or shut-down operating point never reaches -- so
   # validating it there made a wrong-length vector an error at some psi and
   # silently accepted at others. Argument checking cannot be conditional on what
   # the model does with the arguments.
@@ -669,14 +667,24 @@ leaf_gradient <- function(psi_soil,
   route <- .gradient_route(l, model, supply)
   prescribed <- !is.null(psi)
   if (prescribed) {
-    route$evaluate(psi)
-    # Exact equality, for the reason `.gradient_outputs_at` documents: the clamp
-    # is a min/max, so an unclamped target returns bit-identically.
-    clamped <- !identical(route$psi_star(), psi)
+    # ⚠️ A `psi` OUTSIDE THE FEASIBLE INTERVAL IS REFUSED BY THE LEAF, and
+    # reported here rather than thrown: a fit visits these points routinely,
+    # and `status` is how a batch tells its caller which rows to distrust. There
+    # is no operating point to describe, so everything but `psi` stays NA.
+    if (!.gradient_evaluate_feasible(route, psi)) {
+      na_out <- stats::setNames(rep(NA_real_, length(.gradient_output_names())),
+                                .gradient_output_names())
+      return(list(
+        gradient = matrix(NA_real_, length(pars), length(na_out),
+                          dimnames = list(pars, names(na_out))),
+        value = na_out, method = "prescribed", status = "refused",
+        H = NA_real_, stationarity = NA_real_, model = route$model,
+        M = stats::setNames(rep(NA_real_, length(pars)), pars),
+        dY_dpsi = na_out, psi = psi))
+    }
     psi_star <- route$psi_star()
   } else {
     route$solve()
-    clamped <- FALSE
     psi_star <- route$psi_star()
   }
   value <- .gradient_outputs(l)
@@ -721,12 +729,8 @@ leaf_gradient <- function(psi_soil,
     # prescribed psi away from the optimum may sit where profit is convex, and
     # that is fine, because nothing here divides by `H`. What genuinely disables
     # the point is INFEASIBILITY: the shut-down and reversed-gradient exits, where
-    # `dprofit` is a sentinel rather than a derivative. Almost every such point is
-    # already caught as `clamped` -- the shut-down state seats a collar of its own
-    # choosing -- but "almost" is not a guarantee, since a caller can pass exactly
-    # that collar back.
-    status <- if (clamped) "clamped" else if (!feasible) "no-gradient" else
-      "prescribed"
+    # `dprofit` is a sentinel rather than a derivative.
+    status <- if (!feasible) "no-gradient" else "prescribed"
   } else {
     status <- if (!usable) "no-gradient" else
       if (stationarity > stationarity_tol) "pinned" else "interior"
@@ -749,7 +753,7 @@ leaf_gradient <- function(psi_soil,
   #
   # No other curve has this split -- for TF24 the two agree to 0.0%.
   auto_ift <- identical(status, "interior")
-  use_ift <- if (prescribed) !clamped && feasible else switch(method,
+  use_ift <- if (prescribed) feasible else switch(method,
                     auto = auto_ift,
                     ift = TRUE,
                     fd = FALSE)
@@ -769,25 +773,16 @@ leaf_gradient <- function(psi_soil,
          "where psi* is held by a bound and the implicit-function composite ",
          "does not apply. Use method = \"auto\".", call. = FALSE)
   }
-  # ⚠️ A CLAMPED PRESCRIBED PSI GETS NO GRADIENT, RATHER THAN THE DIRECT TERM.
-  # It is not a failure -- the outputs at the clamped collar are perfectly good,
-  # and TF24f relies on the clamp to pull an out-of-range tracked state back
-  # inside. It is that the derivative is not the one this can compute: the collar
-  # actually used is `min(max(psi, a(theta)), b(theta))`, so it moves with the
-  # BOUND, and dY/dtheta picks up the bound's derivative rather than the caller's
-  # `dpsi_dtheta`. That is the active-set problem arriving through the clamp
-  # instead of through the optimiser, and the direct term alone would be
-  # plausible and wrong in exactly the documented way.
-  #
-  # Reported rather than thrown, because a fit will visit these points routinely
-  # and `status` is how a batch tells its caller which rows to distrust. The
-  # all-NA result is assembled below, with the second way of reaching it.
+  # ⚠️ A PSI WITHIN ONE STEP OF AN END GETS NO GRADIENT, RATHER THAN THE DIRECT
+  # TERM: dY/dpsi cannot be centred on it. Reported rather than thrown, because
+  # a fit will visit these points routinely and `status` is how a batch tells
+  # its caller which rows to distrust. The all-NA gradient is assembled below.
 
   if (use_ift) {
-    # dY/dpsi at fixed traits. evaluate_root_collar_psi CLAMPS its target into the
-    # feasible interval, so check it landed where it was asked to: a clamped
-    # evaluation would silently make this a one-sided difference over a shorter
-    # interval, which is the same class of error as the pinned case.
+    # dY/dpsi at fixed traits. The leaf refuses a collar outside the feasible
+    # interval, and a refused step would otherwise have to be a one-sided
+    # difference over a shorter interval, which is the same class of error as the
+    # pinned case.
     #
     # It also catches SOME pinned optima -- psi* within h_psi of a bound -- but
     # not all, and nothing relies on it for that: a forced "ift" at a pinned point
@@ -796,14 +791,13 @@ leaf_gradient <- function(psi_soil,
     lo <- .gradient_outputs_at(l, psi_star - h_psi, route)
     if (is.null(hi) || is.null(lo)) {
       if (prescribed) {
-        # Same reasoning as the clamp on `psi` itself, one step out: a psi that
+        # Same reasoning as the refusal of `psi` itself, one step out: a psi that
         # is inside the interval but within `h_psi` of an end cannot have dY/dpsi
         # centred on it, and a one-sided difference over a shortened interval is
         # the failure this detector exists for. There is no fallback to offer --
         # differencing the solve would answer about the optimum -- so the row is
-        # reported as clamped.
-        clamped <- TRUE
-        status <- "clamped"
+        # reported refused, with the point's value but no gradient.
+        status <- "refused"
         use_ift <- FALSE
       } else if (identical(method, "ift")) {
         stop("leaf_gradient(): method = \"ift\" was asked for at a point whose ",
@@ -1083,15 +1077,28 @@ leaf_gradient <- function(psi_soil,
 }
 
 # Outputs with the collar held at `psi` rather than optimised. NULL when the
-# clamp moved the target, because then this is not the evaluation that was asked
-# for. Exact equality is the right test: the clamp is a min/max, so an unclamped
-# target comes back bit-identical.
+# leaf refuses `psi` as outside the feasible interval, so that a stencil
+# reaching past an end is detected rather than differenced one-sidedly.
 .gradient_outputs_at <- function(l, psi, route) {
-  route$evaluate(psi)
-  if (route$psi_star() != psi) {
+  if (!.gradient_evaluate_feasible(route, psi)) {
     return(NULL)
   }
   .gradient_outputs(l)
+}
+
+# `route$evaluate(psi)`, FALSE where the leaf refuses `psi` as outside its
+# feasible interval. Only that refusal is caught, by its infeasibility code;
+# anything else is a failure of the evaluation and propagates.
+.gradient_evaluate_feasible <- function(route, psi) {
+  tryCatch({
+    route$evaluate(psi)
+    TRUE
+  }, error = function(e) {
+    if (identical(.infeasible_code(conditionMessage(e)), "prescribed_potential")) {
+      return(FALSE)
+    }
+    stop(e)
+  })
 }
 
 # The differentiable parameters, in the order C++ indexes them (#4 stage 2).
@@ -1578,12 +1585,9 @@ leaf_gradient <- function(psi_soil,
          "collar you gave -- so at a prescribed psi neither applies and the ",
          "reported method is \"prescribed\".", call. = FALSE)
   }
-  # ⚠️ COERCED, AND THE CALLER MUST USE THE RETURN. `psi` is compared against
-  # `opt_root_psi_` with `identical()` to detect the clamp, and `identical(3, 3L)`
-  # is FALSE -- so an integer `psi` was reported clamped at a collar it had been
-  # given exactly, with the "where it was pulled to" diagnostic showing no
-  # movement and nothing to notice. `.gradient_check_psi_batch()` already returned
-  # `as.numeric(psi)`, and C++'s `util::identical` is `a == b`, so R alone had it.
+  # ⚠️ COERCED, AND THE CALLER MUST USE THE RETURN, so the R reference and the
+  # C++ batch see the same double. `.gradient_check_psi_batch()` returns
+  # `as.numeric(psi)` too.
   as.numeric(psi)
 }
 

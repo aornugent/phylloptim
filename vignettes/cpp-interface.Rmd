@@ -137,7 +137,7 @@ const double psi[2] = {2.7, 2.8};              // positive magnitudes, MPa
 const std::vector<g::Result> out =
   g::batch(l, theta, 1, {d, d}, /*single=*/false, pars, 1, g::Settings(),
            psi, /*dpsi_dtheta=*/nullptr);      // null here means ZERO...
-// out[i].status is now Prescribed or Clamped
+// out[i].status is now Prescribed or Refused
 // out[i].M / out[i].H are the coefficients of ds/dt = k(M + H s)
 ```
 
@@ -176,8 +176,9 @@ Three things the free function gives you that a hand-rolled loop would not:
   the implied Newton step `|dprofit(ψ*) / H|`, a distance in MPa that needs no
   scale of its own, and a central difference of the solve is used where the
   premise does not hold.
-* **the clamp detector.** `evaluate_root_collar_psi` clamps its target, so a
-  clamped evaluation is silently a one-sided difference. Exact equality catches it.
+* **the refusal detector.** `evaluate_root_collar_psi` refuses a collar outside
+  its feasible interval, so a stencil that steps past an end is caught rather than
+  differenced one-sidedly.
 * **per-row status rather than an exception**, so a proposal that reaches an
   unsolvable point costs that row and not the batch.
 
@@ -228,7 +229,7 @@ for (int sign = -1; sign <= 1; sign += 2) {
 
 **A hand-rolled composite inherits none of the guards.** That snippet is a
 timing harness at one interior point, not a gradient you should ship: it has no
-stationarity test and no clamp detector, so at a boundary optimum it returns a
+stationarity test and no refusal detector, so at a boundary optimum it returns a
 plausible number that is wrong by up to 3.5e+07. `g::batch` above is the one to
 call. This is here to show what the primitives compose into, not as a template.
 

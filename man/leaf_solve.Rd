@@ -48,7 +48,9 @@ recommendations.}
 \item{leaf_specific_conductance_max}{maximum leaf-specific hydraulic
 conductance, kg m^-2 s^-1 MPa^-1}
 
-\item{atm_vpd}{atmospheric vapour pressure deficit, kPa}
+\item{atm_vpd}{atmospheric vapour pressure deficit, kPa. Must lie in
+\verb{(0, e_s(leaf_temp))}, a relative humidity between 0 and 1; a deficit at or
+past saturation is refused.}
 
 \item{ca}{atmospheric CO2 partial pressure, Pa}
 

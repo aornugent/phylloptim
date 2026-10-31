@@ -216,12 +216,11 @@ leaf_traits <- function(vcmax_25 = 96,
 ##' them from [leaf_traits()] is the point of having two functions.
 ##'
 ##' @section What is deliberately not here:
-##' The internal leaf-temperature clamp (`-40 C` to `70 C`) is a compile-time
-##' constant and stays one. It is a guard that keeps an extreme non-equilibrium
-##' transpiration on the energy-balance path from driving the Arrhenius block
-##' non-finite -- not a tolerance anyone tunes. Making it settable would let a
-##' caller produce non-finite photosynthetic parameters and get NaNs back with no
-##' indication of why.
+##' A range for the leaf temperature. Nothing clamps it: with the energy balance
+##' on it is affine in the transpiration, and [set_drivers()] refuses drivers
+##' under which a leaf the solve can reach would be past what the model can
+##' evaluate (R_d's Q10 reaching zero, about 119 C at the defaults), rather than
+##' holding the temperature at a bound.
 ##'
 ##' @param GSS_tol_abs a width on the collar potential, despite its name, which
 ##'   dates from a golden-section search the solve no longer uses. ⚠️ **This does not set how well the operating point is
@@ -642,7 +641,9 @@ leaf_model <- function(traits = leaf_traits(), control = leaf_control(),
 ##'   recommendations.
 ##' @param leaf_specific_conductance_max maximum leaf-specific hydraulic
 ##'   conductance, kg m^-2 s^-1 MPa^-1
-##' @param atm_vpd atmospheric vapour pressure deficit, kPa
+##' @param atm_vpd atmospheric vapour pressure deficit, kPa. Must lie in
+##'   `(0, e_s(leaf_temp))`, a relative humidity between 0 and 1; a deficit at or
+##'   past saturation is refused.
 ##' @param ca atmospheric CO2 partial pressure, Pa
 ##' @param leaf_temp leaf temperature, deg C
 ##' @param atm_o2_kpa atmospheric O2 partial pressure, kPa

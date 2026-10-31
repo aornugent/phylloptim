@@ -47,8 +47,8 @@
 ##' should be loud.
 ##'
 ##' @section Two judgement calls left ordinary, and why:
-##' Of the `stop` sites in the headers, nineteen are classified. Two
-##' of the rest are genuinely arguable, and both were left ordinary because that
+##' Of the `stop` sites in the headers, those carrying a code above are
+##' classified. Two of the rest are genuinely arguable, and both were left ordinary because that
 ##' is the direction whose failure mode is a loud error rather than a quiet wrong
 ##' answer. They are listed here so the decision can be overruled on purpose rather
 ##' than rediscovered:
@@ -94,7 +94,14 @@ leaf_infeasible_codes <- function() {
     gradient_active_set =
       paste("perturbing a parameter moved the feasible collar interval past the",
             "operating point, so the point sits on an active-set boundary and",
-            "cannot be differentiated there"))
+            "cannot be differentiated there"),
+    prescribed_potential =
+      paste("a prescribed collar or stem potential lies outside its feasible",
+            "interval; it is refused rather than moved onto the interval's end"),
+    damage_state =
+      paste("the thermal-damage states seated before set_physiology are outside",
+            "the model: a negative impaired or damaged fraction, or the",
+            "acclimation state at the pole of its shift (A <= -K_A)"))
 }
 
 # The code, or NA if the message carries no token. NA is the safe answer and the

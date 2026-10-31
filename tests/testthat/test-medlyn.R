@@ -43,7 +43,7 @@ test_that("the coupled route reports a CO2-basis conductance (#129)", {
   # expression is a water vapour conductance and was stored without conversion.
   # A tolerance loose enough to pass 1.6 would defeat the purpose, so it is tight
   # and ci_abs_tol is tightened to make that meaningful.
-  for (vpd in c(1, 2, 4)) {
+  for (vpd in c(1, 2, 3)) {
     for (theta in c(0.5, 0.35)) {
       num <- medlyn_leaf(theta = theta, vpd = vpd)
       num$solve_medlyn_ci_numerical()
@@ -72,7 +72,7 @@ test_that("the closed form's gs and ci are consistent only as g0 -> 0", {
   # The analytical route takes ci from the closed form and gs from the USO
   # expression, and those two agree only where the closed form is exact. So it
   # does NOT satisfy the diffusion identity at the default g0. Measured, it runs
-  # 1.084 (vpd 1, theta 0.50) to 1.316 (vpd 4, theta 0.35) -- worst where the
+  # 1.084 (vpd 1, theta 0.50) to 1.268 (vpd 3, theta 0.35) -- worst where the
   # deficit is highest and the soil driest, which is the signature of a dropped
   # g0 term rather than of a units error. Reporting a Fick's-law gs instead would
   # make it exact by construction but would no longer be the USO conductance;
@@ -82,10 +82,10 @@ test_that("the closed form's gs and ci are consistent only as g0 -> 0", {
     l$solve_medlyn_ci_analytical()
     diffusion_residual(l)
   }
-  expect_gt(resid(0.022, 4, 0.35), 1.3)    # the approximation, at the default g0
+  expect_gt(resid(0.022, 3, 0.35), 1.25)   # the approximation, at the default g0
   expect_gt(resid(0.022, 1, 0.50), 1.08)
   expect_lt(abs(resid(0, 2) - 1), 1e-6)    # exact in the limit it is derived in
-  expect_lt(abs(resid(0, 4) - 1), 1e-6)
+  expect_lt(abs(resid(0, 3) - 1), 1e-6)
 })
 
 test_that("the closed form is the coupled solve in the g0 -> 0 limit", {
@@ -126,15 +126,10 @@ test_that("beta reaches the analytical route", {
   expect_equal(l$ci_ / l$ca_, l$g1 / (l$g1 + sqrt(l$atm_vpd_)), tolerance = 1e-12)
 })
 
-test_that("a zero deficit returns g0, not Inf", {
-  # The guard read the `atm_vpd` INPUT field while the expression read the driven
-  # `atm_vpd_`, so a leaf driven at zero deficit took the else-branch and divided
-  # by sqrt(0). The input is still at its 2.0 default, so it never looked zero.
-  l <- medlyn_leaf(vpd = 0)
-  expect_identical(l$atm_vpd_, 0)
-  gs <- l$medlyn_model_gs(10)
-  expect_true(is.finite(gs))
-  expect_equal(gs, l$g0 / MEDLYN_RATIO, tolerance = 1e-12)
+test_that("a zero deficit is refused at the driver, not divided by", {
+  # A deficit must lie in (0, e_s(T)): zero is refused where it is seated, so
+  # sqrt(D) in the USO expression never sees it.
+  expect_error(medlyn_leaf(vpd = 0), "atm_vpd must lie in \\(0, e_s")
 })
 
 test_that("neither route reports a negative conductance", {

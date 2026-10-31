@@ -52,7 +52,9 @@ recommendations.}
 \item{leaf_specific_conductance_max}{maximum leaf-specific hydraulic
 conductance, kg m^-2 s^-1 MPa^-1}
 
-\item{atm_vpd}{atmospheric vapour pressure deficit, kPa}
+\item{atm_vpd}{atmospheric vapour pressure deficit, kPa. Must lie in
+\verb{(0, e_s(leaf_temp))}, a relative humidity between 0 and 1; a deficit at or
+past saturation is refused.}
 
 \item{ca}{atmospheric CO2 partial pressure, Pa}
 
@@ -93,8 +95,9 @@ move no solved output and are refused; their gradient is
 ⚠️ At 25 C the peaked Arrhenius is normalised to its reference, so
 \code{topt_offset_} and \code{dTopt_max_} have an exactly zero effect there -- a true
 zero, not a missing row.
-\code{max(0, k_i_baseline_ - k_i_)} has a kink at equality (the default), where
-the two columns report the difference's average slope.
+The protection cost is signed, \code{k_i_baseline_ - k_i_}, so its columns are
+the same linear slope on both sides of the default, where the two are
+equal.
 
 \code{dY/dvcmax_25} is a PARTIAL at fixed respiration: \code{R_d_25} is its own trait,
 so a fit that wants respiration to follow Vcmax moves both and adds the two
@@ -160,7 +163,7 @@ A list with
 \item{\code{method}}{\code{"ift"} if the implicit-function composite was used,
 \code{"fd"} if the fallback was, \code{"prescribed"} if \code{psi} was given}
 \item{\code{status}}{\code{"interior"}, \code{"pinned"} or \code{"no-gradient"} on the
-solving path; \code{"prescribed"}, \code{"clamped"} or \code{"no-gradient"} with
+solving path; \code{"prescribed"}, \code{"refused"} or \code{"no-gradient"} with
 \code{psi}}
 \item{\code{H}}{the curvature of profit in the collar potential}
 \item{\code{stationarity}}{the implied Newton step, in MPa: what \code{method} was
@@ -172,9 +175,8 @@ optimum}
 entry is the analytic zero at a stationary point and the exact
 \code{dprofit/dpsi} elsewhere -- see the envelope section}
 \item{\code{psi}}{the collar the outputs were evaluated at: \verb{psi*} on the
-solving path, and on the prescribed path the value actually used,
-which differs from the \code{psi} argument exactly when \code{status} is
-\code{"clamped"}}
+solving path, and the \code{psi} argument on the prescribed path, refused
+or not}
 }
 }
 \description{
@@ -337,16 +339,14 @@ solving path \strong{bit-for-bit}, which the tests assert.
 reversed-gradient exits rather than a derivative, and this path never divides
 by \code{H}, so it would otherwise adopt that zero as the real thing.
 
-⚠️ \strong{A clamped \code{psi} gets no gradient, and that is the interesting case.}
-The collar actually used is \code{psi} clamped into the feasible interval, so it
-moves with the \emph{bound} rather than with \code{dpsi_dtheta} — the active-set
-problem, arriving through the clamp instead of through the optimiser. The
-direct term alone would be plausible and wrong. \code{status} reports \code{"clamped"}
-and the gradient is all \code{NA}; \code{psi} in the result is the collar that was
-used. This is reported rather than thrown because a tracking model reaches
-these points routinely — the clamp is how TF24f pulls an out-of-range state
-back inside — and it fires for a \code{psi} within one step of an end too, since
-\code{dY/dpsi} cannot be centred there.
+⚠️ \strong{A \code{psi} outside the feasible interval is refused, and gets no
+gradient.} The leaf does not project it onto the interval's end, which
+would make the outputs move with the \emph{bound} rather than with \code{dpsi_dtheta}.
+\code{status} reports \code{"refused"}, \code{psi} in the result is the one you gave, and
+everything else is \code{NA}. This is reported rather than thrown because a fit
+reaches these points routinely: a trait perturbation moves the interval past
+a fixed \code{psi}. A \code{psi} inside the interval but within one step of an end is
+\code{"refused"} too, with its value, because \code{dY/dpsi} cannot be centred there.
 }
 
 \section{The active set, which is the reason this function is careful}{
@@ -383,7 +383,8 @@ difference of the solve gets it for free.
 
 There is a second guard behind that one, found by measurement rather than
 designed: a pinned optimum sits so close to its bound that the difference in
-\code{psi} cannot be centred there without being clamped, and that is detected too.
+\code{psi} cannot be centred there without stepping out of the interval, and that is
+detected too.
 Over this package's grid it catches every pinned point on its own, so forcing
 \code{method = "ift"} at one fails loudly instead of returning the wrong number.
 Do not read that as making the stationarity test redundant -- it fires only
@@ -409,7 +410,7 @@ respect to plant state and not only with respect to traits.
 ⚠️ \strong{Both move the feasible collar interval, not just the profit function} —
 \code{resistance} directly and \code{leaf_specific_conductance_max} through the supply
 curve — so a perturbation can push a bound past \verb{psi*} more readily than a
-trait perturbation can. That is the case the clamp detector below exists for,
+trait perturbation can. That is the case the refusal detector below exists for,
 and it fails loudly rather than quietly.
 }
 

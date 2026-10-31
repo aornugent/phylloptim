@@ -478,7 +478,7 @@ parameters:
     symbol: 'D_\min'
     units: 'kPa'
     class: constant
-    meaning: 'floor on the leaf-to-air deficit, so a leaf cooled below the dew point cannot report a negative conductance'
+    meaning: 'floor on the leaf-to-air deficit, so a leaf cooled below the dew point cannot report a negative conductance. Kept by decision: it binds at candidate points only, and at a solved point only where SOX, JW26 and LeastCost pin a dark leaf at $\psi_\mathrm{crit}$'
     source: code
     placeholder: true
     code: phylloptim::vpd_leaf_min
@@ -586,15 +586,15 @@ parameters:
     source: Brutsaert (1975), not in Zotero
     placeholder: false
     code: phylloptim::atmos_emissivity_exponent
-  vapour_pressure_min:
+  atmos_emissivity_softmin_width:
     section: energy_balance
-    symbol: 'e_{a,\min}'
-    units: 'Pa'
+    symbol: 'w_\varepsilon'
+    units: '–'
     class: constant
-    meaning: 'floor on the actual vapour pressure in the emissivity, where a deficit larger than saturation would otherwise give a negative base'
+    meaning: 'width of the soft minimum that holds the Brutsaert emissivity below 1; the plain fit wherever it is below 0.937'
     source: code
-    placeholder: false
-    code: phylloptim::vapour_pressure_min
+    placeholder: true
+    code: phylloptim::atmos_emissivity_softmin_width
   aerodynamic_resistance_coef:
     section: energy_balance
     symbol: 'C_{ra}'
@@ -631,24 +631,6 @@ parameters:
     source: code
     placeholder: true
     code: phylloptim::vol_heat_cap_air
-  leaf_temp_min:
-    section: energy_balance
-    symbol: 'T_\min'
-    units: '°C'
-    class: constant
-    meaning: 'lower clamp on the solved leaf temperature, so an extreme non-equilibrium $E$ cannot make the Arrhenius block non-finite'
-    source: code
-    placeholder: false
-    code: phylloptim::leaf_temp_min
-  leaf_temp_max:
-    section: energy_balance
-    symbol: 'T_\max'
-    units: '°C'
-    class: constant
-    meaning: 'upper clamp on the solved leaf temperature'
-    source: code
-    placeholder: false
-    code: phylloptim::leaf_temp_max
   fd_step:
     section: energy_balance
     symbol: 'h'
@@ -900,7 +882,7 @@ parameters:
     symbol: 'c_\mathrm{prot}'
     units: 'µmol m⁻² s⁻¹ per day⁻¹'
     class: trait
-    meaning: 'maintenance cost of protection $\max(0, k_{i,\mathrm{base}} - k_i)$ (leaf default 0)'
+    meaning: 'maintenance cost of protection $k_{i,\mathrm{base}} - k_i$, signed (leaf default 0)'
     source: placeholder
     placeholder: true
     code: phylloptim::Leaf::c_protect_maint_
@@ -918,36 +900,36 @@ parameters:
     symbol: 'F_\min'
     units: '–'
     class: constant
-    meaning: 'floor on the functional fraction $F = 1 - I - D$ where it scales capacity'
+    meaning: 'width of the soft floor on the functional fraction $F = 1 - I - D$ where it scales capacity'
     source: code
     placeholder: false
     code: phylloptim::Leaf::damage_surv_floor
-  exp_clamp:
+  softplus_switch:
     section: damage
-    symbol: '\pm 30'
+    symbol: '30'
     units: '–'
     class: constant
-    meaning: 'clamp on every exponent argument in the layer (the softplus and every Arrhenius rate), so an extreme temperature stays finite'
+    meaning: 'argument $s x$ above which the softplus is evaluated in the form that cannot overflow; the two forms agree to rounding there, so it is not a clamp'
     source: code
     placeholder: false
     literal: 30
-    code: phylloptim::damage::centred_arrhenius
-  topt_clamp_min:
+    code: phylloptim::damage::softplus
+  shifted_temp_min:
     section: damage
     symbol: '250'
     units: 'K'
     class: constant
-    meaning: 'lower clamp on a shifted optimum or isokinetic temperature'
+    meaning: 'lowest shifted optimum or isokinetic temperature the layer accepts; refused below'
     source: code
     placeholder: false
     literal: 250
     code: phylloptim::damage::k_imp
-  topt_clamp_max:
+  shifted_temp_max:
     section: damage
     symbol: '350'
     units: 'K'
     class: constant
-    meaning: 'upper clamp on a shifted optimum or isokinetic temperature'
+    meaning: 'highest shifted optimum or isokinetic temperature the layer accepts; refused above'
     source: code
     placeholder: false
     literal: 350
@@ -1687,13 +1669,14 @@ equations:
     section: energy_balance
     title: Clear-sky emissivity
     latex: |
-      e_a = \max\!\big(1000\,[e_s(T_\mathrm{air}) - D_\mathrm{air}],\; e_{a,\min}\big) \ \text{Pa}, \qquad
-      \varepsilon_a = \min\!\Big(c_\varepsilon\, (e_a / T_{\mathrm{air},K})^{1/7},\; 1\Big)
+      e_a = 1000\,[e_s(T_\mathrm{air}) - D_\mathrm{air}] \ \text{Pa}, \qquad
+      \varepsilon_B = c_\varepsilon\, (e_a / T_{\mathrm{air},K})^{1/7}, \qquad
+      \varepsilon_a = \varepsilon_B - w_\varepsilon \ln\!\big(1 + e^{(\varepsilon_B - 1)/w_\varepsilon}\big)
     code: phylloptim::Leaf::set_physiology
-    reads: [atm_vpd, atmos_emissivity_coef, atmos_emissivity_exponent, vapour_pressure_min, C_to_K]
+    reads: [atm_vpd, atmos_emissivity_coef, atmos_emissivity_exponent, atmos_emissivity_softmin_width, C_to_K]
     writes: []
     kind: closed_form
-    note: 'Brutsaert (1975) as Campbell & Norman write it, $e_a$ in pascals. Clamped at 1, above which the longwave term is exactly zero: above 43.9 °C at a 2 kPa deficit.'
+    note: 'Brutsaert (1975) as Campbell & Norman write it, $e_a$ in pascals. A deficit at or past saturation ($e_a \le 0$) is refused. The fit passes 1 above 43.9 °C at a 2 kPa deficit; the soft minimum takes the longwave term to zero there smoothly, where a min() at 1 put a corner in every output''s slope in $T_\mathrm{air}$ and humidity. Bit-identical to the fit wherever $\varepsilon_B < 0.937$.'
   net_radiation:
     section: energy_balance
     title: Isothermal net radiation
@@ -1730,13 +1713,13 @@ equations:
     section: energy_balance
     title: Leaf temperature at a prescribed transpiration
     latex: |
-      T_\mathrm{leaf}(E) = \mathrm{clamp}_{[T_\min,\,T_\max]}\!\left[T_\mathrm{air} + \frac{R_{n,\mathrm{iso}} - \lambda_v E}{\rho c_p / r_a + g_\mathrm{rad}}\right], \qquad
-      \frac{dT_\mathrm{leaf}}{dE} = \begin{cases} -\lambda_v / (\rho c_p / r_a + g_\mathrm{rad}) & \text{inside the clamp} \\ 0 & \text{on it} \end{cases}
+      T_\mathrm{leaf}(E) = T_\mathrm{air} + \frac{R_{n,\mathrm{iso}} - \lambda_v E}{\rho c_p / r_a + g_\mathrm{rad}}, \qquad
+      \frac{dT_\mathrm{leaf}}{dE} = -\frac{\lambda_v}{\rho c_p / r_a + g_\mathrm{rad}}
     code: phylloptim::Leaf::leaf_temp_from_E
-    reads: [latent_heat_vap, vol_heat_cap_air, leaf_temp_min, leaf_temp_max]
+    reads: [latent_heat_vap, vol_heat_cap_air]
     writes: [Tleaf_]
     kind: closed_form
-    note: 'Explicit, not iterated: $E$ is fixed by the hydraulic supply at the candidate potential and the balance gives the temperature at which the leaf sheds the rest as sensible heat and extra longwave. The one place $T_\mathrm{leaf}$ and $dT_\mathrm{leaf}/dE$ are computed.'
+    note: 'Explicit, not iterated: $E$ is fixed by the hydraulic supply at the candidate potential and the balance gives the temperature at which the leaf sheds the rest as sensible heat and extra longwave. The one place $T_\mathrm{leaf}$ and $dT_\mathrm{leaf}/dE$ are computed. No clamp: set_physiology refuses drivers under which the leaf, between $E = 0$ and $E = K_{max} G(\infty)$, would reach the Tetens pole or a non-positive $Q_{10}$ of $R_d$ (check_leaf_temperature_range).'
   energy_balance_foc:
     section: energy_balance
     title: The energy-balance term of the first-order condition
@@ -1756,58 +1739,58 @@ equations:
     section: damage
     title: Acclimation shift of the photosynthetic optimum
     latex: |
-      \delta = \delta_0 + \Delta T_{\max}\, \frac{A}{A + K_A}, \qquad A \ge 0
+      \delta = \delta_0 + \Delta T_{\max}\, \frac{A}{A + K_A}, \qquad A > -K_A
     code: phylloptim::Leaf::update_temperature_dependent_params
     reads: [use_thermal_damage_, topt_offset_, dTopt_max_, K_A_, A_]
     writes: []
     kind: closed_form
-    note: 'The same shift moves both peaked-Arrhenius optima; negative $A$ is read as zero.'
+    note: 'The same shift moves both peaked-Arrhenius optima. $A$ is read as itself: $A \ge 0$ is invariant under the dynamics, so a max(A, 0) never bound, and without it the shift is smooth through zero. $A \le -K_A$, the pole, is refused.'
   entropy_shift:
     section: damage
     title: Entropy term that moves the optimum
     latex: |
-      \Delta S'(\delta) = \frac{H_d}{\mathrm{clamp}_{[250,\,350]}(T_{\mathrm{opt},0} + \delta)} + R \ln\frac{E_a}{H_d - E_a}, \qquad
+      \Delta S'(\delta) = \frac{H_d}{T_{\mathrm{opt},0} + \delta} + R \ln\frac{E_a}{H_d - E_a}, \qquad
       T_{\mathrm{opt},0} = \frac{H_d}{\Delta S - R \ln[E_a/(H_d - E_a)]}
     code: phylloptim::Leaf::d_S_shifted
-    reads: [gas_constant, topt_clamp_min, topt_clamp_max]
+    reads: [gas_constant, shifted_temp_min, shifted_temp_max]
     writes: [vcmax_, jmax_]
     kind: closed_form
-    note: 'The thermal optimum inverted for the entropy term that puts it $\delta$ K higher; refuses $E_a \le 0$ or $H_d \le E_a$, where no optimum exists.'
+    note: 'The thermal optimum inverted for the entropy term that puts it $\delta$ K higher; refuses $E_a \le 0$ or $H_d \le E_a$, where no optimum exists, and a shifted optimum outside [250, 350] K.'
   functional_fraction:
     section: damage
     title: Functional fraction
     latex: |
-      F = \min\!\big(\max(1 - I - D,\; F_\min),\; 1\big), \qquad V_{cmax} \leftarrow F\, V_{cmax}, \qquad J_{max} \leftarrow F\, J_{max}
+      F = F_0 + F_\min \ln\!\big(1 + e^{-F_0/F_\min}\big), \quad F_0 = 1 - I - D, \qquad V_{cmax} \leftarrow F\, V_{cmax}, \qquad J_{max} \leftarrow F\, J_{max}
     code: phylloptim::Leaf::update_temperature_dependent_params
     reads: [use_thermal_damage_, I_, D_, damage_surv_floor]
     writes: [functional_, vcmax_, jmax_]
     kind: closed_form
-    note: 'The states enter the benefit through capacity and never the hydraulic cost; $R_d$ is not scaled.'
+    note: 'The states enter the benefit through capacity and never the hydraulic cost; $R_d$ is not scaled. A soft floor of width $F_\min$: exactly $F_0$ wherever $F_0 > 3.4 \times 10^{-5}$, positive and falling through $F_0 = 0$. $I < 0$ and $D < 0$ are refused, so $F_0 \le 1$.'
   respiration_costs:
     section: damage
     title: Maintenance costs added to respiration
     latex: |
-      R_d \leftarrow R_d + c_A\, A + c_\mathrm{rep}\, k_\mathrm{rec} + c_\mathrm{prot}\, \max(0, k_{i,\mathrm{base}} - k_i) + c_\mathrm{flux}\, k_\mathrm{rec,eff}\, \max(0, I)
+      R_d \leftarrow R_d + c_A\, A + c_\mathrm{rep}\, k_\mathrm{rec} + c_\mathrm{prot}\, (k_{i,\mathrm{base}} - k_i) + c_\mathrm{flux}\, k_\mathrm{rec,eff}\, I
     code: phylloptim::Leaf::update_temperature_dependent_params
     reads: [use_thermal_damage_, c_acclim_maint_, c_repair_maint_, c_protect_maint_, c_repair_flux_, k_i_baseline_, k_i_, k_rec_, A_, I_]
     writes: [R_d_]
     kind: closed_form
-    note: 'Added after the $Q_{10}$ response, so the gate-off arithmetic is untouched; all four prices default to zero on the leaf.'
+    note: 'Added after the $Q_{10}$ response, so the gate-off arithmetic is untouched; all four prices default to zero on the leaf. Protection is signed: the default $k_i$ equals the baseline, where a max(0, .) put a corner.'
   softplus:
     section: damage
-    title: Guarded softplus
+    title: Softplus
     latex: |
-      \mathrm{softplus}(x; s) = \frac{\ln(1 + e^{s x})}{s}, \qquad s x \text{ clamped to } \pm 30
+      \mathrm{softplus}(x; s) = \frac{\ln(1 + e^{s x})}{s}
     code: phylloptim::damage::softplus
-    reads: [exp_clamp]
+    reads: [softplus_switch]
     writes: []
     kind: closed_form
-    note: 'Softplus only for $x < 30/s$ and constant at $30/s$ above.'
+    note: 'No clamp: above $s x = 30$ it is evaluated as $s x + \ln(1 + e^{-s x})$, which cannot overflow; below, $e^{s x}$ underflows harmlessly.'
   delta_impair:
     section: damage
     title: Acclimation shift of the impairment isokinetic temperature
     latex: |
-      \delta_\mathrm{imp} = \delta_0 + \Delta T_{\mathrm{imp},\max}\, \frac{A}{A + K_A}, \qquad A \ge 0
+      \delta_\mathrm{imp} = \delta_0 + \Delta T_{\mathrm{imp},\max}\, \frac{A}{A + K_A}, \qquad A > -K_A
     code: phylloptim::damage::delta_impair
     also: [phylloptim::Leaf::delta_impair_at, phylloptim::Leaf::update_temperature_dependent_params]
     reads: [topt_offset_, dTimpair_max_, K_A_, A_]
@@ -1817,21 +1800,21 @@ equations:
     section: damage
     title: The layer's one rate form
     latex: |
-      k(T) = k\, \exp\!\left[\frac{E_a}{R}\left(\frac{1}{T_{\mathrm{ref},K}} - \frac{1}{T_K}\right)\right]_{[-30,\,30]}
+      k(T) = k\, \exp\!\left[\frac{E_a}{R}\left(\frac{1}{T_{\mathrm{ref},K}} - \frac{1}{T_K}\right)\right]
     code: phylloptim::damage::centred_arrhenius
-    reads: [gas_constant, C_to_K, exp_clamp]
+    reads: [gas_constant, C_to_K]
     writes: []
     kind: closed_form
-    note: 'Exactly $k$ at $T_\mathrm{ref}$ and at $E_a = 0$, where the argument is an exact zero. Impairment, repair and maturation all take it; nothing in the layer switches on or off.'
+    note: 'Exactly $k$ at $T_\mathrm{ref}$ and at $E_a = 0$, where the argument is an exact zero. Impairment, repair and maturation all take it; nothing in the layer switches on or off. No clamp on the argument (it used to be held to [−30, 30], which a high-$E_a$ species reaches below about 25 °C); an overflow is refused.'
   impairment_rate:
     section: damage
     title: Impairment rate
     latex: |
       k_\mathrm{imp}(T) = k_i\, \exp\!\left[\frac{E_{a,i}}{R}\left(\frac{1}{T'_{\mathrm{iso},K}} - \frac{1}{T_K}\right)\right], \qquad
-      T'_{\mathrm{iso},K} = \mathrm{clamp}_{[250,\,350]}(T_\mathrm{iso} + T_0 + \delta_\mathrm{imp})
+      T'_{\mathrm{iso},K} = T_\mathrm{iso} + T_0 + \delta_\mathrm{imp} \in [250, 350]
     code: phylloptim::damage::k_imp
     also: [phylloptim::Leaf::k_imp_eff, phylloptim::damage::centred_arrhenius]
-    reads: [k_i_, k_i_Ea_, k_i_Tiso_, C_to_K, gas_constant, topt_clamp_min, topt_clamp_max, exp_clamp]
+    reads: [k_i_, k_i_Ea_, k_i_Tiso_, C_to_K, gas_constant, shifted_temp_min, shifted_temp_max]
     writes: [k_imp_eff_]
     kind: closed_form
     cite: Bison-2026
@@ -1843,7 +1826,7 @@ equations:
       k_\mathrm{rec,eff}(T) = k_\mathrm{rec}\, \exp\!\left[\frac{E_{a,\mathrm{rec}}}{R}\left(\frac{1}{T_{25,K}} - \frac{1}{T_K}\right)\right]
     code: phylloptim::damage::k_rec_eff
     also: [phylloptim::Leaf::k_rec_eff, phylloptim::damage::centred_arrhenius]
-    reads: [k_rec_, k_rec_Ea_, damage_Tref, C_to_K, gas_constant, exp_clamp]
+    reads: [k_rec_, k_rec_Ea_, damage_Tref, C_to_K, gas_constant]
     writes: [k_rec_eff_]
     kind: closed_form
     note: 'Does not shut off when hot: impairment outruns the default repair above about 32 °C.'
@@ -1854,7 +1837,7 @@ equations:
       k_\mathrm{mat,eff}(T) = k_\mathrm{mat}\, \exp\!\left[\frac{E_{a,\mathrm{mat}}}{R}\left(\frac{1}{T_{25,K}} - \frac{1}{T_K}\right)\right]
     code: phylloptim::damage::k_mat_eff
     also: [phylloptim::damage::centred_arrhenius]
-    reads: [k_mat_, k_mat_Ea_, damage_Tref, C_to_K, gas_constant, exp_clamp]
+    reads: [k_mat_, k_mat_Ea_, damage_Tref, C_to_K, gas_constant]
     writes: []
     kind: closed_form
   damage_rates:
@@ -2633,7 +2616,7 @@ equations:
     reads: [theta, theta_fc, theta_w]
     writes: []
     kind: closed_form
-    note: 'Both Medlyn routes multiply g1 by it. Clamped, so a soil wetter than field capacity is field capacity and one drier than the wilting point is the wilting point. Not bound: read back through medlyn_model_gs at g0 = 0.'
+    note: 'Both Medlyn routes multiply g1 by it. Clamped, so a soil wetter than field capacity is field capacity and one drier than the wilting point is the wilting point. The one clamp the leaf keeps on a modelled quantity, because it is the published form of the soil-moisture factor (the corner at $\theta_w$ and $\theta_{fc}$ is the model, not a guard); CF77''s soil price clamps the same factor at 1 for the same reason. Not bound: read back through medlyn_model_gs at g0 = 0.'
   medlyn_gs:
     section: medlyn
     title: Medlyn stomatal conductance, on the CO₂ basis

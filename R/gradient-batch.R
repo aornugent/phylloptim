@@ -282,7 +282,7 @@ print.leaf_batch <- function(x, ...) {
 ##'     \item{`value`}{an `n` × 5 matrix of the solved outputs}
 ##'     \item{`method`}{`"ift"`, `"fd"` or `"prescribed"` per observation}
 ##'     \item{`status`}{`"interior"`, `"pinned"`, `"no-gradient"`, `"error"`,
-##'       or with `psi` one of `"prescribed"`, `"clamped"`, `"no-gradient"`}
+##'       or with `psi` one of `"prescribed"`, `"refused"`, `"no-gradient"`}
 ##'     \item{`H`, `stationarity`}{the curvature and the implied Newton step
 ##'       `method` was decided on, per observation}
 ##'     \item{`M`}{an `n` × `length(pars)` matrix of mixed partials

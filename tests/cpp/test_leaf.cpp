@@ -2134,7 +2134,7 @@ void test_dprofit_dpsi_stem_vanishes_at_the_optimum() {
 // case where a gradient is a partial at fixed psi rather than a total through a
 // moving argmax.
 void test_evaluate_psi_stem_prescribes_rather_than_optimises() {
-  printf("evaluate_psi_stem: a prescribed operating point, clamped and tagged\n");
+  printf("evaluate_psi_stem: a prescribed operating point, refused outside and tagged\n");
   using CC = phylloptim::Leaf::CostCurve;
   Drivers d;
   d.PPFD = 1500.0;
@@ -2166,13 +2166,22 @@ void test_evaluate_psi_stem_prescribes_rather_than_optimises() {
   const double p_at = l.evaluate_psi_stem<CC::CF77>(psi_opt);
   near(p_at, profit_opt, 1e-12, "prescribing the optimum reproduces its profit");
 
-  // Outside the interval the target is clamped, not refused -- and the clamp is
-  // where a prescribed gradient stops being a pure partial, because the bound
-  // moves with the traits.
-  l.evaluate_psi_stem<CC::CF77>(l.psi_crit + 5.0);
-  near(l.opt_psi_stem_, l.psi_crit, 1e-12, "a target past psi_crit clamps to it");
-  l.evaluate_psi_stem<CC::CF77>(0.0);
-  near(l.opt_psi_stem_, psi_soil, 1e-12, "and one below psi_soil clamps up to it");
+  // Outside the interval the target is refused, as infeasible, naming the
+  // potential and the interval: projected onto the bound, the outputs would move
+  // with the bound rather than with the potential asked for.
+  for (double target : {l.psi_crit + 5.0, 0.0}) {
+    std::string msg;
+    bool infeasible = false;
+    try {
+      l.evaluate_psi_stem<CC::CF77>(target);
+    } catch (const phylloptim::util::infeasible_error &e) {
+      infeasible = true;
+      msg = e.what();
+    }
+    ok(infeasible && msg.find("prescribed_potential") != std::string::npos &&
+           msg.find("feasible interval") != std::string::npos,
+       "a prescribed stem potential outside [wet, dry] is refused as infeasible: " + msg);
+  }
 
   // The TF24 curve takes the same route and needs no lambda.
   phylloptim::Leaf t = make_leaf(d, {psi_soil}, {1.0});
@@ -2425,6 +2434,7 @@ void test_leaf_temperature_is_reported() {
   for (double T : {15.0, 25.0, 40.0}) {
     Drivers dt = d;
     dt.leaf_temp = T;
+    dt.atm_vpd = 1.0;  // below saturation at 15 C (1.71 kPa)
     phylloptim::Leaf l = make_leaf(dt, {2.0}, {1.0});
     l.find_root_collar_psi();
     ok(l.Tleaf_ == T,
@@ -2769,8 +2779,8 @@ void test_energy_balance_path_runs() {
   ok(eb.assim_colimited_ != A_prescribed,
      "energy balance changes the operating point");
   const double Tleaf = eb.leaf_temp_from_E(eb.transpiration_);
-  ok(Tleaf >= phylloptim::leaf_temp_min && Tleaf <= phylloptim::leaf_temp_max,
-     "leaf temperature stays inside the physical clamp");
+  ok(Tleaf > eb.Tair_ - 20.0 && Tleaf < eb.Tair_ + 20.0,
+     "leaf temperature is within 20 K of the air");
   // This line used to be the ONLY way to get at the leaf's temperature: derive it
   // again, outside the model, from an output. It is now reported, and the two
   // agreeing bit-for-bit is what says the reported value is the one the solve
@@ -2855,13 +2865,11 @@ void test_pm_absorbed_shortwave() {
   // drivers here so the shortwave half is asserted against something independent
   // of Rn_ itself; test_longwave_and_radiative_conductance owns the longwave.
   const double Tair_K = l.Tair_ + phylloptim::C_to_K;
-  const double ea_Pa =
-      std::max(1000.0 * (l.saturation_vapour_pressure(l.Tair_) - l.atm_vpd_),
-               phylloptim::vapour_pressure_min);
-  const double ema = std::min(
+  const double ea_Pa = 1000.0 * (l.saturation_vapour_pressure(l.Tair_) - l.atm_vpd_);
+  // Well below 1 at these drivers, where the soft minimum is exactly the fit.
+  const double ema =
       phylloptim::atmos_emissivity_coef *
-          std::pow(ea_Pa / Tair_K, phylloptim::atmos_emissivity_exponent),
-      1.0);
+      std::pow(ea_Pa / Tair_K, phylloptim::atmos_emissivity_exponent);
   const double expected =
       l.alpha_PAR_ * d.PPFD / phylloptim::umol_par_per_joule +
       l.alpha_NIR_ * l.NIR_int_ -
@@ -2933,7 +2941,8 @@ void test_pm_leaf_temperature_response() {
   printf("PM leaf temperature: Tleaf == Tair off, departs from it on\n");
   for (double ppfd : {400.0, 2000.0}) {
     for (double tair : {20.0, 40.0}) {
-      for (double vpd : {1.0, 3.0}) {
+      // Both deficits below saturation at 20 C (2.34 kPa).
+      for (double vpd : {1.0, 2.0}) {
         Drivers d;
         d.PPFD = ppfd; d.leaf_temp = tair; d.atm_vpd = vpd;
         const std::string at = " at PPFD=" + std::to_string(int(ppfd)) +
@@ -3311,6 +3320,10 @@ void test_boundary_layer_bounds_the_total_conductance() {
       for (double vpd : {0.5, 1.0, 2.0, 4.0})
         for (double ppfd : {500.0, 1500.0})
           for (double psi_soil : {0.5, 1.0, 3.0}) {
+            // A deficit past saturation (4 kPa at 20 C) is refused, not a row.
+            if (!(vpd < phylloptim::Leaf().saturation_vapour_pressure(tair))) {
+              continue;
+            }
             Drivers d;
             d.PPFD = ppfd;
             d.leaf_temp = tair;
@@ -4547,7 +4560,7 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
   const std::vector<Fixture> fixtures{
       {{1.0, 1.25}, 1500.0, 2.0, 0.0, Kind::Interior},
       {{4.0, 4.25, 4.5, 4.75, 5.0}, 900.0, 2.0, 0.0, Kind::BoundarySoil},
-      {{3.0, 3.25, 3.5}, 900.0, 4.0, 0.0, Kind::BoundarySoil},
+      {{3.0, 3.25, 3.5}, 900.0, 3.1, 0.0, Kind::BoundarySoil},  // 3.1 < e_s(25 C)
       {{6.0}, 500.0, 0.5, 0.0, Kind::BoundaryDry},
       {{1.0}, 1.0, 2.0, 0.0, Kind::BoundarySoil, 5e-4},
       {{16.0, 16.25, 16.5}, 900.0, 2.0, 0.0, Kind::HydraulicShutdown}};
@@ -7296,16 +7309,14 @@ void test_longwave_and_radiative_conductance() {
   d.PPFD = 900.0;
   d.atm_vpd = 2.0;
 
-  // 1. STILL AFFINE IN E, with the slope the model reports. Three transpirations,
-  //    all inside the clamp: the second difference of an affine function is zero.
+  // 1. STILL AFFINE IN E, with the slope the model reports. Three transpirations:
+  //    the second difference of an affine function is zero.
   {
     d.leaf_temp = 30.0;
     phylloptim::Leaf l = make_pm_leaf(d, {1.0}, {1.0}, true);
     const double E0 = 0.0, E1 = 1e-5, E2 = 2e-5;
     const double t0 = l.leaf_temp_from_E(E0), t1 = l.leaf_temp_from_E(E1),
                  t2 = l.leaf_temp_from_E(E2);
-    ok(t0 > phylloptim::leaf_temp_min && t2 > phylloptim::leaf_temp_min,
-       "the three test points are inside the clamp");
     near((t2 - t1) - (t1 - t0), 0.0, 1e-9,
          "leaf temperature is still AFFINE in transpiration");
     double dT_dE = 0.0;
@@ -7375,9 +7386,10 @@ void test_longwave_and_radiative_conductance() {
        "and at 25 C the net longwave is stronger than a fixed -40 offset");
   }
 
-  // 4. THE CLAMP, which is a physical bound and not padding. Brutsaert's fit runs
-  //    past emissivity 1 at high air temperature, which would make the sky heat
-  //    the leaf. At the bound the isothermal term is exactly zero.
+  // 4. THE BOUND, which is physical and not padding. Brutsaert's fit runs past
+  //    emissivity 1 at high air temperature, which would make the sky heat the
+  //    leaf. A soft minimum holds it below 1, so the isothermal term goes to zero
+  //    from below -- smoothly, where a min() at 1 put a corner in Rn's slope.
   {
     d.leaf_temp = 60.0;
     d.atm_vpd = 2.0;
@@ -7389,24 +7401,44 @@ void test_longwave_and_radiative_conductance() {
         phylloptim::atmos_emissivity_coef *
         std::pow(ea_Pa / Tair_K, phylloptim::atmos_emissivity_exponent);
     ok(unclamped > 1.0,
-       "the premise: the fit really does exceed 1 here, so the clamp is live");
+       "the premise: the fit really does exceed 1 here, so the bound is live");
     const double sw = hot.alpha_PAR_ * hot.PPFD_ / phylloptim::umol_par_per_joule +
                       hot.alpha_NIR_ * hot.NIR_int_;
-    ok(hot.Rn_ == sw,
-       "clamped, the isothermal longwave is EXACTLY zero, not positive");
-    ok(hot.Rn_ - sw <= 0.0, "so the sky never heats the leaf");
+    ok(hot.Rn_ - sw <= 0.0 && hot.Rn_ - sw > -1e-6,
+       "past the fit's unity the isothermal longwave is zero to 1e-6, never positive");
+
+    // Across the fit's unity (43.9 C at 2 kPa) the longwave's slope in Tair is
+    // continuous: refined to 0.01 K, the largest jump between neighbouring
+    // slopes is a small fraction of the largest slope. The min() gave 1.0.
+    std::vector<double> lw;
+    const double h = 0.01;
+    for (double t = 40.0; t <= 48.0 + 1e-9; t += h) {
+      Drivers dt = d;
+      dt.leaf_temp = t;
+      phylloptim::Leaf x = make_pm_leaf(dt, {1.0}, {1.0}, true);
+      lw.push_back(x.Rn_ - (x.alpha_PAR_ * x.PPFD_ / phylloptim::umol_par_per_joule +
+                            x.alpha_NIR_ * x.NIR_int_));
+    }
+    double mx = 0.0, jump = 0.0;
+    for (size_t i = 1; i < lw.size(); ++i) mx = std::max(mx, std::abs(lw[i] - lw[i - 1]) / h);
+    for (size_t i = 2; i < lw.size(); ++i)
+      jump = std::max(jump, std::abs((lw[i] - lw[i - 1]) - (lw[i - 1] - lw[i - 2])) / h / mx);
+    printf("    longwave across the emissivity bound: largest slope jump %.3e of scale at 0.01 K\n", jump);
+    ok(jump < 0.05, "the longwave's slope in Tair has no corner at the emissivity bound");
+    for (double v : lw) {
+      if (v > 0.0) { ok(false, "the sky never heats the leaf across the bound"); break; }
+    }
   }
 
-  // 5. A deficit larger than saturation is not a physical atmosphere but is
-  //    reachable from a driver sweep, and pow() of a negative base is NaN.
-  {
+  // 5. A deficit at or past saturation is not a physical atmosphere, and it is
+  //    refused on both paths rather than floored.
+  for (bool eb : {true, false}) {
     d.leaf_temp = 5.0;      // esat ~ 0.87 kPa
     d.atm_vpd = 5.0;        // deficit far beyond it
-    phylloptim::Leaf l = make_pm_leaf(d, {1.0}, {1.0}, true);
-    ok(std::isfinite(l.Rn_) && std::isfinite(l.g_rad_),
-       "an impossible deficit still gives finite radiation terms");
-    ok(std::isfinite(l.leaf_temp_from_E(0.0)),
-       "and a finite leaf temperature");
+    const std::string msg = message_of([&] { make_pm_leaf(d, {1.0}, {1.0}, eb); });
+    ok(msg.find("atm_vpd") != std::string::npos && msg.find("e_s") != std::string::npos,
+       std::string("a deficit past saturation is refused, naming atm_vpd and e_s, energy balance ") +
+           (eb ? "on: " : "off: ") + msg);
   }
 
   // 6. Gate off, nothing reads any of it: Tleaf is the driver. This is the arm the
@@ -7735,7 +7767,7 @@ void test_product_link_is_the_product_rule() {
 
   struct Row { double psi_soil, PPFD, atm_vpd; };
   const Row rows[] = {{0.5, 1500.0, 2.0}, {1.0, 900.0, 2.0},
-                      {2.0, 900.0, 4.0}, {1.0, 300.0, 1.0}};
+                      {2.0, 900.0, 3.0}, {1.0, 300.0, 1.0}};
   const int kJS22 = static_cast<int>(phylloptim::Leaf::CostCurve::JS22);
   const int curves[] = {static_cast<int>(phylloptim::Leaf::CostCurve::SOX),
                         static_cast<int>(phylloptim::Leaf::CostCurve::JW26)};
@@ -7865,7 +7897,7 @@ void test_shadow_cost() {
   Drivers d;
   int compared = 0;
   for (double ppfd : {300.0, 900.0, 1500.0}) {
-    for (double vpd : {1.0, 2.0, 4.0}) {
+    for (double vpd : {1.0, 2.0, 3.0}) {
       for (double psi_soil : {0.5, 1.0, 2.0, 3.0}) {
         d.PPFD = ppfd;
         d.atm_vpd = vpd;
@@ -7983,7 +8015,7 @@ void test_tf24_floor_reduces() {
   Drivers d;
   int compared = 0, cf77_pinned = 0;
   for (double ppfd : {300.0, 900.0, 1500.0}) {
-    for (double vpd : {1.0, 2.0, 4.0}) {
+    for (double vpd : {1.0, 2.0, 3.0}) {
       for (double psi_soil : {0.5, 1.0, 2.0, 3.0, 4.0}) {
         d.PPFD = ppfd;
         d.atm_vpd = vpd;
@@ -8163,10 +8195,11 @@ void test_tf24_floor_kmax_vpd_invariance() {
   // the FLUX is not: `dC/dpsi` is TF24's `|f'|` form for the first part and
   // `lambda_o*kmax*f(psi)` for the second. TF24_floor carries both, so it must move
   // by less than CF77 and by more than TF24, and by more as lambda_o rises.
-  const double factor = 16.0;
+  const double factor = 4.0;
   Drivers lo, hi;
   lo.PPFD = hi.PPFD = 1500.0;
-  lo.atm_vpd = 2.0;
+  // Both deficits below saturation at 25 C (3.17 kPa).
+  lo.atm_vpd = 0.75;
   hi.atm_vpd = lo.atm_vpd * factor;
   hi.K_s = lo.K_s * factor;
   const double psi_soil = 1.0;
@@ -8394,7 +8427,7 @@ void test_tf24_floor_closed_form() {
 // ⚠️ THE TWO ARE NOT THE SAME EQUATION AND THE DIFFERENCE IS NOT SMALL. Solving
 // (FOC) for chi gives `chi = (Gamma*/ca + r)/(1 + r)` with `r = xi/sqrt(D)`, so
 // the published form understates chi by `(Gamma*/ca)/(1 + r)` -- some 4% at
-// D = 1 kPa and 8% at D = 4 kPa on this package's defaults, growing with deficit
+// D = 1 kPa and 7% at D = 3 kPa on this package's defaults, growing with deficit
 // because `r` falls as D rises. This test checks against (FOC), which is the
 // model; it then checks the gap to the published form against that expression,
 // which is what establishes that the gap is the approximation and not a defect.
@@ -8429,7 +8462,7 @@ void test_tf24_floor_closed_form() {
 void test_leastcost_matches_prentice_closed_form() {
   printf("LeastCost against Prentice et al. (2014)'s analytical solution\n");
   const double beta = 146.0;   // the published unit-cost ratio
-  const double vpds[3] = {1.0, 2.0, 4.0};
+  const double vpds[3] = {1.0, 2.0, 3.0};
 
   // `K_s` raised for reason 2. Checked across 10-1000 while this test was
   // written: the recovered chi is identical to six figures over that whole
@@ -9126,6 +9159,109 @@ void test_thermal_damage_bypasses_the_cache() {
      "switched off at unchanged drivers, the leaf is one never switched on");
 }
 
+// The layer has no corners left: the exponentials are the functions themselves,
+// A, I and protection are read as themselves, and F's floor is soft. Each is
+// asserted where the old clamp would have bound, and inside, where nothing may
+// have moved.
+void test_thermal_damage_has_no_corners() {
+  printf("thermal damage: no clamp, no max, a soft floor on F\n");
+  using phylloptim::damage::Dual;
+  // 1. The softplus is its plain form inside [-30, 30] and the function past it,
+  //    with a non-zero slope on both sides of each end.
+  {
+    bool inside_same = true;
+    for (double z = -30.0; z <= 30.0; z += 0.5) {
+      inside_same &= phylloptim::Leaf::softplus_(z / 2.0, 2.0) == std::log1p(std::exp(z)) / 2.0;
+    }
+    ok(inside_same, "softplus is bit-identical to log1p(exp(z))/s inside [-30, 30]");
+    near(phylloptim::Leaf::softplus_(-20.0, 2.0), std::log1p(std::exp(-40.0)) / 2.0, 1e-30,
+         "below -30 it is the function, not its value at -30");
+    near(phylloptim::Leaf::softplus_(20.0, 2.0), 20.0, 1e-15, "above 30 it is x to rounding");
+    const Dual lo = phylloptim::damage::softplus(Dual(-20.0, 1.0), Dual(2.0));
+    const Dual hi = phylloptim::damage::softplus(Dual(20.0, 1.0), Dual(2.0));
+    ok(lo.d > 0.0 && std::abs(hi.d - 1.0) < 1e-15,
+       "and its slope is the logistic's on both sides, not the clamp's zero");
+  }
+  // 2. A high-Ea species below 25 C: the impairment rate keeps falling, and its
+  //    sensitivity to Ea is the exponential's, where the clamp held both.
+  {
+    phylloptim::Leaf l;
+    l.k_i_Ea_ = 619e3;
+    const double r10 = l.damage_rates(10.0, 0.0, 0.0, 0.0)[1];
+    const double r5 = l.damage_rates(5.0, 0.0, 0.0, 0.0)[1];
+    ok(r10 > 0.0 && r5 > 0.0 && r5 < r10,
+       "a 619 kJ species' impairment keeps falling below 10 C (argument < -30)");
+    const std::vector<double> g =
+        l.damage_trajectory_gradient({0.0, 1.0}, {5.0, 5.0}, 0.0, 0.0, 0.0, {1});
+    ok(g[1 + 2] != 0.0, "and I's sensitivity to k_i_Ea_ there is not the clamp's zero");
+  }
+  // 3. F's soft floor: the plain fraction wherever the correction is below an
+  //    ulp, positive and falling through I + D = 1 (it underflows to zero only
+  //    some 700 widths past it).
+  {
+    Drivers d;
+    double prev = 0.0;
+    bool rising = true, positive = true, exact = true;
+    for (double sum : {0.0, 0.5, 0.99, 0.9999, 1.0 - 1e-5, 1.0, 1.0 + 1e-6, 1.0 + 1e-5}) {
+      phylloptim::Leaf l = make_thermal_leaf(d, {1.0}, {1.0}, false, true,
+                                             +[](phylloptim::Leaf &) {});
+      l.I_ = sum;
+      l.D_ = 0.0;
+      reseat_thermal_leaf(l, d, {1.0}, {1.0});
+      positive &= l.functional_ > 0.0;
+      if (1.0 - sum > 1e-4) exact &= l.functional_ == 1.0 - sum;
+      if (sum > 0.0) rising &= l.functional_ < prev;
+      prev = l.functional_;
+    }
+    ok(exact, "F is exactly 1 - I - D away from the floor");
+    ok(positive && rising, "and positive and strictly falling in I + D through 1");
+  }
+  // 4. Protection is signed: a leaf less protected than the baseline pays less
+  //    respiration than one at it, which pays less than a more protected one.
+  {
+    Drivers d;
+    auto rd = [&](double k_i) {
+      phylloptim::Leaf l = make_thermal_leaf(d, {1.0}, {1.0}, false, true,
+                                             +[](phylloptim::Leaf &x) { x.c_protect_maint_ = 0.01; });
+      l.k_i_ = k_i;
+      reseat_thermal_leaf(l, d, {1.0}, {1.0});
+      return l.R_d_;
+    };
+    const double base = phylloptim::Leaf().k_i_baseline_;
+    const double a = rd(base - 10.0), b = rd(base), c = rd(base + 10.0);
+    near((a - b) - (b - c), 0.0, 1e-12, "protection's cost is linear through the baseline");
+    ok(a > b && b > c, "and signed: less protection than the baseline is a saving");
+  }
+  // 5. Refusals: a negative fraction or the shift's pole, as infeasible where a
+  //    state is seated; a shifted isokinetic temperature out of range, as an error.
+  {
+    Drivers d;
+    auto seat = [&](double A, double I, double D) -> std::string {
+      phylloptim::Leaf l = make_thermal_leaf(d, {1.0}, {1.0}, false, true,
+                                             +[](phylloptim::Leaf &) {});
+      l.A_ = A; l.I_ = I; l.D_ = D;
+      try {
+        reseat_thermal_leaf(l, d, {1.0}, {1.0});
+      } catch (const phylloptim::util::infeasible_error &e) {
+        return e.what();
+      }
+      return "";
+    };
+    ok(seat(0.0, -1e-9, 0.0).find("damage_state") != std::string::npos,
+       "a negative I_ is refused as infeasible");
+    ok(seat(0.0, 0.0, -1e-9).find("damage_state") != std::string::npos,
+       "a negative D_ likewise");
+    ok(seat(-phylloptim::Leaf().K_A_, 0.0, 0.0).find("damage_state") != std::string::npos,
+       "and A_ at the shift's pole");
+    ok(seat(-1e-9, 0.0, 0.0).empty(), "a hair below zero in A_ is read as itself");
+    phylloptim::Leaf l;
+    l.k_i_Tiso_ = 90.0;
+    ok(message_of([&] { l.damage_rates(25.0, 0.0, 0.0, 0.0); }).find("[250, 350]") !=
+           std::string::npos,
+       "an isokinetic temperature outside [250, 350] K is refused, not held");
+  }
+}
+
 // The solve root-finds dprofit == 0, so with the layer on dprofit has to be the
 // derivative of the profit the solve REPORTS with the layer on. It is, because
 // both read the block update_temperature_dependent_params writes -- and on the
@@ -9165,8 +9301,14 @@ void test_thermal_damage_dprofit_is_the_solves_own() {
         for (double target : {p0 - 0.05, p0 - 0.1}) {
           const double eps = 1e-5;
           const double analytic = l.dprofit_droot_collar_psi_for<CC::TF24>(target);
-          const double up = l.evaluate_root_collar_psi_for<CC::TF24>(target + eps);
-          const double dn = l.evaluate_root_collar_psi_for<CC::TF24>(target - eps);
+          // A target wetter than the wet bound is refused, not a row.
+          double up = NAN, dn = NAN;
+          try {
+            up = l.evaluate_root_collar_psi_for<CC::TF24>(target + eps);
+            dn = l.evaluate_root_collar_psi_for<CC::TF24>(target - eps);
+          } catch (const phylloptim::util::infeasible_error &) {
+            continue;
+          }
           if (!std::isfinite(up) || !std::isfinite(dn)) {
             continue;
           }
@@ -9925,12 +10067,16 @@ void test_light_compensation_corner() {
      "A's one-sided slopes stay apart: the argmax has a corner there, as #183 allows");
 }
 
-// The acceptance sweep of #183: second differences of the solved outputs and
-// of two derivative rows across the drivers, with the energy balance off and
-// on, 1 and 3 layers, and with the thermal-damage layer on. A slope jump is
-// read as a fraction of the sweep's largest slope, and asserted below 0.05
-// everywhere except across a corner: a triple of points that straddles a
-// change of kind, or that sits at the psi_crit pin step 2 of #183 removes.
+// The acceptance sweep of #183, which every PR that touches the solve runs
+// (`make -C tests/cpp smoothness`): second differences of the solved outputs
+// and of two derivative rows across psi_soil, PPFD, VPD and Tair, with the
+// energy balance off and on, 1 and 3 layers, g_min zero and positive, and the
+// thermal-damage layer on. A slope jump is read as a fraction of the sweep's
+// largest slope, and asserted below 0.05 everywhere except across the one
+// corner: a triple of points that straddles a change of kind, which on these
+// sweeps is only the stomatal corner E_s >= 0, where a leaf at its wet bound
+// meets an open one. How many triples reached the assertion is counted and
+// printed (hazard 16).
 struct SweepPoint {
   double profit, A, E, psi, lambda, row_vcmax, row_gmin;
   std::string kind;
@@ -9941,6 +10087,9 @@ struct SweepPoint {
 // independent of the step, curvature's falls with it. Every triple flagged at
 // the sweep's step is re-measured at a hundredth of it, and the refined jump
 // is what is asserted on, against the sweep's own scale.
+// Totals over every call, for the summary line.
+long g_sweep_asserted = 0, g_sweep_corner = 0;
+
 void sweep_kinks(const std::vector<double> &x, const std::vector<SweepPoint> &o,
                  double SweepPoint::*f, const char *name, const std::string &where,
                  double limit, const std::function<SweepPoint(double)> &at) {
@@ -9950,14 +10099,15 @@ void sweep_kinks(const std::vector<double> &x, const std::vector<SweepPoint> &o,
   for (double v : d1) if (std::isfinite(v)) mx = std::max(mx, std::abs(v));
   double worst = 0.0, worst_refined = 0.0;
   size_t at_i = 0, at_r = 0;
-  int excluded = 0, refined = 0;
+  int excluded = 0, refined = 0, asserted = 0;
   for (size_t i = 1; i < d1.size(); ++i) {
     // the triple (i-1, i, i+1) of points
     const std::string &k0 = o[i - 1].kind, &k1 = o[i].kind, &k2 = o[i + 1].kind;
-    const bool corner = k0 != k1 || k1 != k2 || k1 == "boundary-dry";
+    const bool corner = k0 != k1 || k1 != k2;
     if (corner) { ++excluded; continue; }
     const double k = std::abs(d1[i] - d1[i - 1]) / mx;
     if (!std::isfinite(k)) continue;
+    ++asserted;
     if (k > worst) { worst = k; at_i = i; }
     if (k <= limit) continue;
     // Refine: the same jump at a hundredth of the step, about the same point.
@@ -10006,9 +10156,12 @@ void sweep_kinks(const std::vector<double> &x, const std::vector<SweepPoint> &o,
     const double jump = std::abs(fb - fa) / range;
     if (jump > worst_jump) { worst_jump = jump; jump_at = a; }
   }
-  printf("    %-28s %-8s worst at the step %.3e of scale (x = %.3f, %s); %d refined, worst %.3e (x = %.3f); %d corner triples excluded; %d bisected, worst jump %.3e of range (x = %.6f)\n",
-         where.c_str(), name, worst, x[at_i], o[at_i].kind.c_str(), refined, worst_refined,
+  printf("    %-28s %-8s %d triples asserted; worst at the step %.3e of scale (x = %.3f, %s); %d refined, worst %.3e (x = %.3f); %d corner triples excluded; %d bisected, worst jump %.3e of range (x = %.6f)\n",
+         where.c_str(), name, asserted, worst, x[at_i], o[at_i].kind.c_str(), refined, worst_refined,
          x[at_r], excluded, bisected, worst_jump, jump_at);
+  g_sweep_asserted += asserted;
+  g_sweep_corner += excluded;
+  ok(asserted > 0, std::string(name) + " reached the assertion on at least one triple, " + where);
   ok(worst_refined < limit, std::string(name) + " has no slope jump above " + std::to_string(limit) +
                                 " of scale away from a corner once the step is refined, " + where);
   ok(worst_jump < 1e-6, std::string(name) + " has no jump away from a corner, " + where);
@@ -10016,23 +10169,31 @@ void sweep_kinks(const std::vector<double> &x, const std::vector<SweepPoint> &o,
 
 void test_smoothness_sweep() {
   printf("residual conductance: the #183 second-difference sweep\n");
-  struct Config { bool eb; int layers; bool damage; };
-  const Config configs[] = {{false, 1, false}, {false, 3, false}, {true, 1, false}, {true, 3, false}, {false, 1, true}};
+  struct Config { bool eb; int layers; bool damage; double g_min; };
+  const Config configs[] = {{false, 1, false, kGmin}, {false, 3, false, kGmin},
+                            {true, 1, false, kGmin},  {true, 3, false, kGmin},
+                            {false, 1, true, kGmin},  {true, 1, true, kGmin},
+                            {false, 1, false, 0.0},   {true, 1, false, 0.0}};
+  g_sweep_asserted = g_sweep_corner = 0;
+  std::map<std::string, long> kinds;
   for (const Config &c : configs) {
     auto solve = [&](double psi0, double ppfd, double vpd, double tair) {
       Drivers d;
       d.PPFD = ppfd; d.atm_vpd = vpd; d.leaf_temp = tair;
       std::vector<double> psi_soil, depth;
       for (int i = 0; i < c.layers; ++i) { psi_soil.push_back(psi0 + 0.25 * i); depth.push_back(i + 1.0); }
-      phylloptim::Leaf l = make(d, psi_soil, depth, kGmin, c.eb, false,
+      phylloptim::Leaf l = make(d, psi_soil, depth, c.g_min, c.eb, false,
                                 std::numeric_limits<double>::quiet_NaN(),
                                 c.damage ? +[](phylloptim::Leaf &x) { x.use_thermal_damage_ = true; set_atls_inputs(x); }
                                          : static_cast<void (*)(phylloptim::Leaf &)>(nullptr));
       l.find_root_collar_psi();
       SweepPoint p{l.profit_, l.assim_colimited_, l.transpiration_, l.opt_psi_stem_,
                    l.lambda_emergent_, NAN, NAN, l.operating_point_kind_name(l.operating_point_kind())};
-      // The derivative rows, off the thermal-damage layer, which the surface refuses.
-      if (!c.damage && (l.operating_point_kind() == Kind::Interior || l.operating_point_kind() == Kind::BoundarySoil ||
+      ++kinds[p.kind];
+      // The derivative rows, off the thermal-damage layer, which the surface
+      // refuses, and with a residual conductance to differentiate.
+      if (!c.damage && c.g_min > 0.0 &&
+          (l.operating_point_kind() == Kind::Interior || l.operating_point_kind() == Kind::BoundarySoil ||
                         l.operating_point_kind() == Kind::HydraulicShutdown)) {
         p.row_vcmax = profit_row_at_current_point(l, phylloptim::par_vcmax_25);
         p.row_gmin = profit_row_at_current_point(l, phylloptim::par_g_min);
@@ -10040,7 +10201,8 @@ void test_smoothness_sweep() {
       return p;
     };
     const std::string where = std::string(c.eb ? "EB on, " : "EB off, ") + std::to_string(c.layers) +
-                              (c.damage ? " layer, damage on" : " layers");
+                              (c.damage ? " layer, damage on" : " layers") +
+                              (c.g_min > 0.0 ? "" : ", g_min 0");
     auto run = [&](const char *driver, double from, double to, double step,
                    std::function<SweepPoint(double)> at) {
       std::vector<double> x;
@@ -10052,18 +10214,24 @@ void test_smoothness_sweep() {
       sweep_kinks(x, o, &SweepPoint::E, "E", w, 0.05, at);
       sweep_kinks(x, o, &SweepPoint::psi, "psi_stem", w, 0.05, at);
       sweep_kinks(x, o, &SweepPoint::lambda, "lambda", w, 0.05, at);
-      if (!c.damage) {
+      if (!c.damage && c.g_min > 0.0) {
         sweep_kinks(x, o, &SweepPoint::row_vcmax, "d/dvcmax", w, 0.05, at);
         sweep_kinks(x, o, &SweepPoint::row_gmin, "d/dg_min", w, 0.05, at);
       }
     };
     run("psi_soil", 0.3, 6.4, 0.01, [&](double v) { return solve(v, 900.0, 2.0, 25.0); });
     run("PPFD", 0.0, 300.0, 1.0, [&](double v) { return solve(1.0, v, 2.0, 25.0); });
-    // The deficit stays below saturation at the air temperature, where the
-    // longwave term's e_a floor is a refusal step 3 of #183 adds.
-    run("VPD", 0.05, 3.0, 0.02, [&](double v) { return solve(1.0, 900.0, v, 25.0); });
+    // The deficit stays below saturation at the air temperature, past which it
+    // is refused: to 3.15 kPa at 25 C (e_s 3.17), and to 6 kPa at 40 C (7.38),
+    // which also crosses the emissivity's soft bound with the balance on.
+    run("VPD", 0.05, 3.15, 0.02, [&](double v) { return solve(1.0, 900.0, v, 25.0); });
+    run("VPD at 40 C", 0.05, 6.0, 0.02, [&](double v) { return solve(1.0, 900.0, v, 40.0); });
     run("Tair", 5.0, 48.0, 0.25, [&](double v) { return solve(1.0, 900.0, 0.5, v); });
   }
+  printf("    in all: %ld triples asserted, %ld corner triples excluded; kinds solved:",
+         g_sweep_asserted, g_sweep_corner);
+  for (const auto &kv : kinds) printf(" %s %ld", kv.first.c_str(), kv.second);
+  printf("\n");
 }
 
 // #184's first requirement from plant: a leaf forced shut -- by a dry soil, the
@@ -10350,7 +10518,13 @@ void test_rows_where_the_roots_cap_binds() {
 
 }  // namespace residual
 
-int main() {
+int main(int argc, char **argv) {
+  // `test_leaf smoothness` runs the acceptance sweep alone (make smoothness).
+  if (argc > 1 && std::string(argv[1]) == "smoothness") {
+    residual::test_smoothness_sweep();
+    printf("\n%d checks, %d failures\n", checks, failures);
+    return failures == 0 ? 0 : 1;
+  }
   test_defaults_are_unset();
   test_vulnerability_curve();
   test_vulnerability_integral_derivatives();
@@ -10488,6 +10662,7 @@ int main() {
   test_thermal_damage_gate_off_is_inert();
   test_thermal_damage_bypasses_the_cache();
   test_thermal_damage_dprofit_is_the_solves_own();
+  test_thermal_damage_has_no_corners();
   test_thermal_damage_fd_helpers_restore_the_block();
   test_thermal_damage_refusals();
   residual::test_temperature_factor();

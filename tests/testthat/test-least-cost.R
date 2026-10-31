@@ -45,7 +45,7 @@ test_that("the solved chi is Prentice et al.'s first-order condition", {
   ratio <- 1.67
   ca <- 40
 
-  for (vpd in c(1, 2, 4)) {
+  for (vpd in c(1, 2, 3)) {
     r <- leaf_solve(psi_soil = 0.1, PPFD = 3000, atm_vpd = vpd, ca = ca,
                     leaf_temp = 25, supply = sp, model = "LeastCost",
                     # `kmax` raised so the optimum stays interior: least-cost has

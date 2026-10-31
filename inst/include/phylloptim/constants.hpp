@@ -142,7 +142,8 @@ inline constexpr double stefan_boltzmann = 5.670374419e-8;  // W m^-2 K^-4
 // at 0.94-0.99; 0.97 is the usual working value.
 inline constexpr double leaf_emissivity = 0.97;
 // Clear-sky atmospheric emissivity, Brutsaert (1975) as Campbell & Norman write
-// it: ema = 0.642*(ea/Tair_K)^(1/7), clamped at 1 (see set_physiology).
+// it: ema = 0.642*(ea/Tair_K)^(1/7), held below 1 by a soft minimum (see
+// set_physiology).
 //
 // ⚠️ ea MUST BE IN PASCALS. The same relation is more often quoted as
 // `1.24*(ea/T)^(1/7)` with ea in hPa; the two agree because 0.642*100^(1/7) =
@@ -151,32 +152,28 @@ inline constexpr double leaf_emissivity = 0.97;
 // coefficient together, or not at all.
 inline constexpr double atmos_emissivity_coef = 0.642;
 inline constexpr double atmos_emissivity_exponent = 1.0 / 7.0;
-// Floor on the actual vapour pressure used above, Pa. `ea = esat(Tair) - D_air`
-// goes non-positive for a deficit larger than saturation, which is not a physical
-// atmosphere but is reachable from a driver sweep; the emissivity would then be
-// NaN through pow() of a negative base.
-inline constexpr double vapour_pressure_min = 1.0;
+// Width of the soft minimum that holds Brutsaert's emissivity below 1,
+// ema - w*softplus((ema - 1)/w). Where the fit passes unity -- hot,
+// humid air -- the sky radiates as a blackbody at Tair and the longwave term
+// goes to zero smoothly rather than at a corner. Bit-identical to the plain
+// fit wherever ema < 0.937, where the correction is below half an ulp.
+inline constexpr double atmos_emissivity_softmin_width = 0.002;
 // fixed aerodynamic resistance fallback, s m^-1 (doc 6/7.4; used when the wind
 // model is unavailable, e.g. a bare Leaf with no wind/d set)
 inline constexpr double aerodynamic_resistance_fixed = 50.0;
 // leaf boundary-layer coefficient C_ra, s^0.5 m^-1, in ra = C_ra*sqrt(d/U) (doc 4.1)
 inline constexpr double aerodynamic_resistance_coef = 200.0;
-// Physical clamp on the energy-balance leaf temperature (deg C). The linear
-// balance can return absurd temperatures at non-equilibrium operating points an
-// optimiser may probe (a large transpiration driving Tleaf below absolute zero,
-// making the Arrhenius block non-finite). Real leaves operate far inside this
-// range; clamping keeps A(Tleaf) finite so such points get a finite (poor)
-// profit and are simply rejected.
-inline constexpr double leaf_temp_min = -40.0;
-inline constexpr double leaf_temp_max = 70.0;
-// Floor on the leaf-to-air vapour pressure deficit (kPa) used by Fick's law
-// The same argument as the temperature clamp above, one step
-// downstream: a leaf cooled below the dew point has a NEGATIVE deficit, and
+// Floor on the leaf-to-air vapour pressure deficit (kPa) used by Fick's law.
+// A leaf cooled below the dew point has a NEGATIVE deficit, and
 // dividing a positive transpiration by it reports a negative stomatal
 // conductance. Flooring keeps such points finite and unattractive rather than
 // sign-inverted. 0.01 kPa is far below any operating deficit -- the driver
 // defaults are 1.5-2 kPa -- so it binds only where the model is already outside
 // what a one-way diffusion equation describes.
+// ⚠️ THE ONE FLOOR KEPT ON A SOLVED PATH BESIDE THE STOMATAL CORNER, by
+// decision. Measured, it binds at candidate points inside the energy-balance
+// stem routes' domain and at a solved point only where SOX, JW26 and LeastCost
+// pin a dark leaf at psi_crit; never at a collar-route optimum.
 inline constexpr double vpd_leaf_min = 0.01;
 
 

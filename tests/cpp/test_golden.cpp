@@ -120,7 +120,11 @@ std::vector<Row> run_grid() {
   for (double t : kLeafTemps) {
     for (double p : psi_soils) {
       for (double q : ppfds) {
-        for (double d : vpds) {
+        for (double d0 : vpds) {
+          // A deficit at or past saturation is refused, so the driest cell is
+          // 3 kPa where 4 kPa would be: at 25 C, where e_s is 3.17 kPa.
+          const double d =
+              d0 < phylloptim::Leaf().saturation_vapour_pressure(t) ? d0 : 3.0;
           for (int n : layer_counts) {
             rows.push_back(solve(p, q, d, n, t));
           }
@@ -137,8 +141,8 @@ std::vector<Row> run_grid() {
 //
 // `Leaf::operating_point_kind()` says which branch of the collar solve produced
 // the point, and the grid's split between those branches is a measured number.
-// AT 25 C, of the 336 points 232 sit at an interior profit maximum and 56 at a
-// constrained optimum pinned to a bracket bound: 45 wet, and 11 dry, at
+// AT 25 C, of the 336 points 235 sit at an interior profit maximum and 53 at a
+// constrained optimum pinned to a bracket bound: 42 wet, and 11 dry, at
 // psi_soil = 6, where the leaf transpires all its stem can carry (#183). The 48
 // at psi_soil = 17, past the end of the stem curve, shut down; psi_crit bounds
 // nothing under TF24, so no drier soil short of that end does. The 40 C counts
@@ -179,7 +183,7 @@ struct TempKinds {
 // assimilates less and respires more, so it has less to gain from water and its
 // optimum presses against the WET bound instead of the dry one.
 const TempKinds kExpectedKinds[] = {
-    {25.0, 232, 45, 11, 48},
+    {25.0, 235, 42, 11, 48},
     {40.0, 172, 116, 0, 48},
 };
 

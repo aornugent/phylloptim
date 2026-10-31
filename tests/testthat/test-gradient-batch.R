@@ -147,8 +147,8 @@ test_that("the batch matches leaf_gradient() on the single-potential path", {
   # Both of them move the FEASIBLE COLLAR INTERVAL and not only the profit
   # function -- `resistance` directly, the conductance through the supply curve --
   # so a perturbation can push a bound past psi* more readily than a trait
-  # perturbation can, and the clamp detector has to be reached through this route
-  # too.
+  # perturbation can, and the refusal detector has to be reached through this
+  # route too.
   pars <- c("vcmax_25", "stem_P50", "leaf_specific_conductance_max", "resistance")
   for (psi_soil in c(0.5, 1.5, 3.5, 5.5, 6.5)) {
     for (resistance in c(1e3, 1e4)) {
@@ -292,7 +292,7 @@ test_that("a forced method = \"ift\" at a pinned row is refused by name (#147)",
   # each is checked to be pinned under "auto" first, so the refusal is not read
   # off a row that never reached the branch.
   pinned <- list(list(psi_soil = 4, vpd = 2.0, layers = 5L, ppfd = 900),
-                 list(psi_soil = 3, vpd = 4.0, layers = 3L, ppfd = 900),
+                 list(psi_soil = 3, vpd = 3.0, layers = 5L, ppfd = 900),
                  list(psi_soil = 6, vpd = 0.5, layers = 1L, ppfd = 500))
   pars <- c("stem_P50", "vcmax_25")
   for (p in pinned) {
@@ -645,25 +645,25 @@ test_that("the batch's prescribed psi agrees with leaf_gradient(), bit-for-bit",
   }
 })
 
-test_that("a clamped row costs that row and not the batch", {
+test_that("a refused row costs that row and not the batch", {
   # The same per-row discipline `status == "error"` has, for a case that is not
-  # an error: a tracking model will hand over collar potentials that have drifted
-  # outside the feasible interval, and taking out the whole likelihood evaluation
-  # for one of them would take out the draw.
+  # an error: a fit will hand over collar potentials that a perturbation has put
+  # outside the feasible interval, and taking out the whole likelihood
+  # evaluation for one of them would take out the draw.
   pars <- c("vcmax_25", "stem_P50")
   soils <- c(1.0, 2.0, 3.0)
   b <- leaf_batch(psi_soil = soils, PPFD = 900)
   a <- leaf_gradient_batch(b, pars = pars)
 
   g <- leaf_gradient_batch(b, pars = pars, psi = c(99, a$psi[2:3]))
-  expect_identical(g$status, c("clamped", "prescribed", "prescribed"))
+  expect_identical(g$status, c("refused", "prescribed", "prescribed"))
   expect_true(all(is.na(g$gradient[1, , ])))
   expect_true(all(is.na(g$M[1, ])))
-  # The clamped row still says where it was pulled to, and the rows either side
-  # are BIT-IDENTICAL to being asked alone -- the leaf must not carry the clamped
-  # row's state into its neighbours.
-  expect_lt(g$psi[[1]], 99)
-  expect_true(all(is.finite(g$value[1, ])))
+  # The refused row keeps the psi it was given and has no operating point, and
+  # the rows either side are BIT-IDENTICAL to being asked alone -- the leaf must
+  # not carry the refused row's state into its neighbours.
+  expect_identical(g$psi[[1]], 99)
+  expect_true(all(is.na(g$value[1, ])))
   for (i in 2:3) {
     solo <- leaf_gradient_batch(leaf_batch(psi_soil = soils[[i]], PPFD = 900),
                                 pars = pars, psi = a$psi[[i]])
@@ -691,8 +691,9 @@ test_that("the batch validates psi and dpsi_dtheta by shape", {
 
   # A vector is one value per parameter, shared by every observation -- and it
   # must equal the matrix that spells that out, or the recycling is wrong. Each
-  # row is given its OWN psi* so none of them clamps; a shared psi across three
-  # soil potentials would, and then the columns compared here would be NA.
+  # row is given its OWN psi* so none of them is refused; a shared psi across
+  # three soil potentials could be, and then the columns compared here would be
+  # NA.
   psi <- leaf_gradient_batch(b, pars = pars)$psi
   shared <- leaf_gradient_batch(b, pars = pars, psi = psi,
                                 dpsi_dtheta = c(0.1, 0.2))

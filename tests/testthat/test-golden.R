@@ -68,6 +68,10 @@
 # the stem curve, since a soil of 6 MPa no longer shuts the leaf; there its e_up
 # and uptake are exact zeros.
 #
+# Then for refusing a deficit at or past saturation, which moved the shut-down
+# row's deficit from 4 to 3 kPa (e_s is 3.17 kPa at 25 C) and none of its
+# values: a leaf shut at psi_soil 17 reads no deficit.
+#
 # Before that, #92 (the indexed knot grid) moved 27, the psi_stem_to_ci tolerance
 # 18, and the collar root-find 27.
 
@@ -131,7 +135,7 @@ golden_rows <- list(
     )
   ),
   list(
-    inputs = list(psi_soil = 17.0, ppfd = 100, vpd = 4.0, layers = 5L),
+    inputs = list(psi_soil = 17.0, ppfd = 100, vpd = 3.0, layers = 5L),
     expected = list(
       psi_stem      = "0x1.10141205bc01ap+4",
       opt_root_psi  = "0x1.10141205bc01ap+4",
@@ -301,7 +305,7 @@ test_that("a shut-down point writes every output, not just the ones it changed",
   # layer is the natural place because reusing an object is what an R user does.
   l <- default_leaf()
   wet <- list(psi_soil = 0.5, ppfd = 1500, vpd = 0.5)
-  dry <- list(psi_soil = 6.0, ppfd = 100, vpd = 4.0)
+  dry <- list(psi_soil = 6.0, ppfd = 100, vpd = 3.0)
 
   run <- function(l, drivers) {
     l$set_physiology(

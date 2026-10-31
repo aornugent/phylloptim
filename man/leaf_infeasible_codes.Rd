@@ -33,8 +33,8 @@ should be loud.
 
 \section{Two judgement calls left ordinary, and why}{
 
-Of the \code{stop} sites in the headers, nineteen are classified. Two
-of the rest are genuinely arguable, and both were left ordinary because that
+Of the \code{stop} sites in the headers, those carrying a code above are
+classified. Two of the rest are genuinely arguable, and both were left ordinary because that
 is the direction whose failure mode is a loud error rather than a quiet wrong
 answer. They are listed here so the decision can be overruled on purpose rather
 than rediscovered:

@@ -8,50 +8,29 @@
 
 namespace phylloptim {
 
-// Where this model replaces a value by a bound. Each one holds the quantity it
-// masks constant, so whatever that quantity fed stops responding to it -- and a
-// row severed that way and a row that is honestly zero are the same number.
+// Where this model replaces a value by a bound, counted. One site is left: the
+// stomatal corner E_s >= 0, the one inequality the solve keeps. Every other
+// bound a value used to be bent to is now a refusal at the entry point or a
+// smooth form, so a solved path notes nothing else.
 //
-// Every site here already pairs its clamp with a matching derivative, so what is
-// counted is not a defect: it is the DISTANCE from one. Two of these sit within a
-// few hundredths of a soil moisture unit of the wilt point, and until they were
-// counted nobody could say whether a run reached them.
+// Counted rather than refused because the corner is part of the model: the
+// value function is C1 there and the argmax has one-sided derivatives, as at
+// any active bound. The count says how often a run sat on it.
 //
 // The list is this package's own. A consumer that keeps its own tally folds these
 // in rather than sharing an enum, because a header-only model cannot depend on the
 // consumer that includes it.
 enum clamp_site {
-  // The cumulative-vulnerability integral, capped at its closed-form limit
-  // G(inf) = (b/c)*Gamma(1/c). Binds past 7.3132 MPa at the root defaults, where
-  // the end-knot polynomial would otherwise accumulate for ever.
-  CLAMP_ROOT_VULN_INTEGRAL_CAP = 0,
-  // The conductivity lookup's argument, clamped into the knot domain. The upper
-  // end is the curve's last knot, which is vulnerability_psi_max exactly
-  // (6.8918 MPa at the root defaults); the lower is zero.
-  CLAMP_ROOT_VULN_ARGUMENT,
-  // The energy-balance leaf temperature, held inside a physical range so an
-  // extreme non-equilibrium transpiration cannot drive the Arrhenius block
-  // non-finite. Reached only with use_energy_balance on.
-  CLAMP_LEAF_TEMPERATURE,
-  // A collar potential projected into the feasible interval. For a partial taken
-  // at a held collar the unclamped alternative is a `_checked` reader --
-  // dprofit_droot_collar_psi_checked -- which refuses instead; this one is for a
-  // tracked collar being nudged.
-  CLAMP_COLLAR_POTENTIAL,
   // The stomatal flux read as zero where the hydraulic flux falls short of the
-  // residual flux: a candidate below the wet bound, which the solve hands the
-  // evaluator only by rounding (a prescribed collar at the bound inverts the
-  // pair by ~1e-14 MPa). The corner E_s >= 0 the solve keeps (#183).
-  CLAMP_STOMATAL_FLUX,
+  // residual flux. Measured: the operating-point evaluator reaches it only by
+  // rounding at the wet bound; the derivative evaluations taken just wet of
+  // that bound, to read the corner's sign, reach it by up to 0.7% of r*.
+  CLAMP_STOMATAL_FLUX = 0,
   CLAMP_SITE_COUNT
 };
 
 inline const char* clamp_site_name(int site) {
   switch (site) {
-  case CLAMP_ROOT_VULN_INTEGRAL_CAP: return "root_vuln_integral_cap";
-  case CLAMP_ROOT_VULN_ARGUMENT:     return "root_vuln_argument";
-  case CLAMP_LEAF_TEMPERATURE:       return "leaf_temperature";
-  case CLAMP_COLLAR_POTENTIAL:       return "collar_potential";
   case CLAMP_STOMATAL_FLUX:          return "stomatal_flux";
   }
   return "unknown";

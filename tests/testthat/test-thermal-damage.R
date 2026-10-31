@@ -26,14 +26,18 @@ thermal_leaf <- function(supply = leaf_supply_singlelayer()) {
 drive_at <- function(l, leaf_temp, psi_soil = 0.5) {
   # Daylight NIR for the PPFD below; read only with the energy balance on.
   l$NIR_int_ <- 1200 / 4.57
+  # 1 kPa, or half saturation where 1 kPa would be past it: a deficit at or past
+  # saturation is refused.
+  e_s <- 0.6108 * exp(17.27 * leaf_temp / (leaf_temp + 237.3))
+  vpd <- if (1.0 < e_s) 1.0 else 0.5 * e_s
   if (identical(l$supply_kind, "single")) {
     set_drivers(l, psi_soil = psi_soil, PPFD = 1200,
                 root_network = series_resistance(50),
-                leaf_specific_conductance_max = 1e-4, atm_vpd = 1.0, ca = 40,
+                leaf_specific_conductance_max = 1e-4, atm_vpd = vpd, ca = 40,
                 leaf_temp = leaf_temp, atm_o2_kpa = 21, atm_kpa = 101.3)
   } else {
     set_drivers(l, psi_soil = psi_soil + c(0, 0.4, 0.8), PPFD = 1200,
-                leaf_specific_conductance_max = 1e-4, atm_vpd = 1.0, ca = 40,
+                leaf_specific_conductance_max = 1e-4, atm_vpd = vpd, ca = 40,
                 leaf_temp = leaf_temp, atm_o2_kpa = 21, atm_kpa = 101.3)
   }
   invisible(l)
@@ -178,10 +182,9 @@ test_that("each rate is exact at its reference and a centred Arrhenius off it", 
   T2 <- 1 / (1 / (35 + .T0) - .R_gas * log(10) / 1.5e5) - .T0
   drive_at(l, T2)
   expect_equal(l$k_imp_eff_ / 0.3, 10, tolerance = 1e-12)
-  # Bounded: the exponent is clamped at 30, so an absurd Ea stays finite.
+  # Not clamped: an Ea absurd enough to overflow the rate is refused.
   l$k_i_Ea_ <- 1e8
-  drive_at(l, 90)
-  expect_equal(l$k_imp_eff_, 0.3 * exp(30), tolerance = 1e-14)
+  expect_error(drive_at(l, 90), "overflowed")
 })
 
 test_that("acclimation moves the isokinetic temperature by its own amount", {
@@ -224,15 +227,25 @@ test_that("impaired and damaged area discount BOTH capacities by F = 1 - I - D",
   expect_equal(damaged$vcmax_ / undamaged$vcmax_, 0.6, tolerance = 1e-14)
   expect_equal(damaged$jmax_ / undamaged$jmax_, 0.6, tolerance = 1e-14)
 
-  # Past total damage the functional fraction sits on its floor, so the capacities
-  # stay strictly positive and the solve stays well-conditioned.
+  # At total damage the functional fraction is its soft floor's value at zero,
+  # f ln 2 with f = 1e-6: strictly positive, and smooth in I + D through it.
+  total <- thermal_leaf()
+  total$use_thermal_damage_ <- TRUE
+  total$I_ <- 0.8
+  total$D_ <- 0.2
+  drive_at(total, 30)
+  # (1 - 0.8 - 0.2 is 5.6e-17 in double, which moves f ln 2 by ~4e-11.)
+  expect_equal(total$functional_, 1e-6 * log(2), tolerance = 1e-9)
+  expect_equal(total$vcmax_ / undamaged$vcmax_, 1e-6 * log(2), tolerance = 1e-9)
+  # Past it -- I + D = 1.3, outside the simplex the dynamics keep to -- the soft
+  # floor has underflowed to zero capacity, and the solve still completes.
   crushed <- thermal_leaf()
   crushed$use_thermal_damage_ <- TRUE
   crushed$I_ <- 0.8
   crushed$D_ <- 0.5
   drive_at(crushed, 30)
-  expect_equal(crushed$vcmax_ / undamaged$vcmax_, 1e-6, tolerance = 1e-12)
-  expect_equal(crushed$jmax_ / undamaged$jmax_, 1e-6, tolerance = 1e-12)
+  expect_identical(crushed$vcmax_, 0)
+  expect_identical(crushed$jmax_, 0)
   # A leaf this damaged cannot cover its respiration, so it is a net source of
   # CO2, as a dark leaf is -- and the solve completes there with finite carbon.
   # It is an ordinary optimum (#182): the CO2 it respires leaves through its
@@ -291,25 +304,29 @@ test_that("the impairment rate is finite, positive and rising across a wide swee
   }, numeric(1))
   expect_true(all(is.finite(k)))
   expect_true(all(k > 0))
-  # Rising wherever the exponent is inside its clamp, flat where it is not.
-  expect_true(all(diff(k) >= 0))
-  expect_true(all(diff(k)[temps[-1] > 0] > 0))
+  # Strictly rising everywhere: the exponent is not clamped, so the cold end
+  # keeps falling rather than flattening at e^-30.
+  expect_true(all(diff(k) > 0))
 })
 
-test_that("outlandish inputs still give finite capacities and outputs", {
+test_that("a hot leaf is finite, and shifted temperatures out of range are refused", {
   l <- thermal_leaf()
   l$use_thermal_damage_ <- TRUE
-  l$topt_offset_ <- 50
   l$I_ <- 0.4
   l$D_ <- 0.4
-  drive_at(l, 99)
   l$k_i_Ea_ <- 5e5
-  l$k_i_Tiso_ <- 200
   drive_at(l, 99)
   expect_true(all(is.finite(c(l$vcmax_, l$jmax_, l$k_imp_eff_, l$functional_,
                               l$k_rec_eff_, l$electron_transport_))))
   expect_true(l$k_imp_eff_ >= 0)
   expect_true(all(is.finite(l$damage_rates(99, 50, 0.4, 0.4))))
+  # Optima and isokinetic temperatures used to be clamped to [250, 350] K and
+  # are now refused outside it, with the range named.
+  l$topt_offset_ <- 50
+  expect_error(drive_at(l, 99), "outside \\[250, 350\\] K")
+  l$topt_offset_ <- 0
+  l$k_i_Tiso_ <- 200
+  expect_error(l$damage_rates(99, 0, 0.4, 0.4), "\\[250, 350\\] K")
 })
 
 # On the energy-balance path the block is re-seated at each candidate's leaf
@@ -370,9 +387,12 @@ test_that("R_d is not scaled by survival, and the costs add to it", {
   prot <- cost_of(k_i_ = 0.2, c_protect_maint_ = 0.5)
   expect_equal(prot$R_d_ - off$R_d_, 0.5 * (prot$k_i_baseline_ - 0.2),
                tolerance = 1e-12)
-  # Protection above the baseline costs nothing extra: max(0, k_i_baseline - k_i).
-  none <- cost_of(k_i_ = 300, c_protect_maint_ = 0.5)
-  expect_identical(none$R_d_, off$R_d_)
+  # Signed: a leaf less protected than the baseline saves what a more protected
+  # one pays, so the defaults do not sit on a corner.
+  less <- cost_of(k_i_ = 300, c_protect_maint_ = 0.5)
+  expect_equal(less$R_d_ - off$R_d_, 0.5 * (less$k_i_baseline_ - 300),
+               tolerance = 1e-12)
+  expect_lt(less$R_d_, off$R_d_)
   flux <- cost_of(I_ = 0.4, c_repair_flux_ = 1.0)
   expect_equal(flux$R_d_ - off$R_d_, flux$k_rec_eff_ * 0.4, tolerance = 1e-12)
   expect_gt(flux$R_d_, off$R_d_)
@@ -486,13 +506,16 @@ test_that("the isokinetic temperature moves with its own shift", {
                tolerance = 1e-12)
 })
 
-test_that("the acclimation forcing is the guarded softplus", {
+test_that("the acclimation forcing is the softplus, with no clamp", {
   l <- thermal_leaf()
   expect_equal(l$softplus_(0, 1), log(2), tolerance = 1e-15)
   expect_equal(l$softplus_(0.7, 2.5), log1p(exp(2.5 * 0.7)) / 2.5,
                tolerance = 1e-15)
-  # Clamped at s*x = 30, so it does not overflow.
-  expect_true(is.finite(l$softplus_(1e6, 1)))
+  # It does not overflow, and it is the function on both sides rather than a
+  # constant past +-30.
+  expect_identical(l$softplus_(1e6, 1), 1e6)
+  expect_equal(l$softplus_(-50, 1), log1p(exp(-50)), tolerance = 1e-15)
+  expect_gt(l$softplus_(-40, 1), l$softplus_(-50, 1))
 })
 
 # --- the temperature cache ----------------------------------------------------
@@ -546,9 +569,8 @@ test_that("damage_rates is the three-state model, at every input non-default", {
     k_imp <- with(atls_inputs, k_i_ * arrh_ref(temp, k_i_Ea_, k_i_Tiso_ + delta_i))
     k_rec <- with(atls_inputs, k_rec_ * arrh_ref(temp, k_rec_Ea_, 25))
     k_mat <- with(atls_inputs, k_mat_ * arrh_ref(temp, k_mat_Ea_, 25))
-    # softplus as the leaf computes it: its argument s*x is clamped at 30.
     sp <- with(atls_inputs,
-               log1p(exp(min(max(acclim_s_ * (temp - acclim_T_), -30), 30))) / acclim_s_)
+               log1p(exp(acclim_s_ * (temp - acclim_T_))) / acclim_s_)
     expected <- with(atls_inputs, c(
       acclim_alpha_ * sp - acclim_beta_ * A,
       k_imp * (1 - I - D) - (k_rec + k_mat) * I,

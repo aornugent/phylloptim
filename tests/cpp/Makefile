@@ -69,7 +69,7 @@ DEP_INC  = $(ODELIA_INC) $(BH_INC)
 SYS_INC  = $(foreach d,$(filter-out /usr/include /usr/include/,$(strip $(DEP_INC))),-isystem $(d))
 INCLUDES = -I$(PHYLLOPTIM_INC) $(SYS_INC)
 
-.PHONY: all build clean golden psi-stem-golden primitives-golden bench
+.PHONY: all build clean golden psi-stem-golden primitives-golden bench smoothness
 # The suite's own headers are prerequisites too: root_network.hpp holds the two
 # ex-`Leaf`-default constants the golden file's bit-exactness depends on, so a
 # stale rebuild after editing it would be a silently wrong baseline.
@@ -105,6 +105,12 @@ build: test_leaf test_supplied_rows test_transpose test_golden test_primitives
 bench: bench_solve bench_gradient
 	./bench_solve
 	./bench_gradient
+
+# #183's acceptance sweep alone: second differences of the solved outputs over
+# psi_soil, PPFD, VPD and Tair. `make all` runs it too, inside test_leaf; this
+# is the quick way to run it on a change to the solve.
+smoothness: test_leaf
+	./test_leaf smoothness
 
 test_leaf: test_leaf.cpp $(HEADERS)
 	$(CXX) $(CXXSTD) $(OPT) $(WARN) $(INCLUDES) $< -o $@

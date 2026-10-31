@@ -123,7 +123,7 @@ afterwards, because the drivers come back as columns of the answer.
 
 ```{r}
 expand_grid(PPFD = seq(50, 1800, length.out = 30),
-            atm_vpd = c(0.5, 1, 2, 4)) |>
+            atm_vpd = c(0.5, 1, 2, 3)) |>
   with(leaf_solve(psi_soil = 1.0, PPFD = PPFD, atm_vpd = atm_vpd)) |>
   ggplot(aes(PPFD, A, colour = factor(atm_vpd))) +
   geom_line(linewidth = 0.8) +
@@ -437,11 +437,11 @@ b <- leaf_gradient(psi_soil = 2.0, PPFD = 900, pars = "vcmax_25",
 identical(a$gradient, b$gradient)
 ```
 
-A `psi` outside the feasible collar interval gets no gradient. It is clamped, so
-the collar actually used moves with the *bound* rather than with your
-`dpsi_dtheta`, and the direct term alone would be plausible and wrong. `status`
-reports `"clamped"`, the gradient is `NA`, and `g$psi` tells you where the collar
-was pulled to.
+A `psi` outside the feasible collar interval is refused: the leaf does not move it
+onto the interval's end, where the outputs would follow the *bound* rather than
+your `dpsi_dtheta`. `status` reports `"refused"`, `g$psi` is the one you gave, and
+everything else is `NA`. A `psi` within one step of an end is `"refused"` too,
+with its value but no gradient, because `dY/dpsi` cannot be centred there.
 
 Naming something that cannot be differentiated is an error rather than a silent
 omission, and the message says what is available instead:
@@ -618,7 +618,7 @@ last of those is the binding one, and the error is organised by `ci/ca`:
 ```{r}
 grid <- expand.grid(psi_soil = c(0.25, 0.5, 1, 2, 3, 4, 5),
                     PPFD = c(100, 500, 1500),
-                    atm_vpd = c(0.5, 1, 2, 4))
+                    atm_vpd = c(0.5, 1, 2, 3))
 
 solve_both <- function(psi_soil, PPFD, atm_vpd) {
   one <- function(method) {

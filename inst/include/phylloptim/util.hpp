@@ -105,6 +105,17 @@ template <typename T> T clamp(T x, T min_val, T max_val) {
   return std::max(std::min(x, max_val), min_val);
 }
 
+// log(1 + exp(x)) and its slope, the logistic, in the forms that do not
+// overflow. The smooth replacement for a max(0, x), at a width the caller
+// scales x by; every soft floor and soft cap in the leaf is one of these.
+inline double softplus(double x) {
+  return x > 0.0 ? x + std::log1p(std::exp(-x)) : std::log1p(std::exp(x));
+}
+inline double logistic(double x) {
+  return x > 0.0 ? 1.0 / (1.0 + std::exp(-x))
+                 : std::exp(x) / (1.0 + std::exp(x));
+}
+
 // Missing-value sentinel for uninitialised leaf state. Stands in for R's
 // NA_REAL, which is itself a NaN with a payload; nothing in the leaf model
 // inspects the payload, it only ever tests !isfinite(), so a quiet NaN is an

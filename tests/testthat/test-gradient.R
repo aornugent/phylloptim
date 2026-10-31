@@ -165,7 +165,7 @@ test_that("a pinned optimum takes the fallback, and the composite would be wrong
   # the composite's O(1) answer is catastrophic precisely because the truth is
   # not O(1).
   wet <- list(list(psi_soil = 4, vpd = 2.0, layers = 5L),
-              list(psi_soil = 3, vpd = 4.0, layers = 3L))
+              list(psi_soil = 3, vpd = 3.0, layers = 5L))
   for (w in wet) {
     lab <- sprintf("psi_soil=%g vpd=%g layers=%d", w$psi_soil, w$vpd, w$layers)
     auto <- grid_gradient(w$psi_soil, vpd = w$vpd, layers = w$layers,
@@ -318,7 +318,7 @@ test_that("the active-set classification splits the golden grid as measured", {
   # at the wet bound where the leaf declines to open or at the dry end where it
   # transpires all its stem can carry. Every pinned row differences the solve.
   psi_soils <- c(0.5, 1.0, 2.0, 3.0, 4.0, 6.0)
-  vpds <- c(0.5, 1.0, 2.0, 4.0)
+  vpds <- c(0.5, 1.0, 2.0, 3.0)  # 3, not 4: below saturation at 25 C
   layer_counts <- c(1L, 3L, 5L)
   ppfds <- c(100, 500, 900, 1500)
 
@@ -342,8 +342,8 @@ test_that("the active-set classification splits the golden grid as measured", {
   }))
 
   expect_identical(nrow(res), 288L)
-  expect_identical(sum(res$status == "interior"), 231L)
-  expect_identical(sum(res$status == "pinned"), 57L)
+  expect_identical(sum(res$status == "interior"), 234L)
+  expect_identical(sum(res$status == "pinned"), 54L)
   expect_identical(sum(res$status == "no-gradient"), 0L)
 
   # Open pinned points are all at the dry end, which is where a drought
@@ -883,51 +883,49 @@ test_that("a prescribed psi off the optimum matches a difference at fixed collar
   expect_gt(abs(g$dY_dpsi[["profit"]]), 1)
 })
 
-test_that("a clamped psi reports itself and returns no gradient", {
-  # ⚠️ NOT AN ERROR, AND NOT THE DIRECT TERM EITHER. The collar used is `psi`
-  # clamped into the feasible interval, so it moves with the BOUND rather than
-  # with the caller's dpsi_dtheta -- the active-set problem arriving through the
-  # clamp. The direct term alone would be plausible and wrong, so it is withheld;
-  # a tracking model reaches these points routinely, so it is reported and not
-  # thrown.
+test_that("a psi outside the feasible interval is refused, with no gradient", {
+  # ⚠️ NOT AN ERROR, AND NOT A PROJECTION. The leaf refuses a collar outside its
+  # feasible interval rather than moving it onto the end, where the outputs
+  # would follow the BOUND instead of the caller's dpsi_dtheta. A fit reaches
+  # these points routinely, so the row is reported, not thrown.
   d <- grid_drivers(2.0)
   pars <- c("vcmax_25", "stem_P50")
 
   g <- do.call(leaf_gradient, c(d, list(pars = pars, psi = 99)))
-  expect_identical(g$status, "clamped")
+  expect_identical(g$status, "refused")
   expect_identical(g$method, "prescribed")
+  expect_identical(g$psi, 99)
   expect_true(all(is.na(g$gradient)))
   expect_true(all(is.na(g$M)))
   expect_true(all(is.na(g$dY_dpsi)))
-  # What the point IS still comes back: `psi` is the collar actually used, and
-  # `value` describes it. That is what lets a caller see where it was pulled to.
-  expect_lt(g$psi, 99)
-  expect_true(all(is.finite(g$value)))
+  # There is no operating point to describe.
+  expect_true(all(is.na(g$value)))
 
   # And it fires one step inside the end too, because dY/dpsi cannot be centred
   # there -- a one-sided difference over a shortened interval is the same failure
-  # the solving path's clamp detector refuses.
+  # the solving path's detector refuses. The end, bisected: the last psi with a
+  # value.
   a <- do.call(leaf_gradient, c(d, list(pars = pars)))
-  expect_identical(
-    do.call(leaf_gradient, c(d, list(pars = pars, psi = g$psi)))$status,
-    "clamped")
-  # ...while a psi comfortably inside it does not.
-  expect_identical(
-    do.call(leaf_gradient, c(d, list(pars = pars, psi = a$psi)))$status,
-    "prescribed")
+  at <- function(p) do.call(leaf_gradient, c(d, list(pars = pars, psi = p)))
+  inside <- a$psi
+  outside <- 99
+  for (k in 1:60) {
+    m <- (inside + outside) / 2
+    if (all(is.finite(at(m)$value))) inside <- m else outside <- m
+  }
+  edge <- at(inside)
+  expect_identical(edge$status, "refused")
+  expect_true(all(is.finite(edge$value)))
+  expect_true(all(is.na(edge$gradient)))
+  # ...while a psi comfortably inside it is not.
+  expect_identical(at(a$psi)$status, "prescribed")
 })
 
-test_that("an integer psi is not mistaken for a clamped one", {
-  # ⚠️ THE CLAMP TEST IS `identical()` AGAINST WHAT THE CALLER PASSED, and
-  # `identical(3, 3L)` is FALSE. So an integer `psi` -- `psi = 3L`, or the
-  # entirely ordinary `for (p in 2:5)`, since `2:5` yields integers -- was
-  # reported CLAMPED at a collar it had been given exactly, with an all-NA
-  # gradient and a `psi` in the result showing no movement, so there was nothing
-  # to notice.
-  #
-  # Neither sibling had it: `.gradient_check_psi_batch()` already coerced, and
-  # C++'s `util::identical` is `a == b`. R alone, and only because the checker's
-  # return was discarded.
+test_that("an integer psi is the same psi as its double", {
+  # An integer `psi` -- `psi = 3L`, or the entirely ordinary `for (p in 2:5)`,
+  # since `2:5` yields integers -- is coerced by the checker, so the R reference
+  # and the C++ batch see one value. A discarded return once made the R path
+  # alone misreport it.
   d <- grid_drivers(2.0)
   a <- do.call(leaf_gradient, c(d, list(pars = "vcmax_25")))
   whole <- 3                        # inside the feasible interval at this point
@@ -956,9 +954,8 @@ test_that("an infeasible prescribed psi is no-gradient, not a sentinel zero", {
   # profit's indirect term at exactly the dry points a tracking model lives in.
   #
   # The fix reads the feasibility flag the header has always had and R could not
-  # reach. Most such points are caught as `clamped` first -- the shut-down state
-  # seats a collar of its own choosing -- so the test hands back exactly that
-  # collar, which is the case `clamped` cannot see.
+  # reach. The test hands back exactly the collar the shut-down state seated,
+  # which is inside the interval and still has no derivative.
   d <- grid_drivers(16.0)          # past the end of the stem curve: shut down
   solved <- do.call(leaf_gradient, c(d, list(pars = "vcmax_25")))
   expect_identical(solved$status, "no-gradient")
@@ -966,8 +963,8 @@ test_that("an infeasible prescribed psi is no-gradient, not a sentinel zero", {
   g <- do.call(leaf_gradient,
                c(d, list(pars = "vcmax_25", psi = solved$psi,
                          dpsi_dtheta = 1)))
-  # Unclamped -- it is the collar the shut-down state itself seated -- and still
-  # refused, which is the whole point of the test.
+  # Feasible -- it is the collar the shut-down state itself seated -- and still
+  # without a gradient, which is the whole point of the test.
   expect_identical(g$psi, solved$psi)
   expect_identical(g$status, "no-gradient")
   expect_true(all(is.na(g$gradient)))

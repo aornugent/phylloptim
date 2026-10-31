@@ -59,12 +59,11 @@ them from \code{\link[=leaf_traits]{leaf_traits()}} is the point of having two f
 }
 \section{What is deliberately not here}{
 
-The internal leaf-temperature clamp (\verb{-40 C} to \verb{70 C}) is a compile-time
-constant and stays one. It is a guard that keeps an extreme non-equilibrium
-transpiration on the energy-balance path from driving the Arrhenius block
-non-finite -- not a tolerance anyone tunes. Making it settable would let a
-caller produce non-finite photosynthetic parameters and get NaNs back with no
-indication of why.
+A range for the leaf temperature. Nothing clamps it: with the energy balance
+on it is affine in the transpiration, and \code{\link[=set_drivers]{set_drivers()}} refuses drivers
+under which a leaf the solve can reach would be past what the model can
+evaluate (R_d's Q10 reaching zero, about 119 C at the defaults), rather than
+holding the temperature at a bound.
 }
 
 \examples{

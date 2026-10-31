@@ -65,7 +65,7 @@ struct Point {
 std::vector<Point> grid() {
   const double psi_soils[] = {0.5, 1.0, 2.0, 3.0, 4.0, 6.0};
   const double ppfds[] = {100.0, 500.0, 900.0, 1500.0};
-  const double vpds[] = {0.5, 1.0, 2.0, 4.0};
+  const double vpds[] = {0.5, 1.0, 2.0, 3.0};  // 3, not 4: below saturation at 25 C
   const int layer_counts[] = {1, 3, 5};
 
   std::vector<Point> pts;

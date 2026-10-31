@@ -203,6 +203,8 @@ test_that("CF77's potential carries the transpiration the USO collapse gives at 
   kg_to_mol <- 1 / 0.018015
   g <- expand.grid(psi_soil = c(0.3, 1, 2, 3), lambda = c(1e5, 1.5e5, 3e5),
                    T = c(10, 25, 40), D = c(0.5, 1, 2))
+  # A deficit at or past saturation (2 kPa at 10 C) is refused, not a row.
+  g <- g[g$D < 0.6108 * exp(17.27 * g$T / (g$T + 237.3)), ]
   served <- 0L
   for (i in seq_len(nrow(g))) {
     l <- cf_leaf(curve = "CF77", psi_soil = g$psi_soil[i], lambda = g$lambda[i],
@@ -289,7 +291,7 @@ test_that("accuracy against the exact solve degrades as ci/ca falls", {
   # approximation instead of a test of it.
   grid <- expand.grid(psi_soil = c(0.25, 0.5, 1, 2, 3, 4, 5),
                       PPFD = c(100, 500, 1500),
-                      atm_vpd = c(0.5, 1, 2, 4))
+                      atm_vpd = c(0.5, 1, 2, 3))
 
   rows <- lapply(seq_len(nrow(grid)), function(i) {
     g <- grid[i, ]

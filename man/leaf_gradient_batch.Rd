@@ -80,7 +80,7 @@ being \code{A}, \code{gc}, \code{psi_stem}, \code{collar} and \code{profit}}
 \item{\code{value}}{an \code{n} × 5 matrix of the solved outputs}
 \item{\code{method}}{\code{"ift"}, \code{"fd"} or \code{"prescribed"} per observation}
 \item{\code{status}}{\code{"interior"}, \code{"pinned"}, \code{"no-gradient"}, \code{"error"},
-or with \code{psi} one of \code{"prescribed"}, \code{"clamped"}, \code{"no-gradient"}}
+or with \code{psi} one of \code{"prescribed"}, \code{"refused"}, \code{"no-gradient"}}
 \item{\code{H}, \code{stationarity}}{the curvature and the implied Newton step
 \code{method} was decided on, per observation}
 \item{\code{M}}{an \code{n} × \code{length(pars)} matrix of mixed partials
