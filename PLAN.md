@@ -56,7 +56,7 @@ Written for: agents picking up work on this package. Each item names what to cha
 
 **C5. Thermal damage has no worked example outside `the-models.Rmd`.** The `fitting` and `phylloptim` vignettes do not mention it. One short section in `the-models.Rmd` showing the gate on and off at one driver is enough; it is optional.
 
-## D. Speed — measure first
+## D. Speed — measure first (done in 0.27.2: D1 taken; D2, D3, D4 measured and dropped)
 
 **D1. The collar objective walks the root uptake three times per candidate collar.** `Leaf::dprofit_at_collar_psi` and the functions it calls (`E_from_Soil_to_Root_Collar`, the uptake derivative) each rebuild the per-layer uptake for the same collar. The audit's prototype shared one walk and measured 15% faster on `bench_solve`, bit-exact on all three goldens. Reproduce that: share the walk through the existing per-solve cache, assert bit-identity, bench interleaved. Done when the bench moves by what the PR claims and the goldens do not.
 
@@ -92,3 +92,4 @@ These are #206's options 4 and 5, its further candidates, and the audit's findin
 - 0.27.1 (A1–A3, #207): a prescribed stem point writes `lambda_emergent_`; the batch refuses the prices `leaf_solve()` refuses and accepts per-observation prices; the 3.4287 fixtures were dead branches (their root-limited fixtures went in #188) and are gone, and the stem-curve test reads the default.
 - B1–B4, B6, C4 (#210): the source-tree tests run in `R-CMD-check.yml`'s Linux leg through `tools/source_tree_tests.R`, where a skip fails (not `cpp-tests.yml`, which must stay R-free); the PR template asks for the interleaved bench and the registry; `cost-baseline.tsv` has 0.27.0's row; the surface referee lists every slot of the pack on TF24 and TF24_floor; `test-readme.R` checks the grid size and `n_theta` against the code.
 - B5, C1–C3 (#212): comments are contracts, units and hazards only (`leaf_model.hpp` 10,534 → 7,422 lines, 31% comments; all headers 15,687 → 11,380; `R/` 5,722 → 4,980), with compiled objects and all three goldens bit-identical; NEWS is 96 lines, releases grouped; `COMPARISON.md` is rewritten against the current package; `tools/check_lengths.sh` in `cpp-tests.yml` holds a NEWS entry to 12 lines and a code file of 200 lines or more to 40% comments.
+- 0.27.2, section D (#214): the collar objective walks the root uptake once per candidate collar (D1), collar solve −11% on `bench_solve`, goldens bit-identical. Dropped on measurement: D2 (`gradient.hpp` never reads the tables' trait rows, 0% of `bench_gradient`), D3 (the slope `solve_ci` holds is at the iterate before the root, so reusing it moves results by ~1e-13 for ~1%), D4 (the C++ call is 84–92% of a 64-row batch gradient).

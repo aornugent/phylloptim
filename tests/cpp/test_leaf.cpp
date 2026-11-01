@@ -1552,6 +1552,34 @@ void test_soil_conductance_is_positive() {
     l.roots_.uptake_at(l.opt_root_psi_ - h, l.roots_.psi_soil_, buf, dn);
     near(S, (up - dn) / (2.0 * h), 1e-5,
          "conductance matches a central difference at " + std::to_string(layers) + " layers");
+    // The collar objective's one walk gives what the two calls give, bit for
+    // bit: at the solved collar, and on a layer's own potential, a kink where
+    // the slope is NaN (hazard 6).
+    const auto same = [](double a, double b) {
+      return a == b || (std::isnan(a) && std::isnan(b));
+    };
+    for (double collar : {l.opt_root_psi_, l.roots_.psi_soil_[0]}) {
+      const std::string at = " at " + std::to_string(layers) + " layers, collar " +
+                             std::to_string(collar);
+      std::vector<double> c1(buf.size()), c2(buf.size());
+      double e1 = 0.0, e2 = 0.0;
+      l.roots_.uptake_at(collar, l.roots_.psi_soil_, c1, e1);
+      const double s1 = l.roots_.duptake_dpsi(collar, l.roots_.psi_soil_);
+      const double s2 =
+          l.roots_.uptake_and_slope_at(collar, l.roots_.psi_soil_, c2, e2);
+      ok(e1 == e2 && c1 == c2 && same(s1, s2),
+         "one walk's uptake, draws and slope are the two calls'" + at);
+      phylloptim::Leaf a = l, b = l;
+      a.E_from_Soil_to_Root_Collar(collar, a.supply_psi_soil());
+      const double sa = a.dE_from_soil_dpsi_collar(collar, a.supply_psi_soil());
+      const double sb = b.E_and_slope_from_soil(collar, b.supply_psi_soil());
+      ok(a.E_up_ == b.E_up_ && a.soil_consumption_ == b.soil_consumption_ &&
+             same(sa, sb),
+         "and so through the Leaf" + at);
+      if (collar != l.opt_root_psi_) {
+        ok(std::isnan(s2), "the slope on a layer's potential is NaN" + at);
+      }
+    }
   }
 }
 

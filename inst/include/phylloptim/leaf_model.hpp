@@ -1540,6 +1540,19 @@ public:
         return single_.duptake_dpsi(T_collar, psi_soil);
     }
   }
+  // E_from_Soil_to_Root_Collar and dE_from_soil_dpsi_collar from one walk where
+  // the path has one, each bit for bit what the two calls give; returns the slope.
+  double E_and_slope_from_soil(double T_collar, const std::vector<double>& psi_soil) {
+    require_suction_vector(psi_soil, "E_and_slope_from_soil");
+    switch (supply_kind_) {
+      case SupplyKind::MultiLayer:
+        return roots_.uptake_and_slope_at(T_collar, psi_soil, soil_consumption_,
+                                          E_up_);
+      default:
+        single_.uptake_at(T_collar, psi_soil, soil_consumption_, E_up_);
+        return single_.duptake_dpsi(T_collar, psi_soil);
+    }
+  }
   // The shut operating point the collar solve's early exits place: the collar
   // where uptake meets the residual flux, the stem where it carries it, and every
   // output from the ordinary evaluator there (hazard 18).
@@ -3678,7 +3691,8 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   // Past the continuity root with the stem at the end of its curve the soil
   // delivers more than the stem can carry: no operating point, reported like the
   // other no-gradient exits rather than thrown (a difference across a dry pin reaches it).
-  E_from_Soil_to_Root_Collar(psi, supply_psi_soil());
+  // The uptake's collar slope comes from the same walk (dpsi_stem/dpsi below).
+  const double dEup_dpsi = E_and_slope_from_soil(psi, supply_psi_soil());
   if (!stem_carries(E_up_, psi)) {
     return 0.0;
   }
@@ -3718,20 +3732,13 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
     return 0.0;
   }
 
-  // dpsi_stem/dpsi, computed once here and shared by both branches below.
-  const double dEup_dpsi = dE_from_soil_dpsi_collar(psi, supply_psi_soil());
+  // dpsi_stem/dpsi, shared by both branches below.
   double dpsistem_dpsi;
   if (std::isfinite(dEup_dpsi)) {
-    E_from_Soil_to_Root_Collar(psi, supply_psi_soil());  // refresh E_up_ at psi
-    const double E_psi_stem =
-        E_up_ / leaf_specific_conductance_max_ +
-        stem_curve_integral(psi, "Leaf::dprofit_at_collar_psi, forming "
-                                 "dpsi_stem/dpsi at the operating point");
     const double dEpsistem_dpsi =
         dEup_dpsi / leaf_specific_conductance_max_ + stem_curve_integral_deriv(psi);
-    // dpsi_stem/dE_psi_stem = 1/G'(G^-1(E_psi_stem)), and G^-1(E_psi_stem) is
-    // the psi_stem inverted above from the same E_up_ and psi: read the slope there.
-    (void)E_psi_stem;
+    // dpsi_stem/dE_psi_stem = 1/G'(psi_stem), at the psi_stem inverted above
+    // from the same E_up_ and psi.
     dpsistem_dpsi = (1.0 / stem_curve_integral_deriv(psi_stem)) * dEpsistem_dpsi;
   } else {
     // NaN from the supply means "use finite differences" (hazard 6).

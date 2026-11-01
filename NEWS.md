@@ -1,3 +1,7 @@
+# phylloptim 0.27.2
+
+- The leaf solve is about 11% faster, and plant's seasonal stand about 15%: the solver no longer recomputes the roots' water uptake three times for each candidate. Results do not change ([#214](https://github.com/traitecoevo/phylloptim/issues/214)).
+
 # phylloptim 0.27.1
 
 - Evaluating a leaf at a stem potential you choose (`evaluate_psi_stem_at()`) now reports that point's marginal cost of water (`lambda_emergent`); it used to report the value left over from the previous solve. Nothing else changes.

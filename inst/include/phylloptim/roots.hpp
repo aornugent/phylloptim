@@ -277,8 +277,8 @@ public:
   // gravity_head * z_soil_mid_[i], set by set_soil_state for uptake's hot loop.
   std::vector<double> grav_head_z_;
   bool use_precomputed_z_soil_mid_ = false;
-  // Scratch for duptake_dpsi(), reused across calls: mutable and unsynchronised,
-  // so one solve at a time per object.
+  // Scratch for duptake_dpsi() and uptake_and_slope_at(), reused across calls:
+  // mutable and unsynchronised, so one solve at a time per object.
   mutable std::vector<double> draw_scratch_;
   mutable CollarConductance<double> conductance_scratch_;
 
@@ -453,7 +453,7 @@ public:
   // taken only at double and only when `at` views psi_soil_ itself: on the
   // active path a cached read would carry no rows. The collar response comes out
   // of this same walk, never a second one: pass `conductance` to read it, and
-  // nullptr on the forward solve.
+  // nullptr where no slope is wanted.
   template <class T>
   void uptake_at(const T& T_collar, const SupplyInputs<T>& at,
                  std::vector<T>& soil_consumption, T& E_up,
@@ -486,6 +486,19 @@ public:
     conductance_scratch_.keep_per_layer = false;
     uptake_impl<double>(T_collar, supply_over(psi_soil), false, draw_scratch_,
                         E_up, &conductance_scratch_);
+    return conductance_scratch_.total;
+  }
+
+  // The uptake and its collar slope from one walk, each bit for bit what
+  // uptake_at and duptake_dpsi return once begin_solve has seated the cache: the
+  // cached reads are the same table reads, and the slope does not change the
+  // uptake's arithmetic. NaN at a kink, as duptake_dpsi (hazard 6).
+  double uptake_and_slope_at(double T_collar, const std::vector<double>& psi_soil,
+                             std::vector<double>& soil_consumption,
+                             double& E_up) const {
+    conductance_scratch_.keep_per_layer = false;
+    uptake_at<double>(T_collar, supply_over(psi_soil), soil_consumption, E_up,
+                      &conductance_scratch_);
     return conductance_scratch_.total;
   }
 
