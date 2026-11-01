@@ -1,8 +1,8 @@
 # Hazards — phylloptim
 
-The eighteen hazards in this code, each of which has cost someone real numbers, with the measurements behind them. [CLAUDE.md](CLAUDE.md) lists them as one-liners and holds the standing rules; [measurements.md](measurements.md) holds the golden-file record and the benchmark method.
+The nineteen hazards in this code, each of which has cost someone real numbers, with the measurements behind them. [CLAUDE.md](CLAUDE.md) lists them as one-liners and holds the standing rules; [measurements.md](measurements.md) holds the golden-file record and the benchmark method.
 
-⚠️ **The numbers are stable.** Comments in `inst/include/`, `R/` and `tests/` cite "hazard N", so a hazard keeps its number for life. A resolved hazard keeps its slot and says what replaced it; a new one is appended as 18.
+⚠️ **The numbers are stable.** Comments in `inst/include/`, `R/` and `tests/` cite "hazard N", so a hazard keeps its number for life. A resolved hazard keeps its slot and says what replaced it; a new one is appended as 20.
 
 The last section, "One solver: the long form", is the evidence behind the rule of that name in CLAUDE.md.
 
@@ -202,6 +202,17 @@ The wet bound is where the supply delivers exactly the cuticle's residual flux: 
 - **The `g_min == 0` test sits in the class, in front of each out-of-line residual function.** A call that only returns zero cost 2.5% of an open leaf's solve at the default. ⚠️ Measure before merging two residual calls into one pass: doing that in `dprofit` measured 3% SLOWER at `g_min > 0`, interleaved.
 
 `test_smoothness_sweep` in `test_leaf.cpp` is the guard for the epic's smoothness claim: it second-differences profit, `A`, `E`, `psi_stem`, `lambda` and two derivative rows across soil, light, deficit and air temperature, with the energy balance off and on, one and three layers and the damage layer. A slope jump it finds is refined at a hundredth of the step before it fails, which separates a kink from curvature, and an interval whose change dwarfs its neighbours' is bisected, which separates a jump from a steep stretch. ⚠️ The refinement alone cannot see a jump: it is centred on a sweep point and a step between two points straddles it, which is how the 10 MPa jump above first passed. Kind changes are corners and are excluded by design. `test_a_shut_leaf_is_a_value_not_an_exception` holds #184's rule that a dry, dark or hot leaf comes back as a value, from wet soil to plant's 1000 MPa.
+
+## 19. A decision read a step inside a bound makes the solve jump, and a difference of a run integrates the jumps
+
+The collar solve decides a dry pin by the sign of the marginal near the dry end. Read a step of 1e-6 of the bracket inside an end placed only to the bracket's tolerance (`bracket_tol_at`, 1.5e-4 of one plus the collar, ~8e-4 MPa at the stand's collars), the decision could fall on the wrong side of a stationary point that sat between the probe and the true end: the point was then reported at the end, polished to collar precision, past its maximum with a marginal of order one. The solve jumped where the decision flipped: 2.4e-4 MPa in the collar, 6e-7 in profit, 9 MPa in the reported stem, measured on a leaf of plant's seasonal stand under a change of 4e-6 in lma.
+
+Each jump is tiny; what made it real numbers is a **difference of a whole run**. A run of that stand carries ~12,000 such solves, and the number crossing their decision within a step of lma scales with the step while each contributes its jump over twice the step, so the difference carried an offset that no step size removed (0.240, 0.225, 0.217, 0.211 across steps of 1e-3 to 1e-6, against the sweep's 0.368) while forward and backward differences agreed. The sweep was right about the smooth pieces and every per-solve row refereed clean against a difference of the solve at fixed inputs; the forward model was the thing that was wrong.
+
+Two rules follow:
+
+- **Decide a bound on the bound itself, solved to the precision the answer is reported at.** The dry pin is now decided on the marginal at the end polished to collar precision (`dry_bound_root_`); falling there, the maximum is interior however close it sits, and its curvature is read in the logarithm of the distance to the end, where the marginal is close to linear (0.3 per decade at the default traits) — a step in potential across that distance read a slope of the wrong decade. A stationary point within `dry_pin_resolution` (1e-8 MPa) of the end is the pin, which moves the value by ~1e-9. **Decide on a well-conditioned quantity**: decided on whether the stem's inverse could resolve the point, the pin flipped under 1e-12 changes of the inputs, because that quantity IS the rounding noise there, and a run and its tangent pinned different solves, whose rows differ by order one.
+- **When a sweep and a difference of a run disagree and every per-solve row is clean, look for kind flips and difference the run across them.** The signature is a difference that converges to an offset rather than to the sweep, with its two one-sided halves agreeing. `test_a_dry_pin_meets_the_interior_answer_continuously` holds the continuity on the stand's own leaf.
 
 ## One solver: the long form
 

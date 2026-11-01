@@ -2,7 +2,7 @@
 
 A header-only C++ leaf gas-exchange model in which stomatal behaviour emerges from hydraulics, with an R package on top. Extracted from the TF24 strategy in [traitecoevo/plant](https://github.com/traitecoevo/plant).
 
-The guide is three files. **This one holds the standing rules** and is read at the start of every session. **[hazards.md](hazards.md)** holds the eighteen numbered hazards as narratives with their measurements, plus the long form of "One solver". **[measurements.md](measurements.md)** holds the golden files' cross-platform record, the floating-point findings that recur, and the benchmark method. A rule appears here once, as a line with its reason; its evidence lives there.
+The guide is three files. **This one holds the standing rules** and is read at the start of every session. **[hazards.md](hazards.md)** holds the nineteen numbered hazards as narratives with their measurements, plus the long form of "One solver". **[measurements.md](measurements.md)** holds the golden files' cross-platform record, the floating-point findings that recur, and the benchmark method. A rule appears here once, as a line with its reason; its evidence lives there.
 
 Read alongside:
 
@@ -11,6 +11,7 @@ Read alongside:
 - **[`vignettes/the-models.Rmd`](../vignettes/the-models.Rmd)** — the nine optimality models, the cost/link framework that unifies them, the solver's per-call costs, and two appendices: **B** derives the gradients, **C** is the numerical practice (finite-difference steps, golden files, cross-platform magnitudes)
 - **[`vignettes/fitting.Rmd`](../vignettes/fitting.Rmd)** — ⚠️ read *"Fitting a different collection of parameters"* before answering anything about `pars`: what a different collection costs, which parameters return exactly zero and why, which are unreachable, and what a new study has to write itself
 - **[COMPARISON.md](../COMPARISON.md)** — how this differs from `plantecophys`, `tealeaves`, `bigleaf`
+- **[PLAN.md](../PLAN.md)** — the work queue after 0.27.0, in order, with what "done" is for each item; read it before picking up anything from the issues
 - **[issues](https://github.com/traitecoevo/phylloptim/issues)** — the work queue, and the *why* behind each open item
 
 Family context lives in [`plant-meta`](https://github.com/traitecoevo/plant-meta).
@@ -145,6 +146,7 @@ Each has cost someone real numbers; the narrative and its measurements are in [h
 16. **Print how many rows reached an assertion**; a test whose rows all pinned passed without evaluating anything.
 17. **The derivative surface fails silently**: unvisited `for_each_active` members, unchecked seating assumptions, and a replay that must go through `replay_operating_point`.
 18. **A shut leaf is the ordinary evaluator at its wet bound**, where uptake meets the cuticle's residual flux (#182): append residual terms, never interleave them, so `g_min = 0` stays bit-identical; never replace a soft cap with a `min()`; and list every active input a wet-bound `implicit_value` reads.
+19. **A bound is decided on the bound itself, solved to the precision it is reported at**; decided a step inside it, the solve jumped where the decision flipped and a difference of a whole run integrated the jumps into an offset no step size removed.
 
 ## Golden files
 

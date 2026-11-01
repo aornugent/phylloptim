@@ -5244,6 +5244,118 @@ void test_a_replay_hands_over_the_rows_its_solve_did() {
   ok(differ == 0, "every replayed collar and row equals its solve's, bit for bit");
 }
 
+// The dry pin and the interior answer meet continuously. The collar solve
+// decides a dry pin on the marginal AT the end of the collar interval, solved to
+// collar precision; decided a step inside an end placed only to the bracket's
+// tolerance, a stationary point between that step and the end was reported at
+// the end, past its maximum, and the solve jumped by 2.4e-4 MPa in the collar
+// and 6e-7 in profit where the decision flipped. A stand of such leaves carries
+// thousands of those flips, and a difference of a whole run integrated them as
+// a bias that no step size removed, 0.37 against 0.22 on plant's seasonal stand.
+//
+// The first fixture is a leaf of that stand: dry topsoil holding most of the
+// roots over a wet subsoil, where the collar objective's maximum sits within
+// micro-MPa of the dry end for a whole range of the top layer's potential. The
+// top layer is swept finely through the point the old decision flipped at, and
+// every step of profit and of the collar is held to the steps beside it. The
+// sweep is asserted to run along the end: a step of 1e-5 MPa past the collar
+// is outside the interval on most of its points. The second fixture is a true
+// pin, where the marginal is not falling at the collar it reports.
+void test_a_dry_pin_meets_the_interior_answer_continuously() {
+  printf("the dry pin and the interior answer meet continuously\n");
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  using CC = phylloptim::Leaf::CostCurve;
+  namespace pl = phylloptim;
+  // One of plant's seasonal-stand leaves, as it solved it: TF24_floor at
+  // lambda_o = 0, five soil layers 0.3 m thick, roots in all five.
+  const std::vector<double> soil0{4.2195504249414908, 0.092694683070275272,
+                                  0.060412939335358067, 0.048956447693756115,
+                                  0.042802900662827763};
+  const std::vector<double> depth{0.3, 0.6, 0.9, 1.2, 1.5};
+  pl::RootNetwork net;
+  net.r_R_H_min = {189.35400538213139, 3668.3966498423301, 9406.0554611473381,
+                   23250.799912514827, 91864.343073921438};
+  net.r_R_V_sum = {942.31463854872447, 19197.982672469967, 66006.941026179644,
+                   181713.86294375348, 638874.06435868028};
+  const double kmax = 0.00017675922327204239, ppfd = 676.27236337813406;
+  auto solve = [&](double top) {
+    pl::Leaf l;
+    l.set_model(CC::TF24_floor, true);
+    l.TF24_floor_lambda_o = 0.0;
+    // plant's TF24 traits, in set_traits' order.
+    l.set_traits(96.0, 2.04, 2.8887256653360196, 2.680147, 3.4, 1.5, 157.44,
+                 0.35294117647058826, 0.7, 0.99, 7.5, 1.44, 0.4717887793,
+                 0.6385596982, 0.0, 0.0);
+    std::vector<double> soil = soil0;
+    soil[0] = top;
+    l.set_physiology(net, ppfd, soil, depth, kmax, 1.0, 40.0, 25.0, 21.0, 101.3);
+    l.find_root_collar_psi_for<CC::TF24_floor>();
+    return l;
+  };
+  // Through the point the old decision flipped at (4.21997), finely enough
+  // that its jump of 5e-6 MPa in the collar stands against the sweep's own
+  // steps of 1e-7: 1001 solves, a few milliseconds.
+  const double lo = 4.21987, hi = 4.22007, step = 2e-7;
+  std::vector<double> profit, collar;
+  int along_the_end = 0, n = 0, pinned = 0;
+  for (double top = lo; top <= hi + 0.5 * step; top += step) {
+    pl::Leaf l = solve(top);
+    ok(l.operating_point_kind() == Kind::Interior ||
+           l.operating_point_kind() == Kind::BoundaryDry,
+       "the fixture solves to an interior point or a dry pin");
+    pinned += l.operating_point_kind() == Kind::BoundaryDry;
+    profit.push_back(l.profit_);
+    collar.push_back(l.opt_root_psi_);
+    bool read = false;
+    l.dprofit_at_collar_psi<CC::TF24_floor>(l.opt_root_psi_ + 1e-5, &read);
+    along_the_end += !read;
+    ++n;
+  }
+  // The kinds are printed, not asserted: which side of the decision these
+  // points fall on is the solve's to say, and the test is about the join.
+  printf("    %d points, %d within 1e-5 MPa of the dry end, %d pinned\n", n,
+         along_the_end, pinned);
+  ok(along_the_end > n / 2, "the sweep runs along the dry end (test is not vacuous)");
+  // Each step against the next: a jump is a step out of all proportion to the
+  // one beside it. The old decision's jump was 5e-6 MPa in the collar against
+  // steps of ~1e-7 here.
+  double worst_profit = 0.0, worst_collar = 0.0;
+  for (std::size_t i = 1; i + 1 < profit.size(); ++i) {
+    const double dp = std::abs(profit[i] - profit[i - 1]);
+    const double dp_next = std::abs(profit[i + 1] - profit[i]);
+    const double dc = std::abs(collar[i] - collar[i - 1]);
+    const double dc_next = std::abs(collar[i + 1] - collar[i]);
+    worst_profit = std::max(worst_profit, dp / std::max(dp_next, 1e-300));
+    worst_collar = std::max(worst_collar, dc / std::max(dc_next, 1e-300));
+  }
+  printf("    largest step against the next: profit %.3g, collar %.3g\n",
+         worst_profit, worst_collar);
+  ok(worst_profit < 3.0, "profit is continuous along the dry end");
+  ok(worst_collar < 3.0, "the collar is continuous along the dry end");
+
+  // A true pin: one soil layer at 6 MPa, where profit still rises at the end.
+  {
+    pl::Leaf l = make_leaf([] { Drivers d; d.PPFD = 500.0; d.atm_vpd = 0.5; return d; }(),
+                           {6.0}, {1.0});
+    l.find_root_collar_psi();
+    ok(l.operating_point_kind() == Kind::BoundaryDry, "the dry fixture pins");
+    // A pin past its maximum, the old decision's failure, has a falling
+    // marginal of order one at the collar it reports, and a step inside it
+    // EARNS by that marginal times the step. The step is 1e-7 MPa, so such a
+    // pin earns ~1e-7, well clear of what the solve resolves; a true pin loses
+    // the rise over that step. The marginal AT the end is not asserted: the
+    // profit's maximum can sit a hair inside the end, where the marginal has
+    // already turned (it falls from zero to order one across the last
+    // nano-MPa), and the pin is still the answer the collar resolves.
+    pl::Leaf inside = make_leaf([] { Drivers d; d.PPFD = 500.0; d.atm_vpd = 0.5; return d; }(),
+                                {6.0}, {1.0});
+    const double p_in = inside.evaluate_root_collar_psi_for<CC::TF24>(l.opt_root_psi_ - 1e-7);
+    ok(p_in < l.profit_,
+       "a step inside a dry pin loses: " + std::to_string(p_in) + " against " +
+           std::to_string(l.profit_));
+  }
+}
+
 // The coordinates operating_collar hands to billed_outputs_at must be the ones billed_outputs_at
 // would have solved for itself, so handing them over moves no number and no row.
 // Asserted bit for bit on the tangent, where both routes run the same arithmetic
@@ -11083,6 +11195,7 @@ int main(int argc, char **argv) {
   test_light_reaches_carbon_with_a_row();
   test_every_answered_point_hands_over_finite_rows();
   test_a_replay_hands_over_the_rows_its_solve_did();
+  test_a_dry_pin_meets_the_interior_answer_continuously();
   test_held_coordinates_move_no_row();
   test_held_coordinates_are_refused_off_their_point();
   test_supplied_rows_match_a_resolve_at_every_kind();

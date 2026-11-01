@@ -722,6 +722,33 @@ public:
   static double bracket_tol_at(double x) {
     return 1.5 * bracket_tol * (1.0 + std::abs(x));
   }
+  // A stationary point of the collar objective this close to the dry end, in
+  // MPa of collar, is reported as the pin at the end. Within ~1e-10 MPa of the
+  // continuity root the stem's inverse resolves nothing: the flux is within
+  // rounding of what the stem can carry and the inverse moves by whole MPa per
+  // nano-MPa of collar, and the rows through it go with it. At 1e-8 the gap
+  // between the flux and the stem's capacity is ~1e-7 of either, so the stem
+  // and its rows are resolved to ~1e-6; and moving the point onto the end
+  // changes the profit by the marginal integrated over that distance, ~1e-9.
+  //
+  // ⚠️ MEASURED ON THE COLLAR, NOT ON THE STEM. The test was once whether the
+  // stem's inverse could resolve the point (its remaining capacity against
+  // 1e-10 of the flux), which is exactly the quantity that is rounding noise
+  // there: the decision flipped under 1e-12 changes of the inputs, so a run
+  // and a tangent of it a rounding apart pinned different solves, and their
+  // gradients disagreed at 4e-6 where the rows of a pin and of a point beside
+  // it differ by order one. The collar's distance to the polished end is a
+  // difference of two well-conditioned roots and does not flip.
+  static constexpr double dry_pin_resolution = 1e-8;
+  // How far inside the dry end, in MPa, the marginal is a function of the
+  // logarithm of the distance to it rather than of the potential: measured
+  // 0.6 to 0.8 per decade from 1e-7 to 1e-2 on plant's seasonal leaves. An
+  // interior point this close takes its curvature from a difference in that
+  // logarithm, and the solve, and a replay, solve the end to collar precision
+  // so the difference has an end to measure from. A plain step of 1e-5 in potential
+  // reads such a marginal with a relative error of (1e-5 / distance)^2 / 3:
+  // 0.3% at 1e-4 (measured 0.27% on the collar rows), 3e-7 here.
+  static constexpr double dry_end_neighbourhood = 1e-2;
 
 
   double ci_;
@@ -3688,9 +3715,11 @@ public:
     // held at dry_end<K>(). For a curve whose own domain ends at psi_crit
     // (cost_domain_ends_at_psi_crit) that is psi_crit, the most tension its
     // form allows. For every other curve psi_crit bounds nothing (#183), and
-    // the dry end is the end of the stem curve: profit still rising there means
-    // the leaf transpires all the stem can carry, to within e^-40 -- a dry soil
-    // where A climbs steeply at the little flux left. Named for the end, not
+    // the dry end is the end of the stem curve: profit still rising AT that
+    // end, solved to collar precision, means the leaf transpires all the stem
+    // can carry, to within e^-40 -- a dry soil where A climbs steeply at the
+    // little flux left. A stationary point within dry_pin_resolution of the
+    // end is reported here too. Named for the end, not
     // for psi_crit, because for most curves psi_crit is not where it is.
     BoundaryDry,
     // Shutdown on water: no collar potential both carries more than the
@@ -3818,6 +3847,11 @@ private:
   // the residual back to the root, so the row is the root's derivative rather
   // than one proportional to the step.
   double wet_bound_root_ = std::numeric_limits<double>::quiet_NaN();
+  // The dry end of the collar interval solved to collar precision, where the
+  // solve read it: the continuity root with the stem at its dry end. NaN where
+  // no solve polished one. profit_curvature_at_collar measures its difference
+  // from it, because the marginal steepens toward it.
+  double dry_bound_root_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 // Human-readable tag. The switch has no default, so a missing name is a -Wswitch
@@ -4900,6 +4934,7 @@ inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b,
   // point (hazard 8). Every exit below, and both callers, write it again.
   operating_point_kind_ = OperatingPointKind::Unsolved;
   wet_bound_root_ = std::numeric_limits<double>::quiet_NaN();
+  dry_bound_root_ = std::numeric_limits<double>::quiet_NaN();
 
   // Hand the supply path the start of a solve: it builds its per-solve caches and
   // reports back the wettest rooted layer -- the SMALLEST suction, and the lower
@@ -5168,14 +5203,15 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // The DRY endpoint. For a curve bounded at psi_crit it is feasible everywhere
   // measured, so it is tried as-is first and only stepped inside if that fails.
   //
-  // For every other curve the dry end is the end of the stem curve, where G is
-  // flat to rounding: the stem potential there is wherever G first rounds to
-  // G(inf), and every collar derivative divides by a G' of ~1e-16, so the
-  // gradient read at the bound is noise (measured: +0.99 at the bound, -35 one
-  // step of 1e-6 of the bracket inside it, -14.6 at 1e-2). So the first try is
-  // that step inside, and a gradient that is not yet negative steps further in
-  // rather than being read as a pin: the curve's marginal cost of water diverges,
-  // so a falling profit is what the dry end has.
+  // For every other curve the dry end is the continuity root with the stem at
+  // the end of its curve, and the bracket places it only to bracket_tol_at: a
+  // read AT that placing can fall past the root, where transpiration() refuses
+  // a reversed gradient. So the first try is a step inside, which is always
+  // readable, and a gradient that is not yet negative there is not read as a
+  // pin: the end is solved to collar precision and read itself (below). The
+  // marginal is a readable number all the way to that end now the tail of the
+  // stem curve is held as ln Q; it falls steeply over the last micro-MPa, which
+  // is why the probe's sign is not the end's.
   //
   // ⚠️ AND PROFIT CAN STILL BE RISING THERE, which is the model and not noise.
   // These curves' marginal cost of water diverges only as x^((c-1)/c) along the
@@ -5185,6 +5221,12 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // output is defined there; only the stem potential is not (any potential past
   // the end carries the same flux). That is a pin at the dry end, reported as
   // one: the continuity root with the stem at the end of its curve.
+  //
+  // ⚠️ BUT THE PROBES ONLY SAY WHERE TO LOOK; THE PIN IS DECIDED AT THE END
+  // ITSELF, below, once it is solved to collar precision. The probes step in
+  // from an end placed to the bracket's tolerance, and a stationary point can
+  // sit between any probe and the true end, where the marginal falls
+  // from zero to order one across micro-MPa.
   //
   // On a first bracket (prepare_collar_solve's first_bracket) the dry end is
   // the continuity root with the stem at psi_crit, an ordinary point: read as
@@ -5203,11 +5245,54 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
       width = bound_b - bound_a;
     }
   }
+  // The bracket the interior root-find runs on: the step inside the wet bound,
+  // and `hi` wherever the probes leave it.
+  double root_lo = lo;
+  double f_root_lo = f_lo;
+  // Whether the dry end has decided the point: an interior maximum between
+  // the first probe and the end, or the pin. Neither needs the probes below.
+  bool decided = false;
   if (!settled) {
     hi = bounded ? bound_b : bound_b - 1e-6 * width;
     f_hi = dprofit(hi, &ok_hi);
   }
-  if (!settled &&
+  // The end decides, where the first probe read a rising profit. Every probe
+  // is measured from an end placed only to the bracket's tolerance, and the
+  // stationary point can sit between the probe and the end itself: within
+  // micro-MPa of the end the stem runs out to the end of its curve and the
+  // marginal falls steeply, so the sign a probe reads is not the sign at the
+  // end. So the end is solved to collar precision and the marginal read there.
+  // Falling there is an interior maximum between the probe and the end,
+  // root-found like any other; rising there is the pin. Deciding on the end
+  // itself is what makes the pinned and the interior answers one continuous
+  // function of the drivers: decided on probes, a point whose maximum sat
+  // between the probes and the end was reported at the end, past its
+  // maximum with a marginal of order one, and a run crossing that decision
+  // jumped there. Read before the deeper probes, because they say nothing the
+  // end does not, either way, and each costs a ci solve.
+  //
+  // Only where profit rises from the wet end too: a profit falling from the
+  // wet end and rising at the probe has two maxima, and that is the refusal
+  // below, which compares them, not a pin or a root between the probe and
+  // the end.
+  if (!bounded && !settled && f_lo > 0.0 && ok_hi && std::isfinite(f_hi) &&
+      f_hi >= 0.0) {
+    dry_bound_root_ = polish_bracket_bound(bound_b, supply_psi_soil(), 1);
+    bool ok_end = false;
+    const double f_end = dprofit(dry_bound_root_, &ok_end);
+    if (ok_end && std::isfinite(f_end) && f_end < 0.0 && dry_bound_root_ > hi) {
+      root_lo = hi;
+      f_root_lo = f_hi;
+      hi = dry_bound_root_;
+      f_hi = f_end;
+      decided = true;
+    } else if (ok_end && std::isfinite(f_end) && f_end >= 0.0) {
+      rising = true;
+      decided = true;
+    }
+    bound_b = dry_bound_root_;
+  }
+  if (!settled && !decided &&
       !(ok_hi && std::isfinite(f_hi) && (bounded || f_hi < 0.0))) {
     rising = ok_hi && std::isfinite(f_hi);
     for (double frac = bounded ? 1e-6 : 1e-5; frac < 0.5; frac *= 10.0) {
@@ -5221,8 +5306,14 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
     }
   }
   if (!bounded && rising) {
-    // Rising wherever the gradient could be read: the dry end is the answer.
-    hi = bound_b;
+    // Rising at the end where it was read, or at every probe where it was
+    // not: the pin, on the end solved to collar precision. Where the first
+    // probe was not readable the end has not been solved yet.
+    if (!std::isfinite(dry_bound_root_)) {
+      dry_bound_root_ = polish_bracket_bound(bound_b, supply_psi_soil(), 1);
+      bound_b = dry_bound_root_;
+    }
+    hi = dry_bound_root_;
     f_hi = 1.0;
     ok_hi = true;
   }
@@ -5304,13 +5395,14 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   if (f_lo <= 0.0) {
     place_at_wet_bound();
   }
-  if (f_hi >= 0.0 && hi == bound_b) {
+  if (f_hi >= 0.0 && hi == bound_b && !std::isfinite(dry_bound_root_)) {
     const double b = polish_bracket_bound(bound_b, supply_psi_soil(), 1);
     // The dry end is feasible wherever it has been measured, and the sign f_hi
     // has cannot flip across the ~1e-4 the bound moved.
     if (b != bound_b && b > lo) {
       hi = b;
     }
+    dry_bound_root_ = hi;
   }
 
   if (f_lo <= 0.0 && f_hi >= 0.0) {
@@ -5340,8 +5432,60 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // uniroot_smooth's throw-on-bad-bracket cannot fire; passing the two endpoint
   // values it already has saves it re-evaluating them.
   operating_point_kind_ = OperatingPointKind::Interior;
-  return util::uniroot_smooth(dprofit, lo, hi, f_lo, f_hi, collar_root_tol,
-                              static_cast<size_t>(ci_niter));
+  double root;
+  if (!bounded && decided && std::isfinite(dry_bound_root_)) {
+    // Between the first probe and the end the marginal is close to linear in
+    // the LOGARITHM of the distance to the end (dry_end_neighbourhood), so the
+    // root is found in that coordinate: a few steps of a superlinear solver
+    // where the potential itself, with the marginal falling from zero to
+    // order one across the last micro-MPa, takes a dozen, each a ci solve.
+    // A root within dry_pin_resolution of the end is the pin, so the bracket
+    // ends there, and a marginal still rising there decides the pin at once.
+    const double end = dry_bound_root_;
+    bool ok_in = false;
+    const double f_in = end - root_lo > dry_pin_resolution
+                            ? dprofit(end - dry_pin_resolution, &ok_in)
+                            : 0.0;
+    if (!(ok_in && std::isfinite(f_in) && f_in < 0.0)) {
+      operating_point_kind_ = OperatingPointKind::BoundaryDry;
+      return end;
+    }
+    const auto in_log_distance = [&](double s) {
+      return dprofit(end - std::exp(s));
+    };
+    // 1e-10 in the logarithm is 1e-12 MPa at the neighbourhood's outer edge.
+    const double s = util::uniroot_smooth(
+        in_log_distance, std::log(dry_pin_resolution), std::log(end - root_lo),
+        f_in, f_root_lo, 1e-10, static_cast<size_t>(ci_niter));
+    root = end - std::exp(s);
+  } else {
+    root = util::uniroot_smooth(dprofit, root_lo, hi, f_root_lo, f_hi,
+                                collar_root_tol, static_cast<size_t>(ci_niter));
+  }
+  if constexpr (!bounded) {
+    // A root within dry_end_neighbourhood of the dry end reads that end for
+    // its curvature, so the end is solved to collar precision where the solve
+    // has not already; the bracket's own end can lie on either side of the
+    // root by its tolerance. And a root within dry_pin_resolution of the end
+    // is the pin there.
+    //
+    // ⚠️ ONLY WHERE THE BRACKET'S END IS THE DOMAIN'S. A solve settled on its
+    // first bracket ends at the continuity root with the stem at psi_crit, an
+    // ordinary point of this curve's domain: a root beside it is nowhere near
+    // the dry end, and a replay, which brackets the whole domain, would read a
+    // different distance and take a different stencil.
+    if (!dry_end_provisional_ &&
+        bound_b - root < dry_end_neighbourhood + bracket_tol_at(bound_b)) {
+      if (!std::isfinite(dry_bound_root_)) {
+        dry_bound_root_ = polish_bracket_bound(bound_b, supply_psi_soil(), 1);
+      }
+      if (dry_bound_root_ - root < dry_pin_resolution) {
+        operating_point_kind_ = OperatingPointKind::BoundaryDry;
+        return dry_bound_root_;
+      }
+    }
+  }
+  return root;
 }
 
 template <Leaf::CostCurve K>
@@ -5506,6 +5650,16 @@ inline double Leaf::evaluate_root_collar_psi_for(double target_opt_root_psi){
       // closed interval); profit_ is already set.
       return profit_;
     }
+    // The bracket's dry end is placed only to its tolerance, and an interior
+    // maximum can sit between it and the continuity root: a target past the
+    // bracket is read against the root, solved to collar precision.
+    if (target_opt_root_psi > bound_b) {
+      const double b = polish_bracket_bound(bound_b, supply_psi_soil(), 1);
+      if (b > bound_b) {
+        dry_bound_root_ = b;
+        bound_b = b;
+      }
+    }
 
     return profit_at_collar_psi<K>(target_opt_root_psi, bound_a, bound_b);
 }
@@ -5520,6 +5674,14 @@ inline double Leaf::replay_operating_point_for(double collar,
     } else {
       if (kind == OperatingPointKind::BoundarySoil) {
         wet_bound_root_ = polish_bracket_bound(bound_a, supply_psi_soil(), 0);
+      }
+      // A dry pin sits on the polished end, and an interior point near it reads
+      // that end for its curvature: seat it as the solve did, under the solve's
+      // own test, bracket tolerance included, so the two take the same stencil.
+      if (kind == OperatingPointKind::BoundaryDry ||
+          (kind == OperatingPointKind::Interior &&
+           bound_b - collar < dry_end_neighbourhood + bracket_tol_at(bound_b))) {
+        dry_bound_root_ = polish_bracket_bound(bound_b, supply_psi_soil(), 1);
       }
       // The recorded collar is where this solve put the point, and a pinned
       // solve puts it at a POLISHED bound, which can lie up to ~1e-4 outside the
@@ -8827,7 +8989,7 @@ inline S Leaf::operating_collar(const SupplyDraw<S>& draw, const leaf_pars<S>& p
       collar = wet_bound_at<S>(opt_root_psi_, draw, pars);
       break;
     case OperatingPointKind::BoundaryDry:
-      // The continuity root: T1 with the stem held at its critical potential.
+      // The continuity root: T1 with the stem held at its dry end.
       collar = dry_end_collar_at<K, S>(opt_root_psi_, draw, pars);
       break;
     default:
@@ -8845,6 +9007,47 @@ inline double Leaf::profit_curvature_at_collar() {
   // whole range, and the error-versus-step curve has a floor three decades wide
   // around it. Read off dprofit_at_collar_psi's own values: 1e-04, 1e-05 and
   // 1e-06 agree to seven figures, 1e-02 is truncation and 1e-07 is round-off.
+  //
+  // ⚠️ NOT WITHIN dry_end_neighbourhood OF THE DRY END. There the marginal
+  // steepens toward the end, where the stem runs out to the end of its curve,
+  // and a step across that distance reads a slope of the wrong decade (measured
+  // at 5e-7 inside the end: collar rows off by 9% with the step halved to the
+  // distance). In the logarithm of the distance to the end the marginal is
+  // close to linear, 0.3 per decade from 1e-7 to 1e-2 MPa at the default
+  // traits, so the difference is taken there: a fifth of a natural-log unit
+  // either side, and its extrapolation against the half step, which removes
+  // the leading error. Both stencil points lie inside the end, so neither can
+  // refuse where the plain step's upper point does.
+  const OperatingPointKind kind0 = operating_point_kind_;
+  const double wet0 = wet_bound_root_;
+  const double to_dry = std::isfinite(dry_bound_root_)
+                            ? dry_bound_root_ - p0
+                            : std::numeric_limits<double>::infinity();
+  if (to_dry > 0.0 && to_dry < dry_end_neighbourhood) {
+    auto slope_in_log_distance = [&](double hs, bool* ok) -> double {
+      bool in_ok = false, out_ok = false;
+      const double in = dprofit_at_collar_psi<K>(dry_bound_root_ - to_dry * std::exp(-hs), &in_ok);
+      const double out = dprofit_at_collar_psi<K>(dry_bound_root_ - to_dry * std::exp(hs), &out_ok);
+      *ok = in_ok && out_ok && std::isfinite(in) && std::isfinite(out);
+      return (in - out) / (2.0 * hs);
+    };
+    bool ok1 = false, ok2 = false;
+    const double coarse = slope_in_log_distance(0.2, &ok1);
+    const double fine = slope_in_log_distance(0.1, &ok2);
+    // Back to the point the solve placed, with the bounds it polished: the
+    // restore prepares the solve again, which clears them.
+    const double dry0 = dry_bound_root_;
+    evaluate_root_collar_psi_for<K>(p0);
+    operating_point_kind_ = kind0;
+    dry_bound_root_ = dry0;
+    wet_bound_root_ = wet0;
+    if (ok1 && ok2) {
+      // The quotient above is -dM/ds, its inner point lying at the smaller
+      // distance, and dM/dpsi = dM/ds * ds/dpsi with s = ln(end - psi), so
+      // ds/dpsi = -1/(end - psi): the two signs cancel.
+      return ((4.0 * fine - coarse) / 3.0) / to_dry;
+    }
+  }
   const double h = 1e-5;
   bool up_ok = false, down_ok = false, here_ok = false;
   const double up = dprofit_at_collar_psi<K>(p0 + h, &up_ok);
@@ -8869,9 +9072,11 @@ inline double Leaf::profit_curvature_at_collar() {
   // solved interior point into one with no condition to place it at: the failure
   // is a throw, not a wrong number, and it surfaces in a caller that never asked
   // for a curvature.
-  const OperatingPointKind kind0 = operating_point_kind_;
+  const double dry0 = dry_bound_root_;
   evaluate_root_collar_psi_for<K>(p0);
   operating_point_kind_ = kind0;
+  dry_bound_root_ = dry0;
+  wet_bound_root_ = wet0;
   const bool have_up = up_ok && std::isfinite(up);
   const bool have_down = down_ok && std::isfinite(down);
   const bool have_here = here_ok && std::isfinite(here);
