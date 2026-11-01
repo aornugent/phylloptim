@@ -381,11 +381,9 @@ void check(int layers, double psi0, double ppfd, double leaf_temp,
 
 // The kinds the sweep above does not reach, each on test_leaf's drivers and
 // asserted to land on its kind before it is compared: a fixture that drifted to
-// another kind would narrow the check without failing it. A root_P50 of zero
-// keeps the default traits.
+// another kind would narrow the check without failing it.
 void check_kind(const std::vector<double>& psi_soil, double ppfd, double vpd,
-                double root_P50, pl::Leaf::OperatingPointKind want,
-                unsigned long seed) {
+                pl::Leaf::OperatingPointKind want, unsigned long seed) {
   pl::Leaf l;
   l.setup_transpiration(100);
   l.setup_root_vulnerability(100);
@@ -394,18 +392,13 @@ void check_kind(const std::vector<double>& psi_soil, double ppfd, double vpd,
     depth.push_back(1.0 * double(i + 1));
     root.push_back(1.0 / 0.05 / double(psi_soil.size()));
   }
-  if (root_P50 > 0.0) {
-    l.set_traits(96.0, 2.680147, 3.4287, 2.680147, root_P50, 1.5, 157.44, 0.30,
-                 0.7, 0.99, 7.5, 1.44, 1.0, 0.6, 0.0, /*g_min=*/0.0);
-  }
   l.set_physiology(fixture::root_network(root, depth), ppfd, psi_soil, depth,
                    0.000157 / 5.0, vpd, 40.0, 25.0, 21.0, 101.3);
   l.find_root_collar_psi();
   const std::string at = std::string(pl::Leaf::operating_point_kind_name(want)) +
                          " fixture psi_soil=" + std::to_string(psi_soil[0]) +
                          " ppfd=" + std::to_string(ppfd) +
-                         " vpd=" + std::to_string(vpd) +
-                         " root_P50=" + std::to_string(root_P50);
+                         " vpd=" + std::to_string(vpd);
   ok(l.operating_point_kind() == want,
      "the " + at + " is " +
          std::string(pl::Leaf::operating_point_kind_name(want)) + ", got " +
@@ -437,8 +430,8 @@ int main() {
   // The dry pin: a soil dry enough that the leaf transpires all its stem can
   // carry, the continuity root with the stem at the end of its curve (#183).
   // And a soil past the end of the curve, which shuts the leaf.
-  check_kind({6.0}, 500.0, 0.5, 0.0, K::BoundaryDry, seed += 7919);
-  check_kind({16.0, 16.25, 16.5}, 900.0, 2.0, 0.0, K::HydraulicShutdown, seed += 7919);
+  check_kind({6.0}, 500.0, 0.5, K::BoundaryDry, seed += 7919);
+  check_kind({16.0, 16.25, 16.5}, 900.0, 2.0, K::HydraulicShutdown, seed += 7919);
   printf("    %d operating points compared | worst relative %.3e\n", compared,
          worst);
   // Reported because it is what the scaling above is for: a sweep that stopped

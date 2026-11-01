@@ -20,7 +20,9 @@ Written for: agents picking up work on this package. Each item names what to cha
 5. Split the header (section E, #206 option 3). No lines saved, but the design pass in F reads one subsystem at a time.
 6. One roof for models and gradients (section F), which holds #206 options 4 and 5 and the audit's infrastructure findings. It needs a design pass before code; do not start it from this document alone.
 
-## A. Latent bugs — required
+**One PR per group, not per item** (decided 2026-11-02): A; B1–B4, B6 and C4; C1–C3, C5 and B5 (one commit per file for C1, still no code change, shown bit-identical as a whole); D; E; F's design. Each group opens one issue naming its items, and a group whose predecessor has not merged is stacked on it.
+
+## A. Latent bugs — done in 0.27.1 (#207)
 
 **A1. `evaluate_psi_stem` leaves `lambda_emergent_` stale.** `inst/include/phylloptim/leaf_model.hpp`, `Leaf::evaluate_psi_stem` (the stem-route evaluation at a prescribed stem potential, ~line 6358) writes every output of the point except `lambda_emergent_`, so a caller reading the shadow price after it gets the previous solve's. Every other exit of a solve writes it (`lambda_collar_for<K>()` or `lambda_for<K>()`); hazard 8 says why every path must. Done when the function writes it, `test_leaf.cpp`'s stale-state sweep covers the stem route's prescribed evaluation, and the goldens are bit-identical.
 
@@ -87,3 +89,4 @@ These are #206's options 4 and 5, its further candidates, and the audit's findin
 ## Done
 
 - 0.27.0: the dry-end decision is made on the end solved to collar precision, on the collar's own distance; `boundary-dry` and `interior` meet continuously; plant's sweep agrees with a tangent of the run to 7e-8. Measurements on [phylloptim#205](https://github.com/traitecoevo/phylloptim/pull/205).
+- 0.27.1 (A1–A3, #207): a prescribed stem point writes `lambda_emergent_`; the batch refuses the prices `leaf_solve()` refuses and accepts per-observation prices; the 3.4287 fixtures were dead branches (their root-limited fixtures went in #188) and are gone, and the stem-curve test reads the default.

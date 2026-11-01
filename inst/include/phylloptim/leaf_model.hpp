@@ -6383,6 +6383,7 @@ inline double Leaf::evaluate_psi_stem(double target_psi_stem) {
   if (psi_wet > psi_dry) {
     opt_psi_stem_ = psi_wet;
     profit_ = profit_psi_stem_for<K>(psi_wet, psi_soil);
+    lambda_emergent_ = lambda_for<K>(psi_wet, psi_soil);
     operating_point_kind_ = OperatingPointKind::Prescribed;
     return profit_;
   }
@@ -6402,6 +6403,7 @@ inline double Leaf::evaluate_psi_stem(double target_psi_stem) {
 
   opt_psi_stem_ = psi;
   profit_ = profit_psi_stem_for<K>(psi, psi_soil);
+  lambda_emergent_ = lambda_for<K>(psi, psi_soil);
   operating_point_kind_ = OperatingPointKind::Prescribed;
   return profit_;
 }

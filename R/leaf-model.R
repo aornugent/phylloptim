@@ -1080,6 +1080,15 @@ leaf_solve <- function(psi_soil,
                        TF24_floor_lambda_o = NA_real_,
                        LeastCost_beta = NA_real_) {
   .check_model(model, supply)
+  # One price for every row: the price is seated once per Leaf.
+  long <- c(CF77_lambda = length(CF77_lambda),
+            TF24_floor_lambda_o = length(TF24_floor_lambda_o),
+            LeastCost_beta = length(LeastCost_beta)) != 1L
+  if (any(long)) {
+    stop("`", names(long)[long][[1]], "` must be a single number (or NA): ",
+         "leaf_solve() seats one price for every row. For a price per ",
+         "observation, use leaf_batch().", call. = FALSE)
+  }
   prices <- .check_prices(model, CF77_lambda, TF24_floor_lambda_o,
                           LeastCost_beta)
   layered <- .as_layer_list(psi_soil, "psi_soil")
@@ -1275,9 +1284,11 @@ leaf_solve <- function(psi_soil,
 # is the only thing this table is for: a field one curve reads and no other has.
 .check_prices <- function(model, CF77_lambda, TF24_floor_lambda_o,
                           LeastCost_beta = NA_real_) {
-  given <- c(CF77_lambda_ = CF77_lambda,
-             TF24_floor_lambda_o = TF24_floor_lambda_o,
-             LeastCost_beta = LeastCost_beta)
+  # A list, because leaf_gradient_batch() passes a column of `theta`, one value
+  # per row; a field is given when any row sets it.
+  given <- list(CF77_lambda_ = CF77_lambda,
+                TF24_floor_lambda_o = TF24_floor_lambda_o,
+                LeastCost_beta = LeastCost_beta)
   # ⚠️ NOT `[[model]]`, which raises "subscript out of bounds" on every unpriced
   # model rather than reporting no price. "" is a name no field has.
   mine <- if (model %in% names(.solve_price_fields)) {
@@ -1285,7 +1296,8 @@ leaf_solve <- function(psi_soil,
   } else {
     ""
   }
-  wrong <- names(given)[!is.na(given) & names(given) != mine]
+  set <- vapply(given, function(x) any(!is.na(x)), logical(1))
+  wrong <- names(given)[set & names(given) != mine]
   if (length(wrong)) {
     owner <- names(.solve_price_fields)[match(wrong[[1]], .solve_price_fields)]
     what <- if (wrong[[1]] == "LeastCost_beta") {
@@ -1300,7 +1312,7 @@ leaf_solve <- function(psi_soil,
          "derived from that curve's own parameters rather than set. Pass ",
          "model = \"", owner, "\", or drop the argument.", call. = FALSE)
   }
-  given
+  unlist(given)
 }
 
 

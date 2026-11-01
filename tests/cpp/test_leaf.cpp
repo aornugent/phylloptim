@@ -1724,7 +1724,7 @@ void test_root_rows_past_the_dry_end_match_the_table() {
 void test_stem_rows_past_the_dry_end_are_the_closed_forms() {
   printf("stem rows far along the curve are the closed form's\n");
   using AD = xad::fwd<double>::active_type;
-  const double P50 = 3.4287, c = 2.680147;
+  const double P50 = phylloptim::Leaf().stem_P50, c = phylloptim::Leaf().stem_c;
   const auto G = [](double psi, double P50_, double c_) {
     return phylloptim::cumulative_vulnerability_integral_at(
         psi, phylloptim::weibull_b_from_P50(P50_, c_), c_);
@@ -2322,6 +2322,93 @@ void test_evaluate_psi_stem_prescribes_rather_than_optimises() {
   const double p_tf = t.evaluate_psi_stem<CC::TF24>(psi_off);
   near(p_tf, t.profit_psi_stem_TF(psi_off, psi_soil), 1e-12,
        "the TF24 arm agrees with its own objective at that point");
+}
+
+// A prescribed stem point writes every reported output, on a reused leaf
+// (hazard 8): solved first, outputs poisoned, then evaluated, it must report
+// what a fresh leaf evaluated at the same point reports, bit for bit. The dry
+// soil puts the curves bounded at psi_crit on the one-feasible-point exit.
+template <phylloptim::Leaf::CostCurve K>
+void check_prescribed_stem_writes_every_output(const Drivers &d, int *rows,
+                                               int *single_point) {
+  auto seat = [](phylloptim::Leaf &l) {
+    l.CF77_lambda_ = 3e5;
+    l.TF24_floor_lambda_o = kPriceForFOC;
+    l.LeastCost_beta = 2.0;
+    l.JS22_gamma = kGammaJS22;
+    l.CMax_a = kCMaxA;
+    l.CMax_b = kCMaxB;
+    l.set_model(K, false);
+  };
+  const std::string name = phylloptim::Leaf::curve_name(static_cast<int>(K));
+  const double psi_crit = make_leaf(d, {1.0}, {1.0}).psi_crit;
+  for (double psi_soil : {0.5, 1.0, 2.0, psi_crit + 0.5}) {
+    const double target = psi_soil < psi_crit
+                              ? psi_soil + 0.25 * (psi_crit - psi_soil)
+                              : psi_soil + 0.25;
+    phylloptim::Leaf fresh = make_leaf(d, {psi_soil}, {1.0});
+    seat(fresh);
+    fresh.template evaluate_psi_stem<K>(target);
+
+    phylloptim::Leaf reused = make_leaf(d, {psi_soil}, {1.0});
+    seat(reused);
+    reused.optimise();
+    const double poison = -12345.0;
+    for (double* f : {&reused.opt_psi_stem_, &reused.ci_, &reused.assim_colimited_,
+                      &reused.transpiration_, &reused.stom_cond_CO2_,
+                      &reused.profit_, &reused.Tleaf_, &reused.lambda_emergent_,
+                      &reused.residual_flux_}) {
+      *f = poison;
+    }
+    // ProfitMax's stem routes do not write hydraulic_cost_, a defect
+    // psi_stem_optima.tsv records; every other curve's is checked.
+    if constexpr (K != phylloptim::Leaf::CostCurve::ProfitMax) {
+      reused.hydraulic_cost_ = poison;
+    }
+    reused.template evaluate_psi_stem<K>(target);
+
+    const std::vector<double> a = fresh.operating_point_values();
+    const std::vector<double> b = reused.operating_point_values();
+    bool same = a.size() == b.size();
+    for (size_t i = 0; same && i < a.size(); ++i) {
+      same = (std::isnan(a[i]) && std::isnan(b[i])) || a[i] == b[i];
+    }
+    ok(same && reused.lambda_emergent() != poison,
+       name + " at a prescribed stem potential reports a fresh leaf's outputs, "
+              "psi_soil " + std::to_string(psi_soil));
+    const double expected = fresh.template lambda_for<K>(
+        fresh.opt_psi_stem_, fresh.supply_psi_soil_scalar());
+    ok((std::isnan(expected) && std::isnan(fresh.lambda_emergent())) ||
+           fresh.lambda_emergent() == expected,
+       name + " reports the lambda of the point it evaluated");
+    ++*rows;
+    if (fresh.opt_psi_stem_ != target) ++*single_point;
+  }
+}
+
+void test_prescribed_stem_point_writes_every_output() {
+  printf("a prescribed stem point writes every output on a reused leaf\n");
+  using CC = phylloptim::Leaf::CostCurve;
+  Drivers d;
+  d.PPFD = 1500.0;
+  int rows = 0, single_point = 0;
+  check_prescribed_stem_writes_every_output<CC::TF24>(d, &rows, &single_point);
+  check_prescribed_stem_writes_every_output<CC::CF77>(d, &rows, &single_point);
+  check_prescribed_stem_writes_every_output<CC::JS22>(d, &rows, &single_point);
+  check_prescribed_stem_writes_every_output<CC::CMax>(d, &rows, &single_point);
+  check_prescribed_stem_writes_every_output<CC::SOX>(d, &rows, &single_point);
+  check_prescribed_stem_writes_every_output<CC::JW26>(d, &rows, &single_point);
+  check_prescribed_stem_writes_every_output<CC::ProfitMax>(d, &rows,
+                                                           &single_point);
+  check_prescribed_stem_writes_every_output<CC::TF24_floor>(d, &rows,
+                                                            &single_point);
+  check_prescribed_stem_writes_every_output<CC::LeastCost>(d, &rows,
+                                                           &single_point);
+  printf("    %d prescribed points, %d on the one-feasible-point exit\n", rows,
+         single_point);
+  ok(rows == 36, "every curve and soil was compared");
+  ok(single_point == 4,
+     "the four curves bounded at psi_crit reached the one-feasible-point exit");
 }
 
 // EVERY cost curve reports its emergent lambda on the same axis, which is what
@@ -4806,7 +4893,7 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
   namespace pl = phylloptim;
   struct Fixture {
     std::vector<double> psi_soil;
-    double ppfd, vpd, root_P50;
+    double ppfd, vpd;
     Kind want;
     double g_min = 0.0;
   };
@@ -4818,12 +4905,12 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
   // dry pin at the end of the stem curve, #183), a soil past the end of the
   // curve (shut), and an interior control.
   const std::vector<Fixture> fixtures{
-      {{1.0, 1.25}, 1500.0, 2.0, 0.0, Kind::Interior},
-      {{4.0, 4.25, 4.5, 4.75, 5.0}, 900.0, 2.0, 0.0, Kind::BoundarySoil},
-      {{3.0, 3.25, 3.5}, 900.0, 3.1, 0.0, Kind::BoundarySoil},  // 3.1 < e_s(25 C)
-      {{6.0}, 500.0, 0.5, 0.0, Kind::BoundaryDry},
-      {{1.0}, 1.0, 2.0, 0.0, Kind::BoundarySoil, 5e-4},
-      {{16.0, 16.25, 16.5}, 900.0, 2.0, 0.0, Kind::HydraulicShutdown}};
+      {{1.0, 1.25}, 1500.0, 2.0, Kind::Interior},
+      {{4.0, 4.25, 4.5, 4.75, 5.0}, 900.0, 2.0, Kind::BoundarySoil},
+      {{3.0, 3.25, 3.5}, 900.0, 3.1, Kind::BoundarySoil},  // 3.1 < e_s(25 C)
+      {{6.0}, 500.0, 0.5, Kind::BoundaryDry},
+      {{1.0}, 1.0, 2.0, Kind::BoundarySoil, 5e-4},
+      {{16.0, 16.25, 16.5}, 900.0, 2.0, Kind::HydraulicShutdown}};
   const std::vector<int> pars{
       pl::par_vcmax_25, pl::par_stem_c, pl::par_stem_P50, pl::par_root_c,
       pl::par_root_P50, pl::par_TF24_beta2, pl::par_jmax_25, pl::par_phi_J,
@@ -4858,15 +4945,6 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
                         fx.vpd, 40.0, 25.0, 21.0, 101.3);
     pl::leaf_pars<double> p0 = base.passive_pars();
     p0[pl::par_g_min] = fx.g_min;
-    if (fx.root_P50 > 0.0) {
-      // The transpose test's traits for its root-limited fixtures.
-      p0[pl::par_stem_P50] = 3.4287;
-      p0[pl::par_root_P50] = fx.root_P50;
-      p0[pl::par_phi_J] = 0.30;
-      p0[pl::par_JS22_gamma] = 1.0;
-      p0[pl::par_CMax_a] = 0.6;
-      p0[pl::par_CMax_b] = 0.0;
-    }
     pl::Leaf l = solve(p0);
     const std::string name = l.operating_point_kind_name(fx.want);
     ok(l.operating_point_kind() == fx.want,
@@ -11161,6 +11239,7 @@ int main(int argc, char **argv) {
   test_dprofit_dpsi_stem_matches_a_finite_difference_energy_balance();
   test_dprofit_dpsi_stem_vanishes_at_the_optimum();
   test_evaluate_psi_stem_prescribes_rather_than_optimises();
+  test_prescribed_stem_point_writes_every_output();
   test_multilayer_lambda_identity();
   test_g1_eff();
   test_leaf_temperature_is_reported();

@@ -2602,11 +2602,11 @@ equations:
     latex: |
       \lambda_\mathrm{emergent} = \begin{cases} \lambda_K(\psi^*, \psi_s) & \text{stem route} \\ \lambda_{\mathrm{collar},K} & \text{collar route (lambda\_collar)} \end{cases}, \qquad \lambda_\mathrm{CF77} = p
     code: phylloptim::Leaf::lambda_emergent
-    also: [phylloptim::Leaf::lambda_for, phylloptim::Leaf::optimise_psi_stem_single, phylloptim::Leaf::find_root_collar_psi_for]
+    also: [phylloptim::Leaf::lambda_for, phylloptim::Leaf::optimise_psi_stem_single, phylloptim::Leaf::evaluate_psi_stem, phylloptim::Leaf::find_root_collar_psi_for]
     reads: []
     writes: []
     kind: closed_form
-    note: 'Written by the optimiser that ran; NA before. On the stem route it is the seated curve''s λ (CF77''s is its price, exactly); on the collar route, the same curve''s λ along the collar path (lambda_collar). Until 0.15.4 the collar route reported TF24''s multilayer λ whatever curve was seated.'
+    note: 'Written by the solve or the prescribed stem evaluation that ran; NA before. On the stem route it is the seated curve''s λ (CF77''s is its price, exactly); on the collar route, the same curve''s λ along the collar path (lambda_collar). Until 0.15.4 the collar route reported TF24''s multilayer λ whatever curve was seated.'
   g1_eff:
     section: marginal_cost
     title: Equivalent Medlyn slope

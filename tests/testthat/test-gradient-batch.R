@@ -705,6 +705,84 @@ test_that("the batch validates psi and dpsi_dtheta by shape", {
                    matrix(c(0.1, 0.1, 0.1, 0.2, 0.2, 0.2), 3, 2))
 })
 
+test_that("the batch refuses a price its model does not read, and a missing one, as leaf_solve() does", {
+  net <- series_resistance(1e4)
+  single <- leaf_supply_singlelayer()
+  solve_error <- function(...) {
+    tryCatch(leaf_solve(psi_soil = 1.5, PPFD = 1500, ...),
+             error = conditionMessage)
+  }
+  batch_error <- function(model, ...) {
+    b <- leaf_batch(psi_soil = c(1.0, 1.5), PPFD = 1500, ...)
+    tryCatch(leaf_gradient_batch(b, pars = "vcmax_25", model = model),
+             error = conditionMessage)
+  }
+
+  # A price the model does not read: the same check, so the same message.
+  expect_identical(
+    batch_error("TF24_floor", supply = single, root_network = net,
+                CF77_lambda = 1.5e5),
+    solve_error(supply = single, root_network = net, model = "TF24_floor",
+                CF77_lambda = 1.5e5))
+  expect_identical(batch_error("collar", TF24_floor_lambda_o = 1.5e5),
+                   solve_error(TF24_floor_lambda_o = 1.5e5))
+  # given on one observation of several is still given
+  expect_error(leaf_gradient_batch(
+                 leaf_batch(psi_soil = c(1.0, 1.5), PPFD = 1500,
+                            LeastCost_beta = c(NA, 146)),
+                 pars = "vcmax_25", model = "collar"),
+               "model = \"collar\" does not read it")
+
+  # A price the model needs and has no default for is refused before the solve,
+  # not returned as a per-row error.
+  expect_match(solve_error(supply = single, root_network = net,
+                           model = "TF24_floor"),
+               "needs TF24_floor_lambda_o set")
+  expect_match(batch_error("TF24_floor", supply = single, root_network = net),
+               "needs TF24_floor_lambda_o set")
+  expect_match(batch_error("TF24_floor", supply = single, root_network = net,
+                           TF24_floor_lambda_o = c(1.5e5, NA)),
+               "needs TF24_floor_lambda_o set")
+
+  # A price that varies by observation reaches its own row while kmax and the
+  # resistance are shared, so theta has a row per observation.
+  run <- function(price) {
+    b <- leaf_batch(psi_soil = 1.5, PPFD = 1500, supply = single,
+                    root_network = net, CF77_lambda = price)
+    leaf_gradient_batch(b, pars = "vcmax_25", model = "CF77")
+  }
+  both <- leaf_gradient_batch(
+    leaf_batch(psi_soil = c(1.5, 1.5), PPFD = 1500, supply = single,
+               root_network = net, CF77_lambda = c(1e5, 3e5)),
+    pars = "vcmax_25", model = "CF77")
+  expect_identical(both$value[, "A"],
+                   unname(c(run(1e5)$value[, "A"], run(3e5)$value[, "A"])))
+  expect_false(both$value[1, "A"] == both$value[2, "A"])
+
+  # The check reads the columns the solve reads, so a supplied theta is held to
+  # it too, and a batch built with one curve's price can be differentiated
+  # under another once that column is NA.
+  b <- leaf_batch(psi_soil = c(1.0, 1.5), PPFD = 1500, supply = single,
+                  root_network = net, CF77_lambda = 1.5e5)
+  th <- .gradient_theta_matrix(b, leaf_traits(), model = "CF77")
+  colnames(th) <- gradient_par_names()
+  expect_error(leaf_gradient_batch(b, pars = "vcmax_25", model = "TF24"),
+               "CF77 curve's prescribed price")
+  expect_error(leaf_gradient_batch(b, pars = "vcmax_25", model = "TF24",
+                                   theta = th),
+               "CF77 curve's prescribed price")
+  th[, "CF77_lambda_"] <- NA_real_
+  expect_identical(
+    leaf_gradient_batch(b, pars = "vcmax_25", model = "TF24", theta = th)$status,
+    c("interior", "interior"))
+
+  # leaf_solve() seats one price for every row
+  expect_error(leaf_solve(psi_soil = 1.5, PPFD = 1500, supply = single,
+                          root_network = net, model = "CF77",
+                          CF77_lambda = c(1e5, 3e5)),
+               "must be a single number")
+})
+
 test_that("the batch reproduces leaf_gradient() on every model, bit-for-bit", {
   # ⚠️ BIT-FOR-BIT, not close, and for the reason this file's header gives: the
   # two reach the same C++ model by different routes -- one `leaf_gradient()` per
@@ -726,13 +804,17 @@ test_that("the batch reproduces leaf_gradient() on every model, bit-for-bit", {
            LeastCost = "LeastCost_beta")
   for (m in names(own)) {
     p <- own[[m]]
-    # All three model-owned slots supplied on every row: a batch column a model
-    # does not read is never touched, so this is one call rather than a branch on
-    # the model, and it is what covers each slot reaching the right member.
+    # Each model's batch carries its own price only: a price the model does not
+    # read is refused, as it is by leaf_solve(). The single-observation leaf
+    # holds all three, which covers each slot reaching the right member.
+    priced <- function(field, value) {
+      if (.owns_field(m, field)) value else NA_real_
+    }
     b <- leaf_batch(psi_soil = psv, PPFD = 1500, root_network = net,
                     supply = leaf_supply_singlelayer(), traits = tr,
-                    CF77_lambda = 1.5e5, TF24_floor_lambda_o = 1.5e5,
-                    LeastCost_beta = 146)
+                    CF77_lambda = priced("CF77_lambda_", 1.5e5),
+                    TF24_floor_lambda_o = priced("TF24_floor_lambda_o", 1.5e5),
+                    LeastCost_beta = priced("LeastCost_beta", 146))
     gb <- leaf_gradient_batch(b, pars = p, model = m)
     one <- vapply(psv, function(ps) {
       l <- leaf_model(tr, leaf_control(), leaf_supply_singlelayer())

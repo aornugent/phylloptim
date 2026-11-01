@@ -1,3 +1,11 @@
+# phylloptim 0.27.1
+
+- A stem route evaluated at a prescribed stem potential (`evaluate_psi_stem_at()`) now reports that point's `lambda_emergent`; it reported the previous solve's. No other number moves.
+- `leaf_gradient_batch()` refuses a price its model does not read, with `leaf_solve()`'s message, whether it came from `leaf_batch()` or a supplied `theta`, and a missing `TF24_floor_lambda_o` before solving rather than as per-row errors.
+- `leaf_solve()` refuses a price that is not a single number; it seats one price for every row.
+- `leaf_batch()` accepts a price that varies by observation while `leaf_specific_conductance_max` and the resistance are shared; it failed building `theta`.
+- Plan section A, [#207](https://github.com/traitecoevo/phylloptim/issues/207).
+
 # phylloptim 0.27.0
 
 ## A dry pin is decided at the end of the collar interval, and the pinned and interior answers meet continuously

@@ -70,18 +70,22 @@ assimilation by percent, not by rounding.}
 value rather than a profile.}
 
 \item{CF77_lambda}{Cowan-Farquhar's prescribed marginal value of water, in
-umol C (kg H2O)^-1, one per observation. Only \code{model = "CF77"} reads it;
-\code{NA_real_} (the default) uses its aligned default (see \code{\link[=align_curves]{align_curves()}}).}
+umol C (kg H2O)^-1, one per observation. Only \code{model = "CF77"} reads it,
+and \code{\link[=leaf_gradient_batch]{leaf_gradient_batch()}} refuses it under any other model, as
+\code{\link[=leaf_solve]{leaf_solve()}} does; \code{NA_real_} (the default) uses its aligned default
+(see \code{\link[=align_curves]{align_curves()}}).}
 
 \item{TF24_floor_lambda_o}{the \code{TF24_floor} curve's price of water as transpiration
 goes to zero, same units, one per observation. Only \code{model = "TF24_floor"}
-reads it; \code{NA_real_} (the default) leaves it unset. That curve refuses to
-solve without one, deliberately: at zero it is \code{TF24}.}
+reads it, and it is refused under any other model; \code{NA_real_} (the
+default) leaves it unset, and \code{\link[=leaf_gradient_batch]{leaf_gradient_batch()}} refuses that model
+without one, deliberately: at zero it is \code{TF24}.}
 
 \item{LeastCost_beta}{least-cost theory's unit-cost ratio (Prentice et al.
 2014's beta): the cost of maintaining carboxylation capacity relative to the
 cost of transpiration, dimensionless, one per observation. Only
-\code{model = "LeastCost"} reads it; \code{NA_real_} (the default) uses its aligned
+\code{model = "LeastCost"} reads it, and it is refused under any other model;
+\code{NA_real_} (the default) uses its aligned
 default (see \code{\link[=align_curves]{align_curves()}}). Zero is refused, since at
 zero the capacity term vanishes and what is left is water-use efficiency,
 which rises without bound as transpiration falls. The published value is 146.}
