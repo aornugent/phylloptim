@@ -30,7 +30,7 @@ Written for: agents picking up work on this package. Each item names what to cha
 
 **A3. The C++ fixtures' `stem_P50`.** `tests/cpp/test_transpose.cpp:398`, `test_leaf.cpp:1727` and `:4863` hard-code `stem_P50 = 3.4287` where `leaf_traits()` defaults to 3.4 and plant's trait-built default is 2.889. Nothing is wrong numerically, but a fixture that is "the default" in its comment and is not in its value misleads the next reader. Done when each fixture either reads the default or says in one line why it does not.
 
-## B. Contracts the CI does not hold — required (B1–B4 and B6 done in #210; B5 goes with section C)
+## B. Contracts the CI does not hold — required (done: B1–B4 and B6 in #210, B5 in #212)
 
 **B1. `tests/testthat/test-readme.R` never runs on CI.** It skips with `skip_if_not(file.exists(readme))`, and under `R CMD check` the README is not reachable from the test directory. The `cpp-tests.yml` workflow has the source tree; run the file from there with `testthat::test_file()` on the checkout, or copy the README into `tests/testthat/` at check time. Done when a deliberately broken README chunk fails CI.
 
@@ -44,7 +44,7 @@ Written for: agents picking up work on this package. Each item names what to cha
 
 **B6. The derivative surface's FD-versus-IFT check covers a minority of parameters.** `test_leaf.cpp`'s referees compare the implicit-function rows against a difference of the solve for the parameters each fixture happens to perturb. Extend one referee to every `par_*` at every operating-point kind on a small grid, with the per-kind tolerances the existing tests measured. Done when the referee lists every parameter by name and a planted wrong row in any one of them fails.
 
-## C. Shorter comments and NEWS — required, no behaviour change (#206 options 1 and 2)
+## C. Shorter comments and NEWS — required, no behaviour change (#206 options 1 and 2; C1–C4 done, C5 optional and open)
 
 **C1. Comments as current contracts only.** `leaf_model.hpp` is 10,300 lines, about 5,100 of them comments, with 257 ⚠️ markers and 110 issue-number references; `R/` carries the same style. Each comment becomes a contract, a unit or a hazard in one to three lines. History ("the probe that sat here is gone", "was X before #NNN"), retracted claims and issue numbers go: the PR already holds them. Keep a ⚠️ only where the reader is about to make a mistake the hazard list names. Three examples #206 picked: the 36 `par_*` constants carry ~130 lines on when each slot was inserted; the water-potential convention block retells two closed issues; the header of `R/gradient.R` documents a retracted speed claim. Do it one file per PR with no code change in the PR, so the diff is reviewable and the compiled objects and all three goldens can be shown bit-identical. Expected: ~5,000 lines off the C++ and ~1,000 off R. Done per file when every remaining comment answers "what must hold here, and what breaks if it does not".
 
@@ -91,3 +91,4 @@ These are #206's options 4 and 5, its further candidates, and the audit's findin
 - 0.27.0: the dry-end decision is made on the end solved to collar precision, on the collar's own distance; `boundary-dry` and `interior` meet continuously; plant's sweep agrees with a tangent of the run to 7e-8. Measurements on [phylloptim#205](https://github.com/traitecoevo/phylloptim/pull/205).
 - 0.27.1 (A1–A3, #207): a prescribed stem point writes `lambda_emergent_`; the batch refuses the prices `leaf_solve()` refuses and accepts per-observation prices; the 3.4287 fixtures were dead branches (their root-limited fixtures went in #188) and are gone, and the stem-curve test reads the default.
 - B1–B4, B6, C4 (#210): the source-tree tests run in `R-CMD-check.yml`'s Linux leg through `tools/source_tree_tests.R`, where a skip fails (not `cpp-tests.yml`, which must stay R-free); the PR template asks for the interleaved bench and the registry; `cost-baseline.tsv` has 0.27.0's row; the surface referee lists every slot of the pack on TF24 and TF24_floor; `test-readme.R` checks the grid size and `n_theta` against the code.
+- B5, C1–C3 (#212): comments are contracts, units and hazards only (`leaf_model.hpp` 10,534 → 7,422 lines, 31% comments; all headers 15,687 → 11,380; `R/` 5,722 → 4,980), with compiled objects and all three goldens bit-identical; NEWS is 96 lines, releases grouped; `COMPARISON.md` is rewritten against the current package; `tools/check_lengths.sh` in `cpp-tests.yml` holds a NEWS entry to 12 lines and a code file of 200 lines or more to 40% comments.

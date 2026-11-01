@@ -2,23 +2,11 @@
 #ifndef PHYLLOPTIM_QUADRATURE_HPP_
 #define PHYLLOPTIM_QUADRATURE_HPP_
 
-// Adaptive Simpson quadrature, used by Leaf::transpiration_full_integration.
-//
-// Why this exists: in plant, that one function integrated the xylem
-// vulnerability curve directly using plant's QAG (adaptive Gauss-Kronrod), which
-// is ~770 lines spread over four compiled translation units and was the leaf
-// model's ONLY remaining link-time dependency on plant. It is not on the hot
-// path -- the production `transpiration()` reads a pre-integrated table
-// instead, and full integration exists purely as the independent check that the
-// table is faithful (plant's tests/testthat/test-leaf.r asserts the two agree).
-// A dozen lines of adaptive Simpson discharges that job without dragging in a
-// compiled quadrature library, which is what makes this package header-only.
-//
-// Consequence to be aware of: results from transpiration_full_integration are
-// NOT bit-identical to plant's QAG version. Both converge on the same integral,
-// so the table-fidelity test still passes at its stated tolerance, but do not
-// use this function as a bit-reproducibility baseline. Everything on the
-// production path (the table) is unaffected.
+// Adaptive Simpson quadrature, used only by Leaf::transpiration_full_integration:
+// the independent check that the pre-integrated table `transpiration()` reads is
+// faithful (`test_spline_matches_direct_integration`). Off the hot path, and kept
+// header-only so the package needs no compiled quadrature library. It agrees with
+// other quadratures to tolerance, not bit for bit.
 
 #include <cmath>
 #include <cstddef>

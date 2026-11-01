@@ -1,24 +1,14 @@
-# The model registry's pure half: read and validate inst/model-registry.yml,
-# and resolve the symbols it names against Doxygen's XML.
-#
-# ⚠️ EVERYTHING IN THIS FILE IS SOURCED STANDALONE BY tools/registry_symbols.R
-# in the docs workflow, where the package is not installed (Doxygen runs on a
-# runner with no compiler step). So nothing here may call another function of
-# this package, read a Leaf, or use a package other than base, yaml and xml2;
-# tests/testthat/test-registry.R asserts that with codetools::findGlobals().
+# The model registry's pure half: read and validate inst/model-registry.yml, and
+# resolve its symbols against Doxygen's XML. tools/registry_symbols.R sources this
+# file standalone in docs.yml, with the package not installed, so nothing here may
+# call another function of this package, read a Leaf, or use a package other than
+# base, yaml and xml2; test-registry.R asserts that with codetools::findGlobals().
 # The half that needs a live Leaf is R/registry.R.
 #
-# Why Doxygen rather than a stored line: a stored line is wrong the day after
-# the file above it changes, and nothing can tell. Doxygen's XML carries, for
-# every member, the line of its declaration and the span of its body, in the
-# stream it parsed. That stream is tools/doxygen_filter.awk's output, which
-# inserts lines (a `\file` block, `\verbatim` pairs) and drops held blank
-# comment lines, so its line numbers are not the source's. What is identical in
-# both streams, byte for byte, is the sequence of lines that are not whole-line
-# `//` comments, and docs.yml asserts that on every render. Every line Doxygen
-# reports is one of those code lines, so the k-th code line of the filtered
-# stream is the k-th code line of the source: registry_line_map() builds that
-# map and checks the two sequences are identical before trusting it.
+# Lines come from Doxygen's XML, never stored. They are lines of
+# tools/doxygen_filter.awk's output, not the source; registry_line_map() maps them
+# back and refuses a header whose non-comment lines the filter changed (see "The
+# model registry" in .claude/CLAUDE.md).
 
 .registry_classes <- c("trait", "hyperparameter", "constant", "driver")
 .registry_kinds <- c("closed_form", "identity", "derivative", "integrator")
@@ -416,12 +406,10 @@ registry_resolve <- function(raw, xml_dir = NULL, locations = NULL,
        unresolved = unresolved, unreferenced = misses)
 }
 
-# Each `literal:` against the function its `code` names: a literal is a number
-# written inside that function (Tetens' 17.27), so it has to appear among the
-# numbers in the function's body, read from the source over the body span
-# Doxygen reported. Returns the ids of the literals whose number does not
-# appear; a literal changed in the code and not here, or the reverse, is one.
-# `resolved` is registry_resolve()'s output; `include_dir` is the headers' root.
+# The ids of the `literal:`s (Tetens' 17.27) whose number does not appear in the
+# body of the function their `code` names, read over the span Doxygen reported:
+# a literal changed on one side only. `resolved` is registry_resolve()'s output;
+# `include_dir` is the headers' root.
 .registry_literals_unwritten <- function(resolved, include_dir) {
   p <- resolved$parameters
   p <- p[!is.na(p$literal), , drop = FALSE]

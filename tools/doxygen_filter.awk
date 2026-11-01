@@ -4,8 +4,7 @@
 # WHY THIS EXISTS. Doxygen only treats `///`, `//!`, `/** */` and `/*! */` as
 # documentation; an ordinary `//` comment is invisible to it. Every comment in
 # this package is an ordinary `//` comment, and they are the substantive part --
-# the FMA-contraction note in `hydraulic_cost_Sperry`, the four "do not get this
-# wrong" warnings in closed_form.hpp, the two-vulnerability-curves hazard at the
+# the FMA-contraction notes, the "do not get this wrong" warnings in closed_form.hpp, the two-vulnerability-curves hazard at the
 # `stem_b`/`stem_c` declarations. Rendering the API without them would render the
 # half a reader can already get from the signatures.
 #
@@ -50,9 +49,9 @@
 #      together rather than one on each side of a paragraph. `docs.yml` asserts
 #      it, because nothing else can.
 #
-#      The `/*! \file */` block rule 2 emits is EXEMPT, and that is measured
-#      rather than assumed: closed_form.hpp's file block has carried two runs
-#      across a long green master. So the assertion counts `///` blocks only.
+#      The `/*! \file */` block rule 2 emits is EXEMPT: Doxygen 1.9 renders a
+#      file block with two runs correctly, so the assertion counts `///` blocks
+#      only.
 #
 #      A run only OPENS after a blank line and only on a line that is not a list
 #      item. Both conditions are load-bearing. Without the first, the hanging
@@ -67,8 +66,7 @@
 # written with Doxygen in mind: `\`, `@`, `#`, `%`, `&`, `<` and `>` all mean
 # something to Doxygen and here they never do. Without it, `#include <phylloptim.hpp>`
 # becomes a broken link to an entity called "include" followed by a swallowed
-# HTML tag, and the `\int` in the roots.hpp head-loss note becomes an unknown
-# command; both were observed before this was added. Verbatim runs are NOT
+# HTML tag, and a `\int` in a comment becomes an unknown command. Verbatim runs are NOT
 # escaped -- Doxygen reproduces them literally, so an escape would show up as a
 # stray backslash. If you genuinely want a Doxygen command, write a `///`
 # comment and rule 1 will leave it alone.

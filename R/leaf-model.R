@@ -1,40 +1,14 @@
-# The friendly R surface (issue #5, stage 2).
-#
-# Everything here is hand-written and sits ABOVE the generated glue in
-# R/RcppR6.R, which is what makes it rewritable without touching the build, the
-# YAML or CI. Nothing in this file reaches into C++ except through the generated
-# `Leaf` R6 class.
-#
-# Two things it is for:
-#
-#   1. Separating traits from tolerances. The C++ constructor takes 15 positional
-#      arguments and four of them -- GSS_tol_abs, ci_abs_tol, ci_niter,
-#      vulnerability_curve_ncontrol -- are numerical settings sitting among the
-#      physiology. A trait-calibration loop should not have to know which four of
-#      the fifteen are not traits. `leaf_traits()` and `leaf_control()` split
-#      them -- and five more traits (R_d_25, JS22_gamma, CMax_a, CMax_b, g_min) are not
-#      constructor arguments at all and have to be assigned afterwards, which is
-#      the second thing a caller should not have to know.
-#   2. A one-call entry point. `leaf_solve()` takes drivers and returns a
-#      data.frame, which is the shape someone reaching for plantecophys expects.
+# The hand-written R surface above the generated `Leaf` class in R/RcppR6.R, and
+# the only route from here into C++. It splits traits from numerical settings and
+# assigns the traits the 15-argument constructor does not take.
 
-# The C++ default constructor's values, in one place. These are Eucalyptus
-# saligna, and they are the defaults for every function below.
-#
-# ⚠️ These must equal phylloptim::Leaf's default constructor, and it is not enough to
-# believe so: tests/testthat/test-golden.R solves through THESE defaults and
-# compares bit-exactly against a golden file generated from a default-constructed
-# C++ Leaf. If the two ever drift apart, that file fails.
-#
-# root_c / root_b / root_psi_crit default in MultiLayerRoots rather than in Leaf,
-# because a second copy of the root Weibull pair inside Leaf is exactly hazard 1
-# in the developer guide -- it has already cost this project a wrong exponent in a
-# manuscript draft. They are restated here because the R constructor has to pass
-# them, not because Leaf owns them.
-#
-# beta_R_H / beta_R_V are NOT here since #33: they parameterise the
-# root-architecture model, which the leaf no longer runs. Their defaults live with
-# that model, on root_network_from_carbon().
+# Eucalyptus saligna; the defaults for every function below. They must equal
+# phylloptim::Leaf's default constructor: test-golden.R solves through them and
+# compares bit-exactly with a golden file from a default-constructed C++ Leaf.
+# The order is the gradient's trait vector: append, never reorder (hazard 13).
+# JS22_gamma and CMax_a are solved by align_curves(); test-align-curves.R checks.
+# root_c / root_P50 default in MultiLayerRoots, not Leaf (hazard 1); they are
+# restated because the R constructor passes them.
 .leaf_trait_defaults <- list(
   vcmax_25 = 96,
   stem_c = 2.680147,
@@ -258,13 +232,10 @@ leaf_traits <- function(vcmax_25 = 96,
 ##' leaf_control()
 ##' leaf_control(GSS_tol_abs = 1e-5)
 ##' @export
-# `vulnerability_curve_ncontrol` defaults to `Leaf::ncontrol_default`, READ from
-# C++ rather than restated: RcppR6 binds only the 15-argument constructor, so R
-# passes the number in, and a literal here would be a second copy that could
-# drift without the golden file noticing (a table resolution only refines the
-# answer). test-surface.R asserts the
-# default is the C++ constant; plant's test-control.R compares plant's own
-# Control against `leaf_control()`.
+# `vulnerability_curve_ncontrol` is read from C++ `Leaf::ncontrol_default`: a
+# literal would be a second copy whose drift the golden file cannot see (a table
+# resolution only refines the answer). test-surface.R asserts it; plant's
+# test-control.R compares plant's Control with `leaf_control()`.
 leaf_control <- function(GSS_tol_abs = 1e-3,
                          vulnerability_curve_ncontrol = .leaf_ncontrol_default(),
                          ci_abs_tol = 1e-3,
@@ -398,18 +369,10 @@ series_resistance <- function(resistance) {
     stop("series_resistance(): `resistance` must be positive; a zero ",
          "resistance is an infinite flux", call. = FALSE)
   }
-  # ⚠️ NOT `RootNetwork(r_R_V_sum = resistance)`, WHICH COSTS ~58 us. That call
-  # reaches C++ for a default-constructed network and pays `Rcpp::wrap` building the
-  # five-element named list -- measured at 58 us against 1.1 us for a trivial
-  # `.Call`. This function is reached per likelihood evaluation by a calibration
-  # whose fitted resistance changes every proposal, so it cannot be hoisted out of
-  # the caller's loop the way a fixed network can.
-  #
-  # Instead: take ONE default-constructed network per session and overwrite the one
-  # field. R's copy-on-write means the assignment copies rather than mutating the
-  # cached prototype, so callers cannot corrupt each other -- asserted in
-  # test-surface.R. The field list still comes from the real constructor, so it
-  # cannot drift from the C++ struct the way a hand-written `structure()` would.
+  # Not `RootNetwork(r_R_V_sum = resistance)`, whose `Rcpp::wrap` is dear and
+  # would be paid per likelihood evaluation by a calibration (test-cost.R).
+  # Nor a hand-written `structure()`, which could drift from the C++ struct.
+  # Copy-on-write leaves the cached prototype unmutated; test-surface.R asserts it.
   out <- .root_network_prototype()
   out$r_R_V_sum <- resistance
   out
@@ -461,9 +424,6 @@ leaf_model <- function(traits = leaf_traits(), control = leaf_control(),
          "leaf_supply_singlelayer()", call. = FALSE)
   }
 
-  # Positional, because that is what the generated constructor takes. The whole
-  # value of this function is that the ordering is written down once, here,
-  # instead of at every call site.
   l <- Leaf(
     vcmax_25 = traits$vcmax_25,
     stem_c = traits$stem_c,
@@ -481,65 +441,38 @@ leaf_model <- function(traits = leaf_traits(), control = leaf_control(),
     ci_niter = control$ci_niter,
     TF24_cost_scale = traits$TF24_cost_scale
   )
-  # ⚠️ AFTER construction, because plant's RcppR6 bindings pin the generated
-  # constructor by arity so R_d_25 cannot be an argument to it. Without this line
-  # `leaf_traits(R_d_25 = )` would be accepted and silently ignored.
+  # The traits the constructor does not take, since plant's bindings pin its
+  # arity. Each must be assigned here, or its `leaf_traits()` argument is
+  # accepted and silently ignored.
   l$R_d_25 <- traits$R_d_25
-  # Same reason, same trap: a trait the constructor does not take must be
-  # assigned here or leaf_traits(JS22_gamma = ) is silently ignored.
   l$JS22_gamma <- traits$JS22_gamma
   l$CMax_a <- traits$CMax_a
   l$CMax_b <- traits$CMax_b
-  # The residual conductance (#182), the sixteenth trait, for the same reason.
   l$g_min <- traits$g_min
   l$initialize_integrator(control$integration_rule, control$integration_tol)
-  # After the integrator, because set_supply_single clears the solved state --
-  # not the integrator tolerance, but relying on that ordering would be a
-  # dependency on an implementation detail of setup_clean_leaf.
+  # After the integrator, so this does not rely on set_supply_single (which
+  # clears the solved state) leaving the integrator tolerance alone.
   if (identical(supply$kind, "single")) {
     l$set_supply_single(supply$gravity_head)
   }
   l
 }
 
-# ---------------------------------------------------------------------------
-# The R-boundary tax on a RootNetwork, and why these two are memoised
-# ---------------------------------------------------------------------------
+# --- default RootNetworks, memoised ------------------------------------------
 #
-# ⚠️ MATERIALISING A RootNetwork AS AN R OBJECT COSTS ~58 us, AND ALMOST NONE OF
-# IT IS OUR CODE. Measured against the installed package: `RootNetwork__ctor()` --
-# the bare `.Call`, before any R wrapper -- is 58 us, where a trivial `.Call` on a
-# Leaf field is 1.1 us and `$set_physiology()` handed a ready-made network is
-# 4.3 us. It is `Rcpp::wrap` building the five-element named list, which RcppR6
-# generates as five successive `ret["name"] = ...` assignments on an initially
-# empty `Rcpp::List` -- each one grows the list and its names attribute.
+# Materialising a RootNetwork in R is dear, nearly all of it `Rcpp::wrap`; built
+# per call it would dominate `set_drivers()` and `leaf_solve()`. test-cost.R
+# counts the crossings.
 #
-# Building the default network per call therefore made `set_drivers()` **9.4 ->
-# 73 us** on the multi-layer path and **5.8 -> 66 us** on the single-potential one,
-# and `leaf_solve()` **23.7 -> 108 us/row** -- a 4.5x regression on a figure this
-# package's own documentation quotes. Caught only by measuring; every test passed.
-#
-# This is the R boundary dominating a loop again, which is the standing lesson
-# here: count R calls, not arithmetic.
-#
-# Both memos are deliberately SIZE ONE rather than keyed caches. A `leaf_solve()`
-# sweep holds `soil_depth` fixed across rows, so a one-entry memo hits on every row
-# after the first, and it cannot grow without bound the way a keyed cache would if
-# someone swept the soil profile. The comparison is `identical()` on the depth
-# vector -- about 1 us -- not a pasted string key, because formatting a numeric
-# vector to build one costs more than it saves.
-#
-# Sharing one R object across calls is safe: `set_physiology` copies it into C++
-# through `Rcpp::as`, nothing mutates it, and R's copy-on-write means a caller who
-# got hold of it could not mutate ours either.
+# Each memo holds one entry: a sweep holds `soil_depth` fixed, so it hits from the
+# second row on and cannot grow. Sharing one object is safe: `set_physiology`
+# copies it into C++, and copy-on-write protects it from callers.
 
 .network_memo <- new.env(parent = emptyenv())
 
-# The multi-layer default: 20 kg C m^-2 leaf split evenly over the layers, through
-# the architecture model the leaf used to run internally (#33) -- so the numbers
-# are the pre-#33 ones and the provenance is on the page rather than buried in a
-# signature. `soil_depth` determines the whole thing, because the default carbon is
-# `rep(20 / n, n)` with `n == length(soil_depth)`, so it is the only key needed.
+# The multi-layer default: 20 kg C m^-2 leaf split evenly over the layers. Keying
+# on `soil_depth` alone holds only while the carbon is `rep(20 / n, n)` with
+# `n == length(soil_depth)`.
 .default_root_network <- function(n, soil_depth) {
   if (!is.null(.network_memo$depth) &&
       identical(.network_memo$depth, soil_depth)) {
@@ -554,14 +487,8 @@ leaf_model <- function(traits = leaf_traits(), control = leaf_control(),
   net
 }
 
-# The single-potential path's default: one nominal series resistance, in the same
-# memo and for the same reason. 1e3 MPa s (mol H2O)^-1 m^2 leaf is the value the
-# package's own vignettes and the companion calibration study use, and like the
-# multi-layer default it is a stand-in rather than a recommendation -- but it means
-# `leaf_solve(psi_soil = 2, supply = leaf_supply_singlelayer())` means something, exactly
-# as it does on the other path. Neither path forces a caller to own a supply model.
-# One default-constructed RootNetwork per session, as a prototype to copy. See
-# series_resistance() for why, and .network_memo above for the measurement.
+# One default-constructed RootNetwork per session, as a prototype to copy; see
+# series_resistance().
 .root_network_prototype <- function() {
   if (is.null(.network_memo$proto)) {
     .network_memo$proto <- RootNetwork()
@@ -569,6 +496,8 @@ leaf_model <- function(traits = leaf_traits(), control = leaf_control(),
   .network_memo$proto
 }
 
+# The single-potential default: a nominal 1e3 MPa s (mol H2O)^-1 m^2 leaf, the
+# value the vignettes use. A stand-in, not a recommendation.
 .default_series_resistance <- function() {
   if (is.null(.network_memo$series)) {
     .network_memo$series <- series_resistance(1e3)
@@ -681,17 +610,10 @@ set_drivers <- function(x,
   invisible(x)
 }
 
-# Validate and default the drivers, without applying them.
-#
-# WHY THIS IS SPLIT OUT. `leaf_gradient()` re-drives the leaf once per
-# perturbation -- eleven times for a four-parameter gradient -- and all of this
-# validation and defaulting produces the same answer every time bar the one
-# parameter being moved. Resolving once and applying many times is worth ~12% of a
-# gradient, but only if there is ONE definition of the rules: the
-# defaults here are load-bearing (1 m layers, the nominal networks, the
-# single-path placeholder depth) and a second copy in the gradient code would be
-# free to drift from this one silently. So the gradient calls this, not a
-# reimplementation of it.
+# Validate and default the drivers, without applying them. `leaf_gradient()`
+# resolves once and re-applies per perturbation, and must call this rather than
+# copy it: the defaults here (1 m layers, the nominal networks, the single-path
+# placeholder depth) are load-bearing.
 .resolve_drivers <- function(x, psi_soil, PPFD, soil_depth, root_network,
                              leaf_specific_conductance_max, atm_vpd, ca,
                              leaf_temp, atm_o2_kpa, atm_kpa) {
@@ -704,9 +626,7 @@ set_drivers <- function(x,
     stop("`psi_soil` must have at least one layer", call. = FALSE)
   }
 
-  # The C++ boundary rejects this too, and it is the enforcement. This check is
-  # here only to name the fix, because "psi_soil must be positive magnitudes"
-  # arriving from inside a solve is a less useful thing to read than this is.
+  # C++ enforces this too (hazard 2); this check exists to name the fix.
   if (any(psi_soil < 0)) {
     stop("`psi_soil` must be positive magnitudes in MPa, not signed ",
          "potentials. If this came from an older script, drop the minus sign ",
@@ -716,26 +636,19 @@ set_drivers <- function(x,
   single <- identical(x$supply_kind, "single")
 
   if (single) {
-    # The single-potential path reads psi_soil[1] and nothing else: no depth
-    # profile, no root carbon. Rather than quietly ignoring extra layers -- which
-    # would let someone pass a profile and believe it was used -- say so.
+    # This path reads psi_soil[1] and no depth profile, so extra layers and a
+    # `soil_depth` are refused rather than ignored.
     if (n != 1L) {
       stop("`psi_soil` must be a single value on the single-potential supply ",
            "path; got ", n, " layers. Build the leaf with ",
            "leaf_supply_multilayer() for a layered profile.", call. = FALSE)
     }
-    # `soil_depth` really is multi-layer-only: nothing on this path reads a depth
-    # profile, and silently accepting one someone took the trouble to pass is how
-    # a plausible wrong number happens.
     if (!is.null(soil_depth)) {
       stop("`soil_depth` is not used on the single-potential supply path -- ",
            "there is no depth profile to read. Drop it, or build the leaf with ",
            "leaf_supply_multilayer().", call. = FALSE)
     }
-    # `root_network` IS used here, and is the same argument the multi-layer path
-    # takes: one series resistance in r_R_V_sum. That is the whole point of the
-    # consistency change -- the resistance is a driver on both paths now, where it
-    # used to be a leaf_supply_singlelayer() argument on this one.
+    # `root_network` is read here too: one series resistance in r_R_V_sum.
     if (is.null(root_network)) {
       root_network <- .default_series_resistance()
     } else if (!inherits(root_network, "RootNetwork")) {
@@ -765,8 +678,7 @@ set_drivers <- function(x,
     }
   }
 
-  # In `set_physiology`'s own argument order, so a caller can splat it positionally
-  # without naming ten arguments at a call site that runs in a loop.
+  # In `set_physiology()`'s argument order: callers pass it positionally.
   list(root_network = root_network,
        PPFD = PPFD,
        psi_soil = psi_soil,
@@ -827,34 +739,18 @@ operating_point <- function(x) {
   if (!inherits(x, "Leaf")) {
     stop("`x` must be a Leaf, from leaf_model()", call. = FALSE)
   }
-  # One row, from the same C++ reader leaf_solve()'s loop uses, rather than a
-  # data.frame() call listing the columns a second time: the names are written
-  # down once, in .operating_point_names.
-  #
-  # ⚠️ Built directly rather than through data.frame(), which costs 158 us
-  # against 2 us for this -- on a function called once per solved point, to
-  # report a 3 us solve. What data.frame() spends it on is checking and recycling
-  # fifteen arguments that are already fifteen length-1 doubles by construction.
-  # The result is `identical()` to what data.frame() returned, which
-  # test-surface.R asserts rather than assumes; note row.names has to be the
-  # integer 1L and not 1.0, or it would not be.
+  # Built directly: data.frame() costs far more than the solve this reports.
+  # test-surface.R asserts the result is `identical()` to data.frame()'s, which
+  # needs row.names to be the integer 1L, not 1.0.
   v <- as.list(x$operating_point_values())
   names(v) <- .operating_point_names
   structure(v, class = "data.frame", row.names = 1L)
 }
 
-# What an operating point IS: the names of the fifteen values
-# `Leaf::operating_point_values()` returns, in its order. `operating_point()`
-# wraps them in a one-row data.frame and `leaf_solve()` fills a matrix row with
-# them, so the two cannot disagree about which outputs there are.
-#
-# ⚠️ THE ORDER IS AN INTERFACE, and it is one nothing in the types enforces --
-# the C++ side returns a flat vector, because a flat vector is what crosses the
-# boundary for free. test-surface.R asserts these names line up with the
-# fifteen individual bindings by reading each one and comparing, so a field
-# inserted on either side without the other fails there instead of silently
-# shifting a column. test-golden.R then compares leaf_solve()'s output
-# bit-exactly against a file generated in C++.
+# The names of the values `Leaf::operating_point_values()` returns, in its order,
+# shared by `operating_point()` and `leaf_solve()`. The order is an interface the
+# types do not enforce: append, never insert, or saved outputs shift. test-surface.R
+# checks each against its own binding; test-golden.R checks leaf_solve() bit-exactly.
 .operating_point_names <- c(
   "psi_stem",       # MPa, positive magnitude
   "collar",         # MPa, positive magnitude
@@ -866,69 +762,22 @@ operating_point <- function(x) {
   "hydraulic_cost",
   "E_up",
   "uptake",
-  # ⚠️ TF24's MARGINAL COST OF WATER, WHATEVER CURVE IS SEATED. It is
-  # `marginal_cost_water()`, i.e. `lambda_TF24(opt_psi_stem_)`, so on any other
-  # curve it reports what the TF24 cost WOULD price water at at this leaf's
-  # operating point -- not what the seated curve does. The per-curve number is
-  # `lambda_emergent`, which is `(dC/dpsi)/(dE/dpsi)` for whichever curve ran and
-  # is the one output every curve reports on the same axis. It is APPENDED at the
-  # end of this vector rather than placed here beside its namesake, because these
-  # names are POSITIONS and an insertion would shift every saved output.
-  "lambda",         # dA/dE under the TF24 cost -- see above
+  # TF24's marginal cost of water at this operating point, whatever curve is
+  # seated; the seated curve's own is `lambda_emergent`.
+  "lambda",         # dA/dE under the TF24 cost
   "g1_eff",         # the Medlyn g1 this leaf implies
-  # deg C. APPENDED rather than placed beside the other state variables, because
-  # these names are positions and a saved output would shift under an insertion.
-  #
-  # ⚠️ It is NOT the `leaf_temp` driver column, and on the energy-balance path it
-  # is not equal to it: there `leaf_temp` is AIR temperature and this is the
-  # leaf's own, solved from its transpiration. Off that path the two agree, which
-  # is why the column is a copy rather than NA.
-  #
-  # ⚠️ At a PM shut-down the reported `A` does not correspond to this temperature
-  # -- respiration is still the Tair value. That is #105, not a property of this
-  # column.
+  # deg C. Not the `leaf_temp` driver: on the energy-balance path that is air
+  # temperature and this the leaf's own; off it, this is a copy of the driver.
   "Tleaf",
-  # umol C m^-2 s^-1. APPENDED, like Tleaf and for the same reason.
-  #
-  # THE PART OF THE COST THAT IS A PRICE RATHER THAN A REALISED CARBON LOSS.
-  # `hydraulic_cost` is the whole cost the objective subtracted; this is the share
-  # of it that buys nothing and loses nothing, being the value of water in its best
-  # alternative use. `TF24_floor_lambda_o * E` on that curve, zero on every other.
-  # So a caller who wants the carbon the plant actually gave up takes
-  #
-  #     realised cost   = hydraulic_cost - shadow_cost
-  #     carbon profit   = profit + shadow_cost
-  #
-  # and a consumer that grows a plant on this leaf wants the SECOND of those, never
-  # `profit`. Deducting a shadow price from a carbon budget taxes growth by
-  # something the plant never spent.
-  #
-  # ⚠️ ZERO IS NOT A CLAIM THAT THE CURVE'S COST IS ALL REALISED CARBON -- it says
-  # the curve does not separate the two. CF77 is the case that matters: its whole
-  # cost is `lambda * E`, which many would read as a shadow price, but the model
-  # supplies one number and nothing to attribute it with and behaves identically
-  # under either reading. Reporting it as all-shadow would ship an interpretation
-  # as a fact, and as zero-shadow the opposite one; the field is defined only where
-  # the CURVE defines it.
+  # umol C m^-2 s^-1: the share of `hydraulic_cost` that is a price, not carbon
+  # given up; `TF24_floor_lambda_o * E` on that curve and zero on every other,
+  # where zero means the curve does not separate the two. See operating_point().
   "shadow_cost",
-  # umol C (kg H2O)^-1. APPENDED, for the reason Tleaf and shadow_cost were.
-  #
-  # ⚠️ THIS, NOT `lambda`, IS THE SEATED CURVE'S MARGINAL COST OF WATER.
-  # `lambda` above is `marginal_cost_water()` -- TF24's price at this operating
-  # point, whatever curve actually ran -- so on any other curve it reports what the
-  # TF24 cost WOULD charge here. This one is `(dC/dpsi)/(dE/dpsi)` for the curve
-  # that ran, which is the quantity the optimality literature means by lambda and
-  # the one every curve reports on the same axis.
-  #
-  # It was reachable only off the object until now, so a caller using leaf_solve()
-  # on any curve but TF24 had to reconstruct it. On TF24_floor that meant knowing
-  # that `lambda` carries only the hydraulic half and adding the price floor back
-  # by hand -- which is exactly the kind of correction a package should not leave
-  # to its callers, and it read 6.8e+04 against a floor of 1.5e+05.
+  # umol C (kg H2O)^-1: the seated curve's marginal cost of water,
+  # `(dC/dpsi)/(dE/dpsi)`, on the same axis for every curve.
   "lambda_emergent",
-  # kg H2O m^-2 s^-1: the residual (cuticular) flux the leaf realised (#182),
-  # APPENDED for the same reason as the three above. `E` stays the TOTAL flux;
-  # the stomatal flux is `E - residual_flux`.
+  # kg H2O m^-2 s^-1: the residual (cuticular) flux. `E` is the total flux; the
+  # stomatal flux is `E - residual_flux`.
   "residual_flux"
 )
 
@@ -1110,9 +959,8 @@ leaf_solve <- function(psi_soil,
 
   depths <- if (is.null(soil_depth)) NULL else
     .recycle_to(.as_layer_list(soil_depth, "soil_depth"), n, "soil_depth")
-  # One network for every row, or one per row. The inherits() test comes FIRST
-  # because a RootNetwork *is* a list, so length() on it would be 5 and it would
-  # be read as five rows' worth of networks.
+  # One network for every row, or one per row. inherits() first: a RootNetwork
+  # is a list of five, and would otherwise read as five rows' networks.
   networks <- if (is.null(root_network)) {
     NULL
   } else if (inherits(root_network, "RootNetwork")) {
@@ -1125,30 +973,15 @@ leaf_solve <- function(psi_soil,
                                    prices)
             else NULL
 
-  # ⚠️ COLUMNWISE, AND THAT IS MOST OF THE PERFORMANCE STORY OF THIS FUNCTION.
-  # It used to build a one-row data.frame of drivers per row, cbind an
-  # `operating_point()` data.frame to it, and rbind the lot at the end. Measured
-  # over 32 rows on the single-potential path, that cost **344 us per row**
-  # against ~5 us of solving, and 310 us of it was the two data.frame() calls,
-  # the cbind and the rbind -- none of which is the model (#39). Filling
-  # preallocated storage and assembling once takes it to 34 us; the one-call
-  # reader below takes it to **20.5 us**, which is 1.2x the cost of driving the
-  # object by hand rather than the 22x it was. Same result to the bit.
-  #
-  # So: nothing that allocates per row. The driver columns are already length-n
-  # vectors from the recycling above, the outputs go into one matrix, and there
-  # is exactly one data.frame() call, at the end. Its ~105 us is a per-CALL cost
-  # rather than a per-row one, which is why it is still data.frame(): at n = 1 it
-  # is invisible beside the ~230 us of constructing the Leaf.
+  # Nothing allocates per row, which is most of this function's speed: drivers
+  # are already length-n vectors, outputs fill one matrix, and the one
+  # data.frame() call, at the end, is a per-call cost.
   outputs <- matrix(NA_real_, nrow = n, ncol = length(.operating_point_names),
                     dimnames = list(NULL, .operating_point_names))
 
-  # ⚠️ ONE tryCatch PER CALL, OUTSIDE THE LOOP, not one per row. The classification
-  # (#57) has to reach the caller, and the per-row cost of reaching it has to stay
-  # zero: `test-cost.R` guards what this function spends per row, and the issue's own
-  # measurement of a caller's per-row tryCatch was ~2 us. This still fails on the
-  # first infeasible row -- per-row isolation is the other half of #57 and is not
-  # built; see with_phylloptim_conditions() for why not yet.
+  # One condition handler per call, outside the loop, so classifying a failure
+  # costs nothing per row (test-cost.R). The first infeasible row still aborts
+  # the call; see with_phylloptim_conditions().
   with_phylloptim_conditions(
   for (i in seq_len(n)) {
     l <- if (reuse) shared else .seat_model(leaf_model(traits, control, supply),
@@ -1170,9 +1003,8 @@ leaf_solve <- function(psi_soil,
     outputs[i, ] <- l$operating_point_values()
   })
 
-  # The drivers, then the outputs. psi_soil is reported as the wettest layer
-  # when there are several, with the layer count alongside, so the column stays
-  # numeric and the frame stays rectangular.
+  # psi_soil reports the wettest layer, with the layer count alongside, so the
+  # column stays numeric and the frame rectangular.
   data.frame(psi_soil = vapply(layered, min, numeric(1)),
              layers = lengths(layered),
              PPFD = scalars$PPFD,
@@ -1185,14 +1017,9 @@ leaf_solve <- function(psi_soil,
 
 # --- internals ---------------------------------------------------------------
 
-# Validate a model name against the supply path, and seat it. Two functions
-# because the check has to run before anything is built -- an unknown name should
-# not cost a Leaf construction first -- while the seating needs the object.
-#
-# ⚠️ THE SAME REGISTRY `leaf_gradient()` USES, and deliberately not a second list.
-# `.gradient_models()` is derived from `cost_curve_names()`, so a curve added in
-# C++ becomes solvable here without an edit, and the two entry points cannot
-# disagree about which names exist or explain a rejection differently.
+# Validate a model name against the supply path, before a Leaf is built. The
+# names come from `.gradient_models()`, which `leaf_gradient()` also uses, so a
+# curve added in C++ is solvable here and the two entry points cannot disagree.
 .check_model <- function(model, supply) {
   if (!(is.character(model) && length(model) == 1L)) {
     stop("`model` must be a single model name; see cost_curve_names()",
@@ -1211,20 +1038,9 @@ leaf_solve <- function(psi_soil,
   invisible(model)
 }
 
-# `set_model()` is CONFIGURATION -- it survives set_drivers() and set_traits() --
-# so this runs once per Leaf rather than once per row. The prescribed prices are
-# the same kind of thing (#96: they survive both re-driving calls), which is why
-# they are applied here and not in the row loop.
-#
-# ⚠️ THE PRICES REACH THE LEAF ONLY THROUGH HERE, and before they did there was no
-# route at all: `$CF77_lambda_` and `$TF24_floor_lambda_o` are FIELDS, not traits,
-# so `leaf_traits()` cannot carry them and `leaf_solve()` builds its own `Leaf`
-# internally. The two priced curves were therefore reachable from `leaf_model()`
-# and unreachable from the one-call surface -- `leaf_solve(model = "CF77")` could
-# only ever raise the "needs CF77_lambda_ set" refusal. That was survivable while
-# CF77 was the only such curve and its documentation said "build the leaf
-# yourself"; it stopped being survivable when a second curve arrived whose ONLY
-# parameter is a price.
+# The model and its prescribed prices are configuration that survives
+# set_drivers() and set_traits(), so this runs once per Leaf, not per row. It is
+# `leaf_solve()`'s only route to the price fields, which `leaf_traits()` cannot carry.
 .seat_model <- function(x, model, prices = NULL) {
   x$set_model(if (identical(model, "collar")) "TF24" else model,
               if (identical(model, "collar")) "collar" else "stem")
@@ -1236,25 +1052,17 @@ leaf_solve <- function(psi_soil,
   x
 }
 
-# Which price belongs to which curve, and the refusal when they are crossed.
-#
-# ⚠️ ONE TABLE, and it is the R-side twin of `.gradient_owned_pars`. Both say the
-# same thing -- this price belongs to that curve -- for the solve and for the
-# gradient respectively. If a third priced curve appears, both need the row.
-#
-# Passing a price the seated model does not read is REFUSED rather than ignored,
-# because silently ignoring it is how someone spends an afternoon wondering why
-# their lambda had no effect. Passing none is fine: the curve's own check is what
-# reports the omission, and it reports it with the units and the reason.
+# Which field belongs to which curve: the solve's twin of `.gradient_owned_pars`,
+# so a new priced curve needs a row in both. A price the seated model does not
+# read is refused, not ignored; an omitted one is reported by the curve itself.
 .solve_price_fields <- c(CF77 = "CF77_lambda_",
                          TF24_floor = "TF24_floor_lambda_o",
                          LeastCost = "LeastCost_beta")
 
-# The defaults of the owned fields that have one: aligned to TF24 by
-# align_curves(), and the R-side copy of the in-class initialisers in
-# leaf_model.hpp. `test-align-curves.R` asserts both against a fresh Leaf and
-# against a re-run of the alignment. `TF24_floor_lambda_o` has no default (see
-# align_curves()).
+# The defaults of the owned fields that have one: solved by align_curves(), and
+# the R copy of the in-class initialisers in leaf_model.hpp. test-align-curves.R
+# checks both against a fresh Leaf and a re-run of the alignment.
+# `TF24_floor_lambda_o` has none.
 .level_defaults <- c(CF77_lambda_ = 107750.8846,
                      LeastCost_beta = 51.59667042)
 
@@ -1277,11 +1085,9 @@ leaf_solve <- function(psi_soil,
   if (field %in% names(.level_defaults)) .level_defaults[[field]] else NA_real_
 }
 
-# ⚠️ THE THIRD ENTRY IS NOT A PRICE, and the message below branches on it
-# rather than calling it one. `CF77_lambda_` and `TF24_floor_lambda_o` are
-# marginal values of water; `LeastCost_beta` is a dimensionless ratio of two unit
-# costs, and least-cost's price of water is emergent FROM it. What the three share
-# is the only thing this table is for: a field one curve reads and no other has.
+# `LeastCost_beta` is a dimensionless ratio of unit costs, not a price of water,
+# so the refusal names it differently. What the three fields share is that one
+# curve reads each and no other does.
 .check_prices <- function(model, CF77_lambda, TF24_floor_lambda_o,
                           LeastCost_beta = NA_real_) {
   # A list, because leaf_gradient_batch() passes a column of `theta`, one value
@@ -1289,8 +1095,7 @@ leaf_solve <- function(psi_soil,
   given <- list(CF77_lambda_ = CF77_lambda,
                 TF24_floor_lambda_o = TF24_floor_lambda_o,
                 LeastCost_beta = LeastCost_beta)
-  # ⚠️ NOT `[[model]]`, which raises "subscript out of bounds" on every unpriced
-  # model rather than reporting no price. "" is a name no field has.
+  # Not `[[model]]`, which errors on an unpriced model; "" matches no field.
   mine <- if (model %in% names(.solve_price_fields)) {
     .solve_price_fields[[model]]
   } else {

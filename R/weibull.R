@@ -1,16 +1,7 @@
-# Converting published vulnerability curves to (P50, c).
-#
-# The model is parameterised on (P50, c) since the curve became
-# `f(psi) = 2^-(psi/P50)^c`. Published curves arrive as almost anything else: a
-# P88, a P95, a P50 plus a slope. All of it inverts in closed form, so the
-# conversion belongs here rather than in each study that needs it -- which is what
-# four hand-written copies of `psi_at_plc` downstream had become.
-#
-# ⚠️ EVERY POTENTIAL HERE IS A POSITIVE MAGNITUDE. Published P50 is negative
-# (-3.95 MPa); this package uses magnitudes throughout, so `P50` means `|P50|`.
-# A negative input is refused rather than silently negated, because a caller who
-# passes a signed value is working in the other convention and everything else they
-# pass is likely signed too.
+# Converting published vulnerability curves to (P50, c), the parameters of
+# `f(psi) = 2^-(psi/P50)^c`. ⚠️ `P50` means |P50| (hazard 2): a negative input is
+# refused, not negated, since a caller passing one is in the signed convention
+# throughout.
 
 # log2(1/f) for a remaining-conductivity fraction f. This is the only place the
 # quantile arithmetic lives.
@@ -221,9 +212,8 @@ weibull_p50_c <- function(P50 = NULL, P88 = NULL, P95 = NULL, P99 = NULL,
   invisible(TRUE)
 }
 
-# Two quantiles determine both parameters in closed form. ⚠️ They must be
-# DIFFERENT quantiles: two potentials at the same fraction either agree (no
-# information) or contradict each other, and the log ratio below is 0/0 either way.
+# Two quantiles determine both parameters in closed form. They must be at
+# different fractions, or the log ratio below is 0/0.
 .weibull_from_two_quantiles <- function(a, b) {
   La <- .weibull_L(a[["f"]])
   Lb <- .weibull_L(b[["f"]])
@@ -239,28 +229,11 @@ weibull_p50_c <- function(P50 = NULL, P88 = NULL, P95 = NULL, P99 = NULL,
   list(P50 = a[["psi"]] * La^(-1 / cc), c = cc)
 }
 
-# S50 with a non-P50 quantile is the one transcendental case: substituting
-# `P50 = psi_f * L^(-1/c)` into `S50 = K*c/P50` leaves c on both sides inside an
-# exponent.
-#
-# ⚠️ AND IT DOES NOT HAVE A UNIQUE SOLUTION. Written out,
-#
-#     S50(c) = K * c * L^(1/c) / psi_f
-#
-# and `d/dc [c*L^(1/c)] = L^(1/c) * (1 - ln(L)/c)`, which is zero at `c = ln L`.
-# So S50 is U-SHAPED in c with a minimum there, and any S50 above that minimum is
-# reproduced by TWO curves -- one on each branch. This was found by the round-trip
-# test failing with "no root in (0, 20]": both bracket ends were positive because
-# the true root sat in a dip between them.
-#
-# Each branch is searched separately, from the analytic turning point rather than a
-# guess. The UPPER branch is returned because that is where measured stems sit --
-# `ln L` is 1.46 for P95 and 1.12 for P88, against a measured angiosperm range of
-# 1.8-2.6 -- and the lower branch is reported so the caller knows it exists rather
-# than being handed one of two answers silently.
-#
-# When the quantile IS P50 the substitution collapses, `L = 1`, and there is no
-# root-find and no ambiguity. That is the common case and it stays exact.
+# S50 with a non-P50 quantile is transcendental in c and not unique:
+# `S50(c) = K * c * L^(1/c) / psi_f` is U-shaped with its minimum at `c = ln L`, so
+# each branch is searched from that turning point. The upper branch is returned,
+# being where measured stems sit (ln L is 1.12 for P88 and 1.46 for P95, stems
+# 1.8-2.6), and the lower is reported. At P50, `L = 1` and the answer is exact.
 .weibull_from_quantile_and_s50 <- function(q, S50) {
   if (!(is.numeric(S50) && length(S50) == 1L && is.finite(S50) && S50 > 0)) {
     stop("`S50` must be a single finite positive slope in % PLC per MPa; got ",

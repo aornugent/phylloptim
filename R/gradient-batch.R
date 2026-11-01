@@ -1,34 +1,14 @@
-# Trait gradients over many observations at once (#4).
+# Trait gradients over many observations in one crossing: leaf_batch() and
+# leaf_gradient_batch().
 #
-# WHAT THIS FILE IS FOR. `leaf_gradient()` in `gradient.R` computes one
-# observation's gradient in R, over primitives that are already C++. Measured
-# after #69 and #70, a four-parameter gradient costs ~237 us per observation and
-# the model work inside it is 6 us -- 1.5%. The other 98.5% is 112 crossings of
-# the R boundary and the interpreter around them. `tests/cpp/bench_gradient.cpp`
-# times the same composite in C++ at 1.8 us per trait.
+# The composite is transcribed into inst/include/phylloptim/gradient.hpp and
+# looped over observations there; this file gets a parameter matrix in and the
+# arrays out. The likelihood and the parameterisation Jacobian stay with the
+# caller, in R: a fit with P_fit > P_model applies its own chain rule.
 #
-# So the fix is not a faster gradient, it is ONE CROSSING. The composite is
-# transcribed into `inst/include/phylloptim/gradient.hpp` and looped over
-# observations there; this file is the surface that gets it a parameter matrix in
-# and three arrays out. For a 1,327-observation MCMC at 30,000 draws that is
-# ~2.6 h against ~7 min.
-#
-# ⚠️ WHAT STAYS IN R, AND WHY THAT IS NOT LAZINESS. The likelihood and the
-# parameterisation Jacobian. The likelihood is the CALLER's model -- sigma,
-# robustness, a hierarchy -- and putting one in C++ would commit this package to
-# it. The Jacobian belongs in R because that is where the win comes from:
-# a companion calibration study maps 40 fitted parameters onto 4 model ones, so C++ returns
-# dY/dtheta for the four and R applies a 40 x 4 chain rule, vectorised over
-# observations. That is exactly the `P_fit > P_model` structure
-# `vignette("fitting")` identified as where an exact gradient wins at all -- see
-# `gradient.R`'s header for the two cost laws and the retraction in each
-# direction that produced them.
-#
-# ⚠️ AND THE THING TO BE MOST CAREFUL ABOUT: the C++ composite is a SECOND
-# implementation of `leaf_gradient()`, so R remains the reference and the two are
-# required to agree BIT-FOR-BIT. `gradient.hpp`'s header records the three rules
-# that makes possible (literal arithmetic order, no fused multiply-add, explicit
-# call sequencing) and `test-gradient-batch.R` is what holds them.
+# R/gradient.R is the reference, and the C++ composite must agree with it
+# bit-for-bit; test-gradient-batch.R holds that, and R/gradient.R's header says
+# what it constrains.
 
 ##' The observations a batch gradient is taken over
 ##'
@@ -138,11 +118,8 @@ leaf_batch <- function(psi_soil,
 
   l <- leaf_model(traits, control, supply)
 
-  # ⚠️ `.resolve_drivers()` PER ROW, and it is the only place the driver defaults
-  # are applied. 1 m layers, the nominal networks, the single path's placeholder
-  # depth -- all of them live in `set_drivers()`'s resolver, and reimplementing
-  # any of them here or in C++ would create a second copy free to drift silently.
-  # It runs once per observation for the whole fit, not once per gradient.
+  # `.resolve_drivers()` per row: the only place the driver defaults are applied,
+  # so neither this file nor C++ keeps a second copy that could drift.
   resolved <- lapply(seq_len(n), function(i) {
     .resolve_drivers(l, layered[[i]], scalars$PPFD[[i]],
                      if (is.null(depths)) NULL else depths[[i]],
@@ -157,11 +134,9 @@ leaf_batch <- function(psi_soil,
   pick <- function(field) {
     vapply(resolved, function(a) a[[field]], numeric(1))
   }
-  # The two parameters that are DRIVERS: they are columns of `theta` rather than
-  # part of the prepared bundle, because a fit moves them. Their base values are
-  # read back out of the resolved drivers so that the default `theta` describes
-  # the point the batch was built at -- the same thing `.gradient_theta()` does
-  # for one observation.
+  # The two parameters that are drivers are columns of `theta`, not part of the
+  # prepared bundle, because a fit moves them; their base values come from the
+  # resolved drivers, as in `.gradient_theta()`.
   kmax <- pick("leaf_specific_conductance_max")
   resistance <- if (single) {
     vapply(resolved, function(a) a$root_network$r_R_V_sum[[1]], numeric(1))
@@ -333,20 +308,13 @@ leaf_gradient_batch <- function(batch,
   if (!(is.numeric(step) && length(step) == 1L && step > 0)) {
     stop("`step` must be a single positive number", call. = FALSE)
   }
-  # ⚠️ FIRST, before anything touches either handle. Both the drivers and the leaf
-  # are external pointers, so a batch that has been through `serialize()` -- via
-  # `saveRDS()`, or carried into a new session -- holds NULL ones, and the first
-  # read of either reports "external pointer is not valid". That is true and gives
-  # no hint that the fix is to rebuild, and it would come from whichever pointer
-  # Rcpp unwrapped first rather than from anywhere that could explain itself. The
-  # two are created together in `leaf_batch()`, so checking one covers both.
+  # First, before either handle is read: both are external pointers, NULL after
+  # serialize(), and the bare Rcpp error gives no hint to rebuild. They are
+  # created together, so checking one covers both.
   gradient_batch_check(batch$drivers)
 
-  # The supply path comes from the batch's record rather than from `batch$leaf`,
-  # which would be a second pointer read before the check above could speak. It
-  # was taken off the leaf when the batch was built, and the C++ side reads it off
-  # the leaf again per call -- so the value used to validate `pars` and the value
-  # the solve uses still have one source.
+  # The supply path from the batch's record, not `batch$leaf`, which would be a
+  # pointer read before the check above. It was taken off the leaf at build time.
   single <- identical(batch$supply_kind, "single")
   # The thermal-damage inputs are parameters only with the batch leaf's gate on.
   damage <- isTRUE(batch$leaf$use_thermal_damage_)
@@ -356,24 +324,19 @@ leaf_gradient_batch <- function(batch,
   }
   .gradient_check_pars(pars, single, model, damage)
 
-  # ⚠️ THE SAME ROUTE OBJECT `leaf_gradient()` USES, on the batch's own leaf, so
-  # the two entry points cannot disagree about which model a name selects, which
-  # step differencing its solve needs, or which supply path it requires. It is
-  # built for its VALIDATION and for `fd_step` rather than to be called: the loop
-  # lives in C++, and `gradient::route_seat` seats the model there.
+  # The same route object leaf_gradient() uses, so the two cannot disagree about
+  # what a model name selects, its `fd_step` or the supply path it needs. Built
+  # only for those; C++ seats the model itself (`gradient::route_seat`).
   route <- .gradient_route(batch$leaf, model, list(kind = batch$supply_kind))
-  # The one place an integer curve index survives, and it does not cross the R
-  # surface: `gradient::Settings::curve` is C++-internal, with -1 for the collar
-  # route. R callers name a model; C++ turns the name back into a `CostCurve`.
+  # The curve as an index into cost_curve_names(), -1 for the collar route:
+  # C++'s `gradient::Settings::curve`, never seen by an R caller.
   curve <- if (identical(model, .GRADIENT_COLLAR_ROUTE)) {
     -1L
   } else {
     as.integer(match(model, cost_curve_names()) - 1L)
   }
-  # ProfitMax's normaliser is cleared by `apply()` at every perturbation, so C++ has
-  # to put it back. The flag says RE-SOLVE it rather than hold it: `|A|max` is found
-  # by a root-find now, so letting it follow the traits makes the composite a total
-  # derivative. The name is a leftover; the value is a boolean in disguise.
+  # ProfitMax's normaliser is cleared at every perturbation, so C++ re-solves it,
+  # as `.gradient_route()` does in R. A boolean passed as a double.
   reseat_profitmax <- if (identical(model, "ProfitMax")) 1 else 0
 
   if (is.null(theta)) {
@@ -399,9 +362,8 @@ leaf_gradient_batch <- function(batch,
   dpsi_dtheta <- .gradient_dpsi_dtheta_batch(dpsi_dtheta, pars, batch$n,
                                              !is.null(psi))
 
-  # The classification (#57). One crossing, so one wrapper -- and the batch already
-  # reports per-row `status` for the failures it isolates itself, so this catches
-  # only what takes the whole call down.
+  # One crossing, one condition wrapper: per-row failures come back as `status`,
+  # so this catches only what takes the whole call down.
   res <- with_phylloptim_conditions(gradient_batch_run(batch$leaf, batch$drivers, theta,
                             match(pars, par_names) - 1L, step,
                             stationarity_tol, method, fast_stem_curve,
@@ -417,12 +379,9 @@ leaf_gradient_batch <- function(batch,
 
 # --- internals ---------------------------------------------------------------
 
-# The batch counterparts of `.gradient_check_psi()` and
-# `.gradient_dpsi_dtheta()`: one collar potential per observation, and one
-# dpsi/dtheta per observation per parameter. Recycling a length-1 `psi` across a
-# batch is deliberately NOT offered -- a batch whose rows share an imposed collar
-# is a coincidence rather than a design, and silently broadcasting one would make
-# a length mismatch look intentional.
+# The batch counterparts of `.gradient_check_psi()` and `.gradient_dpsi_dtheta()`.
+# A length-1 `psi` is not recycled: rows sharing an imposed collar is a
+# coincidence, and broadcasting one would make a length mismatch look intended.
 .gradient_check_psi_batch <- function(psi, n, method) {
   if (is.null(psi)) {
     return(NULL)
@@ -452,10 +411,8 @@ leaf_gradient_batch <- function(batch,
     stop("`dpsi_dtheta` is the trait response of a collar potential YOU ",
          "imposed, so it needs `psi`.", call. = FALSE)
   }
-  # Finite, for the reason `.gradient_dpsi_dtheta()` records: an infinite value
-  # returns an all-Inf row with a finite, plausible `profit` in it. Checked here
-  # as well as there because the MATRIX form never reaches that function -- only
-  # the named-vector form does, further down.
+  # Finite, for the reason `.gradient_dpsi_dtheta()` gives; checked here too
+  # because the matrix form never reaches it.
   if (!is.numeric(dpsi_dtheta) || !all(is.finite(dpsi_dtheta))) {
     stop("`dpsi_dtheta` must be numeric and finite -- no NA, NaN or Inf. It ",
          "is dpsi/dtheta for a collar YOU imposed; a non-finite value returns ",
@@ -489,28 +446,17 @@ leaf_gradient_batch <- function(batch,
   matrix(as.numeric(dpsi_dtheta), nrow = n, ncol = length(pars))
 }
 
-# `theta` from a leaf_traits() plus the batch's own conductance and resistance.
-# The counterpart of `.gradient_theta()`, which builds the same vector for one
-# observation -- and it reads the two non-traits back out of the resolved drivers
-# for the same reason that one does: theta has to hold the value the solve will
-# actually use.
-#
-# The two non-traits are `leaf_specific_conductance_max` and, on the
-# single-potential path only, `resistance`: both are DRIVERS that a calibration
-# fits like traits (#44), so the enumeration carries them after the traits.
+# `theta` from a leaf_traits() plus the batch's own conductance and resistance:
+# the counterpart of `.gradient_theta()`, reading the non-traits back out of the
+# resolved drivers so theta holds the value the solve uses.
 .gradient_theta_matrix <- function(batch, traits, damage = FALSE,
                                    model = NULL) {
   nr <- batch$theta_nrow
   par_names <- .gradient_par_names()
   m <- matrix(NA_real_, nrow = nr, ncol = length(par_names),
               dimnames = list(NULL, par_names))
-  # ⚠️ EVERY COLUMN IS ADDRESSED BY NAME, including the two non-traits. The traits
-  # always were; the tail two were written as `length(par_names)` and
-  # `length(par_names) - 1L`, which is correct only while they are the last two
-  # columns in that order. Appending a parameter -- which the enumeration is
-  # explicitly designed to allow -- silently wrote `kmax` into the new slot and
-  # `resistance` into `kmax`'s, with no length change to notice. Naming them
-  # removes the class rather than the instance.
+  # Every column by name (hazard 13): a positional tail column shifts silently
+  # when a parameter is appended.
   trait_names <- setdiff(par_names, .gradient_non_traits)
   tv <- unlist(traits)[trait_names]
   if (anyNA(tv)) {
@@ -522,9 +468,8 @@ leaf_gradient_batch <- function(batch,
   # NA on the multi-layer path, where there is no such parameter and C++ never
   # reads the column.
   m[, "resistance"] <- batch$resistance
-  # NA unless the batch was built for the route that owns the price; C++ reads
-  # both slots unconditionally, so each must hold whatever the solve will actually
-  # use.
+  # NA unless the batch was built for the route that owns it; C++ reads every
+  # slot, so each holds whatever the solve will use.
   m[, "CF77_lambda_"] <- batch$CF77_lambda
   m[, "TF24_floor_lambda_o"] <- batch$TF24_floor_lambda_o
   m[, "LeastCost_beta"] <- batch$LeastCost_beta
@@ -578,12 +523,10 @@ leaf_gradient_batch <- function(batch,
   m
 }
 
-# The prices in the columns the solve will read, checked as leaf_solve() checks
-# its arguments: a price the model does not read is refused, and the owned field
-# of a model with no default must be set on every row. The model is named only
-# in leaf_gradient_batch(), so this is the first place either can be checked;
-# left to C++, a missing price is a per-row error, which a fit reads as
-# observations that failed to solve.
+# The owned columns, checked as leaf_solve() checks its arguments: a price the
+# model does not read is refused, and the owned field of a model with no default
+# must be set on every row. Left to C++, a missing one is a per-row error, which
+# a fit reads as observations that failed to solve.
 .gradient_check_theta_prices <- function(m, model, par_names) {
   col <- function(field) m[, match(field, par_names)]
   .check_prices(model, col("CF77_lambda_"), col("TF24_floor_lambda_o"),

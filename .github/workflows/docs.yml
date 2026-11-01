@@ -83,10 +83,9 @@ jobs:
       # oracle is this job. Assert the shape here, where the message can name the
       # block, rather than leaving the next person to bisect the render.
       #
-      # ⚠️ It is the `///` blocks that break, NOT the `/*! \file */` one, and the
-      # difference is load-bearing rather than untested: closed_form.hpp's file
-      # block has carried two runs since long before this check, on a green
-      # master. Counting it too fails the build on code Doxygen renders happily.
+      # It is the `///` blocks that break, not the `/*! \file */` one: Doxygen
+      # 1.9 renders a file block with two runs, so counting it would fail the
+      # build on code Doxygen renders correctly.
       - name: Check no comment block opens two verbatim runs
         run: |
           set -eu

@@ -173,7 +173,7 @@ parameters:
     units: 'J mol⁻¹'
     class: hyperparameter
     meaning: 'activation energy of $V_{cmax}$'
-    source: 'Medlyn-2002 range; the constants.hpp comment says kJ'
+    source: 'Medlyn-2002 range'
     cite: Medlyn-2002
     placeholder: true
     code: phylloptim::Leaf::vcmax_ha_

@@ -1,28 +1,13 @@
-# Telling infeasibility apart from a caller error (#57).
+# Telling infeasibility apart from a caller error, so a fit's infeasible rows can
+# cost themselves rather than the whole likelihood, without matching message text,
+# which changes whenever an error message is improved.
 #
-# A parameter proposal during a fit WILL reach operating points the solve cannot
-# handle -- that is what an optimiser does -- and those rows have to cost themselves
-# rather than the whole likelihood evaluation. Until now every failure arrived as a
-# plain R error, so the only way to separate "this operating point is infeasible"
-# from "the driver column is all NA" was to match on message text.
-#
-# ⚠️ Message text is not a stable interface, and that is not hypothetical here: the
-# out-of-domain wording was rewritten by #65 and again by #79, and #92 added a third
-# variant. Any caller matching on prose was silently broken by each of those, and an
-# improvement to an error message should not break a fit.
-#
-# THE TWO LAYERS, and why it cannot be one. C++ tags the exit with a token in the
-# message (`util::stop_infeasible`, see util.hpp for why a derived C++ type is not
-# enough); R reads the token and re-signals with a condition class. The join could
-# not be at the boundary itself: that is RcppR6-generated and must not be
-# hand-edited, and `util.hpp` must not reach for Rcpp (hazard 9, enforced by CI
-# building the headers on runners with no R). So the classification lives where the
-# knowledge is and the translation lives here.
+# C++ tags an infeasible exit with a token in its message (`util::stop_infeasible`);
+# R reads the token and re-signals with a condition class. The join cannot be at
+# the boundary: that is RcppR6-generated, and util.hpp must not reach Rcpp (hazard 9).
 
-# The token C++ writes. Kept in one place because the test suite asserts that the
-# codes appearing in the installed headers are exactly the ones documented below --
-# a code added in C++ and not here would otherwise be an undocumented part of the
-# API that a caller discovers from a failure.
+# The token C++ writes. test-conditions.R asserts that the codes in the installed
+# headers are exactly those of leaf_infeasible_codes().
 .infeasible_pattern <- "^\\[phylloptim:infeasible:([a-z_]+)\\]\\s*"
 
 ##' Which failures are reported as infeasible
@@ -161,10 +146,8 @@ with_phylloptim_conditions <- function(expr) {
   })
 }
 
-# `phylloptim_error` sits between the specific class and `error` so that a caller can
-# catch everything this package classifies without enumerating codes, and so that a
-# future second category (there is no second category yet) does not need every
-# existing handler rewritten.
+# `phylloptim_error` sits between the specific class and `error`, so a caller can
+# catch everything this package classifies without enumerating codes.
 .infeasible_condition <- function(e, code) {
   structure(
     class = c("phylloptim_infeasible", "phylloptim_error", "error", "condition"),

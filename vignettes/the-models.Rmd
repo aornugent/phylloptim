@@ -1016,6 +1016,24 @@ Because it is an optimum, there are two things `dY/dθ` could mean for this curv
 
 `method = "ift"` remains available for anyone who wants the partial deliberately. No other curve carries this distinction, because no other curve normalises by a quantity that is itself solved for.
 
+## The energy-balance term
+
+With the energy balance on, ψ reaches profit by two routes beyond the two the gate-off derivative already carries, both through the leaf temperature: directly, ψ → ψ_stem → E → T_leaf → the temperature responses → A; and indirectly, through the c_i root-find, whose residual reads the temperature-dependent members and so gains an explicit T argument. `dprofit_energy_balance_term()` adds both, and subtracts the temperature slope of the two costs that read the leaf temperature (ProfitMax's thermal cost and LeastCost's capacity term); `dprofit_dpsi_stem()` and `dprofit_at_collar_psi()` call it, and it is exactly zero with the gate off. Below, $A_T=\partial A/\partial T$ at fixed $c_i$ and $A'=\partial A/\partial c_i$ at fixed temperature (not the $d A/d\psi$ written $A'$ earlier on this page).
+
+The c_i solve finds the root of
+
+$$g(c_i;\psi_{\rm stem},\psi,T)=A(c_i,T)\,u-g_c(T)\,(c_a-c_i)\,a=0,$$
+
+with $u$ the µmol-to-mol factor and $a$ the inverse of atmospheric pressure. So $g_T=A_T u-g_c'(T)(c_a-c_i)a$, $g_{c_i}=A' u+g_c a$, and $dc_i/dT=-g_T/g_{c_i}$. The total temperature slope of assimilation is then
+
+$$\frac{dA}{dT}=A_T+A'\frac{dc_i}{dT}=\frac{A_T\,g_c a+A'\,g_c'(T)\,(c_a-c_i)\,a}{g_{c_i}},$$
+
+and the term added to $dJ/d\psi$ is that slope times $\tau=(dT/dE)(dE/d\psi)$, through the curve's link $h'(A)$.
+
+Two checks come free. At $g_c'(T)=0$ the slope is $A_T$ times the damping factor $g_c a/g_{c_i}$, which lies strictly in (0, 1): the direct thermal effect is partly undone as $c_i$ re-equilibrates, so an implementation returning more than $|A_T\tau|$ is wrong. And $dE/d\psi>0$ while $dT/dE<0$, so $\tau<0$: above the thermal optimum ($A_T<0$) the term is positive and moves the optimum drier, toward more transpiration, because the extra flux buys evaporative cooling. That is the decoupling mechanism, and its sign is the sharpest test of the term.
+
+$g_c'(T)$ is not zero, and a form that puts it under $A_T$ rather than under $A'$ agrees with the one above only at $g_c'(T)=0$, so it passes every test written while that slope was zero.
+
 # Appendix C — numerical practice
 
 Three facts about this model that decide whether a number you compute from it means anything. All three are consequences of the same thing — the objective is flat where it matters — seen from three distances: in the value itself, in a difference of it, and in a derivative of its argmax.

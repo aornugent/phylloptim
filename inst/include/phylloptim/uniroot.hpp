@@ -2,8 +2,9 @@
 #ifndef PHYLLOPTIM_UNIROOT_HPP_
 #define PHYLLOPTIM_UNIROOT_HPP_
 
-// Really simple wrapper around Boost's 1d root finding with bisection
-// method.
+// Boost's one-dimensional root-finders: `uniroot` (bisection) and `uniroot_smooth`
+// (TOMS748). Each takes a bracket with opposite signs at its ends, and running out
+// of max_iterations is infeasible ("root_find_iterations"), not a caller error.
 
 #include <boost/math/tools/roots.hpp>
 #include <phylloptim/util.hpp>
@@ -22,7 +23,8 @@ struct uniroot_tol {
 };
 }
 
-// Wrapper around boost's root finder as a black-box function.
+// Bisection, for a target with no smoothness to exploit. Returns the midpoint of
+// the final bracket.
 template <typename Function>
 double uniroot(Function f, double min, double max, double tol,
                size_t max_iterations) {
@@ -38,35 +40,12 @@ double uniroot(Function f, double min, double max, double tol,
   return (root.first + root.second) / 2.0;
 }
 
-// Faster root finder for SMOOTH, monotonic functions (TOMS748 / Brent-like).
-//
-// Drop-in replacement for uniroot() with the same [min, max] bracketing
-// contract (f(min) and f(max) must have opposite signs). For smooth functions
-// TOMS748 converges super-linearly (~5-8 evals) versus bisection's ~one bit per
-// iteration, so it is attractive for deeply nested, expensive-per-eval solvers.
-//
-// HISTORY (empirical, root_water_uptake branch, #486): an early *blanket* swap
-// of this for util::uniroot across BOTH nested leaf hydraulic root-finds at once
-// destabilised the coupled soil-water ODE (NaN soil potentials, slower overall),
-// which was first read as "the hydraulic path is too non-smooth for a
-// superlinear solver". That conclusion was too broad. Re-examined target by
-// target, both leaf solvers are in fact smooth and strictly monotone over the
-// brackets they are actually handed, and both now use this solver at their
-// existing tolerances (same root, fewer evals):
-//   * psi_stem_to_ci (Phase 6): A_colim demand minus the linear gc supply over
-//     (gamma*, ca]; ~29 -> ~9 evals at 1e-7.
-//   * find_root_psi (Phase 8): the soil->collar continuity residual over
-//     [-psi_crit, wettest_soil_layer]; ~15-16 -> ~6-8 evals at 1e-4. Its
-//     brackets are guaranteed opposite-sign/finite by find_root_collar_psi's
-//     early-exits.
-// The genuine non-smoothness (vulnerability-curve clamps, near-flat regions)
-// lives in
-// E_from_Soil_to_Root_Collar itself, NOT in the root-finders, and would break
-// bisection too. So: use this where the target is smooth and well-behaved across
-// the whole bracket -- which the leaf solvers are, on their operating brackets.
-// One gotcha vs bisect: this validates its bracket and THROWS on non-finite or
-// same-sign endpoints where boost::bisect returned NaN silently (guard upstream
-// if a finite-but-degenerate bracket can occur; see psi_stem_to_ci's NA guard).
+// TOMS748, for a target smooth and monotone across the whole bracket: same
+// contract as uniroot(), in a handful of evaluations where bisection gains one bit
+// per step. Judge smoothness target by target, on the bracket actually handed in:
+// the leaf's ci, soil-to-collar and collar residuals qualify. Unlike boost::bisect it
+// throws on a non-finite or same-sign bracket, so guard upstream wherever a
+// degenerate bracket can occur.
 template <typename Function>
 double uniroot_smooth(Function f, double min, double max, double tol,
                       size_t max_iterations) {
@@ -81,17 +60,9 @@ double uniroot_smooth(Function f, double min, double max, double tol,
   return (root.first + root.second) / 2.0;
 }
 
-// Same solver, for a caller that has ALREADY evaluated both endpoints.
-//
-// This exists for the collar solve (Leaf::maximise_profit_over_collar), which has
-// to evaluate f at both ends anyway -- it must know the signs there to tell an
-// interior optimum from one pinned to a constraint, and it must step the wet end
-// past dprofit's infeasibility sentinel. Handing those two values back saves 2 of
-// ~12 evaluations per solve, and a collar gradient evaluation is not cheap: each
-// one carries a nested ci root-find. Worth the overload on a path plant runs
-// millions of times.
-// The final bracket rather than its midpoint, for a caller that needs the root
-// from one side: f(first) and f(second) differ in sign (or one is zero).
+// Same solver, given f at both ends, returning the final bracket rather than its
+// midpoint for a caller that needs the root from one side: f(first) and f(second)
+// differ in sign (or one is zero).
 template <typename Function>
 std::pair<double, double> uniroot_smooth_bracket(Function f, double min,
                                                  double max, double f_min,
@@ -108,6 +79,9 @@ std::pair<double, double> uniroot_smooth_bracket(Function f, double min,
   return root;
 }
 
+// Same solver, for a caller that has already evaluated both ends, as the collar
+// solve must to classify its optimum: saves two evaluations, each carrying a
+// nested ci root-find.
 template <typename Function>
 double uniroot_smooth(Function f, double min, double max, double f_min,
                       double f_max, double tol, size_t max_iterations) {

@@ -2,49 +2,26 @@
 #ifndef PHYLLOPTIM_GRADIENT_HPP_
 #define PHYLLOPTIM_GRADIENT_HPP_
 
-// Trait gradients, composed here rather than in R (#4).
+// Trait gradients composed in C++: R/gradient.R's `.gradient_ift()` and
+// `.gradient_fd()` transcribed, plus a loop over observations. From R, dispatch
+// rather than the model dominates a gradient's cost, so this crosses the
+// boundary once per likelihood evaluation, not once per parameter per
+// observation. It returns dY/dtheta for the model parameters; the likelihood and
+// the caller's parameterisation Jacobian stay with the caller.
 //
-// WHAT THIS IS. A transcription of R/gradient.R's `.gradient_ift()` and
-// `.gradient_fd()` into C++, plus a loop over observations. It computes exactly
-// what `leaf_gradient()` computes and returns the same six things; the whole
-// point of it is that a four-parameter gradient crosses the R boundary ONCE
-// instead of 112 times.
+// R/gradient.R is the reference, and the two must agree bit for bit: a
+// tolerance would let a transcription slip hide inside the solver's ~1e-9
+// floor. Three rules make that possible:
 //
-// WHY, measured. After #69 and #70 a four-parameter gradient from R costs
-// ~237 us per observation, of which the C++ model work -- two solves -- is
-// 6 us, or 1.5%. The other 98.5% is dispatch and the R interpreter.
-// `tests/cpp/bench_gradient.cpp` times the same composite here at 1.8 us per
-// trait. For a 1,327-observation MCMC that is the difference between hours and
-// minutes, and it is why the entry point is vectorised over OBSERVATIONS: one
-// crossing per likelihood evaluation, not one per parameter per observation.
+//   1. R's arithmetic order is kept literally: `-((up - dn) / (2 * h)) / H` is
+//      not rewritten as `(dn - up) / (2 * h * H)`.
+//   2. No fused multiply-add; see `rounded()`.
+//   3. The call order is sequenced explicitly. `f(a) - f(b)` has unspecified
+//      operand order in C++ and left-to-right in R, and these `f`s mutate the
+//      leaf, so every difference names its two halves first.
 //
-// ⚠️ WHAT IT DELIBERATELY IS NOT: a likelihood. The likelihood is the caller's
-// model -- sigma, robustness, hierarchy -- and baking one in would commit this
-// package to it. This returns dY/dtheta for the FOUR model parameters a leaf
-// has; the caller's parameterisation Jacobian (one study maps 40 fitted
-// parameters onto 4 model ones) stays in R, vectorised over observations, where
-// it is cheap. That split is the `P_fit > P_model` structure
-// `vignette("fitting")` identified as where the exact gradient wins at all.
-//
-// ⚠️⚠️ THIS IS A SECOND IMPLEMENTATION OF AN ALGORITHM THAT ALREADY EXISTS, and
-// that is the risk that dominates everything else here. R/gradient.R stays as
-// the reference and the two must agree BIT-FOR-BIT, not closely -- a tolerance
-// would let a transcription slip hide inside the solver's ~1e-09 floor. Three
-// rules follow, and all three are load-bearing:
-//
-//   1. R's ARITHMETIC ORDER IS KEPT LITERALLY, including where a division could
-//      be folded into a neighbouring one. `-((up - dn) / (2 * h)) / H` is not
-//      rewritten as `(dn - up) / (2 * h * H)`.
-//   2. NO FUSED MULTIPLY-ADD. See `rounded()` below; `a + b * c` written as one
-//      expression compiles to `fmadd` on arm64 and differs from R's two
-//      roundings on 28% of random triples, which is a 1e-16 disagreement in a
-//      test that asserts equality.
-//   3. THE CALL ORDER IS SEQUENCED EXPLICITLY. `f(a) - f(b)` has unspecified
-//      operand order in C++ and left-to-right order in R, and these `f`s mutate
-//      the leaf. Every difference below names its two halves first.
-//
-// `tests/testthat/test-gradient-batch.R` is what holds that, over both supply
-// paths, both methods and the pinned and shut-down rows.
+// `tests/testthat/test-gradient-batch.R` holds this over both supply paths,
+// both methods and the pinned and shut-down rows.
 
 #include <phylloptim/leaf_model.hpp>
 #include <phylloptim/roots.hpp>
@@ -61,8 +38,8 @@
 namespace phylloptim {
 namespace gradient {
 
-// Re-exported here under the names this namespace's callers already use, so the
-// move is not a rename. One definition, in the model; two ways to reach it.
+// The parameter indices, defined in leaf_model.hpp beside the set_traits whose
+// argument order they are, reachable under this namespace too.
 using phylloptim::n_traits;
 using phylloptim::par_vcmax_25;   using phylloptim::par_stem_c;
 using phylloptim::par_stem_P50;   using phylloptim::par_root_c;
@@ -86,27 +63,14 @@ using phylloptim::par_c_repair_maint; using phylloptim::par_c_protect_maint;
 using phylloptim::par_c_repair_flux;
 using phylloptim::par_PPFD;
 
-// The parameter enumeration now lives in leaf_model.hpp, beside the set_traits
-// whose argument order it IS. It was here while only this file indexed it; the
-// differentiable surface indexes it too, and a list two headers can disagree
-// about is the hazard the comment above it warns of.
-
-// How long `theta` is: one entry per `par_names()` below, indexed by the same
-// enumeration.
-//
-// ⚠️ NOT `n_leaf_pars`, WHICH IS LONGER. The pack the leaf's kernels read also holds
-// slots a calibration never proposes -- the light a cohort stands in is seated
-// from the drivers -- so reading `theta` out to `n_leaf_pars` runs past its end. The
-// proposed slots come FIRST in the enumeration and `par_PPFD` is where they stop,
-// which is why this is spelled as that index rather than as a count to keep in
-// step by hand.
+// How long `theta` is: one entry per par_names(), the slots a calibration
+// proposes, which come first in the enumeration and stop at par_PPFD.
+// ⚠️ Not n_leaf_pars, which also counts par_PPFD (hazard 12).
 inline constexpr int n_theta = par_PPFD;
 
-// ⚠️ THESE ARE THE SLOTS A CALIBRATION PROPOSES, which is fewer than the pack
-// holds: `par_PPFD` is seated per cohort or per observation from the drivers and
-// is never fitted, so it has a slot in the enumeration and no name here. R's
-// `.gradient_par_names()` is compared against this list by
-// `test-gradient-batch.R`, so the two cannot drift apart without a failure.
+// The proposed slots' names. par_PPFD is seated from the drivers and never
+// fitted, so it has none. Append, never reorder (hazard 13);
+// test-gradient-batch.R compares R's `.gradient_par_names()` with this list.
 inline const std::vector<std::string>& par_names() {
   static const std::vector<std::string> names{
       "vcmax_25",  "stem_c",              "stem_P50",
@@ -127,17 +91,10 @@ inline const std::vector<std::string>& par_names() {
 
 // --- the five differentiated outputs ------------------------------------------
 //
-// A, gc, psi_stem, collar and profit, in that order, which is R's
-// `.gradient_output_names`. `collar` is psi* itself, which is what makes
-// dcollar/dtheta equal dpsi*/dtheta and lets the two routes below compute the
-// same quantity by different means.
-//
-// ⚠️ APPENDING IS SAFE AND REORDERING IS NOT, exactly as for `par_names` above.
-//
-// The first four are what a gas-exchange calibration OBSERVES. `profit` is here
-// because it is what plant CONSUMES: `leaf.profit_`, not `assim_colimited_`, is
-// the carbon that reaches its mass budget, so until #87 the two sets were
-// disjoint and no gradient this package produced reached a demographic model.
+// A, gc, psi_stem, collar and profit, in R's `.gradient_output_names` order:
+// append, never reorder. `collar` is psi* itself, so dcollar/dtheta is
+// dpsi*/dtheta. The first four are what a gas-exchange calibration observes;
+// `profit` is the carbon plant's mass budget consumes.
 inline constexpr int n_outputs = 5;
 inline constexpr int out_psi_stem = 2;
 inline constexpr int out_collar = 3;
@@ -149,36 +106,19 @@ inline const std::vector<std::string>& output_names() {
   return names;
 }
 
-// Read straight off the members rather than through `operating_point_values()`,
-// which is what R has to use. Bit-identical: that reader copies these same five
-// fields into positions 3, 5, 0, 1 and 6 of its twelve, and the three columns it
-// computes rather than copies (uptake, lambda, g1_eff) are not among them.
-//
-// ⚠️ That is why `profit` was cheap to add here and `uptake` would not be. Every
-// output in this list has to be a field R COPIES; `uptake` is one R sums over
-// the finite soil layers, so adding it means reproducing that summation -- and
-// its order -- on this side too.
 // --- which model's optimum is being differentiated ---------------------------
 //
-// `kCollar` is the production path: the TF24 cost maximised over the root-collar
-// potential, which is what this file did unconditionally. Anything >= 0 is a
-// `Leaf::CostCurve` value and selects a STEM route -- psi_stem with the upstream
-// potential pinned at psi_soil.
-//
-// ⚠️ THE COLLAR BRANCH IS TEXTUALLY WHAT IT ALWAYS WAS. These wrappers exist so
-// the six call sites below stop naming a solver, not to change one: the collar
-// arms call exactly the same functions in the same order, which is what keeps the
-// R-versus-C++ bit-for-bit contract and the golden files intact.
+// `kCollar` is the production path, the TF24 cost maximised over the collar
+// potential; anything >= 0 is a `Leaf::CostCurve` and selects a stem route
+// (psi_stem with the upstream potential pinned at psi_soil). The wrappers below
+// only choose a route: changing what a collar arm calls, or its order, breaks
+// the bit-for-bit contract with R and the golden files.
 inline constexpr int kCollar = -1;
 
-// Seat the model on the leaf ONCE, at the top of a gradient, rather than naming a
-// curve at each of the calls below. `Settings::curve` is still an int here --
-// nothing outside this file sees it -- but the Leaf's own API takes names only, so
-// this is the single place the two representations meet.
-//
-// ⚠️ SEAT IT EVEN ON THE PRESCRIBED PATH, which never calls `route_solve`. The
-// stem entry points read the seated curve, so without this a prescribed gradient
-// would silently differentiate whatever model the leaf was last used for.
+// Seat the model once, at the top of a gradient: the one place the int
+// `Settings::curve` meets the Leaf's named API. Seated on the prescribed path
+// too, which never calls route_solve, because the stem entry points read the
+// seated curve and would otherwise differentiate the leaf's last model.
 inline void route_seat(Leaf& l, int curve) {
   l.set_model(curve < 0 ? Leaf::CostCurve::TF24
                         : static_cast<Leaf::CostCurve>(curve),
@@ -221,11 +161,9 @@ inline bool route_evaluate_feasible(Leaf& l, int curve, double psi) {
   return true;
 }
 
-// ⚠️ THE FLAG IS THE POINT; the unchecked form is this with a null. Both routes
-// return a hard 0.0 SENTINEL on their shut-down and reversed-gradient exits, and a
-// bare zero is indistinguishable from a stationary point -- see
-// Leaf::dprofit_droot_collar_psi's header. There used to be two functions here,
-// the shorter one being a call to the longer with `nullptr`; there is one now.
+// dprofit with its feasibility: both routes return a hard 0.0 sentinel on their
+// shut-down and reversed-gradient exits, which a bare value cannot tell from a
+// stationary point (Leaf::dprofit_droot_collar_psi).
 inline double route_dprofit_checked(Leaf& l, int curve, double psi,
                                     bool* feasible = nullptr) {
   if (curve < 0) {
@@ -242,14 +180,16 @@ inline double route_dprofit(Leaf& l, int curve, double psi) {
   return route_dprofit_checked(l, curve, psi, nullptr);
 }
 
-// ⚠️ WHICH OUTPUT IS THE DECISION VARIABLE MOVES WITH THE ROUTE. On the collar
-// route `collar` IS psi*, so `dcollar/dtheta` is `dpsi* / dtheta` and assigned
-// rather than differenced. On a stem route `psi_stem` plays that part and the
-// collar is never solved for.
+// The output that is the decision variable, whose derivative is dpsi*/dtheta,
+// assigned rather than differenced: `collar` on the collar route, `psi_stem` on
+// a stem route, where the collar is never solved for.
 inline int route_decision(int curve) {
   return curve < 0 ? out_collar : out_psi_stem;
 }
 
+// Read straight off the members, where R reads operating_point_values(), which
+// copies these same fields: bit-identical. An output R computes rather than
+// copies (uptake, a sum over layers) would need that sum reproduced here.
 inline void outputs(const Leaf& l, double* y) {
   y[0] = l.assim_colimited_;
   y[1] = l.stom_cond_CO2_;
@@ -258,11 +198,9 @@ inline void outputs(const Leaf& l, double* y) {
   y[4] = l.profit_;
 }
 
-// The outputs with the collar held at `psi` rather than optimised. False when
-// the leaf refuses `psi` as outside the feasible interval, so that a stencil
-// reaching past an end is detected rather than differenced one-sidedly over a
-// shorter interval -- the same class of error as differentiating at a pinned
-// optimum, and just as plausible-looking.
+// The outputs with the collar held at `psi`. False where the leaf refuses `psi`
+// as infeasible, so a stencil reaching past an end is detected rather than
+// differenced one-sidedly over a shorter interval.
 inline bool outputs_at(Leaf& l, double psi, double* y, int curve = kCollar) {
   if (!route_evaluate_feasible(l, curve, psi)) {
     return false;
@@ -272,58 +210,38 @@ inline bool outputs_at(Leaf& l, double psi, double* y, int curve = kCollar) {
 }
 
 // The product, rounded, so that `a + rounded(b * c)` is two IEEE operations and
-// never one fused multiply-add.
-//
-// ⚠️ THIS IS NOT DEFENSIVE, IT IS REQUIRED. `direct + dY_dpsi * dpsi_dtheta` as
-// one expression compiles to a single `fmadd` on arm64 -- clang contracts within
-// an expression by default, gcc contracts across statements -- and the fused
-// result differs from R's two roundings. Measured over 2,000,000 random triples:
-// the contracted form disagrees on 565,762 of them, i.e. 28%. Every one of those
-// is a last-bit difference in a test whose whole value is that it asserts
-// equality. A named intermediate is enough under clang and not under gcc's
-// `-ffp-contract=fast`, so the barrier is a volatile store, which the standard
-// guarantees rounds. It costs a store and a load per output per parameter,
-// against ~2.5 us of solving.
+// never one fused multiply-add. Required: `direct + dY_dpsi * dpsi_dtheta`
+// contracts to one `fmadd` on arm64 (clang within an expression, gcc across
+// statements), which differs from R's two roundings in the last bit on 28% of
+// random triples. A named intermediate does not stop gcc's
+// `-ffp-contract=fast`; a volatile store does, because the standard makes it round.
 inline double rounded(double x) {
   volatile double v = x;
   return v;
 }
 
-// The step: relative to the parameter for values above 1, and plain `step`
-// below it. The floor is at 1, which is deliberate rather than an epsilon --
-// traits here span `phi_J` = 0.35 to `jmax_25` = 157.44, and a strictly relative step
-// would perturb the small ones so little that the difference is dominated by the
-// solve's ~1e-09 noise.
-//
-// ⚠️ That floor is WRONG for a parameter whose natural magnitude is far below 1,
-// and `leaf_specific_conductance_max` is: it defaults to 3.14e-05, so flooring
-// at 1 would perturb it by 3% and measure a secant across a range over which the
-// model is visibly nonlinear. Those two get a plain relative step. For
-// `resistance` (~1e3 and up) the two rules coincide; it is listed for the reason
-// rather than for the arithmetic.
+// The step: relative to the parameter above 1 and plain `step` below it, so a
+// small trait (phi_J = 0.35) is not perturbed into the solve's ~1e-9 noise.
+// kmax and resistance take a plain relative step: floored at 1, kmax (3.14e-5)
+// would move 3% and measure a secant across visible curvature.
 inline double step_for(int par, double value, double step) {
   const double floor =
       (par == par_kmax || par == par_resistance) ? 0.0 : 1.0;
   return std::max(std::abs(value), floor) * step;
 }
 
-// Where the stencil is centred. `g_min` is refused below zero and defaults to
-// zero, so a central difference about its base value would step onto a negative
-// residual conductance; the stencil is shifted up by one step there, so both
-// of its points are admissible and the difference is the derivative at
-// `g_min = h`. Any other parameter is centred on its value. The twin of
-// `.gradient_centre()` in R/gradient.R, bit for bit.
+// Where the stencil is centred: on the value, except that `g_min` is refused
+// below zero and defaults to zero, so there the stencil shifts up one step and
+// differentiates at g_min = h. The twin of R's `.gradient_centre()`, bit for bit.
 inline double centre_for(int par, double value, double h) {
   return (par == par_g_min && value - h < 0.0) ? value + h : value;
 }
 
 // --- one observation's drivers ------------------------------------------------
 //
-// Everything `set_physiology` takes except the two entries a perturbation can
-// move, which come out of `theta`. Held C++-side and resolved once, because a
-// `RootNetwork` costs 60-100 us to hand across the R boundary -- 60 times a
-// trivial `.Call` -- so building one per observation per likelihood evaluation
-// would cost more than the gradient it was carrying.
+// Everything set_physiology takes except kmax and resistance, which come out of
+// `theta`. Held C++-side and resolved once, because handing a RootNetwork
+// across the R boundary costs more than the gradient it carries.
 struct Drivers {
   RootNetwork root_network;
   double PPFD = 0.0;
@@ -338,22 +256,15 @@ struct Drivers {
 
 enum class Method { Auto, Ift, Fd };
 
-// What the OPERATING POINT is, not whether the call worked -- except for `Error`,
-// which is the batch's per-row failure and is the reason this is a status rather
-// than an exception (see `batch` below).
-// `Prescribed` and `Refused` are the two the caller-supplied-psi path can end in
-// (#88): the collar was imposed, and in the second case it, or the stencil
-// about it, fell outside the feasible interval, so no derivative is reported.
-// ⚠️ APPEND AFTER `Error`, DO NOT INSERT BEFORE IT. The names are
-// source-compatible either way, but the VALUES are not: a consumer holding the
-// integer would break quietly if `Error` moved from 3 to 5. `Prescribed` and
-// `Refused` are therefore last, out of narrative order, on purpose.
+// What the operating point is, not whether the call worked, except `Error`, the
+// batch's per-row failure (see `batch`). `Prescribed` and `Refused` end the
+// caller-supplied-psi path: the collar was imposed, and for `Refused` it, or
+// the stencil about it, fell outside the feasible interval. Append only: a
+// consumer holding the integer breaks quietly if a value moves.
 enum class Status { Interior, Pinned, NoGradient, Error, Prescribed, Refused };
 
-// ⚠️ NO `default:`. An exhaustive switch turns the next member added here into a
-// compiler diagnostic; a `default: return "error"` would silently LABEL it
-// "error" instead, which is exactly the kind of quiet mislabelling `Prescribed`
-// and `Refused` were added to avoid.
+// No `default:`, so a new Status is a compiler diagnostic rather than silently
+// labelled "error".
 inline std::string status_name(Status s) {
   switch (s) {
     case Status::Interior:   return "interior";
@@ -371,31 +282,22 @@ struct Settings {
   double stationarity_tol = 1e-8;
   Method method = Method::Auto;
   bool fast_stem_curve = true;
-  // Which model's optimum to differentiate. `kCollar` is the production path and
-  // the default, so an existing caller is unaffected.
+  // Which model's optimum to differentiate; `kCollar`, the production path, by
+  // default.
   int curve = kCollar;
-  // ⚠️ THE STEP THE FINITE-DIFFERENCE ARM USES, separately from `step`. That arm
-  // differences the SOLVE, so it has to clear the solver's own resolution: the
-  // collar route root-finds `dprofit == 0` to ~1e-15, while the stem routes scan
-  // and refine to ~1e-06 of the bracket. Differencing a stem solve at 1e-06
-  // returns quantisation -- measured, the wrong SIGN for JW26. `step` still drives
+  // The finite-difference arm's step, separate from `step`: that arm re-solves,
+  // so its step must clear the solver's resolution (hazard 15). `step` drives
   // the composite, which perturbs at fixed psi and never re-solves.
   double fd_step = 1e-6;
-  // |A|max held fixed across perturbations, for ProfitMax's `Scaled` link. Zero
-  // means "not pinned"; the caller seeds it from the base solve.
-  // ProfitMax only: re-solve `|A|max` after each perturbation, because `apply()`
-  // clears it. Named for what it does rather than for a value to hold, since
-  // holding one is exactly what made this a partial derivative.
+  // ProfitMax only: re-solve |A|max after each perturbation, because `apply()`
+  // clears it; holding it fixed would make the gradient a partial derivative.
   bool resolve_profitmax = false;
 };
 
-// A collar potential the caller imposes, in place of the one `at` would solve
-// for, plus how that collar responds to each parameter (#88).
-//
-// ⚠️ `dpsi_dtheta` is npars long and in `pars` order, NOT n_theta: it is one value
-// per parameter ASKED FOR, because that is the vector a caller integrating its
-// own sensitivity state is carrying. Null means zero -- the partial at fixed
-// collar -- which is a different statement from the solving path's "derive it".
+// A collar potential the caller imposes in place of the solved one, and how it
+// responds to each parameter. `dpsi_dtheta` is npars long in `pars` order, not
+// n_theta; null means zero (the partial at fixed collar), which is not the
+// solving path's "derive it".
 struct Prescribed {
   double psi = 0.0;
   const double* dpsi_dtheta = nullptr;
@@ -411,10 +313,9 @@ struct Result {
   bool used_ift = false;
   double H = util::na_value;
   double stationarity = util::na_value;
-  // The mixed partials d2profit/dpsi dtheta, npars long, and dY/dpsi at fixed
-  // traits. Kept rather than consumed: `-M/H` is what the composite needs, but M
-  // and H are also the coefficients of a caller's own sensitivity ODE for psi
-  // (traitecoevo/plant#614), and they cannot be recovered once divided.
+  // d2profit/dpsi dtheta (npars long) and dY/dpsi at fixed traits: kept, being
+  // also the coefficients of a caller's own sensitivity ODE for psi, which
+  // cannot be recovered from -M/H.
   std::vector<double> M;
   double dY_dpsi[n_outputs];
   // The collar the outputs were evaluated at -- psi* when solved, the requested
@@ -440,27 +341,18 @@ struct Result {
 
 // --- pushing a parameter vector back onto the leaf ----------------------------
 //
-// ⚠️ ORDER IS LOAD-BEARING, which is why this is one function rather than three
-// lines at each call site. `set_traits()` returns the leaf to its
-// just-constructed state, so the drivers have to be re-supplied AFTER it -- and
-// `set_physiology()` is what re-derives vcmax_/jmax_/R_d_ behind the temperature
-// cache `set_traits()` has just cleared. Setting the traits and then the drivers
-// in the other order runs the whole gradient at the first vcmax the object ever
-// saw, and reports plausible numbers throughout.
-//
-// `only` names the single parameter that has moved, or -1 for "all of them".
+// ⚠️ Order is load-bearing (hazard 10): set_traits() returns the leaf to its
+// just-constructed state, so the drivers are re-supplied after it, and
+// set_physiology() re-derives vcmax_/jmax_/R_d_ behind the temperature cache
+// set_traits() cleared. The other order runs the whole gradient at the first
+// vcmax the object saw. `only` is the single parameter that moved, or -1 for all.
 inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
                   int only, bool fast_stem_curve) {
-  // THE FAST PATH FOR stem_P50. The stem table depends on stem_c alone, so a
-  // perturbed P50 needs nothing rebuilt and nothing re-seated: perturb_stem_P50
-  // moves the trait and its two derived potentials and leaves the physiology in
-  // place, where set_traits would clear it.
-  //
-  // ⚠️ Sound only because `only` names a SINGLE parameter, so everything else in
-  // `theta` is still what the object was last set to. That is true here and
-  // nowhere else, which is why the argument exists rather than the function
-  // guessing. The restore goes through set_traits below, which recomputes
-  // stem_b by the same expression and so returns it to the base bit pattern.
+  // The stem_P50 fast path: the stem table depends on stem_c alone, so
+  // perturb_stem_P50 moves the trait and its derived potentials and leaves the
+  // physiology seated. Sound only because `only` names a single parameter, so
+  // the rest of `theta` is what the object was last set to; the restore through
+  // set_traits recomputes stem_b by the same expression, to the bit.
   if (fast_stem_curve && only == par_stem_P50) {
     l.perturb_stem_P50(theta[par_stem_P50]);
     return;
@@ -472,11 +364,9 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
                theta[par_curv_fact_colim], theta[par_TF24_cost_scale],
                theta[par_R_d_25], theta[par_JS22_gamma],
                theta[par_CMax_a], theta[par_CMax_b], theta[par_g_min]);
-  // Not traits, so they are set directly rather than through set_traits -- and
-  // nothing is derived from either, so a bare write leaves no stale state behind.
-  // ⚠️ ONLY A SET SLOT IS WRITTEN, as R's reference does (`!is.na`). On a route
-  // that does not own a slot it is NA, and writing it would overwrite the leaf's
-  // aligned default, so a later solve on the owning route would be refused.
+  // Not traits and nothing is derived from them, so written directly. Only a
+  // set slot is written, as R does (`!is.na`): on a route that does not own a
+  // slot it is NA, and writing it would overwrite the leaf's aligned default.
   if (!std::isnan(theta[par_CF77_lambda])) {
     l.CF77_lambda_ = theta[par_CF77_lambda];
   }
@@ -506,11 +396,9 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
     l.c_repair_flux_ = theta[par_c_repair_flux];
   }
   if (single) {
-    // R's `series_resistance()`: a default-constructed network carrying one
-    // series resistance in `r_R_V_sum`, which is that field's own meaning with
-    // one layer and no vulnerability-weighted term. Built here rather than
-    // copied from `d.root_network` so that the two implementations cannot
-    // disagree about what the other four fields hold.
+    // R's `series_resistance()`: one series resistance in `r_R_V_sum`, built
+    // here rather than copied from `d.root_network` so the two implementations
+    // cannot disagree about the other four fields.
     RootNetwork net;
     net.r_R_V_sum.assign(1, theta[par_resistance]);
     l.set_physiology(net, d.PPFD, d.psi_soil, d.soil_depth, theta[par_kmax],
@@ -524,41 +412,21 @@ inline void apply(Leaf& l, const double* theta, const Drivers& d, bool single,
 
 // --- the two routes ----------------------------------------------------------
 
-// ⚠️ THE INVARIANT BOTH LOOPS BELOW MAINTAIN, AND IT IS THE FIX FOR #72: every
-// parameter's gradient is taken from the BASE point.
-//
-// The loops restore base once at the END, not between parameters, because every
-// parameter's setter normally goes through the full `set_traits()` +
-// `set_physiology()` path and restores everything on the way. The `stem_P50`
-// shortcut is the one that does not: `perturb_stem_P50()` moves stem_b and
-// touches nothing else, which is sound only if the rest of the object is
-// already at base. So a `stem_P50` that is not the FIRST entry of `pars` was
-// differentiated at a point displaced by one step in whichever parameter
-// preceded it -- up to 3.4e-5 relative, four orders above the ~1e-9 this is
-// supposed to deliver, on both routes.
-//
-// Cheap in the case that matters: `set_traits()` decides the two table rebuilds
-// by comparing the `c` it is given, so after a parameter that owns no
-// vulnerability table nothing is rebuilt and this costs one trait write plus one
-// driver write. After `stem_c`/`root_c` it does rebuild, and those are the
-// parameters whose own gradients cost a rebuild per side anyway.
-//
-// ⚠️ Written as "this parameter takes a shortcut", not as "this parameter is
-// stem_b". `root_b` obeys the same homogeneity identity and would get the same
-// treatment, at which point a name-based test would silently stop covering it.
+// Both loops below take every parameter's gradient from the base point. A
+// setter normally restores everything through set_traits() + set_physiology(),
+// so base is restored only at the end; a shortcut (perturb_stem_P50) restores
+// nothing and is sound only from base, so one that follows another parameter
+// restores base first. Cheap: set_traits() rebuilds a table only for a new `c`.
+// Asked as "takes a shortcut", not "is stem_P50", so a second shortcut is covered.
 inline bool takes_shortcut(int par, const Settings& s) {
   return s.fast_stem_curve && par == par_stem_P50;
 }
 
-// The implicit-function composite. Two perturbed evaluations per parameter,
-// neither of which re-solves the model: `dprofit` at the UNPERTURBED psi* gives
-// the mixed partial, and the outputs at that same psi* give the direct term.
-//
-// ONE composite for both paths. `dpsi_dtheta` null means "derive it by the
-// implicit function theorem", which is right where the collar was solved for;
-// non-null means the caller imposed the collar and knows how it moves. Keeping
-// them in one function is what makes the two paths' agreement at psi* a real
-// assertion rather than two implementations that happen to line up.
+// The implicit-function composite: per parameter, two perturbed evaluations at
+// the unperturbed psi*, neither re-solving; `dprofit` there gives the mixed
+// partial M and the outputs the direct term. `dpsi_dtheta` null means derive it
+// as -M/H (a solved collar); non-null is an imposed collar's own. One function
+// for both, so their agreement at psi* is a real assertion.
 inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
                          bool single, const int* pars, std::size_t npars,
                          double psi_star, double H, const double* dY_dpsi,
@@ -586,12 +454,8 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
       // Evaluate first, then read dprofit at the same fixed collar -- R's order,
       // and `evaluate_root_collar_psi` is what seats the state `dprofit` reads.
       if (s.resolve_profitmax) {
-        // `apply()` above cleared ProfitMax's normaliser, so it has to be put back
-        // before anything reads the objective. RE-SOLVED, not pinned at the base
-        // point: |A|max is found by a root-find now rather than by a scan, so it is
-        // differentiable in the traits and letting it follow them makes this the
-        // TOTAL derivative -- which is what a fit needs. Must match R/gradient.R's
-        // `pinned$reseat`, which calls the same thing.
+        // apply() cleared ProfitMax's normaliser. Re-solved, not pinned, so the
+        // derivative is total; must match R/gradient.R's `pinned$reseat`.
         l.prepare_profitmax();
       }
       if (!outputs_at(l, psi_star, dst + 1, s.curve)) {
@@ -603,12 +467,8 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
                    "on an active-set boundary; lower `stationarity_tol` or "
                    "difference the solve directly.");
       }
-      // ⚠️ AGAIN BEFORE THE DERIVATIVE READ, because R re-seats inside EVERY
-      // accessor rather than once per perturbation, and `prepare_profitmax()`
-      // mutates the leaf's rate fields while it maximises. Once here and twice
-      // there leaves the two reading `dprofit` at different states: measured, the
-      // batch and the one-observation route then agreed only to 3e-05 where they
-      // are required to agree bit-for-bit.
+      // Again before the derivative read, because R re-seats inside every
+      // accessor and prepare_profitmax() mutates the leaf's rate fields.
       if (s.resolve_profitmax) {
         l.prepare_profitmax();
       }
@@ -622,17 +482,12 @@ inline void gradient_ift(Leaf& l, const double* theta, const Drivers& d,
       const double direct = (up[1 + j] - dn[1 + j]) / (2.0 * h);
       out[k * n_outputs + j] = direct + rounded(dY_dpsi[j] * d_psi);
     }
-    // `collar` is not an output of the evaluation -- it IS psi*, held fixed, so
-    // its direct term is zero by construction and the composite reduces to
-    // dpsi*/dtheta. Set explicitly rather than left as the difference of two
-    // identical numbers.
+    // The decision variable is psi* held fixed, so its direct term is zero and
+    // the composite is dpsi*/dtheta: assigned, not differenced.
     out[k * n_outputs + route_decision(s.curve)] = d_psi;
-    // The envelope theorem, ASSIGNED for the same reason `collar` is: profit's
-    // indirect term is identically zero at a stationary point, so stating that
-    // beats multiplying a measured near-zero by dpsi/dtheta. It is also immune
-    // to a non-finite `d_psi` -- which a CALLER supplies on the prescribed path
-    // -- where `0 * x` would be NaN in this one column while the other four
-    // carried +-Inf.
+    // The envelope theorem, assigned for the same reason: profit's indirect term
+    // is identically zero at a stationary point. Also immune to a non-finite
+    // caller-supplied d_psi, where 0 * x would be NaN.
     if (envelope) {
       out[k * n_outputs + out_profit] =
           (up[1 + out_profit] - dn[1 + out_profit]) / (2.0 * h);
@@ -673,43 +528,30 @@ inline void gradient_fd(Leaf& l, const double* theta, const Drivers& d,
   apply(l, theta, d, single, -1, s.fast_stem_curve);
 }
 
-// THE THERMAL-DAMAGE LAYER IS CARRIED (Leaf::use_thermal_damage_). Both routes
-// difference the solve's own dprofit and outputs, which read the block the layer
-// writes, so they need nothing of it but its inputs in `theta` -- seated by
-// `apply()` above. The derivative SURFACE (operating_collar, billed_outputs_at) still refuses
-// it: those read capacities off the parameter pack, whose kernels do not apply
-// the layer.
+// Both routes carry the thermal-damage layer: they difference the solve's own
+// dprofit and outputs, needing only its inputs in `theta` (seated by apply()).
+// The derivative surface (operating_collar, billed_outputs_at) refuses it,
+// because the parameter pack's kernels do not apply the layer.
 
 // --- one observation ---------------------------------------------------------
 //
-// Fills `out` progressively and THROWS on the three conditions `leaf_gradient()`
-// stops on, so that a partially-determined row still carries its diagnostics
-// when `batch` catches. See `batch` for why the batch does not propagate.
+// Fills `out` progressively and throws on the conditions leaf_gradient() stops
+// on, so a partly determined row keeps its diagnostics when `batch` catches.
 inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
                const int* pars, std::size_t npars, const Settings& s,
                Result& out, const Prescribed* prescribed = nullptr) {
   out.reset(npars);
 
   apply(l, theta, d, single, -1, s.fast_stem_curve);
-  // Seat the model before anything reads it. `apply` runs `set_traits`, which
-  // clears the solved state but NOT the seated curve, so this could be hoisted
-  // out of the per-observation loop -- it is here because `at()` is a public
-  // entry point in its own right and must not depend on `batch` having run.
+  // Seated here, not only by `batch`, because at() is a public entry point.
   route_seat(l, s.curve);
 
-  // Two ways in. The default SOLVES for the collar potential; `prescribed`
-  // IMPOSES one, which is what a caller tracking the optimum rather than
-  // finding it has (#88).
-  //
-  // ⚠️ `psi_star` keeps its name on both paths and is no longer always the
-  // argmax. It is "the collar the outputs were evaluated at", which is what
-  // every use of it below actually means.
+  // The default solves for the collar; `prescribed` imposes one. Either way
+  // `psi_star` is the collar the outputs were evaluated at, not always the argmax.
   if (prescribed != nullptr) {
-    // ⚠️ A PRESCRIBED PSI OUTSIDE THE FEASIBLE INTERVAL IS REFUSED BY THE LEAF,
-    // and reported here rather than thrown: a fit visits these points routinely
-    // -- a trait perturbation moves the interval past a fixed psi -- and
-    // `status` is how a batch tells its caller which rows to distrust. There is
-    // no operating point to describe, so everything but `psi` stays NA.
+    // A prescribed psi outside the feasible interval is reported, not thrown: a
+    // fit visits such points routinely, and `status` tells a batch which rows to
+    // distrust. Everything but `psi` stays NA.
     if (!route_evaluate_feasible(l, s.curve, prescribed->psi)) {
       out.status = Status::Refused;
       out.psi = prescribed->psi;
@@ -722,56 +564,32 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
   out.psi = psi_star;
   outputs(l, out.value);
 
-  // Is the composite's premise true HERE? Stationarity is what the whole
-  // derivation rests on and it fails at a pinned optimum, where psi* is a bound,
-  // dprofit is not zero at the answer, and -M/H is not the bound's derivative.
-  // The formula does not fail loudly: at a boundary-soil point the true gradient is
-  // ~1e-08 and the bare composite returns O(1).
-  //
-  // So the premise is TESTED. The test is the implied Newton step
-  // |dprofit(psi*) / H|, a distance in MPa that needs no scale of its own: over
-  // this package's 288-point grid the worst interior point is 4.8e-11 and the
-  // mildest pinned one 6.3e-06, so the 1e-08 default sits in an empty band four
-  // orders wide on each side.
+  // The composite rests on stationarity, which fails at a pinned optimum, and
+  // fails quietly (O(1) where the truth is ~1e-8). So it is tested, by the
+  // implied Newton step |dprofit(psi*) / H| in MPa: over the 288-point grid
+  // interior points reach 4.8e-11 and pinned ones start at 6.3e-06, so the 1e-8
+  // default sits in an empty band.
   const double h_psi = std::max(std::abs(psi_star), 1.0) * s.step;
-  // ⚠️ WITH ITS FEASIBILITY, not bare. `dprofit_droot_collar_psi` returns a hard
-  // 0.0 SENTINEL on its shut-down and reversed-gradient exits, and a bare zero is
-  // indistinguishable from a stationary point. The solving path got away with the
-  // value alone because `H` collapses to zero too and `usable` catches the pair;
-  // the prescribed path does not divide by `H`, so it would adopt the sentinel as
-  // if it were dprofit/dpsi.
+  // With its feasibility: the prescribed path does not divide by H, so it would
+  // adopt dprofit's 0.0 sentinel as dprofit/dpsi.
   bool resid_feasible = false;
   const double resid =
       route_dprofit_checked(l, s.curve, psi_star, &resid_feasible);
-  // Named halves: `f(a) - f(b)` has unspecified operand order in C++ and
-  // left-to-right order in R, and `dprofit_droot_collar_psi` mutates the leaf.
+  // Named halves (rule 3 in the header).
   const double d_hi = route_dprofit(l, s.curve, psi_star + h_psi);
   const double d_lo = route_dprofit(l, s.curve, psi_star - h_psi);
   const double H = (d_hi - d_lo) / (2.0 * h_psi);
-  // H == 0 with resid == 0 is the shut-down signature: dprofit returns a
-  // sentinel zero there rather than a derivative, so the ratio would be 0/0.
-  // H > 0 would not be a maximum. Both mean the composite has nothing to stand
-  // on.
+  // H == 0 with resid == 0 is the shut-down sentinel, and H > 0 is not a
+  // maximum: either way the composite has nothing to stand on.
   const bool usable = std::isfinite(H) && H < 0.0 && std::isfinite(resid);
   out.H = H;
   out.stationarity = usable ? std::abs(resid / H)
                             : std::numeric_limits<double>::infinity();
   if (prescribed != nullptr) {
-    // ⚠️ THE STATIONARITY TEST DOES NOT ROUTE HERE, AND IS STILL WORTH TAKING.
-    // What it decides on the solving path -- composite or fallback -- is
-    // meaningless at a collar the caller chose: there is no argmax to be pinned
-    // against, and differencing the solve would answer about the optimum
-    // instead. So `Method` is refused at the R boundary.
-    //
-    // The NUMBER keeps its meaning and gains a better one: it is how far the
-    // point handed over sits from the optimum, in MPa. Reported, and used for
-    // exactly one thing -- see the envelope below.
-    //
-    // ⚠️ NoGradient REACHES THIS PATH TOO, and it is not the solving path's
-    // condition. There `usable` also demands `H < 0` -- a MAXIMUM test, which a
-    // caller-chosen collar has no business satisfying: a prescribed psi away from
-    // the optimum may sit where profit is convex, and that is fine because
-    // nothing here divides by `H`. What disables the point is INFEASIBILITY.
+    // At an imposed collar the stationarity test routes nothing (`Method` is
+    // refused at the R boundary); it is reported as the point's distance from
+    // the optimum in MPa and decides the envelope below. NoGradient here means
+    // infeasible, not H >= 0: an imposed collar may sit where profit is convex.
     out.status = resid_feasible ? Status::Prescribed : Status::NoGradient;
   } else {
     out.status = !usable ? Status::NoGradient
@@ -792,9 +610,8 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
                "has nothing to stand on. This is a shut-down or otherwise "
                "determined operating point; use method = \"auto\".");
   }
-  // ⚠️ REFUSED BY NAME, as R/gradient.R does and in the same place. The step
-  // check below caught every pinned row only while psi* sat 1e-06 of a bracket
-  // width from a bound found to 1e-04; with the bound solved exactly it can fit.
+  // Refused by name, as R/gradient.R does and in the same place: the step check
+  // below does not catch every pinned row.
   if (use_ift && prescribed == nullptr && out.status == Status::Pinned) {
     util::stop("leaf_gradient(): method = \"ift\" was asked for at a pinned "
                "optimum, where psi* is held by a bound and the "
@@ -804,24 +621,18 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
 
   double dY_dpsi[n_outputs];
   if (use_ift) {
-    // dY/dpsi at fixed traits. It also catches SOME pinned optima -- psi* within
-    // h_psi of a bound -- but not all, and nothing relies on it for that: a
-    // forced Method::Ift at a pinned point is refused by name above.
+    // dY/dpsi at fixed traits. It catches some pinned optima (psi* within h_psi
+    // of a bound), but nothing relies on that.
     double hi[n_outputs];
     double lo[n_outputs];
-    // Both, unconditionally, before the test -- R computes `hi` and `lo` on
-    // consecutive lines and only then checks either, and each call moves the
-    // leaf.
+    // Both before either is tested, as in R: each call moves the leaf.
     const bool hi_ok = outputs_at(l, psi_star + h_psi, hi, s.curve);
     const bool lo_ok = outputs_at(l, psi_star - h_psi, lo, s.curve);
     if (!hi_ok || !lo_ok) {
       if (prescribed != nullptr) {
-        // The same reasoning as the refusal of psi itself, one step out: a psi
-        // inside the interval but within h_psi of an end cannot have dY/dpsi
-        // centred on it, and a one-sided difference over a shortened interval is
-        // exactly what this detector exists to refuse. No fallback to offer --
-        // differencing the solve would answer about the optimum -- so the row is
-        // reported refused, with the point's value but no gradient.
+        // A psi within h_psi of an end cannot have dY/dpsi centred on it, and
+        // differencing the solve would answer about the optimum, so the row is
+        // refused, with the point's value but no gradient.
         use_ift = false;
         out.status = Status::Refused;
       } else if (s.method == Method::Ift) {
@@ -837,33 +648,18 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
       for (int j = 0; j < n_outputs; ++j) {
         dY_dpsi[j] = (hi[j] - lo[j]) / (2.0 * h_psi);
       }
-      // `dprofit_droot_collar_psi` is EXACT in psi -- forward AD plus the IFT at
-      // the ci root-find -- so for profit alone there is something better than a
-      // difference of the same quantity, and it is already computed. The other
-      // four have no such route and must be differenced. One rule, both paths,
-      // which is what keeps a prescribed psi* reproducing the solve exactly.
-      //
-      // ⚠️ THIS IS THE READER #87 SAID DID NOT EXIST YET. Until the prescribed
-      // path landed, the only consumer was `gradient_ift` with `envelope` false --
-      // a forced Method::Ift at a pinned point, which is refused. A prescribed psi
-      // away from the optimum is not stationary, so
-      // it takes this branch for real, and the exactness now matters.
+      // dprofit is exact in psi (forward AD plus the IFT at the ci root-find) and
+      // already computed, so profit's dY/dpsi is that, not a difference. One rule
+      // on both paths keeps a prescribed psi* reproducing the solve exactly; it
+      // matters where the envelope does not apply, as off the optimum.
       dY_dpsi[out_profit] = resid;
     }
   }
 
-  // ⚠️ THE ENVELOPE THEOREM, and the only place this package uses it. At a
-  // STATIONARY point dprofit/dpsi is analytically zero, so profit's indirect
-  // term vanishes identically and dprofit/dtheta is the direct partial alone.
-  // `gradient_ift` is told to ASSIGN that column rather than reach it by
-  // multiplying a near-zero dY/dpsi -- the same treatment `collar` gets, for the
-  // same reason: an identity is stated, not arrived at.
-  //
-  // ⚠️ Conditional on stationarity, not on `use_ift`. The identity comes from
-  // dprofit/dpsi == 0; at a pinned optimum psi* is a theta-dependent BOUND,
-  // dprofit/dpsi is not zero there, and the indirect term survives. Someone
-  // forcing Method::Ift there already gets a confidently wrong number and should
-  // not get a differently wrong one for this column alone.
+  // The envelope theorem: at a stationary point dprofit/dpsi is zero, so
+  // gradient_ift assigns profit's column the direct partial alone. Conditional
+  // on stationarity, not on use_ift: at a pinned optimum psi* is a bound and the
+  // indirect term survives.
   const bool envelope = usable && out.stationarity <= s.stationarity_tol;
 
   out.used_ift = use_ift;
@@ -871,14 +667,9 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
     for (int j = 0; j < n_outputs; ++j) {
       out.dY_dpsi[j] = dY_dpsi[j];
     }
-    // ⚠️ NULL MEANS TWO DIFFERENT THINGS AND ONLY ONE OF THEM REACHES
-    // `gradient_ift`. There, null is "derive dpsi/dtheta by the implicit
-    // function theorem", which is right for a collar that was SOLVED for. A
-    // prescribed collar with no dpsi_dtheta means the opposite -- it does not
-    // move with theta, so the answer is the partial at fixed collar -- and
-    // passing the null straight through would silently give the caller the
-    // solving path's indirect term on top of it. Zeros are materialised here so
-    // that every C++ caller gets that, not just `batch`.
+    // To gradient_ift a null dpsi_dtheta means "derive it", right only for a
+    // solved collar. A prescribed collar with none does not move with theta, so
+    // zeros are materialised here, for every C++ caller and not just `batch`.
     std::vector<double> zeros;
     const double* d_psi = nullptr;
     if (prescribed != nullptr) {
@@ -891,13 +682,9 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
     gradient_ift(l, theta, d, single, pars, npars, psi_star, H, dY_dpsi, s,
                  d_psi, envelope, out.M.data(), out.grad.data());
   } else if (prescribed != nullptr) {
-    // ⚠️ A PSI WITHIN ONE STEP OF AN END GETS NO GRADIENT, RATHER THAN THE
-    // DIRECT TERM: dY/dpsi cannot be centred on it. `reset` already left grad, M
-    // and dY_dpsi as NA; value, H, stationarity and psi stay, because they
-    // describe the point rather than the derivative.
-    //
-    // The same holds for an INFEASIBLE one, where `dprofit` is a sentinel rather
-    // than a derivative -- see the status block above.
+    // A prescribed psi within one step of an end, or infeasible, gets no
+    // gradient: `reset` left grad, M and dY_dpsi NA, while value, H,
+    // stationarity and psi describe the point and stay.
   } else {
     gradient_fd(l, theta, d, single, pars, npars, s, out.grad.data());
   }
@@ -905,28 +692,17 @@ inline void at(Leaf& l, const double* theta, const Drivers& d, bool single,
 
 // --- the batch ---------------------------------------------------------------
 //
-// `theta` is a COLUMN-MAJOR matrix of `theta_nrow` x n_theta, as R hands one
-// over: either one row per observation, or exactly one row shared by all of
-// them.
+// `theta` is a column-major `theta_nrow` x n_theta matrix, as R hands one over:
+// one row per observation, or one row shared by all.
 //
-// ⚠️ PER-ROW STATUS, NOT AN EXCEPTION, and this is the design decision the batch
-// exists to make. A proposal during a fit WILL reach operating points the solve
-// cannot handle -- that is what a proposal distribution does -- and that has to
-// cost those rows rather than the whole dataset. Throwing would take out a
-// likelihood evaluation, and with it the draw, for one observation the sampler
-// was entitled to reject on its own. `batch()` below isolates per row for the
-// same reason.
+// Per-row status, not an exception: a proposal during a fit will reach points
+// the solve cannot handle, and that must cost those rows, not the likelihood
+// evaluation. A failed row's gradient is all NA rather than partly filled, so a
+// caller checking status per row cannot read a gradient with a hole in it; its
+// value, H and stationarity stay where they were determined.
 //
-// A failed row's gradient is ALL NA rather than partially filled. A parameter
-// loop that threw halfway has valid entries before the throw, and returning them
-// alongside `status == "error"` would be an invitation to use them: a caller who
-// checks the status per row and not per cell would be reading a gradient with a
-// hole in it. Its `value`, `H` and `stationarity` are kept where they were
-// determined, because those describe the point rather than the derivative.
-//
-// `psi` is null to solve, or one collar potential per observation to impose
-// (#88); `dpsi_dtheta` is then a COLUMN-MAJOR n x npars matrix, again as R hands
-// one over, and null means zero throughout.
+// `psi` is null to solve, or one collar per observation to impose;
+// `dpsi_dtheta` is then a column-major n x npars matrix, null meaning zero.
 inline std::vector<Result> batch(Leaf& l, const double* theta,
                                 std::size_t theta_nrow,
                                 const std::vector<Drivers>& drivers,
@@ -961,11 +737,9 @@ inline std::vector<Result> batch(Leaf& l, const double* theta,
       out[i].used_ift = false;
       out[i].message = e.what();
       out[i].grad.assign(npars * n_outputs, util::na_value);
-      // Put the leaf back at this row's base parameters before the next one.
-      // The next row's own `apply(only = -1)` would do it -- `set_traits` forces
-      // the vulnerability rebuild that `perturb_stem_P50` displaced -- but the
-      // LAST row has no next one, and a batch that ended on the fast path would
-      // hand back a leaf quietly running on a rescaled stem curve (hazard 8).
+      // Back to this row's base: the last row has no next apply() to do it, and
+      // a batch ending on the fast path would hand back a leaf on a rescaled stem
+      // curve (hazard 8).
       try {
         apply(l, th, drivers[i], single, -1, s.fast_stem_curve);
       } catch (const std::exception&) {  // NOLINT: nothing better to do here

@@ -257,8 +257,8 @@ is exact in \code{psi} and smooth in the traits -- \code{psi} is one of its argu
 no argmax is involved and \code{M} is a first difference of an exact quantity. It is
 stable to seven significant figures across five decades of step size.
 
-The second term is not a correction. For \code{TF24_cost_scale}, \code{TF24_beta2}, \code{stem_b}
-and \code{stem_c} it is 100\% of the answer, and for \code{vcmax_25} 52\%.
+The second term is not a correction. For \code{TF24_cost_scale}, \code{TF24_beta2} and
+\code{stem_c} it is 100\% of the answer, and for \code{vcmax_25} 52\%.
 }
 
 \section{profit, which is the one output the envelope theorem reaches}{

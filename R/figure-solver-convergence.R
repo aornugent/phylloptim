@@ -1,32 +1,12 @@
-## How the two solvers converge, for vignette("the-models").
+## How the two solvers converge, for vignette("the-models"). A search comparing
+## values of J stops at a floor, sqrt(4.eps.|J|/k) for curvature k (drawn on
+## panel a), because J is flat at its maximum; a root-find on dJ/dpsi, steep
+## there, does not. Both get the same bracket, which flatters the search.
 ##
-## The claim being illustrated is stronger than "one converges faster". The
-## search does not merely converge slowly -- it STOPS, at a floor no number of
-## evaluations gets past, because it compares values of J and J is flat at its
-## maximum. Near the optimum J changes by less than a rounding error while psi
-## still moves, so the comparison that drives the search becomes noise. The floor
-## sits at sqrt(4.eps.|J|/k) for curvature k, which is drawn on panel (a).
-##
-## A root-find has no such limit: it is looking for a ZERO of a function that is
-## steep exactly where J is flat, so the quantity it compares against zero still
-## carries information at 1e-15.
-##
-## Both solvers are given THE SAME sign-changing bracket, which flatters the
-## search -- it is handed the basin rather than having to find it, and locating
-## the basin is what the 64-point scan in the psi_stem entry points is for.
-##
-## ⚠️ THE ITERATIONS RUN IN R, THE MODEL DOES NOT. Both traces call the real
-## bound methods -- `evaluate_root_collar_psi()` for J and
-## `dprofit_droot_collar_psi()` for dJ/dpsi -- so the objective, its derivative
-## and every tolerance beneath them are the package's own. Only the outer
-## iteration is reproduced here, because C++ does not hand its iterates back.
-## The root-find is R's `uniroot` (Brent's zeroin) traced through a counting
-## wrapper, so it is a real Brent trace and not a reimplementation; the search is
-## textbook golden section, which is what this package used before the collar
-## solve moved to the first-order condition.
-##
-## Base graphics, vector device, everything a separate object if the figure ever
-## needs hand-polish -- same rules as figure-overview.R.
+## Only the outer iterations run in R, since C++ does not return its iterates: J
+## and dJ/dpsi are the bound `evaluate_root_collar_psi()` and
+## `dprofit_droot_collar_psi()`. The root-find is R's `uniroot` (Brent) traced, and
+## the search is textbook golden section.
 
 .sc_col <- list(
   search = "firebrick",
@@ -35,14 +15,10 @@
   guide = "grey85"
 )
 
-## A sign-changing bracket for dJ/dpsi: scan the feasible interval and take the
-## first crossing. Returns NULL when the optimum is pinned rather than interior,
-## which is a real outcome and not a failure -- the caller picks other drivers.
-##
-## The feasible collar interval is narrower than [psi_soil, psi_crit] -- the
-## supply path's own bounds sit inside it -- and asking outside it raises a
-## domain condition rather than returning a non-finite number, so the scan
-## catches and infeasible points drop out.
+## A sign-changing bracket for dJ/dpsi: the first crossing on a scan, or NULL when
+## the optimum is pinned, a real outcome for which the caller picks other drivers.
+## Points outside the feasible collar interval, which is narrower than
+## [psi_soil, psi_crit], raise a domain condition; the scan drops them.
 .sc_bracket <- function(l, n = 60) {
   lo <- l$psi_soil_[1] + 1e-6
   hi <- l$psi_crit - 1e-6
@@ -168,9 +144,8 @@ plot_solver_convergence <- function(psi_soil = 1.0, PPFD = 1500,
                  bracket = br, curvature = k, search_floor = floor_x))
 }
 
-## One panel. Both series on a log y, a legend only on the first, and the floor
-## drawn where the traces stop improving -- because they DO stop, and pretending
-## otherwise would be the one dishonest thing this figure could do.
+## One panel: both series on a log y, a legend on the first only, and the floor
+## drawn where the search stops improving.
 .sc_panel <- function(xs, ys, xr, yr, ylab, main, floor_x = NULL) {
   pos <- function(v) ifelse(v <= 0, NA, v)
   ys <- pos(ys)

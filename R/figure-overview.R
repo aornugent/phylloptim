@@ -1,20 +1,10 @@
-## An overview figure for vignette("the-models"): the real curves on the left,
-## the causal wiring in the middle, the physical path on the right.
-##
-## Everything here is base graphics on purpose. The output is a vector device
-## (SVG in the vignette, PDF for a manuscript), so every line and label survives
-## into Illustrator as a separate object if the figure ever needs hand-polish.
-##
-## The three zones are drawn by three functions below, each into a 0-100 x 0-100
-## user space so the layouts are readable as coordinates rather than as fractions
-## of whatever device happens to be open.
+## The overview figure for vignette("the-models"), in base graphics on a vector
+## device so every line and label stays a separate object for hand-polish. The
+## schematic zones draw into a 0-100 x 0-100 user space.
 
 ## ---------------------------------------------------------------------------
-## palette -- shared with the panels, which is the point
-##
-## The flow diagram is colour-coded to the profit panel: green boxes are the
-## green curve, the red box is the red curve. A reader who has understood panel
-## (a) can then read the wiring without a legend.
+## palette, shared with the panels: the flow diagram's green and red boxes are
+## panel (a)'s green and red curves, so the wiring reads without a legend.
 
 .fig_col <- list(
   benefit = "forestgreen",
@@ -33,11 +23,8 @@
 ## drawing primitives
 
 ## The largest cex up to `cex` at which `txt` fits inside `width` user units.
-##
-## Boxes are laid out in fixed user coordinates but text is sized in cex, so the
-## two part company as soon as the figure is drawn at a different size or the
-## caller raises `cex` -- and what that looks like is box labels running out
-## through their borders. Measuring is cheap and removes the whole class.
+## Boxes are in user units and text in cex, so without this labels overrun their
+## borders when the device size or `cex` changes.
 .fig_fit_cex <- function(txt, cex, width, pad = 0.92) {
   lines <- if (is.character(txt)) {
     unlist(strsplit(txt, "\n", fixed = TRUE))
@@ -114,16 +101,9 @@
   invisible(NULL)
 }
 
-## How many y-units are physically as long as one x-unit, in the panel that is
-## currently open.
-##
-## Both schematic panels use a 0-100 x 0-100 space, so a shape specified in user
-## units is stretched by whatever aspect the device gives the panel -- and these
-## panels are strongly portrait. Multiplying a y-extent by this makes a shape
-## come out the way it was drawn on paper: `.fig_aspect() * r` is the y-radius of
-## a circle whose x-radius is `r`. Without it the leaf and the resistors distort
-## with the figure's dimensions, which is exactly what a reusable figure must not
-## do.
+## How many y-units are physically as long as one x-unit in the open panel.
+## Scale a y-extent by it (`.fig_aspect() * r` is the y-radius of a circle of
+## x-radius `r`) so shapes keep their proportions on any device.
 .fig_aspect <- function() {
   pin <- par("pin")
   pin[1] / pin[2]
@@ -304,12 +284,9 @@
                   "the models differ here, and nowhere else"),
            border = .fig_col$cost, fill = .fig_col$cost_fill, cex = cex)
 
-  ## the cross-links: the part the figure exists for -----------------------
-  ##
-  ## The energy balance is a CYCLE, so it is drawn as the two arrows it is: the
-  ## gate reads E, and what it returns re-enters at g_c. The thermal cost gets a
-  ## third arrow, reaching past the gutter into the benefit column, because it is
-  ## the only gate that moves both sides of the ledger.
+  ## the cross-links ------------------------------------------------------
+  ## The energy balance is a cycle (it reads E and re-enters at g_c), so two
+  ## arrows; the thermal cost alone moves both sides, so it reaches into benefit.
 
   .fig_arrow(lx1 + 0.5, 77, rx0 - 0.5, 77, col = .fig_col$gate, lwd = 1.1)
   .fig_arrow(rx0 - 0.5, 72.5, lx1 + 0.5, 62, col = .fig_col$gate, lwd = 1.1)
@@ -430,10 +407,8 @@
   marker(86, 43, "3")
 
   ## --- the notes ---------------------------------------------------------
-  ##
-  ## Numbered rather than set beside the drawing: the panel is portrait, so a
-  ## right-hand annotation column would leave the plant two inches wide and six
-  ## tall, which is a telegraph pole rather than a tree.
+  ## Numbered below rather than beside the drawing: the panel is portrait, and a
+  ## side column would squeeze the plant too narrow.
   notes <- list(
     c("The leaf.  Water out and CO2 in through one conductance.",
       "With the energy balance on, T_leaf and D_leaf become",

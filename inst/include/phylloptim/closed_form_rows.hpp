@@ -7,28 +7,18 @@
 
 namespace phylloptim {
 
-// Putting a closed-form row onto a table read.
+// Putting a closed-form row onto a table read, for the stem and root curves alike.
 //
-// THE VALUE IS THE TABLE'S, in both functions and at every call site, because the
-// solve ran on the table: a value from elsewhere would place the operating point
-// somewhere else, if only by the table's ~1e-14. THE TRAIT ROWS ARE THE CURVE'S,
-// in both, because a table carries none.
+// The value is the table's at every call site, because the solve ran on the table;
+// the trait rows are the curve's, in (P50, c) through rows_in_P50, because a table
+// carries none. The query row is supplied where the assembly already forms it
+// (dG/dpsi, from stem_curve_integral_deriv and root_vuln_integral_deriv_at) and is
+// the curve's own where nothing else does (df/dpsi), so each has one value. Every
+// bracket below is exactly zero at the recording point, so only the tape sees the
+// rows.
 //
-// THE QUERY ROW IS THE ONE THE REST OF THE ASSEMBLY ALREADY FORMS: dG/dpsi is
-// formed by stem_curve_integral_deriv and root_vuln_integral_deriv_at, so
-// integral_with_closed_form_rows takes it as an argument rather than forming a
-// second value of it; df/dpsi is formed nowhere else, so
-// curve_with_closed_form_rows uses the curve's own. Both are closed forms now, so the two could not disagree in any
-// case, but the argument keeps there being one value of each.
-//
-// Every bracket below is exactly zero in VALUE at the recording point, so the
-// number is untouched and only the tape sees the rows.
-//
-// ⚠️ ONE PLACE, FOR TWO CURVES. The stem and the root do this identically, and
-// the rows go through rows_in_P50 -- so written twice, one copy gets the chain in
-// c and the other keeps a partial at fixed b. That is a finite, plausible, wrong
-// row that nothing reports, which is exactly the class of defect this file exists
-// to make unwritable.
+// One place for both curves: written twice, one copy would get the chain in c and
+// the other keep a partial at fixed b, a plausible wrong row nothing reports.
 
 // A table read with the rows `derivatives_at` gives at its point, in (P50, c).
 template <class S, class Derivatives>
@@ -59,10 +49,8 @@ inline S integral_with_closed_form_rows(double table_value, double table_slope,
       cumulative_vulnerability_integral_derivatives_at);
 }
 
-// Q(psi) = G(inf) - G(psi): what the curve has left past psi, with rows that
-// keep their relative precision as Q goes to zero
-// (cumulative_vulnerability_complement_derivatives_at). A difference of two
-// G rows there would carry G(inf)'s rounding, which is all of Q's size.
+// Q(psi) = G(inf) - G(psi), with rows that keep their relative precision as Q goes
+// to zero; a difference of two G rows would carry G(inf)'s rounding, all of Q.
 template <class S>
 inline S complement_with_closed_form_rows(double table_value,
                                           double table_slope, const S& psi,
