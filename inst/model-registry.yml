@@ -1066,19 +1066,10 @@ parameters:
     symbol: 'x_\mathrm{end}'
     units: '–'
     class: constant
-    meaning: 'the end of a vulnerability curve, in x = (psi/b)^c: past it G is G(inf) to rounding; the end of both tables and the stem''s dry end for every curve psi_crit does not bound (#183)'
+    meaning: 'the end of a vulnerability curve, in x = (psi/b)^c: past it G is G(inf) to rounding and what is left, G(inf) - G, is read as zero; the end of both tables and the stem''s dry end for every curve psi_crit does not bound (#183)'
     source: code
     placeholder: false
     code: phylloptim::vulnerability_x_end
-  stem_capacity_floor:
-    section: vulnerability
-    symbol: '\epsilon_G'
-    units: '–'
-    class: constant
-    meaning: 'least share of G(inf) the stem must still carry from the wettest layer for a solve to have an interval: a resolution floor (G is read to ~2e-16 of G(inf)), not a modelled bound; it binds only where psi_crit does not (~12.4 MPa at the defaults)'
-    source: 'code: measured, the collar solve refused where the remaining capacity fell below ~1e-13'
-    placeholder: false
-    code: phylloptim::Leaf::stem_capacity_floor
   vulnerability_curve_ncontrol:
     section: vulnerability
     symbol: 'n'
@@ -1664,7 +1655,7 @@ equations:
       r^* = \kappa\big(\kappa(r, E_\infty),\, C_U\big);
       \qquad E = E_s + r^*
     code: phylloptim::Leaf::residual_flux
-    also: [phylloptim::Leaf::residual_demand_at, phylloptim::Leaf::residual_cap, phylloptim::Leaf::supply_ceiling, phylloptim::Leaf::residual_demand_dT, phylloptim::Leaf::residual_cap_ddemand, phylloptim::Leaf::residual_cap_dceiling, phylloptim::Leaf::residual_root_cap, phylloptim::Leaf::residual_root_cap_ddemand, phylloptim::Leaf::residual_root_cap_dceiling_dr, phylloptim::Leaf::residual_root_ceiling_at, phylloptim::residual_cap_factor, phylloptim::MultiLayerRoots::uptake_limit, phylloptim::Leaf::residual_flux_dpsi_upstream, phylloptim::Leaf::residual_cond_temp_deriv, phylloptim::Leaf::residual_flux_at, phylloptim::Leaf::stem_integral_limit_at]
+    also: [phylloptim::Leaf::residual_demand_at, phylloptim::Leaf::residual_cap, phylloptim::Leaf::supply_ceiling, phylloptim::Leaf::residual_demand_dT, phylloptim::Leaf::residual_cap_ddemand, phylloptim::Leaf::residual_cap_dceiling, phylloptim::Leaf::residual_root_cap, phylloptim::Leaf::residual_root_cap_ddemand, phylloptim::Leaf::residual_root_cap_dceiling_dr, phylloptim::Leaf::residual_root_ceiling_at, phylloptim::residual_cap_factor, phylloptim::MultiLayerRoots::uptake_limit, phylloptim::Leaf::residual_flux_dpsi_upstream, phylloptim::Leaf::residual_cond_temp_deriv, phylloptim::Leaf::residual_flux_at, phylloptim::Leaf::stem_complement_at]
     reads: [g_min, atm_kpa, kg_to_mol_h2o, leaf_specific_conductance_max, residual_cap_fraction]
     writes: [residual_flux_]
     kind: closed_form
@@ -1961,14 +1952,15 @@ equations:
     latex: |
       F(\psi) = b\,g(\psi/b), \qquad g(u) = \int_0^{u} e^{-s^{c}}\,ds; \qquad
       u_i = u_\mathrm{end}\, i/n,\ u_\mathrm{end} = x_\mathrm{end}^{1/c}; \quad \text{on } [u_i, u_{i+1}],\ t = (u - u_i)/h: \\
-      \hat g(u) = \textstyle\sum_{k=0}^{5} a_{i,k}\, t^k, \quad \hat g, \hat g', \hat g'' = g, g', g'' \text{ at both knots}; \quad
+      \hat g(u) = \textstyle\sum_{k=0}^{5} a_{i,k}\, t^k, \quad \hat g, \hat g', \hat g'' = g, g', g'' \text{ at both knots}\ (i < i_q); \\
+      \hat g(u) = g(\infty) - e^{\hat L(u)},\ \hat L(u) = \textstyle\sum_{k=0}^{5} a_{i,k}\, t^k,\ \hat L, \hat L', \hat L'' = \ln q, (\ln q)', (\ln q)'' \text{ at both knots}\ (i \ge i_q),\ q = g(\infty) - g; \\
       \hat F' = \hat g'(\psi/b); \quad \hat F = F(\infty) \text{ past } u_\mathrm{end}
     code: phylloptim::vulnerability_table
     also: [phylloptim::vulnerability_integral, phylloptim::vulnerability_integral_deriv, phylloptim::vulnerability_psi_end, phylloptim::Leaf::setup_transpiration, phylloptim::MultiLayerRoots::setup_vulnerability]
     reads: [vulnerability_curve_ncontrol, vulnerability_x_end]
     writes: []
     kind: closed_form
-    note: 'A quintic Hermite interpolant in $u$ whose knot values, slopes and curvatures are exact, so $\hat F$ is C2 across every knot (#183) and its slope, read from the same polynomial, is the derivative of the value the solve reads. Below the first 8 spans the grid is graded in dyadic levels of 8 spans each, so the $u^c$ behaviour at zero is resolved without a pow. Measured against a 50-digit reference at 800 intervals: $|\hat F - F| \le$ 2e-15 $F(\infty)$ at the default $c$, 2.7e-12 at $c$ = 1.2; the cubic splines this replaces reached 8.7e-11. The table depends on $c$ alone, so a P50 moves nothing in it, and it is shared between copies and between the stem and the root where their $c$ agree.'
+    note: 'A quintic Hermite interpolant in $u$ whose knot values, slopes and curvatures are exact, so $\hat F$ is C2 across every knot (#183) and its slope, read from the same polynomial, is the derivative of the value the solve reads. Below the first 8 spans the grid is graded in dyadic levels of 8 spans each, so the $u^c$ behaviour at zero is resolved without a pow. From the first knot $i_q$ where $q \le g/1024$ (x ~ 5.6 at the default $c$; set by the cost of an exp per read, not by accuracy) the spans hold $\ln q$, the log of what is left, from the upper incomplete gamma: near $F(\infty)$ a quintic in $g$ resolves nothing (its knot differences fall below an ulp of $g(\infty)$, and its slope is rounding past $x \approx 25$), while $\ln q$ is nearly a polynomial and keeps $q$ and the conductivity to their own relative precision to the end of the curve (#190). Measured against a 50-digit reference at 800 intervals: $|\hat F - F| \le$ 2e-15 $F(\infty)$ at the default $c$, 2.7e-12 at $c$ = 1.2; in the tail $q$ to 8e-14 of itself and $\hat g''$ to 4e-12 of itself for $c$ from 1.2 to 12; the cubic splines this replaced reached 8.7e-11. The table depends on $c$ alone, so a P50 moves nothing in it, and it is shared between copies and between the stem and the root where their $c$ agree.'
   stem_vulnerability_integral:
     section: vulnerability
     title: The stem integral as the code reads it
@@ -2001,7 +1993,7 @@ equations:
     reads: [root_b]
     writes: []
     kind: closed_form
-    note: 'The root''s table, the stem''s own where their $c$ agree; no cap (#85). It approaches $F_r(\infty)$ as the layer dries, so the reverse flux into a drying layer tends to the whole area under the conductivity curve over $r_{H,\min}$ (#1). No binding: read through E_from_Soil_to_Root_Collar on the general branch, where the layer flux is $(\psi_c - \psi_s - \rho_w g z)\,\hat F/(r_{H,\min}\,\Delta\psi)$ at $r_{V,\Sigma} = 0$.'
+    note: 'The root''s table, the stem''s own where their $c$ agree; no cap (#85). It approaches $F_r(\infty)$ as the layer dries; from a lower end in the tail a layer''s integral is $\tilde Q_r(\psi_\mathrm{lo}) - \tilde Q_r(\psi_\mathrm{hi})$, a layer conducts while $\tilde Q_r > 0$ (to the end of the curve, not to where $\tilde F_r$ rounds to $F_r(\infty)$), and uptake_limit reads $\tilde Q_r$ directly (#190). So the reverse flux into a drying layer tends to the whole area under the conductivity curve over $r_{H,\min}$ (#1). No binding: read through E_from_Soil_to_Root_Collar on the general branch, where the layer flux is $(\psi_c - \psi_s - \rho_w g z)\,\hat F/(r_{H,\min}\,\Delta\psi)$ at $r_{V,\Sigma} = 0$.'
 
   # --- supply ------------------------------------------------------------------
   stem_transpiration:
@@ -2009,14 +2001,15 @@ equations:
     title: Stem supply
     latex: |
       E(\psi_\mathrm{stem}; \psi_\mathrm{up}) = k_{max}\big[\tilde F(\psi_\mathrm{stem}) - \tilde F(\psi_\mathrm{up})\big]
-      \;\approx\; k_{max}\!\int_{\psi_\mathrm{up}}^{\psi_\mathrm{stem}} f(u)\,du
+      \;\approx\; k_{max}\!\int_{\psi_\mathrm{up}}^{\psi_\mathrm{stem}} f(u)\,du, \qquad
+      E = k_{max}\big[\tilde Q(\psi_\mathrm{up}) - \tilde Q(\psi_\mathrm{stem})\big],\ \tilde Q = F(\infty) - \tilde F \ \text{ where } \psi_\mathrm{up} \text{ is in the tail}
     code: phylloptim::Leaf::transpiration
-    also: [phylloptim::Leaf::stem_curve_integral, phylloptim::Leaf::setup_transpiration]
+    also: [phylloptim::Leaf::stem_curve_integral, phylloptim::Leaf::stem_curve_complement, phylloptim::Leaf::stem_curve_in_tail, phylloptim::Leaf::setup_transpiration]
     reads: [leaf_specific_conductance_max, stem_b, stem_c]
     writes: []
     kind: closed_form
     cite: Sperry-2017
-    note: 'kg m⁻² s⁻¹. $\psi_\mathrm{up}$ is the collar on the collar route and $\psi_\mathrm{soil}$ on the stem route; a reversed pair ($\psi_\mathrm{stem} < \psi_\mathrm{up}$) is refused, and equality gives exactly zero (#31). A one-entry memo keyed on the two potentials (invalidated by set_physiology and perturb_stem_P50) returns the same value bit for bit.'
+    note: 'kg m⁻² s⁻¹. $\psi_\mathrm{up}$ is the collar on the collar route and $\psi_\mathrm{soil}$ on the stem route; a reversed pair ($\psi_\mathrm{stem} < \psi_\mathrm{up}$) is refused, and equality gives exactly zero (#31). A one-entry memo keyed on the two potentials (invalidated by set_physiology and perturb_stem_P50) returns the same value bit for bit. From an upstream potential in the table''s tail the flux is a difference of what is left, $\tilde Q$, which keeps the digits $F(\infty)$ swamps in a difference of $\tilde F$ (#190); transpiration_at forms the same difference on the same test.'
   stem_transpiration_quadrature:
     section: supply
     title: Stem supply by direct quadrature
@@ -2033,13 +2026,14 @@ equations:
     title: Stem potential from a transpiration
     latex: |
       \psi_\mathrm{stem} = \tilde F^{-1}\!\big(E/k_{max} + \tilde F(\psi_\mathrm{up})\big), \qquad
+      \psi_\mathrm{stem} = \tilde Q^{-1}\!\big(\tilde Q(\psi_\mathrm{up}) - E/k_{max}\big) \ \text{where } \psi_\mathrm{up} \text{ is in the tail}, \qquad
       \psi_\mathrm{stem} = \psi_\mathrm{up} \ \text{if } E = 0 \text{ and } \psi_\mathrm{up} \ge \psi_\mathrm{end}
     code: phylloptim::Leaf::transpiration_to_psi_stem
-    also: [phylloptim::Leaf::stem_curve_integral, phylloptim::Leaf::stem_curve_integral_inverse, phylloptim::vulnerability_integral_inverse]
+    also: [phylloptim::Leaf::psi_stem_carrying, phylloptim::Leaf::stem_curve_integral, phylloptim::Leaf::stem_curve_integral_inverse, phylloptim::Leaf::stem_curve_complement_inverse, phylloptim::vulnerability_integral_inverse, phylloptim::vulnerability_complement_inverse]
     reads: [leaf_specific_conductance_max, stem_b, stem_c]
     writes: []
     kind: closed_form
-    note: 'The table inverted: a cubic Hermite start in the knots'' own $(\hat g, u)$ with the exact inverse slopes, then Newton on the table''s value and slope, so the two directions are mutual inverses to rounding. Infeasible (stem_curve_domain) where the target is negative or past $F(\infty)$ beyond rounding: no stem potential carries that flow; $F(\infty)$ itself is the end of the curve. Past the end the curve is flat, so a zero flux returns the upstream potential rather than inverting.'
+    note: 'The table inverted: a cubic Hermite start in the knots'' own $(\hat g, u)$ with the exact inverse slopes, then Newton on the table''s value and slope, so the two directions are mutual inverses to rounding; in the tail the same on $\hat L$, from $\tilde Q$, so a stem potential is placed to its own conditioning however little the stem has left. Infeasible (stem_curve_domain) where the target is negative or past $F(\infty)$ beyond a few ulps of $F(\infty)$: no stem potential carries that flow; $F(\infty)$ itself is the end of the curve. Past the end the curve is flat, so a zero flux returns the upstream potential rather than inverting.'
   layer_midpoints:
     section: supply
     title: Layer midpoints and gravity head
@@ -2198,7 +2192,7 @@ equations:
       \quad\Longleftrightarrow\quad E(\psi_\mathrm{stem};\psi_r) = E_\mathrm{up}(\psi_r)
     code: phylloptim::Leaf::find_psi_stem_from_psi_root
     reads: [leaf_specific_conductance_max]
-    also: [phylloptim::Leaf::transpiration_to_psi_stem]
+    also: [phylloptim::Leaf::transpiration_to_psi_stem, phylloptim::Leaf::psi_stem_carrying]
     writes: []
     kind: closed_form
     note: 'What the soil delivers to the collar the stem carries to the leaf. $G$ is the stem vulnerability curve''s cumulative integral and $G^{-1}$ its inverse, both the hydraulics section''s; a zero flux past the end of the curve returns the upstream potential. At a dry pin of a curve $\psi_\mathrm{crit}$ does not bound the stem is held at $\psi_\mathrm{end}$ instead (seat_stem_at_dry_pin), which carries the uptake to the continuity root''s precision.'
@@ -2209,10 +2203,10 @@ equations:
     latex: |
       [\psi_a, \psi_b] = \big[\psi_a,\ \psi_{r,\mathrm{end}}\big], \quad E_\mathrm{up}(\psi_a) = r^*(\psi_a), \quad E_\mathrm{col}(\psi_{r,\mathrm{end}}; \psi_\mathrm{dry}) = 0;
       \quad \psi_\mathrm{dry} = \psi_\mathrm{crit} \text{ (SOX, JW26, CF77, LeastCost)},\ \psi_\mathrm{end} \text{ otherwise}; \\
-      \quad \text{shut if } \min_i \psi_{\mathrm{soil},i} \ge \psi_\mathrm{dry},\ F(\infty) - F(\min_i \psi_{\mathrm{soil},i}) \le \epsilon_G F(\infty),\ E_\mathrm{col}(\psi_\mathrm{dry}) < r^*,\ \psi_{r,\mathrm{end}} \ge \psi_\mathrm{dry} \text{ or } \psi_b - \psi_a \le \epsilon
+      \quad \text{shut if } \min_i \psi_{\mathrm{soil},i} \ge \psi_\mathrm{dry},\ E_\mathrm{col}(\psi_\mathrm{dry}) < r^*,\ \psi_{r,\mathrm{end}} \ge \psi_\mathrm{dry} \text{ or } \psi_b - \psi_a \le \epsilon
     code: phylloptim::Leaf::prepare_collar_solve
     also: [phylloptim::Leaf::dry_end, phylloptim::Leaf::extend_collar_bracket, phylloptim::Leaf::set_shut_state, phylloptim::Leaf::find_wet_bound]
-    reads: [psi_crit, collar_root_tol, stem_capacity_floor]
+    reads: [psi_crit, collar_root_tol]
     writes: []
     kind: closed_form
     note: 'The dry end is the continuity root with the stem at its dry end: $\psi_\mathrm{crit}$ for the four curves whose own form ends there (cost_domain_ends_at_psi_crit), the end of the stem curve for the rest (#183). The root''s critical potential bounds nothing. For the rest, the optimising solve tries the continuity root at $\psi_\mathrm{crit}$ first, as a bracket that holds the optimum wherever profit already falls there, and extends it (extend_collar_bracket) where it does not. The continuity root is taken from its feasible side. An interval narrower than bracket_tol_at(bound_b) has both ends polished to collar precision, and one no wider than collar_root_tol is a shut-down too; a narrow extension has its dry end polished the same way, its wet end already polished wherever the first bracket was narrow. The wet end is wet_bound and every shut exit is shut_state; nothing shuts a leaf on light or heat (#182).'

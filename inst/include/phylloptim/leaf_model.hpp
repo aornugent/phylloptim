@@ -1154,11 +1154,10 @@ public:
   }
   double residual_cond_temp_deriv_active(double psi_upstream, double leaf_temp,
                                          double gc_const) const;
-  // The same quantities on the tape: G(inf) with its trait rows, and the
-  // realised residual flux at a collar, carrying rows in g_min, kmax and the
-  // stem curve's pair. The leaf temperature and deficit are the seated
-  // operating point's and are passive, as the deficit is in collar_coords_at.
-  template <class S> S stem_integral_limit_at(const leaf_pars<S>& pars) const;
+  // The same quantity on the tape: the realised residual flux at a collar,
+  // carrying rows in g_min, kmax and the stem curve's pair. The leaf
+  // temperature and deficit are the seated operating point's and are passive,
+  // as the deficit is in collar_coords_at.
   // Declared ahead of its definition with the derivative surface below; the
   // draw carries the roots' ceiling on the residual flux.
   template <class S> struct SupplyDraw;
@@ -1813,20 +1812,6 @@ public:
   // 400, and they are shared between copies.
   static constexpr double ncontrol_default = 800.0;
 
-  // The least share of G(inf) the stem must still be able to carry from the
-  // wettest layer for the collar solve to have an interval. G is read to
-  // ~2e-16 of G(inf), so a stem whose remaining capacity G(inf) - G(psi) is
-  // 1e-11 of it carries a flux resolved to ~2e-5 of itself; below ~1e-13 every
-  // gradient is rounding, and the solve was measured refusing there (soil
-  // 13.4-14 MPa at the defaults, where x = (psi/b)^c > 27). The leaf shuts
-  // instead, at a soil of ~12.4 MPa at the defaults (x ~ 22), giving up a flux
-  // below 1e-11 of the stem's capacity: continuous to that order.
-  //
-  // ⚠️ A RESOLUTION FLOOR, NOT A MODELLED BOUND, and it binds only where psi_crit
-  // does not (the curves cost_domain_ends_at_psi_crit names leave ~1e-2 there).
-  // Carrying the curve's tail as G(inf) - G would resolve it and remove this.
-  static constexpr double stem_capacity_floor = 1e-11;
-
   // The two derivations, one place each, so a caller cannot get them
   // inconsistent. `f` is the remaining-conductivity fraction.
   // Forwards: the derivation lives in vulnerability.hpp, beside the curve it
@@ -1878,6 +1863,23 @@ public:
   // G(inf) = stem_b Gamma(1/c) / c, the most the stem can carry per unit
   // conductance.
   double stem_curve_limit() const;
+  // Q = G(inf) - G(psi), what the stem has left to carry past psi, read to its
+  // own relative precision however small it is (the table's tail), and its
+  // inverse. Q is zero past the end of the curve.
+  double stem_curve_complement(double psi, const char* caller = nullptr) const;
+  double stem_curve_complement_inverse(double Q) const;
+  // Whether psi is in the stem table's tail, where G(inf) - G has fallen to
+  // VulnerabilityTable::tail_share of G. A flux from
+  // an upstream potential there is formed as Q(upstream) - Q(stem), and the
+  // stem potential carrying it is found from Q: as a difference of G the flux
+  // loses every digit G(inf) has that it does not.
+  bool stem_curve_in_tail(double psi) const;
+  // Whether the stem can carry E from psi_upstream, allowing the few ulps a
+  // flux held below the stem's ceiling picks up (stem_curve_integral_inverse);
+  // and the stem potential that carries it, refusing a flux it cannot.
+  bool stem_carries(double E, double psi_upstream) const;
+  double psi_stem_carrying(double E, double psi_upstream,
+                           const char* caller) const;
 
   // Move stem_P50, and with it stem_b and psi_crit, without touching the stem
   // table, which depends on stem_c alone.
@@ -2958,6 +2960,10 @@ public:
   // query slope and the two TRAIT rows the closed form gives exactly.
   template <class S>
   S stem_integral_at(const S& psi, const leaf_pars<S>& pars) const;
+  // Q(psi) = G(inf) - G(psi) the same way: the table's value, to its relative
+  // precision however small, with the closed form's rows for what is left.
+  template <class S>
+  S stem_complement_at(const S& psi, const leaf_pars<S>& pars) const;
 
   // The two conditions that place the operating point at a held collar, and both
   // halves of each coordinate.
@@ -4028,6 +4034,15 @@ inline S Leaf::stem_integral_at(const S& psi, const leaf_pars<S>& pars) const {
       pars[par_stem_c]);
 }
 
+template <class S>
+inline S Leaf::stem_complement_at(const S& psi, const leaf_pars<S>& pars) const {
+  const double at = odelia::util::to_passive(psi);
+  return complement_with_closed_form_rows<S>(
+      stem_curve_complement(at, "Leaf::stem_complement_at"),
+      -stem_curve_integral_deriv(at), psi, pars[par_stem_P50],
+      pars[par_stem_c]);
+}
+
 inline leaf_pars<double> Leaf::passive_pars() const {
   leaf_pars<double> p{};
   p[par_vcmax_25] = vcmax_25;
@@ -4829,7 +4844,15 @@ inline void Leaf::set_shut_state() {
   // The stem carries the uptake, as it does at every collar. At g_min = 0 that
   // uptake is zero to the polish tolerance, and E = 0 puts the stem AT the
   // collar exactly rather than a round-trip of the inverse table away from it.
-  opt_psi_stem_ = residual_flux(collar, E_up_) == 0.0
+  //
+  // ⚠️ SO DOES AN UPTAKE THE BOUND'S ROOT-FIND LEAVES AT OR BELOW ZERO. The draw
+  // equals the residual flux only to the polish tolerance, and where the
+  // residual flux is ~1e-50 (a collar at the end of the stem curve, the drier
+  // layers' reverse draw balancing the wettest one's) that leaves it negative.
+  // Inverted, a negative flux puts the stem WETTER than the collar: measured
+  // 0.39 MPa wetter once the tail resolved it (#190), with E reported as zero.
+  // The stem at the collar is that flux's limit from above, so nothing jumps.
+  opt_psi_stem_ = (residual_flux(collar, E_up_) == 0.0 || !(E_up_ > 0.0))
                       ? collar
                       : find_psi_stem_from_psi_root(collar, soil);
   profit_ = profit_psi_stem_for<K>(opt_psi_stem_, collar);
@@ -4892,13 +4915,6 @@ inline bool Leaf::prepare_collar_solve(double& bound_a, double& bound_b,
   auto bracket = [&](double end) -> bool {
     dry_end_ = end;
     if (wettest_soil_layer >= end) {
-      return false;
-    }
-    // Nor where the stem can carry less, from the wettest layer, than the curve
-    // resolves (stem_capacity_floor): no gradient there is more than rounding.
-    const double G_inf = stem_curve_limit();
-    if (!(G_inf - stem_curve_integral(wettest_soil_layer) >
-          stem_capacity_floor * G_inf)) {
       return false;
     }
     // Uptake at a collar held at the end is the most the soil delivers with the
@@ -5577,8 +5593,7 @@ inline double Leaf::dprofit_at_collar_psi(double opt_root_psi, bool* feasible) {
   // differencing across a dry pin, as the gradient's own stationarity check
   // does. Reported like the other no-gradient exits rather than thrown.
   E_from_Soil_to_Root_Collar(psi, supply_psi_soil());
-  if (!(E_up_ / leaf_specific_conductance_max_ + stem_curve_integral(psi) <=
-        stem_curve_limit() * (1.0 + 16.0 * std::numeric_limits<double>::epsilon()))) {
+  if (!stem_carries(E_up_, psi)) {
     return 0.0;
   }
   const double psi_stem = transpiration_to_psi_stem(E_up_, psi);
@@ -6813,12 +6828,11 @@ inline double Leaf::g_min_factor_temp_deriv(double leaf_temp) const {
               util::logistic((leaf_temp - g_min_T_trans_) / g_min_T_width_));
 }
 
-// kmax (G(inf) - G(psi_up)): the most the stem can ever carry from psi_up,
-// which it approaches as its own potential runs away.
+// kmax Q(psi_up) = kmax (G(inf) - G(psi_up)): the most the stem can ever
+// carry from psi_up, which it approaches as its own potential runs away.
 inline double Leaf::supply_ceiling(double psi_upstream) const {
   return leaf_specific_conductance_max_ *
-         (stem_curve_limit() -
-          stem_curve_integral(psi_upstream, "Leaf::supply_ceiling"));
+         stem_curve_complement(psi_upstream, "Leaf::supply_ceiling");
 }
 
 // r* = r (1 + (r/E_inf)^p)^(-1/p), the smooth minimum of the demand and the
@@ -7065,27 +7079,13 @@ inline double Leaf::solve_ci(double gc) {
 }
 
 template <class S>
-inline S Leaf::stem_integral_limit_at(const leaf_pars<S>& pars) const {
-  using odelia::util::to_passive;
-  const double P50_0 = to_passive(pars[par_stem_P50]);
-  const double c_0 = to_passive(pars[par_stem_c]);
-  const double b = weibull_b_from_P50(P50_0, c_0);
-  const VulnerabilityIntegralDerivatives d =
-      cumulative_vulnerability_integral_limit_derivatives(b, c_0);
-  const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
-  return S(d.value) + S(rows.dP50) * (pars[par_stem_P50] - S(P50_0)) +
-         S(rows.dc) * (pars[par_stem_c] - S(c_0));
-}
-
-template <class S>
 inline S Leaf::residual_flux_at(const S& collar, const leaf_pars<S>& pars,
                                 const SupplyDraw<S>& draw) const {
   // The demand: g_min at the seated leaf temperature, at the seated deficit.
   // Both are the operating point's and passive; the trait carries the row.
   const double per_g = g_min_factor(Tleaf_) * vpd_leaf_ / atm_kpa_ / kg_to_mol_h2o;
   const S r = pars[par_g_min] * S(per_g);
-  const S E_inf = pars[par_kmax] * (stem_integral_limit_at<S>(pars) -
-                                    stem_integral_at<S>(collar, pars));
+  const S E_inf = pars[par_kmax] * stem_complement_at<S>(collar, pars);
   const S E_cap = S(residual_cap_fraction) * E_inf;
   // The same limits as the double path's residual_cap, so the two agree where
   // the ceiling has closed: the cap is the ceiling's fraction there, and a
@@ -7278,6 +7278,69 @@ inline double Leaf::stem_curve_integral_inverse_deriv(double w) const {
   return 1.0 / stem_curve_integral_deriv(stem_curve_integral_inverse(w));
 }
 
+inline double Leaf::stem_curve_complement(double psi, const char* caller) const {
+  if (psi < 0.0) {
+    stem_curve_out_of_domain(0.0, std::numeric_limits<double>::infinity(), psi,
+                             "what the cumulative xylem conductivity integral "
+                             "has left, G(inf) - G (psi in +MPa)",
+                             "psi", caller);
+  }
+  return vulnerability_complement(*stem_curve_, psi, stem_b,
+                                  stem_inv_b_.of(stem_b));
+}
+
+inline double Leaf::stem_curve_complement_inverse(double Q) const {
+  return vulnerability_complement_inverse(*stem_curve_, Q, stem_b);
+}
+
+inline bool Leaf::stem_curve_in_tail(double psi) const {
+  return vulnerability_in_tail(*stem_curve_, psi, stem_inv_b_.of(stem_b));
+}
+
+// Before the tail, in G as it always was, so a flux whose stem lies there
+// is placed bit for bit as before; G^-1 itself turns to Q past the tail's
+// start. From an upstream potential in the tail, in Q: what is left after E
+// is Q(upstream) - E/kmax, to the precision of the two.
+inline bool Leaf::stem_carries(double E, double psi_upstream) const {
+  constexpr double slack = 1.0 + 16.0 * std::numeric_limits<double>::epsilon();
+  const double w = E / leaf_specific_conductance_max_;
+  if (!stem_curve_in_tail(psi_upstream)) {
+    return w + stem_curve_integral(psi_upstream) <= stem_curve_limit() * slack;
+  }
+  return w - stem_curve_complement(psi_upstream) <=
+         stem_curve_limit() * (slack - 1.0);
+}
+
+inline double Leaf::psi_stem_carrying(double E, double psi_upstream,
+                                      const char* caller) const {
+  const double w = E / leaf_specific_conductance_max_;
+  if (!stem_curve_in_tail(psi_upstream)) {
+    return stem_curve_integral_inverse(w + stem_curve_integral(psi_upstream, caller),
+                                       caller);
+  }
+  const double Q_up = stem_curve_complement(psi_upstream, caller);
+  const double left = Q_up - w;
+  if (std::isnan(left)) {
+    return left;  // a NaN flux places no stem, and is not a flux out of range
+  }
+  // ⚠️ "PAST" MEANS PAST A FEW ULPS OF G(inf), as in stem_curve_integral_inverse,
+  // not of Q: a flux reaches here from a draw placed by a root-find in G's
+  // arithmetic (a shut leaf's wet bound, a continuity root), which can overshoot
+  // a remaining capacity of ~1e-15 G(inf) by more than that capacity. Such a
+  // flux is the stem's whole capacity, and the end of the curve its potential,
+  // as before. A negative flux leaves more than G(inf) only where the stem
+  // would be wetter than saturation, which is refused as G^-1 refuses it.
+  if (!(left >= -16.0 * std::numeric_limits<double>::epsilon() * stem_curve_limit()) ||
+      !(left <= stem_curve_limit())) {
+    stem_curve_out_of_domain(0.0, Q_up, w,
+                             "the stem's remaining capacity from psi_upstream, "
+                             "Q(psi_upstream) = G(inf) - G(psi_upstream), "
+                             "which bounds the flux it carries",
+                             "E/K_max", caller);
+  }
+  return stem_curve_complement_inverse(left > 0.0 ? left : 0.0);
+}
+
 inline void Leaf::perturb_stem_P50(double stem_P50_new) {
   check_psi_magnitudes(stem_P50_new, stem_c, roots_.root_P50, roots_.root_c);
   stem_P50 = stem_P50_new;
@@ -7331,11 +7394,19 @@ inline double Leaf::transpiration(double psi_stem, double psi_upstream) {
     return transpiration_cache_value_;
   }
 
-  // integration of proportion_of_conductivity over [opt_root_psi_, psi_stem]
-  const double E = leaf_specific_conductance_max_ *
-    (stem_curve_integral(psi_stem, "Leaf::transpiration, at psi_stem") -
-     stem_curve_integral(psi_upstream, "Leaf::transpiration, at psi_upstream"));
-  // return (transpiration_full_integration(psi_stem));
+  // integration of proportion_of_conductivity over [opt_root_psi_, psi_stem]:
+  // a difference of G, or, from an upstream potential in the table's tail, of
+  // what is left, Q = G(inf) - G, which keeps the digits G(inf) swamps there.
+  const double E =
+      stem_curve_in_tail(psi_upstream)
+          ? leaf_specific_conductance_max_ *
+                (stem_curve_complement(psi_upstream,
+                                       "Leaf::transpiration, at psi_upstream") -
+                 stem_curve_complement(psi_stem, "Leaf::transpiration, at psi_stem"))
+          : leaf_specific_conductance_max_ *
+                (stem_curve_integral(psi_stem, "Leaf::transpiration, at psi_stem") -
+                 stem_curve_integral(psi_upstream,
+                                     "Leaf::transpiration, at psi_upstream"));
 
   // A stem wetter than its upstream end would move water from the leaf to the
   // soil. The integral above is then negative, and stom_cond_CO2 and
@@ -7382,17 +7453,15 @@ inline double Leaf::transpiration_to_psi_stem(double transpiration_, double psi_
     return psi_upstream;
   }
 
-  double E_psi_stem = transpiration_/leaf_specific_conductance_max_ +
-    stem_curve_integral(psi_upstream, "Leaf::transpiration_to_psi_stem, at psi_upstream");
-
   // The lookup that killed plant#576, and the reason the inverse names its units:
-  // E_psi_stem below the table's lower end means the demanded flux is NEGATIVE,
-  // i.e. the collar cannot supply it and the stem potential that would carry it is
-  // wetter than saturation. There is no such potential, so widening the domain is
-  // not the fix -- the caller should not have asked. Naming the argument E/K_max
-  // rather than a bare `u` is what makes that readable from the message.
-  return stem_curve_integral_inverse(
-      E_psi_stem, "Leaf::transpiration_to_psi_stem, inverting for psi_stem");
+  // E/K_max + G(psi_upstream) below the table's lower end means the demanded
+  // flux is NEGATIVE, i.e. the collar cannot supply it and the stem potential
+  // that would carry it is wetter than saturation. There is no such potential,
+  // so widening the domain is not the fix -- the caller should not have asked.
+  // Naming the argument E/K_max rather than a bare `u` is what makes that
+  // readable from the message.
+  return psi_stem_carrying(transpiration_, psi_upstream,
+                           "Leaf::transpiration_to_psi_stem, inverting for psi_stem");
 }
 
 // The TOTAL conductance to CO2 at a candidate pair, mol CO2 m^-2 LA s^-1: the
@@ -7852,6 +7921,12 @@ inline Leaf::PhotoCapacity<T> Leaf::photo_capacity() const {
 template <typename T>
 inline T Leaf::transpiration_at(const T& sigma, const T& collar,
                                 const leaf_pars<T>& pars) const {
+  // The difference transpiration() forms, on the same test, so the value is
+  // its value bit for bit and the rows are those of what it differences.
+  if (stem_curve_in_tail(odelia::util::to_passive(collar))) {
+    return pars[par_kmax] * (stem_complement_at<T>(collar, pars) -
+                             stem_complement_at<T>(sigma, pars));
+  }
   return pars[par_kmax] * (stem_integral_at<T>(sigma, pars) -
                            stem_integral_at<T>(collar, pars));
 }
@@ -8012,9 +8087,7 @@ inline void Leaf::held_coords_at(double sigma_star, double ci_star,
     sigma_h = odelia::implicit_value<S>(
         sigma_star, dT1_dsigma,
         [&](const S& sg) -> S {
-          return pars[par_kmax] *
-                     (leaf.template stem_integral_at<S>(sg, pars) -
-                      leaf.template stem_integral_at<S>(held, pars)) -
+          return leaf.template transpiration_at<S>(sg, held, pars) -
                  draw.E_up.value;
         },
         pars, draw.E_up.value);
@@ -8127,13 +8200,14 @@ inline Leaf::CollarCoords<S> Leaf::collar_channel_at(
 
   // dsigma/dcollar: THE INVERSE'S OWN SLOPE times the transport's, which
   // is how upstream's dprofit_at_collar_psi forms it and what actually placed
-  // sigma. Read at E_up/kmax + G(collar) -- THE SOIL DRAW, the point the inverse
-  // table was queried at, not the stem flux.
-  const double u_at = to_passive(draw.E_up.value) / to_passive(kmax) +
-                      to_passive(stem_integral_at<S>(held, pars));
+  // sigma. Read where the inverse placed the stem for THE SOIL DRAW
+  // (psi_stem_carrying), not for the stem flux.
+  const double sigma_at = psi_stem_carrying(
+      to_passive(draw.E_up.value), to_passive(collar),
+      "Leaf::collar_channel_at, placing the stem for the soil draw");
   const S recip = S(1.0) / f_sigma;
   const S dsigma_du =
-      S(stem_curve_integral_inverse_deriv(u_at)) + (recip - S(to_passive(recip)));
+      S(1.0 / stem_curve_integral_deriv(sigma_at)) + (recip - S(to_passive(recip)));
   // psi_crit does not move with the collar.
   //
   // ⚠️ NOR DOES A STEM HELD AT A DRY PIN. sigma_h is already the end of the curve
@@ -8483,18 +8557,17 @@ inline S Leaf::dry_end_collar_at(double bound_x, const SupplyDraw<S>& draw,
   // The dry end is T1 with the stem held at its dry end (dry_end_at): the collar
   // at which the soil delivers exactly what the column can still carry. The stem
   // is held there, so only the second integral and the flux move with the collar.
-  // Where the dry end is the end of the stem curve, the stem integral there is
-  // G(inf) and its rows are G(inf)'s: the leaf transpires all the stem can carry.
+  // Where the dry end is the end of the stem curve, the stem has nothing left
+  // to carry there, to e^-40 of G(inf), and its rows are zero to the same
+  // order: the leaf transpires all the stem can carry from the collar.
   const double dT_dx =
       -to_passive(pars[par_kmax]) * stem_curve_integral_deriv(bound_x) -
       dflux_dx;
   const S dry = odelia::implicit_value<S>(
       bound_x, dT_dx,
       [&](const S& x) -> S {
-        return pars[par_kmax] *
-                   (leaf.template stem_integral_at<S>(dry_end_at<K, S>(pars),
-                                                      pars) -
-                    leaf.template stem_integral_at<S>(x, pars)) -
+        return leaf.template transpiration_at<S>(dry_end_at<K, S>(pars), x,
+                                                 pars) -
                draw.E_up.value;
       },
       pars, draw.E_up.value);
@@ -9847,12 +9920,10 @@ inline void Leaf::optimise_psi_stem_single() {
       set_profitmax_degenerate_state(psi_wet, psi_soil);
       return;
     }
-  } else if (psi_wet > psi_dry ||
-             !(stem_curve_limit() - stem_curve_integral(psi_soil) >
-               stem_capacity_floor * stem_curve_limit())) {
+  } else if (psi_wet > psi_dry || !(stem_curve_complement(psi_soil) > 0.0)) {
     // Drier soil than the stem can carry more than the cuticle's loss from
-    // short of its dry end, or than the curve resolves a flux from
-    // (stem_capacity_floor): one feasible potential, and this is it.
+    // short of its dry end, or than it can carry anything from: one feasible
+    // potential, and this is it.
     profit_ = profit_psi_stem_for<K>(psi_wet, psi_soil);
     lambda_emergent_ = lambda_for<K>(psi_wet, psi_soil);
     return;

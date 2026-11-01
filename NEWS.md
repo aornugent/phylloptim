@@ -1,6 +1,12 @@
-# phylloptim 0.24.0
+# phylloptim 0.25.0
 
-## The boundary layer's share of the CO2 path (#122)
+## The vulnerability curves' tail is carried as what is left (#190)
+
+Near the end of a vulnerability curve G sits within rounding of G(inf), so a flux formed as G(stem) - G(upstream) kept none of its digits and the conductivity G' was rounding past x = (psi/b)^c ~ 25. The table now holds ln Q, Q = G(inf) - G, wherever Q has fallen to 1/1024 of G (x ~ 5.6, 7.5 MPa at the default stem curve), so Q and G' keep their own relative precision to the end of the curve (Q to 8e-14 of itself and G' to 4e-12 for c from 1.2 to 12). A flux from an upstream potential in the tail is Q(upstream) - Q(stem), on the stem (`transpiration`, `transpiration_at`) and in the roots' uptake walk and `uptake_limit`; a stem potential is placed from Q (`psi_stem_carrying`, `stem_curve_complement_inverse`); the trait rows of Q come from a continued fraction for the upper incomplete gamma (`cumulative_vulnerability_complement_derivatives_at`).
+
+`Leaf::stem_capacity_floor` is gone: a leaf no longer shuts at ~12.4 MPa because the curve could not resolve its flux, and a shut leaf's stem potential is resolved to the end of the curve. A root layer conducts until the end of its curve (15.44 MPa at the defaults) rather than until G happened to round to G(inf) (14.51 MPa). A shut leaf whose uptake the wet bound leaves at or below zero now has its stem at the collar; inverted, that negative flux had put the stem up to 0.39 MPa wetter than the collar once the tail resolved it.
+
+`boundary-dry` pins on the collar route are not removed: they are where profit still rises at the collar's dry bound, and with the tail resolved the optimum on those rows is interior in the stem (x ~ 25) but within ~1e-11 MPa of the collar's dry bound, below what a collar solve resolves. That is #190's open half.
 
 With the energy balance on, the leaf has a boundary layer, and the CO2 conductance treated the whole leaf-to-air path as stomatal (H2O:CO2 ratio `r_s`, 1.67). The boundary layer's share diffuses at `r_b = r_s^(2/3)` (1.407 at the default; the laminar-layer scaling of Sabot et al. 2022, eq 10), so the conductance is now the series `1/g_c = r_s/g_w - (r_s - r_b)/g_bw`, with `g_w` the total conductance to water (`gs_H2O`) and `g_bw` the boundary layer's (`gb_H2O`). The transpiration is set by the hydraulics as before; the boundary layer changes how much CO2 it buys. On the default traits over psi_soil 0.5-4, VPD 0.5-4 kPa, PPFD 500 and 1500, Tair 25 and 35 C, `A` rises by a median 0.3% at 5 m/s of wind and 0.8% at 0.5 m/s, at most 1.4%, and `gc` by at most 4.1%; no solve's profit falls. Off the energy balance nothing changes, bit for bit.
 

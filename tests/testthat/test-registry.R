@@ -18,7 +18,7 @@ leaf <- leaf_model()
 .registry_unbound_members <- c("damage_surv_floor", "collar_root_tol", "k_crit_fraction",
                                "GSS_tol_abs", "vulnerability_curve_ncontrol",
                                "medlyn_H2O_CO2_ratio", "residual_cap_power",
-                               "residual_cap_fraction", "stem_capacity_floor")
+                               "residual_cap_fraction")
 
 # Inputs with no default by design: an unset one reads NaN and the code refuses
 # it where it is used (TF24_floor's price, the energy balance's near-infrared),

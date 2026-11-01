@@ -297,6 +297,139 @@ void test_vulnerability_integral_derivatives() {
   ok(at_end > 0.0, "the end of the curve is inside the series' reach");
 }
 
+// What is left of the integral, Q = G(inf) - G (#190): its rows against
+// central differences of the closed form (b/c) Gamma(1/c, x), read RELATIVE TO
+// Q's OWN SIZE, which a difference of two G rows cannot reach once Q is below
+// ~1e-13 of G(inf); and the two bundles summed against G(inf)'s rows, on both
+// sides of x = 2, where the continued fraction takes over.
+void test_vulnerability_complement_derivatives() {
+  printf("analytic trait derivatives of what is left of the integral (#190)\n");
+  const auto Q_at = [](double psi, double b, double c) {
+    return (b / c) * boost::math::tgamma(1.0 / c, std::pow(psi / b, c));
+  };
+  double worst_value = 0.0, worst_dpsi = 0.0, worst_db = 0.0, worst_dc = 0.0,
+         worst_sum = 0.0;
+  int points = 0, deep = 0;
+  for (double b : {0.5, 3.898245}) {
+    for (double c : {1.2, 2.680147, 5.0, 12.0}) {
+      for (double x : {0.3, 1.0, 1.99, 2.01, 5.0, 15.0, 25.0, 35.0, 39.5}) {
+        ++points;
+        if (x > 30.0) ++deep;
+        const double psi = b * std::pow(x, 1.0 / c);
+        const auto d =
+            phylloptim::cumulative_vulnerability_complement_derivatives_at(psi, b, c);
+        const double Q = Q_at(psi, b, c);
+        worst_value = std::max(worst_value, std::abs(d.value - Q) / Q);
+        const double h = 1e-6;
+        const double fd_psi =
+            (Q_at(psi * (1 + h), b, c) - Q_at(psi * (1 - h), b, c)) / (2 * h * psi);
+        const double fd_b =
+            (Q_at(psi, b * (1 + h), c) - Q_at(psi, b * (1 - h), c)) / (2 * h * b);
+        const double fd_c =
+            (Q_at(psi, b, c * (1 + h)) - Q_at(psi, b, c * (1 - h))) / (2 * h * c);
+        // In units of Q per unit of each argument: dQ/dc passes through zero.
+        worst_dpsi = std::max(worst_dpsi, std::abs(d.dpsi - fd_psi) / std::max(std::abs(fd_psi), Q));
+        worst_db = std::max(worst_db, std::abs(d.db - fd_b) / std::max(std::abs(fd_b), Q));
+        worst_dc = std::max(worst_dc, std::abs(d.dc - fd_c) / std::max(std::abs(fd_c), Q));
+        const auto g = phylloptim::cumulative_vulnerability_integral_derivatives_at(psi, b, c);
+        const auto l = phylloptim::cumulative_vulnerability_integral_limit_derivatives(b, c);
+        worst_sum = std::max({worst_sum, std::abs(d.db + g.db - l.db) / std::abs(l.db),
+                              std::abs(d.dc + g.dc - l.dc) / std::abs(l.dc)});
+      }
+    }
+  }
+  printf("    %d points (%d past x = 30) | value %.3g | dpsi %.3g | db %.3g | dc %.3g "
+         "of Q's own size | with G's rows, G(inf)'s to %.3g\n",
+         points, deep, worst_value, worst_dpsi, worst_db, worst_dc, worst_sum);
+  ok(deep == 16, "the grid reaches Q below e^-30 of G(inf)");
+  // To Q's own conditioning in psi, which is c x eps of Q: 1e-13 at c = 12
+  // and x = 40, where both sides form exp(-x) from a rounded x.
+  near(worst_value, 0.0, 5e-13, "Q matches the closed form, relative to Q");
+  near(worst_dpsi, 0.0, 1e-7, "dQ/dpsi matches a central difference, relative to Q");
+  near(worst_db, 0.0, 1e-7, "dQ/db matches a central difference, relative to Q");
+  near(worst_dc, 0.0, 1e-7, "dQ/dc matches a central difference, relative to Q");
+  near(worst_sum, 0.0, 1e-12, "Q's rows and G's sum to G(inf)'s");
+  const auto past = phylloptim::cumulative_vulnerability_complement_derivatives_at(
+      phylloptim::vulnerability_psi_end(3.898245, 2.680147) * 1.01, 3.898245, 2.680147);
+  ok(past.value == 0.0 && past.db == 0.0 && past.dc == 0.0,
+     "past the end of the curve Q and its rows are zero, as the table reads it");
+
+  // Below c = 1 the continued fraction's first denominator x + 1 - 1/c is zero
+  // at x = 3, c = 0.25 (psi = 81, b = 1), so the rows there come from G(inf)
+  // less G; they still match the closed form and a difference.
+  {
+    const double psi = 81.0, b = 1.0, c = 0.25, h = 1e-6;
+    const auto d = phylloptim::cumulative_vulnerability_complement_derivatives_at(psi, b, c);
+    const double Q = Q_at(psi, b, c);
+    near(d.value / Q, 1.0, 1e-12, "below c = 1, Q matches the closed form");
+    near(d.dc, (Q_at(psi, b, c * (1 + h)) - Q_at(psi, b, c * (1 - h))) / (2 * h * c),
+         1e-6 * std::abs(d.dc), "and dQ/dc a central difference");
+  }
+  // A table whose q never falls to tail_share of g before the end still ends
+  // in a tail span, so a read at the end of the curve has one to read.
+  for (const auto& [c, n] : {std::pair{25.0, 9.0}, std::pair{0.04, 800.0}}) {
+    const auto t = phylloptim::vulnerability_table(c, n, nullptr);
+    ok(t->tail_index() < t->intervals(), "the last span is a tail span at c = " +
+                                             std::to_string(c));
+    ok(std::isfinite(phylloptim::vulnerability_complement(*t, t->u_end(), 1.0, 1.0)),
+       "and Q at the end of the curve is read from it");
+  }
+  // NaN in, NaN out, through Q's inverse as through Q.
+  {
+    const auto t = phylloptim::vulnerability_table(2.680147, 800.0, nullptr);
+    ok(std::isnan(phylloptim::vulnerability_complement_inverse(
+           *t, std::numeric_limits<double>::quiet_NaN(), 3.9)),
+       "Q^-1 of NaN is NaN, not the end of the curve");
+  }
+}
+
+// The table's tail (#190): from where Q has fallen to tail_share of G to the
+// end of the curve, Q and the conductivity are read to their own relative
+// precision, and a flux from an upstream potential there is resolved relative
+// to itself. Before #190 that flux was a difference of two values of G within
+// rounding of G(inf): at x = 30 it carried no correct digit.
+void test_vulnerability_table_tail() {
+  printf("vulnerability table: the tail keeps what is left to its own precision (#190)\n");
+  double worst_q = 0.0, worst_dq = 0.0, worst_join = 0.0;
+  for (double c : {1.2, 1.5, 2.0, 2.680147, 5.0, 12.0}) {
+    const auto t = phylloptim::vulnerability_table(c, phylloptim::Leaf::ncontrol_default, nullptr);
+    for (int i = 0; i <= 2000; ++i) {
+      const double u = t->u_tail() + (t->u_end() - t->u_tail()) * i / 2000.0;
+      const double x = std::pow(u, c);
+      const double q = phylloptim::vulnerability_complement(*t, u, 1.0, 1.0);
+      const double ref = boost::math::tgamma(1.0 / c, x) / c;
+      worst_q = std::max(worst_q, std::abs(q - ref) / ref);
+      const double dq = phylloptim::vulnerability_integral_deriv(*t, u, 1.0);
+      worst_dq = std::max(worst_dq, std::abs(dq - std::exp(-x)) / std::exp(-x));
+    }
+    // The join is a knot: G either side of it agrees to rounding.
+    const double ut = t->u_tail();
+    worst_join = std::max(
+        worst_join, std::abs(phylloptim::vulnerability_integral(*t, ut, 1.0) -
+                             phylloptim::vulnerability_integral(*t, std::nextafter(ut, 0.0), 1.0)) /
+                        t->G_inf_over_b());
+  }
+  printf("    q %.3g and G' %.3g of themselves; G across the join %.3g of G(inf)\n",
+         worst_q, worst_dq, worst_join);
+  near(worst_q, 0.0, 2e-13, "q is read to its own relative precision in the tail");
+  near(worst_dq, 0.0, 1e-11, "the conductivity is read to its own relative precision there");
+  near(worst_join, 0.0, 4e-16, "G is continuous where the tail starts");
+
+  phylloptim::Leaf l;
+  l.setup_transpiration(phylloptim::Leaf::ncontrol_default);
+  double worst_E = 0.0;
+  for (double x_up : {10.0, 20.0, 30.0, 38.0}) {
+    const double up = l.stem_b * std::pow(x_up, 1.0 / l.stem_c);
+    const double stem = l.stem_b * std::pow(x_up + 1.0, 1.0 / l.stem_c);
+    const double want = l.leaf_specific_conductance_max_ *
+                        (phylloptim::cumulative_vulnerability_complement_derivatives_at(up, l.stem_b, l.stem_c).value -
+                         phylloptim::cumulative_vulnerability_complement_derivatives_at(stem, l.stem_b, l.stem_c).value);
+    worst_E = std::max(worst_E, std::abs(l.transpiration(stem, up) - want) / want);
+  }
+  printf("    a flux drawn from x = 10 to 38 to %.3g of itself\n", worst_E);
+  near(worst_E, 0.0, 1e-12, "a flux from the tail is resolved relative to itself");
+}
+
 // The vulnerability table (#183): what it reads against boost's incomplete gamma,
 // the continuity it promises across knots, its inverse, and its independence of
 // b. The accuracy bounds are the ones VulnerabilityTable states, at the default
@@ -3928,39 +4061,39 @@ void test_root_network_template_is_the_double_overload() {
 // that can be asked of an inverse is its conditioning, eps * w / G'(psi), so
 // the error is read in those units; the residual in G must be rounding.
 //
-// ⚠️ THE CONDITIONING UNIT ASSUMES G IS READ TO AN ULP, which the table is not
-// where the stem has nearly nothing left to carry: there the knot differences
-// fall below an ulp of G(inf), so G is resolved to a few ulps, and psi
-// scatters by that many units with every residual still rounding. That tail is
-// the one Leaf::stem_capacity_floor already declares unresolved, and the
-// worst point there moves with the platform's libm (7.2 units on macOS/arm64,
-// 15.5 on Linux/x86, at x ~ 33). So the unit is asserted above the floor and
-// reported below it; the residual is asserted everywhere.
+// Q^-1 is checked the same way, psi -> Q(psi) -> Q^-1 -> psi', in ITS
+// conditioning, eps * Q / G'(psi), which is what carrying the tail as Q buys:
+// at x = 40 that unit is ~1e-15 of psi where G's is ~e^40 times larger, so a
+// tail held as G(inf) - G could not pass it past x ~ 5. It is asserted in the
+// tail, where Q is what the table holds.
 void test_stem_curve_inverse_round_trips() {
   printf("the stem curve's inverse round-trips\n");
   const double eps = std::numeric_limits<double>::epsilon();
-  double worst_cond = 0.0, worst_tail = 0.0, worst_res = 0.0, worst_cross = 0.0;
-  std::string cond_at, tail_at, res_at, cross_at;
-  int compared = 0, resolved = 0;
+  double worst_cond = 0.0, worst_res = 0.0, worst_cross = 0.0, worst_q = 0.0;
+  std::string cond_at, res_at, cross_at, q_at;
+  int compared = 0, tail = 0;
   const auto check = [&](phylloptim::Leaf& l, double psi, const std::string& at) {
     const double w = l.stem_curve_integral(psi);
     const double fast = l.stem_curve_integral_inverse(w);
     const double full = l.stem_curve_integral_inverse(w, nullptr, true);
-    const double scale = eps * std::max(w, eps) / l.stem_curve_integral_deriv(psi) +
-                         eps * psi;
+    const double dG = l.stem_curve_integral_deriv(psi);
+    const double scale = eps * std::max(w, eps) / dG + eps * psi;
     const double cond = std::abs(fast - psi) / scale;
     const double res = std::abs(l.stem_curve_integral(fast) - w) / std::max(w, eps);
     const double cross = std::abs(fast - full) / scale;
-    const double G_inf = l.stem_curve_limit();
-    if (G_inf - w > phylloptim::Leaf::stem_capacity_floor * G_inf) {
-      ++resolved;
-      if (cond > worst_cond) { worst_cond = cond; cond_at = at; }
-    } else if (cond > worst_tail) {
-      worst_tail = cond;
-      tail_at = at;
-    }
+    if (cond > worst_cond) { worst_cond = cond; cond_at = at; }
     if (res > worst_res) { worst_res = res; res_at = at; }
     if (cross > worst_cross) { worst_cross = cross; cross_at = at; }
+    const double end = phylloptim::vulnerability_psi_end(l.stem_b, l.stem_c);
+    // Q's conditioning is the claim only in the tail: before it Q is
+    // G(inf) - G, carrying up to 10 bits of G(inf)'s rounding by design.
+    if (psi < end && l.stem_curve_in_tail(psi)) {
+      const double Q = l.stem_curve_complement(psi);
+      const double back = l.stem_curve_complement_inverse(Q);
+      const double q_cond = std::abs(back - psi) / (eps * Q / dG + eps * psi);
+      if (q_cond > worst_q) { worst_q = q_cond; q_at = at; }
+      ++tail;
+    }
     ++compared;
   };
   for (int n : {100, 800}) {
@@ -3978,18 +4111,17 @@ void test_stem_curve_inverse_round_trips() {
                                     std::to_string(end * i / 100.0));
     }
   }
-  printf("    %d points, %d above the capacity floor | worst %.3g x conditioning "
-         "there (%.3g below it, not asserted), residual %.3g, fast-vs-full %.3g "
-         "x conditioning\n",
-         compared, resolved, worst_cond, worst_tail, worst_res, worst_cross);
+  printf("    %d points, %d of them in the tail | G^-1 worst %.3g x conditioning, "
+         "residual %.3g, fast-vs-full %.3g | Q^-1 worst %.3g x its conditioning\n",
+         compared, tail, worst_cond, worst_res, worst_cross, worst_q);
   ok(compared == 2202, "every point of the round trip was compared");
-  ok(resolved >= 1800, "most of the round trip is above the capacity floor; got " +
-                           std::to_string(resolved));
+  ok(tail >= 1000, "half the round trip is in the tail; got " + std::to_string(tail));
   ok(worst_cond <= 8.0, "the inverse is within 8 units of its conditioning; worst" +
                             cond_at);
   ok(worst_res <= 4.0 * eps, "the residual in G is rounding; worst" + res_at);
   ok(worst_cross <= 8.0, "the fast path agrees with the converged one; worst" +
                              cross_at);
+  ok(worst_q <= 8.0, "Q^-1 is within 8 units of Q's conditioning; worst" + q_at);
 }
 
 // The stem conductivity carries the TABLE's value and the CURVE's rows
@@ -10514,16 +10646,20 @@ void test_the_capped_regime_is_smooth_in_the_soil() {
         sweep_kinks(x, o, &SweepPoint::profit, "profit", where, 0.05, at);
         sweep_kinks(x, o, &SweepPoint::A, "A", where, 0.05, at);
         sweep_kinks(x, o, &SweepPoint::E, "E", where, 0.05, at);
-        // psi_stem only where the stem still resolves its flux. Past ~12 MPa a
-        // shut leaf's stem carries less than G(inf)'s rounding, so its potential
-        // is defined only to that rounding (G' ~ 1e-13 at x ~ 30): every
-        // potential there carries the same flux. A follow-up to #183 carries the
-        // tail as G(inf) - G to keep it.
+        // psi_stem to the end of the stem curve: with the tail carried as
+        // G(inf) - G (#190) a shut leaf's stem potential is resolved to there,
+        // where before ~12 MPa it was defined only to G(inf)'s rounding. Within
+        // a gravity head of the end itself the shut collar is held AT the end,
+        // where what the stem has left steps from e^-40 of G(inf) to zero,
+        // until the wettest layer's balance passes it: a corner the curve's
+        // end sets, at fluxes of ~1e-50.
         {
+          const phylloptim::Leaf l0 = solve(4.0);
+          const double end = phylloptim::vulnerability_psi_end(l0.stem_b, l0.stem_c);
           std::vector<double> xs;
           std::vector<SweepPoint> os;
           for (std::size_t i = 0; i < x.size(); ++i) {
-            if (x[i] <= 12.0 + 1e-9) { xs.push_back(x[i]); os.push_back(o[i]); }
+            if (x[i] < end - 0.1) { xs.push_back(x[i]); os.push_back(o[i]); }
           }
           sweep_kinks(xs, os, &SweepPoint::psi, "psi_stem", where, 0.05, at);
         }
@@ -10673,6 +10809,7 @@ int main(int argc, char **argv) {
   test_defaults_are_unset();
   test_vulnerability_curve();
   test_vulnerability_integral_derivatives();
+  test_vulnerability_complement_derivatives();
   test_spline_matches_direct_integration();
   test_arrhenius();
   test_saturation_vapour_pressure();
@@ -10770,6 +10907,7 @@ int main(int argc, char **argv) {
   test_knot_grid_reaches_its_intended_domain();
   test_psi_crit_lies_inside_the_stem_curve_domain();
   test_vulnerability_table();
+  test_vulnerability_table_tail();
   test_bad_input_throws();
   test_infeasible_is_a_distinct_failure();
   test_out_of_domain_names_the_spline();

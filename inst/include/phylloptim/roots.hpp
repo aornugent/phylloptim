@@ -507,6 +507,20 @@ public:
     return vulnerability_integral_deriv(*vulnerability_, psi, inv_b_.of(root_b));
   }
 
+  // Q = G(inf) - G(psi), the area left under the conductivity curve past psi,
+  // to its own relative precision however small (the table's tail). Zero past
+  // the end of the curve, where a layer conducts nothing.
+  double root_vuln_complement_at(double psi) const {
+    return vulnerability_complement(*vulnerability_, psi, root_b, inv_b_.of(root_b));
+  }
+
+  // Whether psi is in the table's tail, where a layer's integral between two
+  // potentials is formed as a difference of Q rather than of G (uptake_impl):
+  // as a difference of G it keeps none of the digits G(inf) swamps.
+  bool root_in_tail(double psi) const {
+    return vulnerability_in_tail(*vulnerability_, psi, inv_b_.of(root_b));
+  }
+
   // Per-timestep soil state: the layer potentials, the layer depths, and the
   // gravitational head that follows from them.
   void set_soil_state(const std::vector<double>& psi_soil,
@@ -745,49 +759,35 @@ public:
   // collar dries without bound. A layer's flux (T - psi_i - z_i) /
   // (r_H span / I + r_V) tends to I_inf / r_H as the span grows, where
   // I_inf = G(inf) - G(psi_i) is the area left under the conductivity curve
-  // past the layer's potential. A layer with none left (past the end of the
-  // curve, where G is G(inf) to rounding) contributes nothing, and one with no horizontal
-  // resistance makes the limit infinite. The leaf caps the residual flux below
-  // this on the collar route (#182, #184), so a soil the roots can barely draw
-  // from is never asked for more than it can give. Rows on the tape: each G
-  // through the same closed form as the uptake walk, and G(inf) through the
-  // curve's limit. kg H2O m^-2 leaf s^-1, the unit of E_up.
+  // past the layer's potential, read as the table's Q. A layer with none left
+  // (past the end of the curve) contributes nothing, and one with no
+  // horizontal resistance makes the limit infinite. The leaf caps the residual
+  // flux below this on the collar route (#182, #184), so a soil the roots can
+  // barely draw from is never asked for more than it can give. Rows on the
+  // tape: Q's closed form, which keeps them as Q goes to zero. kg H2O m^-2 leaf
+  // s^-1, the unit of E_up.
   template <class T>
   T uptake_limit(const SupplyInputs<T>& at) const {
     using odelia::util::to_passive;
-    T G_lim;
-    if constexpr (std::is_same_v<T, double>) {
-      G_lim = root_vuln_integral_limit();
-    } else {
-      const double P50_0 = to_passive(at.root_P50);
-      const double c_0 = to_passive(at.root_c);
-      const double b = weibull_b_from_P50(P50_0, c_0);
-      const VulnerabilityIntegralDerivatives d =
-          cumulative_vulnerability_integral_limit_derivatives(b, c_0);
-      const TraitRows rows = rows_in_P50(d.db, d.dc, b, c_0);
-      G_lim = T(root_vuln_integral_limit()) +
-              T(rows.dP50) * (at.root_P50 - T(P50_0)) +
-              T(rows.dc) * (at.root_c - T(c_0));
-    }
     T total = T(0.0);
     for (int i = 0; i < max_soil_layer; ++i) {
       const T& psi_i = at.psi_soil[i];
       const double q = to_passive(psi_i);
-      T G_i;
+      T I_inf;
       if constexpr (std::is_same_v<T, double>) {
-        G_i = root_vuln_integral_at(q);
+        I_inf = root_vuln_complement_at(q);
       } else {
-        G_i = integral_with_closed_form_rows<T>(root_vuln_integral_at(q),
-                                                root_vuln_integral_deriv_at(q), psi_i,
-                                                at.root_P50, at.root_c);
+        I_inf = complement_with_closed_form_rows<T>(root_vuln_complement_at(q),
+                                                    -root_vuln_integral_deriv_at(q),
+                                                    psi_i, at.root_P50, at.root_c);
       }
-      if (!(to_passive(G_lim) - to_passive(G_i) > 0.0)) {
+      if (!(to_passive(I_inf) > 0.0)) {
         continue;
       }
       if (!(to_passive(at.r_R_H_min[i]) > 0.0)) {
         return T(std::numeric_limits<double>::infinity());
       }
-      total += (G_lim - G_i) / at.r_R_H_min[i];
+      total += I_inf / at.r_R_H_min[i];
     }
     // In kg, as E_up leaves the walk; the per-layer draws are in mol.
     return total * T(kg_per_mol_h2o);
@@ -809,7 +809,7 @@ public:
       if (wettest < 0 || s < psi_soil[static_cast<std::size_t>(wettest)]) {
         wettest = i;
       }
-      if (!(root_vuln_integral_limit() - root_vuln_integral_at(s) > 0.0)) {
+      if (!(root_vuln_complement_at(s) > 0.0)) {
         continue;
       }
       const double b = s + grav_head_z_[static_cast<std::size_t>(i)];
@@ -831,7 +831,7 @@ public:
     double highest = -std::numeric_limits<double>::infinity();
     for (int i = 0; i < max_soil_layer; ++i) {
       const double s = psi_soil[static_cast<std::size_t>(i)];
-      if (!(root_vuln_integral_limit() - root_vuln_integral_at(s) > 0.0)) {
+      if (!(root_vuln_complement_at(s) > 0.0)) {
         continue;
       }
       highest = std::max(highest, s + grav_head_z_[static_cast<std::size_t>(i)]);
@@ -999,16 +999,34 @@ public:
           }
         };
 
+        // From a lower end in the table's tail the span's integral is a
+        // difference of what is left, Q(lo) - Q(hi), which keeps its digits
+        // where G(hi) - G(lo) keeps none.
+        auto Q_integral = [&](const T& arg) -> T {
+          const double q = to_passive(arg);
+          if constexpr (std::is_same_v<T, double>) {
+            return root_vuln_complement_at(q);
+          } else {
+            return complement_with_closed_form_rows<T>(root_vuln_complement_at(q),
+                                     -root_vuln_integral_deriv_at(q), arg,
+                                     at.root_P50, at.root_c);
+          }
+        };
+
         T integral = T(0.0);
         if (to_passive(T_pos_lo) < to_passive(T_src_max)) {
-          integral += G_integral(T_src_max) - G_integral(T_pos_lo);
+          if (root_in_tail(to_passive(T_pos_lo))) {
+            integral += Q_integral(T_pos_lo) - Q_integral(T_src_max);
+          } else {
+            integral += G_integral(T_src_max) - G_integral(T_pos_lo);
+          }
         }
         if (to_passive(T_src_min) < to_passive(T_neg_hi)) {
           integral += (T_neg_hi - T_src_min);
         }
 
-        // A layer whose whole span lies past the end of the curve (where G is
-        // G(inf) to rounding) has no conductance left and draws nothing. At double that fell out of the arithmetic as
+        // A layer whose whole span lies past the end of the curve has no
+        // conductance left and draws nothing. At double that fell out of the arithmetic as
         // num / inf; on the tape it was inf * 0, so the layer is skipped
         // explicitly, with no flux and no rows. A shut leaf's collar can sit
         // there now that it is no longer held at a critical potential (#182).
