@@ -166,7 +166,7 @@ a `theta` written from a stale count shifts every parameter after the gap and dr
 the last off the end, with no diagnostic at all. That has happened: a 16-entry list
 under what was then an 18-element array put `kmax` in a trait's slot, and the only
 symptom was `dA/dvcmax = nan`. The package's own CI consumer carries a
-`static_assert(g::n_theta == 19)` beside its list for exactly this reason; copy it.
+`static_assert(g::n_theta == 35)` beside its list for exactly this reason; copy it.
 
 Three things the free function gives you that a hand-rolled loop would not:
 
@@ -269,7 +269,7 @@ the one place they are kept current.
 
 ## The golden file is the contract
 
-`tests/cpp/golden/operating_points.tsv` records 288 operating points at full
+`tests/cpp/golden/operating_points.tsv` records 672 operating points at full
 precision and is compared **bit-exactly**. It is what makes a large refactor of
 this code checkable rather than hopeful, and any change that moves it is expected
 to say what moved and by how much.

@@ -24,7 +24,7 @@ Most numbers quoted in the prose here are produced by the code chunk beside them
 
 Some numbers cannot be generated that way. Timings, cross-platform magnitudes, and the fitted vulnerability curves in Appendix A all come from elsewhere: the benchmark harness, CI, the literature. Nothing re-checks those when this page is rendered, so treat them as reported measurements rather than as live output.
 
-Several counts below are quoted against the **reference grid**, which is worth naming once. It is a fixed set of 576 driver combinations — 6 soil potentials, 4 light levels, 4 vapour pressure deficits and 3 soil-layer counts, at two leaf temperatures — that the package solves and stores as a regression baseline. When a passage says "42 of 240 feasible rows", those are rows of that grid.
+Several counts below are quoted against the **reference grid**, which is worth naming once. It is a fixed set of 672 driver combinations — 7 soil potentials, 4 light levels, 4 vapour pressure deficits and 3 soil-layer counts, at two leaf temperatures — that the package solves and stores as a regression baseline. When a passage says "51 of 288 feasible rows", those are rows of that grid.
 
 ## How to read this page
 
@@ -176,7 +176,7 @@ The sweep costs 64 objective evaluations before refinement begins, which is expe
 
 ### When the answer is a bound, not a stationary point
 
-Where profit is still climbing as it reaches the end of the feasible interval, `dJ/dψ` never crosses zero inside that interval and the optimum is the endpoint itself. This is a *constrained* optimum, and it is not a corner case: it happens on 42 of the 240 feasible rows of the reference grid.
+Where profit is still climbing as it reaches the end of the feasible interval, `dJ/dψ` never crosses zero inside that interval and the optimum is the endpoint itself. This is a *constrained* optimum, and it is not a corner case: it happens on 51 of the 288 feasible rows of the reference grid at 25 °C.
 
 A solver therefore has to test the derivative's sign at each end and say explicitly that the answer is a bound. Handed no sign change, a bracketing root-find cannot on its own distinguish "the answer is the endpoint" from "I failed", so the operating-point kind is what carries the distinction.
 
@@ -199,7 +199,7 @@ The solve records eight kinds in all; the others are rarer or are refusals. `vig
 
 A bound that binds is also not the same as a bound that is hit exactly. The bracket steps in by around one part in a million of its width, so testing `ψ* == ψ_soil` to detect closure is a test that never fires. Compare against the bound with a tolerance instead, or read the sign of the gradient there.
 
-`hydraulic-shutdown` is separate from the other three and easily confused with them. It accounts for 48 of the 576 reference points, and it is a statement about feasibility rather than about a choice the leaf made.
+`hydraulic-shutdown` is separate from the other three and easily confused with them. It accounts for 96 of the 672 reference points, 48 at each leaf temperature, and it is a statement about feasibility rather than about a choice the leaf made.
 
 Finally, a stationary point need not be unique. Where the marginal cost is peaked, which the next section explains, the first-order condition can have two roots and a bracketing solve finds one of them. This is the one real argument for keeping a scan: searching the objective over a grid finds the taller hump but cannot feed a gradient, while solving the condition feeds a gradient but can land on the wrong hump.
 
@@ -824,7 +824,7 @@ Every model simplifies. The assumptions that matter most when interpreting outpu
 | **Benefit link** `h` | A transform applied to assimilation before the cost is subtracted: identity, `log`, or scaled |
 | **Root collar** | Where the root system joins the stem, and the point the collar route optimises the potential at |
 | **Route** | Which potential is optimised. The *stem route* takes `ψ_stem` with the upstream potential held at `ψ_soil`; the *collar route* takes the collar potential with the root path in series |
-| **Reference grid** | The package's 576-point regression baseline: 6 soil potentials × 4 light levels × 4 deficits × 3 layer counts, at two leaf temperatures |
+| **Reference grid** | The package's 672-point regression baseline: 7 soil potentials × 4 light levels × 4 deficits × 3 layer counts, at two leaf temperatures |
 | **Operating point** | The solved state: `ψ*` and every output evaluated there |
 | **Operating-point kind** | Which branch produced the answer: interior, at either bound, or hydraulic shutdown |
 | **λ** | The marginal cost of water, `(dC/dψ)/(dE/dψ)`, in carbon per unit water |
@@ -931,7 +931,7 @@ cat(sprintf("f(psi_crit) = %.17g   (the critical fraction, exactly)\n",
 
 Those are equalities rather than agreements. `stem_b` and `psi_crit` are computed from `(P50, c)` by the expressions printed beside them, so there is no gap to quote.
 
-That matters more than it looks, because **rounding a derived quantity is amplified by the solve.** If you set `stem_b` and `psi_crit` by hand to a rounded `P95` instead of deriving them, the error does not stay where you put it. Rounding `psi_crit` to seven figures displaces it by 4.7e-08 and `stem_b` by 3.1e-08, and that propagates to a worst case of 4.4e-05 on assimilation across the 576-point reference grid. A thousandfold amplification of a rounding-level input, which is still below the 1e-4 at which this project calls a difference real, but well above where it would be if the amplification were 1.
+That matters more than it looks, because **rounding a derived quantity is amplified by the solve.** If you set `stem_b` and `psi_crit` by hand to a rounded `P95` instead of deriving them, the error does not stay where you put it. Rounding `psi_crit` to seven figures displaces it by 4.7e-08 and `stem_b` by 3.1e-08, and that propagates to a worst case of 4.4e-05 on assimilation across 576 of the reference grid's points. A thousandfold amplification of a rounding-level input, which is still below the 1e-4 at which this project calls a difference real, but well above where it would be if the amplification were 1.
 
 So specify `(P50, c)` at whatever precision you have, and let everything else be derived.
 

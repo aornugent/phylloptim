@@ -112,7 +112,7 @@ exactly the case where numerical gradients are noisiest.
 
 ## Status
 
-**0.10.0.** The model is in production use inside plant. 0.10.0 adds the derivative surface a model differentiating a run needs, and moves the vulnerability tables from 100 to 400 knots, which moves every number read off them; [NEWS.md](NEWS.md) has what changed in each release and why.
+**0.27.** The model is in production use inside plant, which differentiates runs containing it through the derivative surface; [NEWS.md](NEWS.md) has what changed in each release and whether results moved.
 
 ## Two ways in, and the model does not need R
 
@@ -554,7 +554,7 @@ The solver's own costs, model by model, are the table in `vignette("the-models")
 Name it in `LinkingTo` to compile against the headers, the way `BH` is used:
 
 ```
-LinkingTo: BH, odelia (>= 0.7.0), phylloptim (>= 0.10.0)
+LinkingTo: BH, odelia (>= 0.10.0), phylloptim (>= 0.16.0)
 ```
 
 `LinkingTo` is **not** transitive in R, so you must name `BH` and `odelia` yourself even though it is phylloptim that includes them — including the odelia
@@ -567,7 +567,7 @@ Deliberately few. The two the *model* needs are header-only:
 
 | | why | how |
 |---|---|---|
-| **odelia** (>= 0.7.0) | cubic Hermite interpolator for the pre-integrated vulnerability curves, the supplied-derivative nodes the leaf's rows are handed over through, and the vendored **XAD** automatic-differentiation library | `LinkingTo` |
+| **odelia** (>= 0.10.0) | cubic Hermite interpolator for the pre-integrated vulnerability curves, the supplied-derivative nodes the leaf's rows are handed over through, and the vendored **XAD** automatic-differentiation library | `LinkingTo` |
 | **BH** (Boost) | TOMS748 root finder, incomplete gamma for the closed-form vulnerability integral | `LinkingTo` |
 
 **Rcpp** and **R6** are needed by the R layer only. They are not in the model's
@@ -580,9 +580,9 @@ solver core was the last R touchpoint in the include graph, via `ode_util.hpp`;
 that was removed upstream in traitecoevo/odelia#44, so the test suite now builds
 against the real headers with nothing standing in for R at all. odelia 0.2.0 was the first release with that fix; an older odelia fails deep in
 the build with `RcppCommon.h: No such file or directory`, which does not point at
-the cause. **The floor is 0.7.0** because the leaf's supplied derivative rows are
-built on headers that first shipped there (`implicit_node.hpp`, `tangent.hpp`,
-`with_slope.hpp`).
+the cause. **The floor is 0.10.0**: the leaf's supplied derivative rows are
+built on odelia's `implicit_node.hpp`, `tangent.hpp` and `with_slope.hpp`, under
+the reverse-mode names 0.10.0 gave them; phylloptim follows them from 0.16.0.
 
 Both dependencies are already required by plant, so plant pays nothing new for
 depending on this package.
@@ -598,7 +598,7 @@ make -C tests/cpp        # plain C++: no R, no test framework
 It discovers BH and odelia through `Rscript` if R is installed, and otherwise
 falls back to a sibling `odelia/` checkout and Homebrew Boost. Override with `make BH_INC=... ODELIA_INC=...`. It builds five programs: `test_leaf` (unit), `test_supplied_rows` and `test_transpose` (the derivative rows), `test_golden` and `test_primitives` (the baselines). `ctest --test-dir build` runs the same five through CMake.
 
-At its centre is `tests/cpp/golden/operating_points.tsv`: 576 operating points
+At its centre is `tests/cpp/golden/operating_points.tsv`: 672 operating points
 recorded at full precision and compared **bit-exactly**, which is what makes a
 large refactor of this code checkable rather than hopeful. It is bit-exact on the
 platform that generated it (macOS/arm64) and compared with per-field tolerances

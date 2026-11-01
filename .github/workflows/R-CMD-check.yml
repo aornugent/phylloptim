@@ -91,3 +91,19 @@ jobs:
           # is what a LinkingTo consumer gets, and is a different thing from what
           # cpp-tests.yml builds.
           args: 'c("--no-manual", "--as-cran")'
+
+      # R CMD check runs the tests from an unpacked copy with no README.md, no
+      # R/ sources and no Doxygen XML, so test-readme.R and test-registry.R's
+      # source-tree tests skip there. Here they run against the checkout, and a
+      # skip fails the step. One leg is enough, and apt has Doxygen.
+      - name: Run the tests that read the source tree
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        run: |
+          set -eu
+          apt_opts="-o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=2"
+          sudo apt-get $apt_opts update
+          sudo apt-get $apt_opts install -y doxygen graphviz
+          doxygen > /dev/null
+          R CMD INSTALL .
+          Rscript tools/source_tree_tests.R

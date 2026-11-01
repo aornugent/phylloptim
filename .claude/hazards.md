@@ -152,7 +152,7 @@ So all nine stem routes maximise over a CLOSED interval through the one solver: 
 
 ⚠️ **Endpoints alone are a half-fix, and the row count hides it.** Adding the two bounds removes every boundary row while still leaving a worst-case shortfall of 3.05e-01 on a genuine interior second hump — worse than the 4.71e-01 it fixes. **Read the worst shortfall, not the number of rows short.** This is the standing objection to any derivative-only route: a root-find between the two ends is exactly the half-fix. What keeps both properties is multi-start — several sub-brackets, each yielding an exact stationary point, compared on profit — because a grid argmax is piecewise constant in the traits and so cannot feed a gradient (hazard 3).
 
-The collar solve needs none of this: `maximise_profit_over_collar` tests the gradient's sign at each end and reports a pinned optimum explicitly, which is why 42 of 240 feasible golden rows are pinned and correct.
+The collar solve needs none of this: `maximise_profit_over_collar` tests the gradient's sign at each end and reports a pinned optimum explicitly, which is why 51 of the 288 feasible golden rows at 25 °C are pinned and correct.
 
 ⚠️ **A STEM ROUTE IS NOT the collar solve with a restriction — it is a different model, and neither is a check on the other.** These optimise ψ_stem with upstream pinned at ψ_soil, ignoring the soil→collar path entirely, which is what their refusal message means by "non-**root-based**". They disagree with the collar solve on 20 of 30 driver rows, and the gap does **not** close as the root resistance goes to zero (1.67 MPa at r = 1e-2): as that resistance vanishes the collar loses its freedom, `[root_zero_E, collar_at_dry_end]` collapses, and the collar solve loses precision and finally reports hydraulic shutdown (#176). So `set_physiology` refuses a single-potential resistance below `SinglePotential::resistance_min` (1e-2); the floor removes only that loss of precision, not the disagreement, and the 1.67 MPa at r = 1e-2 is the two models differing at an accepted input.
 
@@ -234,7 +234,7 @@ The rule is in CLAUDE.md. This is what it rests on.
 
 **Two things in the tree LOOK like a second solver and are not.** Both say so at the definition:
 
-- **`Leaf::maximise_profit_over_collar`** is the one solver at `n = 0` PLUS a classification: every exit sets an `OperatingPointKind`, and 42 of 240 feasible golden rows are pinned and read it. The shared maximiser returns an argmax and nothing about how it got there, so folding them in means either an out-parameter no other caller wants, or losing the tag.
+- **`Leaf::maximise_profit_over_collar`** is the one solver at `n = 0` PLUS a classification: every exit sets an `OperatingPointKind`, and 51 of the 288 feasible golden rows at 25 °C are pinned and read it. The shared maximiser returns an argmax and nothing about how it got there, so folding them in means either an out-parameter no other caller wants, or losing the tag.
 - **`dprofit_dpsi_stem` and `dprofit_at_collar_psi`** share ~90 lines of algebra. The stem form IS the collar form at `dpsistem_dpsi = 1`, `dgc_dpsi = 0` — mathematically, not TEXTUALLY, and the Identity arm's exact operation sequence is what keeps all four golden baselines bit-identical. Everything carrying no such constraint is already shared: `cost_deriv<K>`, `benefit_link_deriv<K>`, `temp_deriv`, `dprofit_energy_balance_term`.
 
 So the shape to look for is not a function duplicating the solver's *algebra* — that can be load-bearing — but one duplicating its *structure* with a piece missing.

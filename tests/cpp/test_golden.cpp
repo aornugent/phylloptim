@@ -164,7 +164,7 @@ std::vector<Row> run_grid() {
 // knowing before reading the zeros as coverage: at the defaults that needs about
 // 45 C. `test_rd_temperature_response` covers it.
 //
-// A zero counts for this grid, whose psi_soil values are {0.5, 1, 2, 3, 4, 6},
+// A zero counts for this grid, whose psi_soil values are {0.5, 1, 2, 3, 4, 6, 17},
 // and says nothing about the model. What the two failure branches do is checked
 // by test_collar_solve_refuses_rather_than_guessing in test_leaf.cpp.
 // ⚠️ COUNTED PER TEMPERATURE, not over the whole grid: a single total would let

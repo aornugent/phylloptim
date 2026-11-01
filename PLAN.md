@@ -30,7 +30,7 @@ Written for: agents picking up work on this package. Each item names what to cha
 
 **A3. The C++ fixtures' `stem_P50`.** `tests/cpp/test_transpose.cpp:398`, `test_leaf.cpp:1727` and `:4863` hard-code `stem_P50 = 3.4287` where `leaf_traits()` defaults to 3.4 and plant's trait-built default is 2.889. Nothing is wrong numerically, but a fixture that is "the default" in its comment and is not in its value misleads the next reader. Done when each fixture either reads the default or says in one line why it does not.
 
-## B. Contracts the CI does not hold — required
+## B. Contracts the CI does not hold — required (B1–B4 and B6 done in #210; B5 goes with section C)
 
 **B1. `tests/testthat/test-readme.R` never runs on CI.** It skips with `skip_if_not(file.exists(readme))`, and under `R CMD check` the README is not reachable from the test directory. The `cpp-tests.yml` workflow has the source tree; run the file from there with `testthat::test_file()` on the checkout, or copy the README into `tests/testthat/` at check time. Done when a deliberately broken README chunk fails CI.
 
@@ -52,7 +52,7 @@ Written for: agents picking up work on this package. Each item names what to cha
 
 **C3. `COMPARISON.md` is stale on its headline claims.** It calls the package `leaf`, cites "PLAN 7b", says Prentice14 is "planned" (LeastCost ships), lists two runnable optimality schemes (nine ship), says the energy balance is "minimal", and quotes a cost per solve. Rewrite the table against `vignettes/the-models.Rmd` and the current bench, or delete the file and point at the vignette. Deleting is acceptable if nothing links to it but `.claude/CLAUDE.md`.
 
-**C4. Stale counts.** The reference grid is 672 points, not 576: `README.md:601`, `.claude/measurements.md:7`, `vignettes/the-models.Rmd:27` and `:202` say 576 (`.claude/CLAUDE.md:54` is right). `vignettes/cpp-interface.Rmd:169` quotes `static_assert(g::n_theta == 19)`; `n_theta` is 35 (`gradient.hpp:103`), and the same vignette's line 151 says so. `README.md`'s Status section is at 0.10.0; `NEWS.md` is at 0.27.0. `README.md:557`, `:570` and `:583` put odelia's floor at 0.7.0; `DESCRIPTION` says `>= 0.10.0`. Fix each from the code, not from another document, and add a line to `test-readme.R` (after B1) that greps the two counts out of the goldens.
+**C4. Stale counts** (done in #210)**.** The reference grid is 672 points, not 576: `README.md:601`, `.claude/measurements.md:7`, `vignettes/the-models.Rmd:27` and `:202` say 576 (`.claude/CLAUDE.md:54` is right). `vignettes/cpp-interface.Rmd:169` quotes `static_assert(g::n_theta == 19)`; `n_theta` is 35 (`gradient.hpp:103`), and the same vignette's line 151 says so. `README.md`'s Status section is at 0.10.0; `NEWS.md` is at 0.27.0. `README.md:557`, `:570` and `:583` put odelia's floor at 0.7.0; `DESCRIPTION` says `>= 0.10.0`. Fix each from the code, not from another document, and add a line to `test-readme.R` (after B1) that greps the two counts out of the goldens.
 
 **C5. Thermal damage has no worked example outside `the-models.Rmd`.** The `fitting` and `phylloptim` vignettes do not mention it. One short section in `the-models.Rmd` showing the gate on and off at one driver is enough; it is optional.
 
@@ -90,3 +90,4 @@ These are #206's options 4 and 5, its further candidates, and the audit's findin
 
 - 0.27.0: the dry-end decision is made on the end solved to collar precision, on the collar's own distance; `boundary-dry` and `interior` meet continuously; plant's sweep agrees with a tangent of the run to 7e-8. Measurements on [phylloptim#205](https://github.com/traitecoevo/phylloptim/pull/205).
 - 0.27.1 (A1–A3, #207): a prescribed stem point writes `lambda_emergent_`; the batch refuses the prices `leaf_solve()` refuses and accepts per-observation prices; the 3.4287 fixtures were dead branches (their root-limited fixtures went in #188) and are gone, and the stem-curve test reads the default.
+- B1–B4, B6, C4 (#210): the source-tree tests run in `R-CMD-check.yml`'s Linux leg through `tools/source_tree_tests.R`, where a skip fails (not `cpp-tests.yml`, which must stay R-free); the PR template asks for the interleaved bench and the registry; `cost-baseline.tsv` has 0.27.0's row; the surface referee lists every slot of the pack on TF24 and TF24_floor; `test-readme.R` checks the grid size and `n_theta` against the code.

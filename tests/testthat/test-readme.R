@@ -57,3 +57,42 @@ test_that("every r block in the README parses and runs", {
                   paste(label, "failed:", conditionMessage(err)))
   }
 })
+
+# The two counts the documents quote most, read from where they are true: the
+# reference grid's size from its golden file, and n_theta from the parameter
+# enumeration. Both had gone stale in several documents at once.
+test_that("the documents quote the reference grid's size and n_theta as the code has them", {
+  skip_on_cran()
+  root <- testthat::test_path("..", "..")
+  golden <- file.path(root, "tests", "cpp", "golden", "operating_points.tsv")
+  # The golden file ships in the tarball and the documents do not, so every
+  # file is checked: under R CMD check this skips.
+  docs <- c("README.md", "vignettes/the-models.Rmd", "vignettes/cpp-interface.Rmd",
+            ".claude/measurements.md", "inst/include/phylloptim/leaf_model.hpp")
+  skip_if_not(all(file.exists(c(golden, file.path(root, docs)))),
+              "the source tree is not reachable from here")
+  read <- function(...) readLines(file.path(root, ...), warn = FALSE)
+  quoted <- function(lines, pattern) {
+    m <- regmatches(lines, regexec(pattern, lines, perl = TRUE))
+    as.integer(vapply(Filter(length, m), `[`, "", 2))
+  }
+
+  grid <- sum(!grepl("^#", readLines(golden, warn = FALSE))) - 1L
+  text <- unlist(lapply(docs[1:4], read))
+  on_grid <- quoted(text, paste0("(\\d+)(?: operating points(?! compared)| driver ",
+                                 "combinations| reference points|-point regression)"))
+  expect_gt(length(on_grid), 4L)
+  expect_true(all(on_grid == grid),
+              info = paste("the grid has", grid, "points; quoted:",
+                           paste(on_grid, collapse = ", ")))
+
+  enum <- read("inst", "include", "phylloptim", "leaf_model.hpp")
+  n_theta <- quoted(enum, "^inline constexpr int par_PPFD = (\\d+);")
+  expect_length(n_theta, 1L)
+  vig <- read("vignettes", "cpp-interface.Rmd")
+  on_theta <- c(quoted(vig, "n_theta == (\\d+)"), quoted(vig, "n_theta` = \\*\\*(\\d+)\\*\\*"))
+  expect_gt(length(on_theta), 1L)
+  expect_true(all(on_theta == n_theta),
+              info = paste("n_theta is", n_theta, "; quoted:",
+                           paste(on_theta, collapse = ", ")))
+})

@@ -1260,7 +1260,7 @@ void test_collar_solve_satisfies_its_own_first_order_condition() {
   ok(l.opt_root_psi_ <= bound_b, "and no drier than the binding dry limit");
 }
 
-// A CONSTRAINED optimum, which 42 of the 240 feasible golden-grid rows are: profit
+// A CONSTRAINED optimum, which 51 of the 288 feasible golden-grid rows at 25 C are: profit
 // is still climbing at one end of the feasible interval, so dprofit never crosses
 // zero inside it. The residual is then NOT small, and that is correct rather than a
 // convergence failure -- so this pins the property that actually holds there.
@@ -4874,23 +4874,28 @@ double profit_row_at_current_point(phylloptim::Leaf &l, int par,
   return odelia::ode::derivative_along(out.profit);
 }
 
-// The supplied rows against a central difference of the SOLVE, at every kind
-// operating_collar places by a condition: the in-tree form of the referee behind #136's
-// bound-polish fix, which lived outside the repository. A difference re-solves,
-// so it re-derives the bound or the stationarity condition from scratch and
-// shares nothing with the rows but the model -- which is what makes it a
-// referee for rows the surface SUPPLIES. Each fixture is asserted to land on its
-// kind, and a parameter whose step moves the point to another kind is skipped
-// and counted, because a difference across a kink is not a derivative.
+// The supplied rows against a difference of the SOLVE, for every parameter in
+// the pack, at every kind operating_collar places by a condition, on both
+// curves the surface serves. A difference re-solves, so it re-derives the bound
+// or the stationarity condition from scratch and shares nothing with the rows
+// but the model -- which is what makes it a referee for rows the surface
+// SUPPLIES. Each fixture is asserted to land on its kind, and a parameter whose
+// step moves the point to another kind is skipped and counted, because a
+// difference across a kink is not a derivative.
 //
-// Every trait and kmax, for collar, profit and every layer's uptake, at the
-// default 400 knots so a perturbed curve is rebuilt at the base's resolution.
-void test_supplied_rows_match_a_resolve_at_every_kind() {
-  printf("supplied rows against a difference of the solve, at every kind\n");
+// A parameter the curve's solve does not read on this path (another curve's
+// price or level, the single path's resistance, the damage layer, which the
+// surface refuses) must give an EXACT zero both as a row and as a difference: a
+// surface that starts reading one fails here by name. Every other row is held
+// to the tolerance below, and every read parameter must be compared somewhere,
+// so a wrong row in any of them fails.
+template <phylloptim::Leaf::CostCurve K>
+void referee_every_parameter_at_every_kind(int* compared_out) {
   using T = odelia::ode::tangent_scalar<double>;
   using Kind = phylloptim::Leaf::OperatingPointKind;
   using CC = phylloptim::Leaf::CostCurve;
   namespace pl = phylloptim;
+  const std::string curve = pl::Leaf::curve_name(static_cast<int>(K));
   struct Fixture {
     std::vector<double> psi_soil;
     double ppfd, vpd;
@@ -4902,23 +4907,36 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
   // cuticle so the bound is a regular point: at g_min = 0 the solve steps 1e-6
   // of the bracket inside it, and a difference of the solve then measures that
   // step), a soil dry enough that the leaf transpires all its stem can carry (a
-  // dry pin at the end of the stem curve, #183), a soil past the end of the
-  // curve (shut), and an interior control.
+  // dry pin at the end of the stem curve), a soil past the end of the curve
+  // (shut), and an interior control.
   const std::vector<Fixture> fixtures{
       {{1.0, 1.25}, 1500.0, 2.0, Kind::Interior},
       {{4.0, 4.25, 4.5, 4.75, 5.0}, 900.0, 2.0, Kind::BoundarySoil},
       {{3.0, 3.25, 3.5}, 900.0, 3.1, Kind::BoundarySoil},  // 3.1 < e_s(25 C)
       {{6.0}, 500.0, 0.5, Kind::BoundaryDry},
       {{1.0}, 1.0, 2.0, Kind::BoundarySoil, 5e-4},
-      {{16.0, 16.25, 16.5}, 900.0, 2.0, Kind::HydraulicShutdown}};
-  const std::vector<int> pars{
-      pl::par_vcmax_25, pl::par_stem_c, pl::par_stem_P50, pl::par_root_c,
-      pl::par_root_P50, pl::par_TF24_beta2, pl::par_jmax_25, pl::par_phi_J,
-      pl::par_curv_fact_elec_trans, pl::par_curv_fact_colim,
-      pl::par_TF24_cost_scale, pl::par_R_d_25, pl::par_kmax};
+      {{16.0, 16.25, 16.5}, 900.0, 2.0, Kind::HydraulicShutdown},
+      // The same kinds with a cuticle, where g_min is a regular parameter.
+      {{1.0, 1.25}, 1500.0, 2.0, Kind::Interior, 5e-4},
+      {{6.0}, 500.0, 0.5, Kind::BoundaryDry, 5e-4},
+      {{16.0, 16.25, 16.5}, 900.0, 2.0, Kind::HydraulicShutdown, 5e-4}};
+  // TF24_floor at a small price, so its fixtures stay on TF24's kinds.
+  const double price = 1e3;
+  const auto unread = [&](int k) {
+    if (k == pl::par_TF24_floor_lambda_o) return K != CC::TF24_floor;
+    return k == pl::par_JS22_gamma || k == pl::par_CMax_a ||
+           k == pl::par_CMax_b || k == pl::par_resistance ||
+           k == pl::par_CF77_lambda || k == pl::par_LeastCost_beta ||
+           (k >= pl::par_A && k < pl::par_PPFD);
+  };
+  const auto par_name = [](int k) {
+    return k == pl::par_PPFD ? std::string("PPFD")
+                             : pl::gradient::par_names()[std::size_t(k)];
+  };
+  std::map<std::string, std::vector<int>> per_par_kind;
   double worst_rel = 0.0, worst_abs = 0.0;
   std::string worst_rel_at, worst_abs_at, skipped_at;
-  int compared = 0, skipped = 0;
+  int compared = 0, skipped = 0, zero = 0, at_zero_g_min = 0;
   for (const Fixture& fx : fixtures) {
     std::vector<double> depth, root;
     for (std::size_t i = 0; i < fx.psi_soil.size(); ++i) {
@@ -4926,6 +4944,9 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
       root.push_back(1.0 / 0.05 / double(fx.psi_soil.size()));
     }
     const pl::RootNetwork network = fixture::root_network(root, depth);
+    // Every slot the pack holds is written to the leaf, the damage layer's
+    // included although its gate is off, so a difference sees whatever the
+    // solve reads.
     const auto solve = [&](const pl::leaf_pars<double>& p) {
       pl::Leaf l;
       l.set_traits(p[pl::par_vcmax_25], p[pl::par_stem_c], p[pl::par_stem_P50],
@@ -4935,9 +4956,27 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
                    p[pl::par_TF24_cost_scale], p[pl::par_R_d_25],
                    p[pl::par_JS22_gamma], p[pl::par_CMax_a], p[pl::par_CMax_b],
                    p[pl::par_g_min]);
-      l.set_physiology(network, fx.ppfd, fx.psi_soil, depth, p[pl::par_kmax],
-                       fx.vpd, 40.0, 25.0, 21.0, 101.3);
-      l.find_root_collar_psi();
+      l.CF77_lambda_ = p[pl::par_CF77_lambda];
+      l.TF24_floor_lambda_o = p[pl::par_TF24_floor_lambda_o];
+      l.LeastCost_beta = p[pl::par_LeastCost_beta];
+      l.A_ = p[pl::par_A];
+      l.I_ = p[pl::par_I];
+      l.D_ = p[pl::par_D];
+      l.topt_offset_ = p[pl::par_topt_offset];
+      l.dTopt_max_ = p[pl::par_dTopt_max];
+      l.K_A_ = p[pl::par_K_A];
+      l.k_i_ = p[pl::par_k_i];
+      l.k_i_baseline_ = p[pl::par_k_i_baseline];
+      l.k_rec_ = p[pl::par_k_rec];
+      l.k_rec_Ea_ = p[pl::par_k_rec_Ea];
+      l.c_acclim_maint_ = p[pl::par_c_acclim_maint];
+      l.c_repair_maint_ = p[pl::par_c_repair_maint];
+      l.c_protect_maint_ = p[pl::par_c_protect_maint];
+      l.c_repair_flux_ = p[pl::par_c_repair_flux];
+      l.set_physiology(network, p[pl::par_PPFD], fx.psi_soil, depth,
+                       p[pl::par_kmax], fx.vpd, 40.0, 25.0, 21.0, 101.3);
+      l.set_model(K, true);
+      l.optimise();
       return l;
     };
     pl::Leaf base;
@@ -4945,16 +4984,27 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
                         fx.vpd, 40.0, 25.0, 21.0, 101.3);
     pl::leaf_pars<double> p0 = base.passive_pars();
     p0[pl::par_g_min] = fx.g_min;
+    p0[pl::par_TF24_floor_lambda_o] = price;
+    // The single path's slot, NA on this one; any value, since nothing reads it.
+    p0[pl::par_resistance] = 1e3;
     pl::Leaf l = solve(p0);
     const std::string name = l.operating_point_kind_name(fx.want);
     ok(l.operating_point_kind() == fx.want,
-       "the " + name + " fixture lands on its kind, got " +
+       curve + ": the " + name + " fixture lands on its kind, got " +
            l.operating_point_kind_name(l.operating_point_kind()));
     if (l.operating_point_kind() != fx.want) continue;
     const double curvature = fx.want == Kind::Interior
-                                 ? l.profit_curvature_at_collar<CC::TF24>()
+                                 ? l.profit_curvature_at_collar<K>()
                                  : std::numeric_limits<double>::quiet_NaN();
-    for (int k : pars) {
+    for (int k = 0; k < pl::n_leaf_pars; ++k) {
+      // At g_min = 0 the solve steps 1e-6 of the bracket inside the wet bound,
+      // and at any g_min > 0 it sits on it (hazard 18), so a forward difference
+      // carries that step over h (-4.3e-6 MPa / h in the collar here). The row
+      // is the slope from above; it is refereed at the fixtures with a cuticle.
+      if (k == pl::par_g_min && fx.g_min == 0.0) {
+        ++at_zero_g_min;
+        continue;
+      }
       pl::leaf_pars<T> tp;
       for (std::size_t i = 0; i < tp.size(); ++i) tp[i] = T(p0[i]);
       odelia::ode::set_direction(tp[std::size_t(k)], 1.0);
@@ -4965,10 +5015,10 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
         r_v.push_back(T(l.roots_.network_.r_R_V_sum[std::size_t(i)]));
       }
       const pl::SupplyInputs<T> supply{soil, r_h, r_v, tp[pl::par_root_P50],
-                                   tp[pl::par_root_c]};
+                                       tp[pl::par_root_c]};
       const auto draw = l.supply_draw_at<T>(T(l.opt_root_psi_), supply);
-      const T collar = l.operating_collar<CC::TF24, T>(draw, tp, curvature);
-      const auto out = l.billed_outputs_at<CC::TF24, T>(collar, draw, tp);
+      const T collar = l.operating_collar<K, T>(draw, tp, curvature);
+      const auto out = l.billed_outputs_at<K, T>(collar, draw, tp);
       std::vector<double> rows{odelia::ode::derivative_along(collar),
                                odelia::ode::derivative_along(out.profit)};
       for (const T& u : out.uptake) rows.push_back(odelia::ode::derivative_along(u));
@@ -4977,30 +5027,42 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
       // error-versus-step V has its floor at or above 1e-5, and at the
       // gradient's own 1e-6 kmax's profit row at a wet bound reads the
       // difference's noise (2e-4 against a floor of 9e-7). At 1e-4 every row
-      // larger than 1e-6 agrees to 1e-5.
-      const double h = std::abs(p0[std::size_t(k)]) * 1e-4;
+      // larger than 1e-6 agrees to 1e-5. A parameter at zero takes a forward
+      // step, since some (CMax_b among them) may not go negative.
+      const double v = p0[std::size_t(k)];
+      const bool forward = v == 0.0;
+      const double h = forward ? 1e-7 : std::abs(v) * 1e-4;
       pl::leaf_pars<double> p_up = p0, p_down = p0;
       p_up[std::size_t(k)] += h;
-      p_down[std::size_t(k)] -= h;
-      pl::Leaf up = solve(p_up), down = solve(p_down);
+      if (!forward) p_down[std::size_t(k)] -= h;
+      pl::Leaf up = solve(p_up), down = forward ? l : solve(p_down);
+      const double span = forward ? h : 2.0 * h;
       if (up.operating_point_kind() != fx.want ||
           down.operating_point_kind() != fx.want) {
         ++skipped;
-        skipped_at += " " + name + "/" + pl::gradient::par_names()[std::size_t(k)];
+        skipped_at += " " + name + "/" + par_name(k);
         continue;
       }
-      std::vector<double> fd{(up.opt_root_psi_ - down.opt_root_psi_) / (2.0 * h),
-                             (up.profit_ - down.profit_) / (2.0 * h)};
+      std::vector<double> fd{(up.opt_root_psi_ - down.opt_root_psi_) / span,
+                             (up.profit_ - down.profit_) / span};
       for (std::size_t j = 0; j < out.uptake.size(); ++j) {
-        fd.push_back((up.soil_consumption_[j] - down.soil_consumption_[j]) /
-                     (2.0 * h));
+        fd.push_back((up.soil_consumption_[j] - down.soil_consumption_[j]) / span);
       }
       for (std::size_t j = 0; j < rows.size(); ++j) {
         const std::string at =
-            " at " + name + " d" + (j == 0 ? std::string("collar")
-                                    : j == 1 ? std::string("profit")
-                                             : "uptake[" + std::to_string(j - 2) + "]") +
-            "/d" + pl::gradient::par_names()[std::size_t(k)];
+            " (" + curve + ") at " + name + " d" +
+            (j == 0   ? std::string("collar")
+             : j == 1 ? std::string("profit")
+                      : "uptake[" + std::to_string(j - 2) + "]") +
+            "/d" + par_name(k);
+        if (unread(k)) {
+          ok(rows[j] == 0.0 && fd[j] == 0.0,
+             "a parameter the solve does not read has a zero row and a zero "
+             "difference" + at + ": row " + std::to_string(rows[j]) +
+                 ", difference " + std::to_string(fd[j]));
+          ++zero;
+          continue;
+        }
         const double err = std::abs(rows[j] - fd[j]);
         const double scale = std::max(std::abs(rows[j]), std::abs(fd[j]));
         if (err > worst_abs) { worst_abs = err; worst_abs_at = at; }
@@ -5009,20 +5071,56 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
           worst_rel_at = at;
         }
         ++compared;
-        ok(err <= 1e-4 * scale + 1e-7,
+        auto& seen = per_par_kind[name];
+        seen.resize(pl::n_leaf_pars, 0);
+        ++seen[std::size_t(k)];
+        // The absolute floor is on the row times the parameter's own scale,
+        // so a parameter of order 1e3 (PPFD, the price) is not let off rows of
+        // order 1e-9 per unit.
+        const double unit = std::max(1.0, std::abs(v));
+        ok(err <= 1e-4 * scale + 1e-7 / unit,
            "the supplied row matches a difference of the solve" + at +
                ": row " + std::to_string(rows[j]) + ", difference " +
                std::to_string(fd[j]));
       }
     }
   }
-  printf("    %d rows compared, %d parameters skipped across a kind change:%s\n"
+  std::string kinds;
+  for (const auto& [kind, seen] : per_par_kind) {
+    int n = 0;
+    for (int c : seen) n += c;
+    kinds += " " + kind + " " + std::to_string(n);
+  }
+  printf("    %s: %d rows compared (%s ), %d unread rows exactly zero,\n"
+         "    g_min passed over at %d fixtures without a cuticle,\n"
+         "    %d parameters skipped across a kind change:%s\n"
          "    worst relative %.3g%s\n    worst absolute %.3g%s\n",
-         compared, skipped, skipped_at.c_str(), worst_rel, worst_rel_at.c_str(),
-         worst_abs, worst_abs_at.c_str());
-  // A referee that skipped most of its work would pass on what is left.
-  ok(compared >= 350, "the referee compared at least 350 rows");
-  ok(skipped <= 2, "at most two parameters were skipped across a kind change");
+         curve.c_str(), compared, kinds.c_str(), zero, at_zero_g_min, skipped,
+         skipped_at.c_str(), worst_rel, worst_rel_at.c_str(), worst_abs,
+         worst_abs_at.c_str());
+  // A referee that skipped a parameter at a kind would pass on what is left.
+  ok(per_par_kind.size() == 4, curve + ": rows were compared at all four kinds");
+  for (const auto& [kind, seen] : per_par_kind) {
+    for (int k = 0; k < pl::n_leaf_pars; ++k) {
+      if (!unread(k)) {
+        ok(seen[std::size_t(k)] > 0,
+           curve + ": " + par_name(k) + " was compared at " + kind);
+      }
+    }
+  }
+  ok(skipped <= 3, curve + ": at most three parameters were skipped across a "
+                   "kind change");
+  *compared_out += compared;
+}
+
+void test_supplied_rows_match_a_resolve_at_every_kind() {
+  printf("supplied rows against a difference of the solve, every parameter, "
+         "at every kind\n");
+  using CC = phylloptim::Leaf::CostCurve;
+  int compared = 0;
+  referee_every_parameter_at_every_kind<CC::TF24>(&compared);
+  referee_every_parameter_at_every_kind<CC::TF24_floor>(&compared);
+  ok(compared >= 1100, "the referee compared at least 1100 rows");
 }
 
 // A shut leaf whose roots outlast its stem, so set_shut_state seats the stem at
