@@ -2558,6 +2558,13 @@ public:
                                            double psi_upstream);
   template <CostCurve K> static constexpr bool cost_reads_upstream();
   template <CostCurve K> static constexpr bool cost_domain_ends_at_psi_crit();
+  // Whether the objective is A times a gain factor, which has no maximum
+  // where A <= 0 throughout, so the leaf is shut there (dark_under_product).
+  template <CostCurve K> static constexpr bool objective_is_product();
+  // For such a curve, whether A <= 0 with the stem at its dry end, the most
+  // open the leaf can be; this leaves the leaf evaluated there.
+  template <CostCurve K> bool dark_under_product(double psi_dry,
+                                                 double psi_upstream);
   // The stem potential past which a solve does not look: psi_crit for a curve
   // whose own domain ends there, and the end of the stem curve for every other.
   template <CostCurve K> double dry_end() const;
@@ -5053,6 +5060,73 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
     return dprofit_at_collar_psi<K>(psi, feasible);
   };
 
+  // Places lo at the wet bound, where uptake meets the residual flux: the
+  // answer where profit falls from the wet end, and for a dark leaf under a
+  // product objective (below).
+  double lo = bound_a;
+  double hi = bound_b;
+  const auto place_at_wet_bound = [&]() {
+    const double a = polish_bracket_bound(bound_a, supply_psi_soil(), 0);
+    wet_bound_root_ = a;
+    if (g_min > 0.0) {
+      // With a residual conductance the bound is a regular point -- the
+      // stomatal flux is zero and the cuticle still conducts -- so the leaf
+      // that declines to open sits exactly on it. That is what removes the
+      // boundary-soil artefact of #183: a reported state set by the step
+      // below rather than by the model.
+      lo = a;
+    } else if (a < hi) {
+      // With nothing conducting at the bound itself, a shut leaf in the dark
+      // has no finite ci there (ci = ca + R_d/g_c), so the reported state is
+      // taken a step inside it. Stepped in on the bound's own scale, not the
+      // width's: a step that is a fraction of the width moves with the DRY
+      // bound, a parameter dependence the rows do not have -- and for root_c the
+      // same size as the answer.
+      //
+      // ⚠️ ALWAYS FROM THE POLISHED ROOT, even where the polish left the bound
+      // where the bracket had it. Keeping the bracket's own lower end there
+      // instead put two different steps on either side of a driver value, and
+      // the reported A and E jumped by 3e-6 of their range where a sweep
+      // crossed between them.
+      //
+      // ⚠️ Do not start smaller than 1e-6. The rows read the flux at the stepped
+      // point rather than at the root, an error proportional to the step (~1e-6
+      // of profit per unit of a root trait, visible where the true derivative
+      // is zero: a one-layer wet bound is the gravity balance). But at 1e-7 and
+      // 1e-8 the forward model's stem-potential inversion reaches its rounding
+      // floor, and a finite-difference referee found 56 rows wrong against 3.
+      //
+      // Only the no-flow test is repeated here, not the whole gradient: the sign
+      // f_lo already has cannot flip across the ~1e-4 the bound moved at a pin,
+      // and re-taking dprofit on every pinned row cost 1.5% of every solve.
+      const double scale = std::max(a, 1e-3);
+      const double limit = 0.5 * (bound_b - a);
+      for (double frac = 1e-6; frac * scale < limit; frac *= 10.0) {
+        const double x = a + frac * scale;
+        const double s = find_psi_stem_from_psi_root(x, supply_psi_soil());
+        if (std::isfinite(s) && x < s) {
+          lo = x;
+          break;
+        }
+      }
+    }
+  };
+
+  // A product objective with A <= 0 at the dry end has no maximum, and the leaf
+  // is shut (objective_is_product). Decided before either end's gradient is
+  // read: through the log link at a negative A they say nothing.
+  if constexpr (objective_is_product<K>()) {
+    if (dark_under_product<K>(
+            find_psi_stem_from_psi_root(bound_b, supply_psi_soil()), bound_b)) {
+      // Where the open path would start: the bound at g_min > 0, a step inside
+      // the no-flow sentinel at g_min = 0, should placement find no step.
+      lo = g_min > 0.0 ? bound_a : bound_a + 1e-6 * width;
+      place_at_wet_bound();
+      operating_point_kind_ = OperatingPointKind::BoundarySoil;
+      return lo;
+    }
+  }
+
   // The WET endpoint. With a residual conductance it is an ordinary point: the
   // stomatal flux is zero there but the cuticle still conducts, so dprofit is a
   // real derivative and the bound is tried as-is first. At g_min = 0 it is
@@ -5073,7 +5147,6 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // than a step inside moves every interior row by the solver floor. Keeping
   // the old first step at g_min = 0 is what keeps the golden files bit-identical.
   bool ok_lo = false;
-  double lo = bound_a;
   double f_lo = 0.0;
   for (double frac = (g_min > 0.0 ? 0.0 : 1e-6); frac < 0.5;
        frac = (frac == 0.0 ? 1e-6 : frac * 10.0)) {
@@ -5112,7 +5185,6 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   constexpr bool bounded = cost_domain_ends_at_psi_crit<K>();
   bool ok_hi = false;
   bool rising = false;
-  double hi = bound_b;
   double f_hi = 0.0;
   bool settled = false;
   if (dry_end_provisional_) {
@@ -5222,50 +5294,7 @@ inline double Leaf::maximise_profit_over_collar(double bound_a, double bound_b) 
   // a side that would pin is touched, so an interior solve pays nothing; and a
   // polish whose re-evaluation fails keeps the bracket's answer.
   if (f_lo <= 0.0) {
-    const double a = polish_bracket_bound(bound_a, supply_psi_soil(), 0);
-    wet_bound_root_ = a;
-    if (g_min > 0.0) {
-      // With a residual conductance the bound is a regular point -- the
-      // stomatal flux is zero and the cuticle still conducts -- so the leaf
-      // that declines to open sits exactly on it. That is what removes the
-      // boundary-soil artefact of #183: a reported state set by the step
-      // below rather than by the model.
-      lo = a;
-    } else if (a < hi) {
-      // With nothing conducting at the bound itself, a shut leaf in the dark
-      // has no finite ci there (ci = ca + R_d/g_c), so the reported state is
-      // taken a step inside it. Stepped in on the bound's own scale, not the
-      // width's: a step that is a fraction of the width moves with the DRY
-      // bound, a parameter dependence the rows do not have -- and for root_c the
-      // same size as the answer.
-      //
-      // ⚠️ ALWAYS FROM THE POLISHED ROOT, even where the polish left the bound
-      // where the bracket had it. Keeping the bracket's own lower end there
-      // instead put two different steps on either side of a driver value, and
-      // the reported A and E jumped by 3e-6 of their range where a sweep
-      // crossed between them.
-      //
-      // ⚠️ Do not start smaller than 1e-6. The rows read the flux at the stepped
-      // point rather than at the root, an error proportional to the step (~1e-6
-      // of profit per unit of a root trait, visible where the true derivative
-      // is zero: a one-layer wet bound is the gravity balance). But at 1e-7 and
-      // 1e-8 the forward model's stem-potential inversion reaches its rounding
-      // floor, and a finite-difference referee found 56 rows wrong against 3.
-      //
-      // Only the no-flow test is repeated here, not the whole gradient: the sign
-      // f_lo already has cannot flip across the ~1e-4 the bound moved at a pin,
-      // and re-taking dprofit on every pinned row cost 1.5% of every solve.
-      const double scale = std::max(a, 1e-3);
-      const double limit = 0.5 * (bound_b - a);
-      for (double frac = 1e-6; frac * scale < limit; frac *= 10.0) {
-        const double x = a + frac * scale;
-        const double s = find_psi_stem_from_psi_root(x, supply_psi_soil());
-        if (std::isfinite(s) && x < s) {
-          lo = x;
-          break;
-        }
-      }
-    }
+    place_at_wet_bound();
   }
   if (f_hi >= 0.0 && hi == bound_b) {
     const double b = polish_bracket_bound(bound_b, supply_psi_soil(), 1);
@@ -5940,19 +5969,20 @@ constexpr bool Leaf::cost_reads_upstream() {
 // carries all it ever can.
 //
 // Four curves are different, and for each the bound belongs to the curve, not
-// to the hydraulics. Measured on psi_stem_optima.tsv, each sits AT psi_crit on
-// many rows:
+// to the hydraulics:
 //
-//   SOX, JW26  their published gain factor reaches zero at psi_crit. With A < 0
-//              (every dark row) A*g is largest where g = 0, and past psi_crit
-//              g < 0 and profit grows without bound, so psi_crit is where these
-//              forms are defined to stop.
+//   SOX, JW26  their published gain factor reaches zero at psi_crit, and past
+//              it g < 0, so psi_crit is where these forms are defined to stop.
+//              No row pins there: with A > 0 the product is zero at psi_crit
+//              and positive inside, and with A <= 0 throughout the leaf is
+//              shut (objective_is_product).
 //   CF77       a constant price need not overtake A'(E) before E reaches the
 //              stem's ceiling, so the supremum can lie at psi_stem -> infinity.
 //   LeastCost  sits at psi_crit on most rows, dark and light.
 //
-// What these should do instead is open (a follow-up to #183); until then they
-// keep the bound, a dry pin at psi_crit and the shut exit they had.
+// What CF77 and LeastCost should do instead is open (a follow-up to #183);
+// until then they keep the bound, a dry pin at psi_crit and the shut exit
+// they had.
 template <Leaf::CostCurve K>
 constexpr bool Leaf::cost_domain_ends_at_psi_crit() {
   if constexpr (K == CostCurve::SOX || K == CostCurve::JW26 ||
@@ -5965,6 +5995,38 @@ constexpr bool Leaf::cost_domain_ends_at_psi_crit() {
                   "unhandled CostCurve in cost_domain_ends_at_psi_crit");
     return false;
   }
+}
+
+// SOX and JW26 maximise A g, with g falling from 1 to 0 at psi_crit. Where A
+// <= 0 at every opening the product's supremum is 0, approached as g -> 0 at
+// psi_crit: a leaf in the dark would be driven to the driest potential its
+// form allows, to make its respiration count for nothing. These forms describe
+// a leaf that fixes carbon, so a leaf that cannot is shut, at the wet bound,
+// as a TF24 leaf in the dark is. A rises with opening, so A at the dry end
+// decides it: measured over 18,144 rows (PPFD 0-40, 10-40 C, energy balance on
+// and off), A <= 0 there never had A > 0 anywhere else. The argmax jumps at
+// the light compensation point either way, from the wet bound to an interior
+// optimum near psi_crit; no treatment of psi_crit removes that from a product.
+template <Leaf::CostCurve K>
+constexpr bool Leaf::objective_is_product() {
+  if constexpr (K == CostCurve::SOX || K == CostCurve::JW26) {
+    return true;
+  } else {
+    static_assert(K == CostCurve::TF24 || K == CostCurve::CF77 ||
+                      K == CostCurve::JS22 || K == CostCurve::CMax ||
+                      K == CostCurve::ProfitMax || K == CostCurve::TF24_floor ||
+                      K == CostCurve::LeastCost,
+                  "unhandled CostCurve in objective_is_product");
+    return false;
+  }
+}
+
+template <Leaf::CostCurve K>
+inline bool Leaf::dark_under_product(double psi_dry, double psi_upstream) {
+  static_assert(objective_is_product<K>(),
+                "dark_under_product is only defined for a product objective");
+  set_leaf_states_rates_from_psi_stem(psi_dry, psi_upstream);
+  return !(assim_colimited_ > 0.0);
 }
 
 template <Leaf::CostCurve K>
@@ -9927,6 +9989,15 @@ inline void Leaf::optimise_psi_stem_single() {
     profit_ = profit_psi_stem_for<K>(psi_wet, psi_soil);
     lambda_emergent_ = lambda_for<K>(psi_wet, psi_soil);
     return;
+  }
+  // A product objective with A <= 0 at the dry end has no maximum, and the leaf
+  // is shut at the wet end (objective_is_product).
+  if constexpr (objective_is_product<K>()) {
+    if (dark_under_product<K>(psi_dry, psi_soil)) {
+      profit_ = profit_psi_stem_for<K>(psi_wet, psi_soil);
+      lambda_emergent_ = lambda_for<K>(psi_wet, psi_soil);
+      return;
+    }
   }
 
   double profit_opt = 0.0;

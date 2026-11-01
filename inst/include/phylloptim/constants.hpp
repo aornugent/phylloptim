@@ -182,8 +182,8 @@ inline constexpr double aerodynamic_resistance_coef = 200.0;
 // what a one-way diffusion equation describes.
 // ⚠️ THE ONE FLOOR KEPT ON A SOLVED PATH BESIDE THE STOMATAL CORNER, by
 // decision. Measured, it binds at candidate points inside the energy-balance
-// stem routes' domain and at a solved point only where SOX, JW26 and LeastCost
-// pin a dark leaf at psi_crit; never at a collar-route optimum.
+// stem routes' domain and at a solved point only where LeastCost pins a dark
+// leaf at psi_crit; never at a collar-route optimum.
 inline constexpr double vpd_leaf_min = 0.01;
 
 

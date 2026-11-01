@@ -942,7 +942,7 @@ So specify `(P50, c)` at whatever precision you have, and let everything else be
 Two things follow, and both are easy to miss.
 
 - The domain check disappears, because it becomes vacuous. A derived `psi_crit` describes the curve it was derived from, so there is no consistency left to validate.
-- For the four curves whose domain ends at `psi_crit` (SOX, JW26, CF77, LeastCost), a leaf pinned there has a hydraulic cost that does not depend on the curve's scale: the remaining conductivity is exactly `f` whatever `P50` is, so `dprofit/dP50` at that pin is exactly zero rather than merely small.
+- For the curves that can pin at `psi_crit` (CF77 and LeastCost; SOX and JW26 end there too, but shut a leaf with `A <= 0` rather than pin it), a leaf pinned there has a hydraulic cost that does not depend on the curve's scale: the remaining conductivity is exactly `f` whatever `P50` is, so `dprofit/dP50` at that pin is exactly zero rather than merely small.
 
 ## Three consequences for gradients
 

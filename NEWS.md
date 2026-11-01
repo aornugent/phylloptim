@@ -1,4 +1,10 @@
-# phylloptim 0.25.0
+# phylloptim 0.26.0
+
+## SOX and JW26 shut a leaf that cannot fix carbon (#189)
+
+SOX and JW26 maximise `A g`, with `g` falling to zero at `psi_crit`. Where `A <= 0` at every opening (the dark, or a leaf too hot to fix carbon) that product has no maximum, only a supremum as `g -> 0`, so the stem route pinned such a leaf at `psi_crit`, transpiring hard to make its respiration count for nothing, and the collar route reported `solver-refused`. Such a leaf is now shut at the wet bound on both routes, as a TF24 leaf in the dark is, with kind `boundary-soil` on the collar route. `A` rises with opening, so `A <= 0` at the dry end decides it: over 18,144 rows (PPFD 0-40, 10-40 C, energy balance on and off), `A <= 0` there never had `A > 0` anywhere else. Rows with `A > 0` anywhere are unchanged; the argmax still jumps at the light compensation point, which is the product form's and no treatment of `psi_crit` removes.
+
+Goldens: `operating_points.tsv` and `primitives.tsv` are bit-identical. `psi_stem_optima.tsv` moves on 432 rows, all SOX or JW26, every one with `A <= 0` that was pinned at `psi_crit` (PPFD 0, and PPFD 1500 at 40-50 C); each now sits at `psi_soil` with no flow. `lambda_emergent` on those rows is finite where it was about -1e22 or -inf.
 
 ## The vulnerability curves' tail is carried as what is left (#190)
 

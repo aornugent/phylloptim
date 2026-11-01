@@ -478,7 +478,7 @@ parameters:
     symbol: 'D_\min'
     units: 'kPa'
     class: constant
-    meaning: 'floor on the leaf-to-air deficit, so a leaf cooled below the dew point cannot report a negative conductance. Kept by decision: it binds at candidate points only, and at a solved point only where SOX, JW26 and LeastCost pin a dark leaf at $\psi_\mathrm{crit}$'
+    meaning: 'floor on the leaf-to-air deficit, so a leaf cooled below the dew point cannot report a negative conductance. Kept by decision: it binds at candidate points only, and at a solved point only where LeastCost pins a dark leaf at $\psi_\mathrm{crit}$'
     source: code
     placeholder: true
     code: phylloptim::vpd_leaf_min
@@ -2217,15 +2217,15 @@ equations:
     latex: |
       \text{hydraulic-shutdown at the bracket (collar\_bracket, shut\_state); otherwise}\quad
       \text{interior if } J'(\psi_a^+) > 0 > J'(\psi_b), \text{ with } J'(\psi^*) = 0;\quad
-      \text{boundary-soil if } J'(\psi_a^+) \le 0;\quad
+      \text{boundary-soil if } J'(\psi_a^+) \le 0 \text{ or, for SOX and JW26, } A(\psi_b) \le 0;\quad
       \text{boundary-dry if } J'(\psi_b) \ge 0;\quad
       \text{solver-refused if both}
     code: phylloptim::Leaf::maximise_profit_over_collar
-    also: [phylloptim::Leaf::OperatingPointKind, phylloptim::Leaf::prepare_collar_solve, phylloptim::Leaf::find_root_collar_psi_for]
+    also: [phylloptim::Leaf::OperatingPointKind, phylloptim::Leaf::prepare_collar_solve, phylloptim::Leaf::find_root_collar_psi_for, phylloptim::Leaf::objective_is_product, phylloptim::Leaf::dark_under_product]
     reads: [collar_root_tol, GSS_tol_abs]
     writes: [opt_root_psi_, opt_psi_stem_, profit_]
     kind: identity
-    note: 'The collar solve root-finds $J'' = 0$ (foc_collar) to collar_root_tol inside the bracket rather than searching $J$, so a bound that binds has to be detected by the sign of $J''$ at each end: $\psi_a^+$ is the wet end stepped in by 1e-6 of the width (the wet end itself is the no-flow sentinel), $\psi_b$ the dry end. A pinned bound is polished to 1e-15 before it is returned; with a residual conductance the wet bound is a regular point and is returned as the optimum, at $g_\min = 0$ the solve steps 1e-6 of the width inside it. For a curve $\psi_\mathrm{crit}$ does not bound, the dry end is read a step of 1e-6 of the width inside it, where the stem curve still resolves a gradient, and a gradient still rising there pins the leaf at the end of the stem curve: it transpires all the stem can carry. Codes follow the enum: 1 interior, 2 boundary-soil, 3 boundary-dry, 4 hydraulic-shutdown, 5 prescribed, 6 solver-refused, 7 non-finite-gradient. The kind is not bound: operating_point_kind() is C++ only.'
+    note: 'The collar solve root-finds $J'' = 0$ (foc_collar) to collar_root_tol inside the bracket rather than searching $J$, so a bound that binds has to be detected by the sign of $J''$ at each end: $\psi_a^+$ is the wet end stepped in by 1e-6 of the width (the wet end itself is the no-flow sentinel), $\psi_b$ the dry end. A pinned bound is polished to 1e-15 before it is returned; with a residual conductance the wet bound is a regular point and is returned as the optimum, at $g_\min = 0$ the solve steps 1e-6 of the width inside it. For a curve $\psi_\mathrm{crit}$ does not bound, the dry end is read a step of 1e-6 of the width inside it, where the stem curve still resolves a gradient, and a gradient still rising there pins the leaf at the end of the stem curve: it transpires all the stem can carry. SOX and JW26 maximise $A\,g$, which has no maximum where $A \le 0$ at every opening, only a supremum as $g \to 0$ at $\psi_\mathrm{crit}$; $A$ rises with opening, so $A \le 0$ at the dry end decides it, and the leaf is shut at the wet bound, before either end''s gradient is read (objective_is_product). The stem route does the same. The argmax still jumps at the light compensation point, from the wet bound to an interior optimum near $\psi_\mathrm{crit}$. Codes follow the enum: 1 interior, 2 boundary-soil, 3 boundary-dry, 4 hydraulic-shutdown, 5 prescribed, 6 solver-refused, 7 non-finite-gradient. The kind is not bound: operating_point_kind() is C++ only.'
 
   # --- cost curves and the marginal cost of water --------------------------------
   # --- the cost curves ---------------------------------------------------------
