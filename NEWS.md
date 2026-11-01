@@ -1,3 +1,9 @@
+# phylloptim 0.26.1
+
+## A shut leaf seated at its collar bills its root traits nothing (#200)
+
+Where the roots outlast the stem (soil near or past the end of the stem curve but inside the root curve's), `set_shut_state` seats a shut leaf's stem at its collar. The derivative surface instead placed the stem by inverting the stem's flux against the soil draw, which divided the draw's root rows by the stem's conductivity at the collar, ~1e-20 there: past the end of the stem curve the held stem's `root_P50` row read -1.07e15, and the cost's slope turned that into `root_P50` and `root_c` profit rows of 1e-3 to 9e-3 where a difference of the solve gives 0. The surface now seats the stem at the collar wherever the shut state did, so it carries the collar's rows; the profit rows are ~2e-17 or smaller. Wherever the inversion was well conditioned the two placements are the same derivative: the at-every-kind referee reports the same worst rows, and all three goldens are bit-identical. The R layer does not use the surface, so nothing it returns moves.
+
 # phylloptim 0.26.0
 
 ## SOX and JW26 shut a leaf that cannot fix carbon (#189)

@@ -3017,6 +3017,14 @@ public:
     return operating_point_kind_ == OperatingPointKind::BoundaryDry &&
            sigma_star == vulnerability_psi_end(stem_b, stem_c);
   }
+  // Whether sigma_star is a shut leaf's stem seated AT its collar, which
+  // set_shut_state does wherever the residual flux is zero or the wet bound
+  // leaves the uptake at or below zero. There sigma is the collar, rows and
+  // all, and both halves above read this.
+  bool stem_held_at_collar(double sigma_star, double collar) const {
+    return operating_point_kind_ == OperatingPointKind::HydraulicShutdown &&
+           sigma_star == collar;
+  }
 
   // The stem's critical potential at any scalar. DERIVED from the trait pair, as
   // it is at double, which is what makes the old `no_gradient` question moot: it
@@ -8143,8 +8151,19 @@ inline void Leaf::held_coords_at(double sigma_star, double ci_star,
   // (seat_stem_at_dry_pin), so sigma is that end as a function of the traits,
   // not the root of T1: T1's slope there is kmax e^-40, and dividing by it hands
   // over amplified rounding (measured: forward and reverse disagreed by 0.4%).
+  //
+  // ⚠️ AND A SHUT LEAF'S STEM SEATED AT ITS COLLAR IS THE COLLAR. T1 inverted
+  // there divides the draw's root rows by the stem's conductivity at the
+  // collar, which near and past the end of the stem curve is ~1e-20: the held
+  // stem's root_P50 row measured -1.07e15, the collar's channel read its slope at
+  // another stem and cancelled none of it, and the cost's slope of ~1e-18 made
+  // that a root_P50 profit row of 1e-3 where a difference of the solve gives 0.
+  // Held here, sigma takes the collar's rows through the channel (V = 1), which
+  // is the same derivative wherever the inversion is well conditioned.
   if (stem_held_at_dry_pin(sigma_star)) {
     sigma_h = stem_curve_end_at<S>(pars);
+  } else if (stem_held_at_collar(sigma_star, to_passive(collar))) {
+    sigma_h = held;
   } else {
     sigma_h = odelia::implicit_value<S>(
         sigma_star, dT1_dsigma,
@@ -8263,13 +8282,16 @@ inline Leaf::CollarCoords<S> Leaf::collar_channel_at(
   // dsigma/dcollar: THE INVERSE'S OWN SLOPE times the transport's, which
   // is how upstream's dprofit_at_collar_psi forms it and what actually placed
   // sigma. Read where the inverse placed the stem for THE SOIL DRAW
-  // (psi_stem_carrying), not for the stem flux.
-  const double sigma_at = psi_stem_carrying(
-      to_passive(draw.E_up.value), to_passive(collar),
-      "Leaf::collar_channel_at, placing the stem for the soil draw");
-  const S recip = S(1.0) / f_sigma;
-  const S dsigma_du =
-      S(1.0 / stem_curve_integral_deriv(sigma_at)) + (recip - S(to_passive(recip)));
+  // (psi_stem_carrying), not for the stem flux. Formed only where it is read:
+  // the inverse is the one thing here that can refuse.
+  const auto dsigma_du = [&]() -> S {
+    const double sigma_at = psi_stem_carrying(
+        to_passive(draw.E_up.value), to_passive(collar),
+        "Leaf::collar_channel_at, placing the stem for the soil draw");
+    const S recip = S(1.0) / f_sigma;
+    return S(1.0 / stem_curve_integral_deriv(sigma_at)) +
+           (recip - S(to_passive(recip)));
+  };
   // psi_crit does not move with the collar.
   //
   // ⚠️ NOR DOES A STEM HELD AT A DRY PIN. sigma_h is already the end of the curve
@@ -8279,9 +8301,13 @@ inline Leaf::CollarCoords<S> Leaf::collar_channel_at(
   // and f_sigma -- which carry no information past rounding: measured, it moved
   // the profit rows by up to 8e-5 on macOS/arm64 and by up to 60% on Linux/x86,
   // where a difference of the solve agrees with the held stem's rows to 1e-9.
+  //
+  // A stem seated at a shut leaf's collar moves with it one for one.
   const S V = stem_held_at_dry_pin(sigma_star)
                   ? S(0.0)
-                  : dsigma_du * (draw.E_up.slope / kmax + f_p);
+                  : stem_held_at_collar(sigma_star, to_passive(collar))
+                        ? S(1.0)
+                        : dsigma_du() * (draw.E_up.slope / kmax + f_p);
 
   const S gc_const = S(gc_per_flux);
   const S inv = S(inv_atm);

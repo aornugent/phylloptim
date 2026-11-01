@@ -4947,6 +4947,137 @@ void test_supplied_rows_match_a_resolve_at_every_kind() {
   ok(skipped <= 2, "at most two parameters were skipped across a kind change");
 }
 
+// A shut leaf whose roots outlast its stem, so set_shut_state seats the stem at
+// the collar. The surface used to place the stem by inverting T1 against the
+// draw there, which divided the draw's root rows by the stem's conductivity at
+// the collar (~1e-20 past the end of the stem curve, ~1e-18 just short of it)
+// and billed the root traits up to 9e-3 of profit. The leaf is shut and stays
+// shut, so a difference of the solve gives 0 and those rows must be zero to
+// rounding; every other row is held to the referee's tolerance against the
+// same difference.
+//
+// Only fixtures whose seating is decided exactly: past the stem's end the
+// residual flux is exactly zero, and at g_min = 0 it always is. Short of the
+// end at g_min > 0 the seating follows the sign of an uptake of ~1e-22, which
+// is rounding and need not agree across platforms.
+void test_shut_leaf_seated_at_its_collar_bills_the_roots_nothing() {
+  printf("a shut leaf seated at its collar bills the root traits nothing\n");
+  using T = odelia::ode::tangent_scalar<double>;
+  using Kind = phylloptim::Leaf::OperatingPointKind;
+  using CC = phylloptim::Leaf::CostCurve;
+  namespace pl = phylloptim;
+  struct Fixture {
+    double psi_top, g_min;
+    bool past_the_end;
+  };
+  const std::vector<Fixture> fixtures{
+      {16.0, 5e-4, true}, {16.0, 0.0, true}, {15.1, 0.0, false}};
+  const std::vector<int> pars{
+      pl::par_vcmax_25, pl::par_stem_c, pl::par_stem_P50, pl::par_root_c,
+      pl::par_root_P50, pl::par_TF24_beta2, pl::par_jmax_25, pl::par_phi_J,
+      pl::par_curv_fact_elec_trans, pl::par_curv_fact_colim,
+      pl::par_TF24_cost_scale, pl::par_R_d_25, pl::par_kmax, pl::par_g_min};
+  int compared = 0, skipped = 0;
+  double worst_root_profit = 0.0;
+  for (const Fixture& fx : fixtures) {
+    const std::vector<double> psi_soil{fx.psi_top, fx.psi_top + 0.25,
+                                       fx.psi_top + 0.5};
+    std::vector<double> depth, root;
+    for (std::size_t i = 0; i < psi_soil.size(); ++i) {
+      depth.push_back(1.0 * double(i + 1));
+      root.push_back(1.0 / 0.05 / double(psi_soil.size()));
+    }
+    const pl::RootNetwork network = fixture::root_network(root, depth);
+    const auto solve = [&](const pl::leaf_pars<double>& p) {
+      pl::Leaf l;
+      l.set_traits(p[pl::par_vcmax_25], p[pl::par_stem_c], p[pl::par_stem_P50],
+                   p[pl::par_root_c], p[pl::par_root_P50], p[pl::par_TF24_beta2],
+                   p[pl::par_jmax_25], p[pl::par_phi_J],
+                   p[pl::par_curv_fact_elec_trans], p[pl::par_curv_fact_colim],
+                   p[pl::par_TF24_cost_scale], p[pl::par_R_d_25],
+                   p[pl::par_JS22_gamma], p[pl::par_CMax_a], p[pl::par_CMax_b],
+                   p[pl::par_g_min]);
+      l.set_physiology(network, 900.0, psi_soil, depth, p[pl::par_kmax], 2.0,
+                       40.0, 25.0, 21.0, 101.3);
+      l.find_root_collar_psi();
+      return l;
+    };
+    pl::Leaf base;
+    base.set_physiology(network, 900.0, psi_soil, depth, 0.000157 / 5.0, 2.0,
+                        40.0, 25.0, 21.0, 101.3);
+    pl::leaf_pars<double> p0 = base.passive_pars();
+    p0[pl::par_g_min] = fx.g_min;
+    p0[pl::par_root_P50] = 6.0;
+    const pl::Leaf l = solve(p0);
+    const std::string at = " at soil " + pl::util::format_double(fx.psi_top) +
+                           ", g_min " + pl::util::format_double(fx.g_min);
+    ok(l.operating_point_kind() == Kind::HydraulicShutdown, "the leaf is shut" + at);
+    ok(l.opt_psi_stem_ == l.opt_root_psi_, "the stem is seated at the collar" + at);
+    ok((l.opt_root_psi_ > pl::vulnerability_psi_end(l.stem_b, l.stem_c)) ==
+           fx.past_the_end,
+       std::string("the collar is ") + (fx.past_the_end ? "past" : "short of") +
+           " the end of the stem curve" + at);
+    if (l.operating_point_kind() != Kind::HydraulicShutdown) continue;
+    for (int k : pars) {
+      // A difference across g_min = 0 is not a derivative.
+      if (k == pl::par_g_min && fx.g_min == 0.0) continue;
+      pl::Leaf lk = l;
+      pl::leaf_pars<T> tp;
+      for (std::size_t i = 0; i < tp.size(); ++i) tp[i] = T(p0[i]);
+      odelia::ode::set_direction(tp[std::size_t(k)], 1.0);
+      std::vector<T> soil, r_h, r_v;
+      for (int i = 0; i < lk.supply_n_layers(); ++i) {
+        soil.push_back(T(lk.roots_.psi_soil_[std::size_t(i)]));
+        r_h.push_back(T(lk.roots_.network_.r_R_H_min[std::size_t(i)]));
+        r_v.push_back(T(lk.roots_.network_.r_R_V_sum[std::size_t(i)]));
+      }
+      const pl::SupplyInputs<T> supply{soil, r_h, r_v, tp[pl::par_root_P50],
+                                       tp[pl::par_root_c]};
+      const auto draw = lk.supply_draw_at<T>(T(lk.opt_root_psi_), supply);
+      const T collar = lk.operating_collar<CC::TF24, T>(
+          draw, tp, std::numeric_limits<double>::quiet_NaN());
+      const auto out = lk.billed_outputs_at<CC::TF24, T>(collar, draw, tp);
+      const double h = std::abs(p0[std::size_t(k)]) * 1e-4;
+      pl::leaf_pars<double> p_up = p0, p_down = p0;
+      p_up[std::size_t(k)] += h;
+      p_down[std::size_t(k)] -= h;
+      const pl::Leaf up = solve(p_up), down = solve(p_down);
+      const std::string name = pl::gradient::par_names()[std::size_t(k)];
+      if (up.operating_point_kind() != Kind::HydraulicShutdown ||
+          down.operating_point_kind() != Kind::HydraulicShutdown) {
+        ++skipped;
+        continue;
+      }
+      const double rows[2] = {odelia::ode::derivative_along(collar),
+                              odelia::ode::derivative_along(out.profit)};
+      const double fd[2] = {(up.opt_root_psi_ - down.opt_root_psi_) / (2.0 * h),
+                            (up.profit_ - down.profit_) / (2.0 * h)};
+      for (int j = 0; j < 2; ++j) {
+        const std::string what =
+            at + " d" + (j == 0 ? "collar" : "profit") + "/d" + name;
+        const double scale = std::max(std::abs(rows[j]), std::abs(fd[j]));
+        ++compared;
+        ok(std::abs(rows[j] - fd[j]) <= 1e-4 * scale + 1e-7,
+           "the row matches a difference of the solve" + what + ": row " +
+               pl::util::format_double(rows[j]) + ", difference " +
+               pl::util::format_double(fd[j]));
+      }
+      if (k == pl::par_root_P50 || k == pl::par_root_c) {
+        worst_root_profit = std::max(worst_root_profit, std::abs(rows[1]));
+        ok(std::abs(fd[1]) <= 1e-12,
+           "a difference of the solve leaves profit where it is" + at + " d/d" + name);
+        ok(std::abs(rows[1]) <= 1e-12,
+           "the profit row is zero to rounding" + at + " d/d" + name + ": " +
+               pl::util::format_double(rows[1]));
+      }
+    }
+  }
+  printf("    %d rows compared, %d parameters skipped across a kind change, "
+         "worst root |dprofit| %.3g\n",
+         compared, skipped, worst_root_profit);
+  ok(compared >= 70, "the test compared at least 70 rows");
+}
+
 // The interior arm divides every collar row by the curvature it is handed, and
 // odelia refuses only an exactly zero or non-finite one. So the arm refuses a
 // curvature that is not negative or lies inside the floor, naming the value; the
@@ -10955,6 +11086,7 @@ int main(int argc, char **argv) {
   test_held_coordinates_move_no_row();
   test_held_coordinates_are_refused_off_their_point();
   test_supplied_rows_match_a_resolve_at_every_kind();
+  test_shut_leaf_seated_at_its_collar_bills_the_roots_nothing();
   test_operating_collar_refuses_a_flat_or_rising_curvature();
   test_surface_refuses_a_curve_or_supply_it_was_not_solved_on();
   test_tf24_floor_rows_at_a_price();
