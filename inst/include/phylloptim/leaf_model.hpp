@@ -7087,6 +7087,11 @@ inline double Leaf::residual_cond_temp_deriv_active(double psi_upstream,
 // and code-layout luck moves this benchmark by ~2%, the size of the effect. If
 // you re-derive the curve, build every point from one tree and interleave.
 //
+// Since 0.26.2 the table describes the TOMS748 fallback only. The Newton solve
+// below stops on a step under 1e-13 (1 + |ci|), where its iterate is converged to rounding,
+// so it has no band to land in: ci's noise along a smooth path is ~3e-16
+// relative, the same as TOMS748's here, at under half the evaluations.
+//
 // ⚠️ **What chose 1e-13 over 1e-10 is a consumer that differences the solve
 // (#172).** Where TOMS748 stops inside its band depends on the state, so at
 // 1e-10 the reported outputs are noisy along any smooth path through the
@@ -7138,7 +7143,74 @@ inline double Leaf::solve_ci(double gc) {
     const double f_hi = hi == ca_ ? A_ca * umol_to_mol -
                                         (gc * (ca_ - hi) / (atm_kpa_ * kPa_to_Pa))
                                   : target(hi);
-    return util::uniroot_smooth(target, lo, hi, target(lo), f_hi, ci_root_tol,
+    const double f_lo = target(lo);
+    // Safeguarded Newton first. The residual is increasing and concave in ci
+    // (A is a smooth minimum of two concave hyperbolas, the supply is linear), so
+    // Newton from a point where it is negative stays below the root and climbs to
+    // it, and from a point where it is positive overshoots at most once. A step
+    // that leaves the bracket is replaced by the Newton step from its lower end,
+    // which lands between that end and the root, or where that end's slope is
+    // not finite by a bisection (geometric across orders of magnitude). It stops on a step below ci_root_tol (1 + |ci|),
+    // where the iterate is converged to about the square of that, so the root is
+    // placed to rounding rather than anywhere in a band: no state-dependent noise
+    // for a caller to difference. From the secant point it takes 4-5 evaluations
+    // where TOMS748 took ~10. TOMS748 remains the fallback, with its refusals.
+    if (f_lo < 0.0 && f_hi >= 0.0) {
+      if (f_hi == 0.0) {
+        return hi;
+      }
+      const PhotoCapacity<double> cap = photo_capacity<double>();
+      const double supply_per_pa = gc / (atm_kpa_ * kPa_to_Pa);
+      // The value is `target`'s and the slope is the kernel's own tangent
+      // (assim_slope_at), so the Newton root and TOMS748's are the same
+      // function's to the last bit and the slope cannot drift from it.
+      auto residual = [&](double x, double& slope) -> double {
+        slope = assim_slope_at<double>(x, cap) * umol_to_mol + supply_per_pa;
+        return target(x);
+      };
+      double a = lo, b = hi;
+      double f_a = f_lo, slope_a = std::numeric_limits<double>::quiet_NaN();
+      double x = lo - f_lo * (hi - lo) / (f_hi - f_lo);
+      for (int i = 0; i < static_cast<int>(ci_niter); ++i) {
+        double slope;
+        const double f = residual(x, slope);
+        if (f == 0.0) {
+          return x;
+        }
+        if (f < 0.0) {
+          a = x;
+          f_a = f;
+          slope_a = slope;
+        } else {
+          b = x;
+        }
+        const double newton = x - f / slope;
+        // ⚠️ CONVERGENCE IS TESTED BEFORE THE SAFEGUARD. At the root the step
+        // rounds away and `newton` lands ON the bracket end x just became, which
+        // the safeguard would read as leaving the bracket and bisect: forty
+        // halvings from wherever the other end is, stopping ~1e-12 off.
+        if (std::abs(newton - x) <= ci_root_tol * (1.0 + std::abs(x))) {
+          return newton;
+        }
+        if (newton > a && newton < b) {
+          x = newton;
+          continue;
+        }
+        // Overshot from above. Where hi sits far above the root (a net source
+        // with almost no conductance, hi up to ~1e100 Pa) bisecting from there
+        // took a step per halving of that distance: 325 evaluations at gc 1e-100.
+        // The step from a needs a finite slope there, which Gamma* (lo) has not,
+        // so a bracket spanning orders of magnitude is split geometrically.
+        if (!std::isfinite(slope_a)) {
+          residual(a, slope_a);
+        }
+        const double from_a = a - f_a / slope_a;
+        x = (from_a > a && from_a < b)   ? from_a
+            : (a > 0.0 && b > 4.0 * a) ? std::sqrt(a * b)
+                                       : 0.5 * (a + b);
+      }
+    }
+    return util::uniroot_smooth(target, lo, hi, f_lo, f_hi, ci_root_tol,
                                 ci_niter);
   } catch (const std::exception& e) {
     util::stop_infeasible("ci_solve", "solve_ci failed: " + std::string(e.what()) +

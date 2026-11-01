@@ -1,3 +1,13 @@
+# phylloptim 0.26.2
+
+## The ci root-find is a safeguarded Newton solve
+
+`solve_ci`, the supply-equals-demand root behind every ci, was TOMS748 to 1e-13 and about half of a collar solve. The residual is increasing and concave in ci (A is a smooth minimum of two concave hyperbolas, the supply is linear), so Newton converges from either side; its slope is the kernel's own forward tangent (`assim_slope_at`), not a second hand-written definition. It now starts from the secant point of the bracket, replaces a step that leaves the bracket by the Newton step from its lower end (which a concave residual keeps below the root), and stops on a step under 1e-13 (1 + |ci|), where the iterate is converged to rounding: 4-5 evaluations against ~10, with TOMS748 kept as the fallback and its refusals unchanged. No start depends on an earlier solve, so the result does not depend on history.
+
+`bench_solve`, interleaved, best of three: the collar solve 4.39 -> 3.47 us (-21%), the TF stem route 4.19 -> 2.50 (-40%), ProfitMax's 6.35 -> 3.39 (-47%). plant's TF24 stands run 22% faster than on 0.26.1, which puts them 16-17% ahead of plant on 0.16.0. Where the bracket's top sits orders of magnitude above the root (a net source with almost no conductance) the bracket is split geometrically, so the solve stays at 8-14 evaluations there.
+
+The root is placed to rounding rather than anywhere in TOMS748's band, so values move by up to ~1e-13 relative; ci's noise along a smooth path stays at ~3e-16. No row changes status or kind. The IFT gradient agrees with an extrapolated difference of the solve at least as well as before (single-potential `leaf_specific_conductance_max` profit row 1.6e-7 -> 9e-8 relative). The value is the kernel's own too, so the Newton root and TOMS748's are the same function's to the last bit. All four golden files are regenerated.
+
 # phylloptim 0.26.1
 
 ## A shut leaf seated at its collar bills its root traits nothing (#200)
