@@ -18,9 +18,9 @@
 // `root_network` is a phylloptim::RootNetwork of per-layer root resistances per
 // unit leaf area (hazard 4). phylloptim::root_network_from_carbon builds one from
 // root carbon; the solve never calls it. To differentiate the operating point,
-// see the derivative surface in phylloptim/leaf_model.hpp.
+// see the derivative surface in phylloptim/leaf_derivative_surface.hpp.
 //
-// closed_form.hpp defines Leaf::optimise_closed, which leaf_model.hpp declares, so
+// closed_form.hpp defines Leaf::optimise_closed, which leaf.hpp declares, so
 // it must stay in this list or a call to optimise() fails to link.
 
 #include <phylloptim/closed_form.hpp>

@@ -23,7 +23,7 @@ Family context lives in [`plant-meta`](https://github.com/traitecoevo/plant-meta
 | find which header holds what | the map below, in dependency order |
 | change the solve | "One solver" below, then hazards [3](hazards.md#3-argmax-smoothness-is-a-hard-constraint-not-a-preference), [8](hazards.md#8-every-path-out-of-the-solve-must-write-its-own-rates), [11](hazards.md#11-a-bracketing-optimiser-answers-where-is-the-interior-maximum-which-is-not-where-is-the-maximum) and [18](hazards.md#18-a-shut-leaf-is-the-ordinary-evaluator-at-its-wet-bound-and-nothing-writes-its-outputs-by-hand-182) |
 | add a cost curve | "One solver" below, then [its long form](hazards.md#one-solver-the-long-form) |
-| change the derivative surface | the preamble of `leaf_model.hpp`, `vignettes/derivative-surface.Rmd`, hazard [17](hazards.md#17-the-derivative-surface-fails-silently-in-three-ways-and-none-is-a-compile-error) |
+| change the derivative surface | the top of `leaf_derivative_surface.hpp`, `vignettes/derivative-surface.Rmd`, hazard [17](hazards.md#17-the-derivative-surface-fails-silently-in-three-ways-and-none-is-a-compile-error) |
 | change a trait or the parameter set | hazards [10](hazards.md#10-changing-a-trait-is-not-one-assignment-and-the-reason-is-invisible), [12](hazards.md#12-n_theta-is-a-compile-time-constant-and-a-short-aggregate-initialiser-is-legal-c) and [13](hazards.md#13-the-trait-vector-is-bound-positionally-in-four-places), and grep `.github/` |
 | move a golden number | "Golden files" below, then [measurements.md](measurements.md#the-golden-files) |
 | time anything | "Cost" below, then [the benchmark method](measurements.md#benchmark-method) |
@@ -41,9 +41,22 @@ Family context lives in [`plant-meta`](https://github.com/traitecoevo/plant-meta
 | `closed_form_rows.hpp` | a table's value with the closed form's trait rows, for both curves |
 | `roots.hpp` | `RootNetwork`, `root_network_from_carbon`, `SupplyInputs`, `CollarConductance`, `MultiLayerRoots` (the one uptake walk), `layer_thicknesses()` (soil depths to layer widths). Nothing here calls `root_network_from_carbon`: since #33 the caller runs the root model and hands `set_physiology` the resistances |
 | `single_potential.hpp` | `SinglePotential`, the other supply path |
-| `leaf_model.hpp` | the `par_*` enumeration and `leaf_pars`, `Leaf`, `CostCurve`, `OperatingPointKind`, the solve, and the derivative surface (`supply_draw_at`, `operating_collar`, `billed_outputs_at`) |
-| `closed_form.hpp` | `Leaf::optimise_closed`, out of line, legal only because `<phylloptim.hpp>` includes it after `leaf_model.hpp` |
+| `damage.hpp` | `namespace damage`: the thermal-damage dynamics, written once on the scalar type; no `Leaf` |
+| `leaf.hpp` | the `par_*` enumeration and `leaf_pars`; the class `Leaf`, with `CostCurve`, `OperatingPointKind`, `with_curve()`, `supply_draw_at` and every `switch (supply_kind_)`; its constructors, `set_traits`, `set_physiology`, `set_model` and `optimise()` |
+| `leaf_photosynthesis.hpp` | the temperature responses, the Farquhar kernels, `solve_ci`, and `set_leaf_states_rates_from_psi_stem` (the evaluator at a stem potential) |
+| `leaf_hydraulics.hpp` | the residual conductance and its soft cap, the stem curve's four operations, transpiration |
+| `leaf_energy_balance.hpp` | leaf temperature, the deficit at the leaf, the boundary layer, `dprofit_energy_balance_term` |
+| `leaf_damage.hpp` | `Leaf`'s side of the thermal-damage layer |
+| `leaf_cost_curves.hpp` | each curve's cost, profit and λ, ProfitMax's normalisers, `curve_name()`, and every per-curve table |
+| `leaf_collar_solve.hpp` | the collar solve: continuity, the wet bound, `maximise_profit_over_collar`, `dprofit_at_collar_psi`, `replay_operating_point_for` |
+| `leaf_stem_routes.hpp` | `dprofit_dpsi_stem`, `evaluate_psi_stem`, `optimise_psi_stem_single` |
+| `leaf_derivative_surface.hpp` | the derivative surface's contract, then `operating_collar`, `billed_outputs_at` and what only they use |
+| `leaf_medlyn.hpp` | the Medlyn model, which is not a `CostCurve`, and `g1_eff` |
+| `leaf_model.hpp` | `Leaf` whole: the ten headers above, in order. plant and `gradient.hpp` include it |
+| `closed_form.hpp` | `Leaf::optimise_closed`, out of line because it needs the complete `Leaf`; `<phylloptim.hpp>` includes it and `leaf_model.hpp` does not |
 | `gradient.hpp` | `n_theta`, the IFT composite and `batch`, the bit-for-bit twin of `R/gradient.R` |
+
+**A member is defined in its subsystem's `leaf_*.hpp`, and a consumer includes `leaf_model.hpp`, never a part.** A part alone parses, but a member it calls and does not define is a link error. Order within `leaf_model.hpp` does not matter, because the templates are instantiated at the end of the translation unit; the two solves include `leaf_cost_curves.hpp` only so that each parses alone. Moving a definition between parts changes no code: Apple clang's objects stay byte-identical, and gcc's differ only in how it numbers its constant labels (#216).
 
 `inst/include/phylloptim.hpp` is the R-free umbrella: one include is the whole model. `phylloptim.h` and the generated `RcppR6_*.hpp` are the R layer's, include Rcpp, and only `src/RcppR6.cpp` includes them; the `.h`/`.hpp` split is forced by RcppR6, which hardwires both names.
 
@@ -113,7 +126,7 @@ Everything is an argument to that call:
 | a different decision variable or supply topology | the bracket and the chain factor `dpsi_stem/dpsi` |
 | a scan, or no scan | `n` |
 
-- **A new cost curve touches no solver.** It is one enumerator appended last (move `n_cost_curves`, which names the last one), one arm each in `with_curve()` and `curve_name()`, and one arm in every per-curve `if constexpr` table: those are the ones ending in `static_assert(..., "unhandled CostCurve")`, so `grep -n 'unhandled CostCurve' leaf_model.hpp` lists them and a missed one is a compile error. Today they are `benefit_link`, `check_cost_parameters`, `cost_deriv`, `cost_reads_upstream`, `cost_domain_ends_at_psi_crit`, `objective_is_product`, `profit_psi_stem_for`, `lambda_for` and `lambda_collar_for`, plus `cost_deriv_upstream` for a curve that reads the upstream potential.
+- **A new cost curve touches no solver.** It is one enumerator appended last (move `n_cost_curves`, which names the last one), one arm each in `with_curve()` and `curve_name()`, and one arm in every per-curve `if constexpr` table: those are the ones ending in `static_assert(..., "unhandled CostCurve")`, so `grep -n 'unhandled CostCurve' leaf_cost_curves.hpp closed_form.hpp` lists them and a missed one is a compile error. Today they are `benefit_link`, `check_cost_parameters`, `cost_deriv`, `cost_reads_upstream`, `cost_domain_ends_at_psi_crit`, `objective_is_product`, `profit_psi_stem_for`, `lambda_for` and `lambda_collar_for`, plus `cost_deriv_upstream` for a curve that reads the upstream potential, and `closed_form::optimise_into`, which refuses a curve with no closed form.
 - ⚠️ **A cost that reads the upstream potential needs its `cost_reads_upstream<K>()` and `cost_deriv_upstream<K>()` rows**, or the collar solve converges onto a point that is not the maximum, with no error (#141).
 - **A cost or λ that reads the flux reads it through `operating_point_flux()`, never `transpiration()`.** `transpiration()` refuses a reversed pair (#31), while the evaluator reads that pair as no flow, and a prescribed collar at the multi-layer wet bound inverts to a stem ~1e-14 MPa wetter; `test_prescribed_wet_bound_reads_no_flow` lists the curves that read E, and a new one belongs in it.
 - **Runtime curve dispatch is ONE switch, `Leaf::with_curve()`**, plus `curve_name()`. Neither has a `default:`, deliberately: a `default` satisfies `-Werror=switch` and removes the check they exist for.
@@ -194,7 +207,7 @@ YAML 1.1 reads `1e-3` as a string: write a float with a point and a signed expon
 - **The `supply_kind_` enum**, which measured free where `std::variant` did not (hazard 6).
 - **Public `Leaf` members**, which plant binds by name (hazard 7).
 - **`tsv_to_hex.c`**, which is live: `test-golden.R`'s regeneration recipe needs it.
-- **The aligned level defaults** (`CF77_lambda_`, `JS22_gamma`, `CMax_a`, `LeastCost_beta`; #156) are solved by `align_curves()`, not chosen, and live in four places: the in-class initialisers in `leaf_model.hpp`, `leaf_traits()`, `.leaf_trait_defaults` (`JS22_gamma`, `CMax_a`) and `.level_defaults` (`CF77_lambda_`, `LeastCost_beta`). `test-align-curves.R` re-solves them, so a change that moves TF24 or one of these curves at the reference fails it; re-align every copy rather than loosening the test. The golden files pin their own values and do not follow the defaults.
+- **The aligned level defaults** (`CF77_lambda_`, `JS22_gamma`, `CMax_a`, `LeastCost_beta`; #156) are solved by `align_curves()`, not chosen, and live in four places: the in-class initialisers in `leaf.hpp`, `leaf_traits()`, `.leaf_trait_defaults` (`JS22_gamma`, `CMax_a`) and `.level_defaults` (`CF77_lambda_`, `LeastCost_beta`). `test-align-curves.R` re-solves them, so a change that moves TF24 or one of these curves at the reference fails it; re-align every copy rather than loosening the test. The golden files pin their own values and do not follow the defaults.
 
 Comments in `inst/include/phylloptim.h`, `inst/RcppR6_classes.yml`, `Doxyfile` and old `NEWS.md` entries that cite "PLAN item N" refer to a `PLAN.md` retired in #126; its last version is `git show 83fbb25^:PLAN.md`. Item 6a is the one-way include rule above, 6c the RcppR6 layering, and 15 the Doxygen site (issue #12).
 

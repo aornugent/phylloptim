@@ -68,7 +68,7 @@ test_that("the documents quote the reference grid's size and n_theta as the code
   # The golden file ships in the tarball and the documents do not, so every
   # file is checked: under R CMD check this skips.
   docs <- c("README.md", "vignettes/the-models.Rmd", "vignettes/cpp-interface.Rmd",
-            ".claude/measurements.md", "inst/include/phylloptim/leaf_model.hpp")
+            ".claude/measurements.md", "inst/include/phylloptim/leaf.hpp")
   skip_if_not(all(file.exists(c(golden, file.path(root, docs)))),
               "the source tree is not reachable from here")
   read <- function(...) readLines(file.path(root, ...), warn = FALSE)
@@ -86,7 +86,7 @@ test_that("the documents quote the reference grid's size and n_theta as the code
               info = paste("the grid has", grid, "points; quoted:",
                            paste(on_grid, collapse = ", ")))
 
-  enum <- read("inst", "include", "phylloptim", "leaf_model.hpp")
+  enum <- read("inst", "include", "phylloptim", "leaf.hpp")
   n_theta <- quoted(enum, "^inline constexpr int par_PPFD = (\\d+);")
   expect_length(n_theta, 1L)
   vig <- read("vignettes", "cpp-interface.Rmd")

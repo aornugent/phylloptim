@@ -38,7 +38,7 @@
 namespace phylloptim {
 namespace gradient {
 
-// The parameter indices, defined in leaf_model.hpp beside the set_traits whose
+// The parameter indices, defined in leaf.hpp beside the set_traits whose
 // argument order they are, reachable under this namespace too.
 using phylloptim::n_traits;
 using phylloptim::par_vcmax_25;   using phylloptim::par_stem_c;

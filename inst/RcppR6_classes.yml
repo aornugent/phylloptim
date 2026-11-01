@@ -418,7 +418,7 @@ Leaf:
     # maturation are k_rec_ and k_mat_ at 25 C with k_rec_Ea_ and k_mat_Ea_. Every
     # rate is per DAY and every temperature the LEAF's. leaf_gradient(), leaf_gradient_batch() and the closed
     # form refuse a leaf with the gate on. See `use_thermal_damage_` in
-    # leaf_model.hpp.
+    # leaf.hpp.
     use_thermal_damage_: {type: bool, access: field}
     topt_offset_: {type: double, access: field}
     k_i_: {type: double, access: field}
@@ -530,7 +530,7 @@ Leaf:
     profitmax_k_span: {type: double, access: member, name_cpp: profitmax_k_span}
     g1_eff: {type: double, access: member, name_cpp: g1_eff}
     # THE PART OF THE COST THAT IS A PRICE, NOT A REALISED CARBON LOSS. See the
-    # declaration in leaf_model.hpp: `TF24_floor_lambda_o * E` on that curve, exactly
+    # declaration in leaf.hpp: `TF24_floor_lambda_o * E` on that curve, exactly
     # zero on every other, and zero means "this curve does not separate the two"
     # rather than "this curve's cost is all realised carbon". An accessor, not stored
     # state (hazard 5), and read-only -- a settable one would be a way to disagree
@@ -593,7 +593,7 @@ Leaf:
     # comment contradicting that one for two releases is why the claim is stated in
     # one place now.
     #
-    # The leaf_model.hpp declaration has the full reasoning; it is the same
+    # The leaf.hpp declaration has the full reasoning; it is the same
     # judgement as supply_kind above, reached from a different direction.
     #
     # This exists so a calibration loop can perturb a trait without rebuilding the

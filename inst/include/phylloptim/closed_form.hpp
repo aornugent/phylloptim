@@ -482,9 +482,9 @@ inline void optimise_into(Leaf &l) {
 
 } // namespace closed_form
 
-// The closed-form arm of `Leaf::optimise()`, declared in `leaf_model.hpp`. Defined
-// here because it needs `closed_form`, which needs the complete `Leaf`; legal only
-// because `<phylloptim.hpp>` includes this header after `leaf_model.hpp`.
+// The closed-form arm of `Leaf::optimise()`, declared in `leaf.hpp`. Defined
+// here because it needs `closed_form`, which needs the complete `Leaf`.
+// `<phylloptim.hpp>` includes this header and `leaf_model.hpp` does not.
 //
 // The refusals are configuration checks, so they run at solve time: route, supply,
 // energy balance, thermal damage and g_min are all settable after `set_model`.
