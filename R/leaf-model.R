@@ -1060,7 +1060,7 @@ leaf_solve <- function(psi_soil,
                          LeastCost = "LeastCost_beta")
 
 # The defaults of the owned fields that have one: solved by align_curves(), and
-# the R copy of the in-class initialisers in leaf.hpp. test-align-curves.R
+# the R copy of their curves' definitions in leaf_cost_curves.hpp. test-align-curves.R
 # checks both against a fresh Leaf and a re-run of the alignment.
 # `TF24_floor_lambda_o` has none.
 .level_defaults <- c(CF77_lambda_ = 107750.8846,

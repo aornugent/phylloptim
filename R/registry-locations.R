@@ -207,7 +207,10 @@ registry_line_map <- function(header, filter) {
 #' member: its qualified name, kind, file and line (declaration), body span,
 #' the anchor of its page in the HTML render, its initializer where it has one
 #' (a constexpr's value), and the symbols it references. Lines are the source's,
-#' through [registry_line_map()].
+#' through [registry_line_map()]. A function's references include the `Leaf`
+#' members it reads through a `Leaf&` parameter (`l.TF24_cost_scale`, as each
+#' curve's `Curve<K>` does), read from its body: Doxygen 1.9.8, which CI runs,
+#' records none of them.
 #'
 #' Needs a render with `GENERATE_XML = YES` and `REFERENCES_RELATION = YES`,
 #' which the package's `Doxyfile` sets: `doxygen` at the package root writes
@@ -260,6 +263,10 @@ registry_locations <- function(xml_dir,
       anchor <- sub(paste0("^", refid, "_1"), "", id)
       init <- text_of(m, "./initializer")
       refs <- xml2::xml_find_all(m, "./references")
+      params <- xml2::xml_find_all(m, "./param")
+      leaf_params <- xml2::xml_text(xml2::xml_find_first(params, "./declname"))[
+        grepl("^\\s*(const\\s*)?Leaf\\s*&\\s*$",
+              xml2::xml_text(xml2::xml_find_first(params, "./type")))]
       # An enum's values are children of its memberdef, and a function that
       # reads one (the damage layer indexes its parameter pack by them) refers
       # to the value's id, so they are named here too.
@@ -277,6 +284,7 @@ registry_locations <- function(xml_dir,
         url = paste0(refid, ".html#", anchor),
         initializer = if (is.na(init)) NA_character_ else trimws(sub("^=", "", trimws(init))),
         references = I(list(xml2::xml_attr(refs, "refid"))),
+        leaf_params = I(list(leaf_params[!is.na(leaf_params)])),
         stringsAsFactors = FALSE)
     }
   }
@@ -303,6 +311,20 @@ registry_locations <- function(xml_dir,
   out$line <- mapply(remap, out$file, out$line)
   out$body_start <- mapply(remap, out$body_file, out$body_start)
   out$body_end <- mapply(remap, out$body_file, out$body_end)
+  # Members read through a Leaf& parameter, from the body's text.
+  leaf_members <- out$symbol[startsWith(out$symbol, "phylloptim::Leaf::")]
+  for (i in which(lengths(out$leaf_params) > 0L & !is.na(out$body_start) &
+                  !is.na(out$body_end))) {
+    body <- readLines(file.path(include_dir, out$body_file[i]),
+                      warn = FALSE)[out$body_start[i]:out$body_end[i]]
+    body <- sub("//.*$", "", body)
+    pattern <- paste0("\\b(", paste(out$leaf_params[[i]], collapse = "|"),
+                      ")\\s*\\.\\s*([A-Za-z_][A-Za-z_0-9]*)")
+    read <- unlist(regmatches(body, gregexpr(pattern, body, perl = TRUE)))
+    read <- paste0("phylloptim::Leaf::", sub(".*\\.\\s*", "", read))
+    out$references[[i]] <- unique(c(out$references[[i]], read[read %in% leaf_members]))
+  }
+  out$leaf_params <- NULL
   rownames(out) <- NULL
   out
 }

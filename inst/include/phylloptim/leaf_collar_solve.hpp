@@ -699,10 +699,10 @@ inline void Leaf::find_root_collar_psi_for(){
   // The stem route's parameter check: without it CF77 with an unset lambda
   // maximises a NaN objective and returns a bracket end as an operating point.
   check_cost_parameters<K>();
-  // ProfitMax seeds its normalisers before searching, on either topology: the
-  // reference potential is psi_soil where there is one and the zero-flow collar
-  // where there is not (see profitmax_reference_psi).
-  if constexpr (K == CostCurve::ProfitMax) {
+  // A normalised curve seeds its normalisers before searching, on either
+  // topology: the reference potential is psi_soil where there is one and the
+  // zero-flow collar where there is not (see profitmax_reference_psi).
+  if constexpr (Curve<K>::prepares_normalisers) {
     prepare_profitmax();
   }
     double bound_a, bound_b;

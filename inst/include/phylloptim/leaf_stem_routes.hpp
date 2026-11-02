@@ -121,10 +121,12 @@ inline double Leaf::evaluate_psi_stem(double target_psi_stem) {
   if (!supply_is_single_layer()) {
     util::stop("psi soil must have only one value to use non-root-based profit optimisation methods");
   }
-  // The optimiser's checks and ProfitMax's normalisers, so a prescribed point
-  // and a solved one agree on what a curve requires and whether its objective exists.
+  // The optimiser's checks and the curve's normalisers, so a prescribed point
+  // requires what a solved one does. Unlike the solve it has no degenerate exit:
+  // a normalised curve is evaluated where the solve finds no objective (a dark
+  // leaf, a wet end past psi_crit).
   check_cost_parameters<K>();
-  if constexpr (K == CostCurve::ProfitMax) {
+  if constexpr (Curve<K>::prepares_normalisers) {
     prepare_profitmax();
   }
   const double psi_soil = supply_psi_soil_scalar();
@@ -281,7 +283,7 @@ inline void Leaf::optimise_psi_stem_single() {
   // normalisers there is no objective at the wet end to evaluate. A dark leaf is
   // tested first, as its |A|max is non-positive anyway. Its normalisers are
   // Sperry's, over the stream to psi_crit, so a wet end past psi_crit has none.
-  if constexpr (K == CostCurve::ProfitMax) {
+  if constexpr (Curve<K>::prepares_normalisers) {
     if ((PPFD_ < 1.5e-8) | (psi_wet > psi_crit)) {
       set_profitmax_degenerate_state(psi_wet, psi_soil);
       return;

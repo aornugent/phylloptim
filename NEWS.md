@@ -1,3 +1,7 @@
+# phylloptim 0.27.4
+
+- For C++ users, each cost curve is one definition, `phylloptim::Curve<K>` in `leaf_cost_curves.hpp`: its name, the parameters it owns and their defaults, its properties, and its cost, the cost's slopes and its marginal cost of water. A curve missing a piece is a compile error naming it. No result changes and every bound method keeps its name ([#226](https://github.com/traitecoevo/phylloptim/issues/226)).
+
 # phylloptim 0.27.3
 
 - `$find_root_collar_psi()` solves the curve the leaf is set to, on the collar route, and refuses what that curve refuses (TF24_floor without its price, for one); it used to solve TF24 whatever curve was set. A leaf on the default model is unchanged.

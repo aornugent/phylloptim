@@ -12,7 +12,9 @@
 # did not follow fails here. Every resolved line maps back to the source
 # through the filter's line map, which refuses a header whose code lines the
 # filter altered. Every parameter an equation `reads` is referenced by the
-# equation's function (Doxygen's REFERENCES_RELATION), so an equation that
+# equation's function (Doxygen's REFERENCES_RELATION, plus the Leaf members a
+# function reads through a `Leaf&` parameter, from its body, which Doxygen 1.9.8
+# does not record; see registry_locations()), so an equation that
 # quietly stopped reading a parameter, or started reading one not registered,
 # fails here. And every `literal:` is a number written in the body of the
 # function its entry names, so a constant changed on one side only fails here. The second argument, if given, receives the resolved registry:

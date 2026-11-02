@@ -111,10 +111,13 @@ inline double Leaf::dprofit_energy_balance_term(
       bl_slope;
 
   // dA/dTleaf total times tau: dA/dpsi along the temperature path, benefit-side
-  // only. The costs that read Tleaf (ProfitMax's thermal cost, LeastCost's
-  // capacity term) are taken below. The identity arm keeps the additive curves'
+  // only. A cost that reads Tleaf (ProfitMax's thermal cost, LeastCost's
+  // capacity term) is taken below. The identity arm keeps the additive curves'
   // operation order.
   if constexpr (benefit_link<K>() == BenefitLink::Identity) {
+    static_assert(!Curve<K>::cost_reads_leaf_temperature,
+                  "an identity-link cost that reads leaf temperature needs its "
+                  "slope taken in this arm too");
     (void)vcmax_up;
     (void)vcmax_dn;
     return tau *
@@ -128,19 +131,11 @@ inline double Leaf::dprofit_energy_balance_term(
     // The block is restored, so this is the A the call site's `base` used.
     const double A = assim_colimited_kernel(ci);
     double term = benefit_link_deriv<K>(A) * dA_dpsi_T;
-    if constexpr (K == CostCurve::ProfitMax) {
-      // dTC/dpsi = TC'(Tleaf) * tau; cost-side, so no h' factor, and the slope
-      // lambda_ProfitMax reports.
-      term -= thermal_cost_temp_deriv(Tleaf) * tau;
-    } else if constexpr (K == CostCurve::LeastCost) {
-      // C = log W with `vcmax_` at Tleaf, so d(log W)/dpsi gains
-      // beta*umol_to_mol*dVcmax/dT*tau/W (`cost_deriv` holds only the E half).
-      // Cost-side, so no h'. W reads the total flux, stomatal part from gc.
-      const double dVcmax_dT = (vcmax_up - vcmax_dn) / (2.0 * h);
-      const double W = gc_s / gc_const * kg_to_mol_h2o +
-                       LeastCost_beta * vcmax_ * umol_to_mol +
-                       r_star * kg_to_mol_h2o;
-      term -= LeastCost_beta * umol_to_mol * dVcmax_dT * tau / W;
+    if constexpr (Curve<K>::cost_reads_leaf_temperature) {
+      // Cost-side, so no h' factor.
+      term = Curve<K>::less_cost_temperature_slope(
+          *this, term,
+          TemperaturePath{Tleaf, tau, h, vcmax_up, vcmax_dn, gc_s, gc_const, r_star});
     } else {
       (void)vcmax_up;
       (void)vcmax_dn;

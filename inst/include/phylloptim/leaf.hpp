@@ -336,14 +336,8 @@ public:
   double psi_stem = util::na_value;
   // The Cowan-Farquhar marginal value of water, carbon per unit transpiration. An
   // input: no model code assigns it and setup_clean_leaf() does not clear it.
-  //
-  // ALIGNED DEFAULTS. Each level parameter (`CF77_lambda_`, `JS22_gamma`, `CMax_a`
-  // with `CMax_b` 0, `LeastCost_beta`) defaults to where its stem optimum has
-  // TF24's conductance at one reference: single-potential supply, psi_soil 1 MPa,
-  // PPFD 900, VPD 2 kPa, ca 40 Pa, leaf at 25 C, energy balance off, other traits at
-  // default. R's `align_curves()` solves them and `test-align-curves.R` fails when a
-  // change moves an optimum there: re-align every copy rather than loosen it.
-  double CF77_lambda_ = 107750.8846;            // umol C (kg H2O)^-1
+  // A curve parameter's default is its curve's definition's (leaf_cost_curves.hpp).
+  double CF77_lambda_ = curve_default<CostCurve::CF77, par_CF77_lambda>();  // umol C (kg H2O)^-1
   // Optional Medlyn (2011) soil-moisture factor, making the CF77 price
   // `CF77_lambda_ / beta(theta)`. Off must stay bit-identical (the golden files pin
   // CF77 rows), so cf77_price() then returns CF77_lambda_ rather than dividing by 1.
@@ -352,13 +346,15 @@ public:
   // parameter: an input like `CF77_lambda_`, with no default. Unset is refused,
   // because at zero the curve is TF24 under another name. Its scale is the leaf's
   // lambda, 9e4-3e5 at the defaults; far outside it the optimum pins (hazard 16).
-  double TF24_floor_lambda_o = util::na_value;     // umol C (kg H2O)^-1
+  double TF24_floor_lambda_o =
+      curve_default<CostCurve::TF24_floor, par_TF24_floor_lambda_o>();  // umol C (kg H2O)^-1
   // Least-cost's unit-cost ratio beta = c_V / c_E (Prentice et al. 2014), the curve's
   // only parameter; an input like `CF77_lambda_`. Dimensionless, so leastcost_flux()
   // puts E and vcmax_ in the same molar units, and it weighs vcmax_, so this is
   // Prentice's beta/eta* at the leaf's temperature. The default is aligned, not the
   // published 146, which at the default leaf pins the optimum at psi_crit.
-  double LeastCost_beta = 51.59667042;             // dimensionless, c_V / c_E
+  double LeastCost_beta =
+      curve_default<CostCurve::LeastCost, par_LeastCost_beta>();  // dimensionless, c_V / c_E
   double hydraulic_cost_;
   
   double electron_transport_;
@@ -676,8 +672,8 @@ public:
   // Joshi & Stocker (2022)'s hydraulic unit cost, `gamma` in
   // `F = A - alpha*Jmax - gamma*(dpsi)^2`, initialised here for R_d_25's reason.
   // Their capacity term is not implemented, so this is their cost, not their model.
-  // The default is aligned (see `CF77_lambda_`).
-  double JS22_gamma = 0.4717887793;    // umol C m^-2 s^-1 MPa^-2
+  // The default is aligned (see the aligned defaults in leaf_cost_curves.hpp).
+  double JS22_gamma = curve_default<CostCurve::JS22, par_JS22_gamma>();  // umol C m^-2 s^-1 MPa^-2
   // Wolf, Anderegg & Pacala (2016) carbon maximisation as Sabot's TractLSM
   // implements it (`SPAC/fregulate.py`), a marginal cost linear in leaf potential,
   //
@@ -685,9 +681,9 @@ public:
   //
   // CMax_b is signed, negative in the paper's convention, and TractLSM stores it
   // sign-inverted: pin the sign by reproducing a TractLSM number. CMax_a is aligned
-  // with CMax_b = 0 (see `CF77_lambda_`).
-  double CMax_a = 0.6385596982;        // umol C m^-2 s^-1 MPa^-2
-  double CMax_b = 0.0;                 // umol C m^-2 s^-1 MPa^-1
+  // with CMax_b = 0 (see the aligned defaults in leaf_cost_curves.hpp).
+  double CMax_a = curve_default<CostCurve::CMax, par_CMax_a>();  // umol C m^-2 s^-1 MPa^-2
+  double CMax_b = curve_default<CostCurve::CMax, par_CMax_b>();  // umol C m^-2 s^-1 MPa^-1
   // Dark respiration's temperature response, Tjoelker et al. (2001):
   //
   //     R_d(T) = R_d_25 * Q10(T)^((T - 25) / 10)
@@ -1101,6 +1097,9 @@ public:
   // Names the enum's last member: move it when a curve is appended, or the new
   // curve falls outside every bounds check.
   static constexpr int n_cost_curves = static_cast<int>(CostCurve::LeastCost) + 1;
+  // The default of the parameter in `Slot` as curve K's definition states it; a
+  // slot the curve does not own is a compile error.
+  template <CostCurve K, int Slot> static constexpr double curve_default();
 
   // The model is configuration, because its parameters already are: set_model()
   // seats it and optimise() takes nothing. TF24 on the collar route by default.
@@ -1221,8 +1220,8 @@ public:
 
   // The only runtime curve dispatch: calls `f(tag)` with `tag` an
   // `std::integral_constant<CostCurve, K>`, so the body is compiled per curve.
-  // A new curve needs an arm here and in curve_name(); neither switch has a
-  // `default:`, so `-Werror=switch` makes a forgotten curve a build failure.
+  // A new curve needs an arm here; the switch has no `default:`, so
+  // `-Werror=switch` makes a forgotten curve a build failure.
   template <typename F>
   static decltype(auto) with_curve(CostCurve curve, F&& f) {
     switch (curve) {
@@ -1292,6 +1291,10 @@ public:
                                            double psi_upstream);
   // The collar route's lambda_emergent, for the seated curve. See the definition.
   template <CostCurve K> double lambda_collar_for();
+  // At the solved collar: S, the soil-to-collar conductance, and the factor
+  // (1 + kmax f(psi_r)/S) a cost reading psi_stem alone takes on the collar route.
+  // False where S is not a positive number, and `series` is then unset.
+  bool collar_series(double& S, double& series);
 
   template <CostCurve K>
   double evaluate_psi_stem(double target_psi_stem);
@@ -1303,6 +1306,13 @@ public:
   // dVcmax/dTleaf, the same way and with the same restore, for lambda_LeastCost
   // with the energy balance on (LeastCost's capacity cost reads vcmax_).
   double vcmax_temp_deriv(double leaf_temp);
+  // What a cost reading leaf temperature needs from dprofit_energy_balance_term:
+  // the leaf temperature, its slope tau = dT/dpsi, the difference step and
+  // vcmax_ either side of it, the stomatal flux's conductance terms and the
+  // residual flux.
+  struct TemperaturePath {
+    double Tleaf, tau, h, vcmax_up, vcmax_dn, gc_s, gc_const, r_star;
+  };
   // The energy-balance contribution to dJ/dpsi through Tleaf(E(psi)), zero with
   // the gate off; out of line so it cannot change FMA contraction on the gate-off
   // path. `E_s`, `r_star`, `drstar_dpsi` and `dgc_dT_residual` are the residual
@@ -1708,8 +1718,7 @@ public:
   // Also both potentials, but only because `E` is measured from the upstream one --
   // the COST here is a function of the absolute potential, unlike JS22's.
   double lambda_CMax(double psi_stem, double psi_upstream) const;
-  // lambda_TF24(psi) + lambda_o: the one lambda here that does not vanish at the
-  // wet end. One argument, because the hydraulic half reads the absolute
+  // lambda_TF24(psi) + lambda_o, which does not vanish at the wet end. One argument, because the hydraulic half reads the absolute
   // potential; lambda_for<TF24_floor> discards the upstream one.
   double lambda_TF24_floor(double psi_stem) const;
 
@@ -2061,6 +2070,9 @@ private:
   double dry_bound_root_ = std::numeric_limits<double>::quiet_NaN();
 };
 
+// Everything about one cost curve, specialised for each in leaf_cost_curves.hpp.
+template <Leaf::CostCurve K> struct Curve;
+
 // Human-readable tag. The switch has no default, so a missing name is a -Wswitch
 // warning -- an error under the test suite's -Werror=switch, "unknown" elsewhere.
 inline const char* Leaf::operating_point_kind_name(OperatingPointKind kind) {
@@ -2082,7 +2094,7 @@ inline Leaf::Leaf()
     vcmax_25(96), // umol m^-2 s^-1 
     stem_c(2.680147), //unitless
     stem_P50(3.4), // MPa, positive magnitude -- THE trait; stem_b/psi_crit derive
-    TF24_beta2(1.5), //exponent for effect of hydraulic risk (unitless)
+    TF24_beta2(curve_default<CostCurve::TF24, par_TF24_beta2>()), //exponent for effect of hydraulic risk (unitless)
     jmax_25(157.44), // maximum electron transport rate umol m^-2 s^-1
     phi_J(0.30 / 0.85), // quantum yield of electron transport per ABSORBED photon (mol mol^-1); 0.30 per incident photon at alpha_PAR_ = 0.85
     curv_fact_elec_trans(0.7), //curvature factor for the light response curve (unitless)
@@ -2091,7 +2103,7 @@ inline Leaf::Leaf()
     vulnerability_curve_ncontrol(ncontrol_default),
     ci_abs_tol(1e-3),
     ci_niter(1000),
-    TF24_cost_scale(7.5) //cost parameter for TF24 profit model umol m^-2 s^-1
+    TF24_cost_scale(curve_default<CostCurve::TF24, par_TF24_cost_scale>()) //cost parameter for TF24 profit model umol m^-2 s^-1
    {
       // The root traits and the beta_R_* constants keep their defaults in
       // MultiLayerRoots, which owns them; a second copy here is hazard 1.

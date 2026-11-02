@@ -613,7 +613,12 @@ int compare(Tolerance tol) {
 //     fields instead;
 //   * `hydraulic_cost_` written in carbon units by `_TF` and `_CF77`
 //     and left STALE by `_ProfitMax`, which does not write it;
-//   * `CF77_lambda_` as a caller input that `_ProfitMax` overwrites.
+//   * `collar_at_ProfitMax` refused on every row: the collar route's prescribed
+//     evaluation does not seed ProfitMax's normalisers, and seating a supply
+//     clears them;
+//   * `at_ProfitMax` evaluated where the solve takes its degenerate exit (a dark
+//     leaf, a wet end past psi_crit): the stem route's prescribed evaluation
+//     seeds the normalisers but has no such exit.
 //
 // ⚠️ ADDING A SOLVER IS AN ADDITION IN THE "fresh" PASS AND NOT IN THE "reuse"
 // ONE, so check the two separately when regenerating. The reuse pass drives one
@@ -630,8 +635,9 @@ int compare(Tolerance tol) {
 // constructs a Leaf per row, which makes it reproducible and blind to stale
 // state -- the same trade the grid above makes. Pass "reuse" drives ONE Leaf
 // through a fixed sequence of rows, poisoning every stale-prone output first, so
-// a value that survives is provably not written by the path under test. Four of
-// the divergences above are stale-state bugs that pass "fresh" cannot see.
+// a value that survives is provably not written by the path under test. A stale
+// write, like `hydraulic_cost_` under `_ProfitMax` above, is what pass "fresh"
+// cannot see.
 //
 // The two axes that make a different MODEL rather than a different driver:
 //   solver    which objective, and which variable it optimises. `collar`
@@ -644,7 +650,9 @@ int compare(Tolerance tol) {
 //             Neither arm is a check on the other.
 //             Every curve runs on both: `collar` is TF24's collar route and
 //             `collar_<curve>` each other curve's, the only golden rows on the
-//             collar route for any curve but TF24.
+//             collar route for any curve but TF24. `at_<curve>` and
+//             `collar_at_<curve>` evaluate each curve at a prescribed point
+//             instead, the only rows that reach the prescribed evaluators.
 //   topology  single-potential supply, or a multi-layer profile at 1 or 3
 //             layers. The three psi_stem solvers refuse 3 layers; the refusal
 //             is RECORDED rather than skipped, so a change that lifts it shows
@@ -708,13 +716,20 @@ enum class Solver { TF, ProfitMax, CF77, Collar, JS22, CMax, SOX, JW26, TF24_flo
                     CollarProfitMax, CollarCF77, CollarJS22, CollarCMax, CollarSOX,
                     CollarJW26, CollarTF24_floor, CollarLeastCost,
                     // LeastCost at the beta that leaves it interior, on each route.
-                    LeastCostInterior, CollarLeastCostInterior };
+                    LeastCostInterior, CollarLeastCostInterior,
+                    // Each curve at a prescribed point, on the stem route and then
+                    // on the collar route (evaluate_at_quarter).
+                    AtTF24, AtProfitMax, AtCF77, AtJS22, AtCMax, AtSOX, AtJW26,
+                    AtTF24_floor, AtLeastCost,
+                    CollarAtTF24, CollarAtProfitMax, CollarAtCF77, CollarAtJS22,
+                    CollarAtCMax, CollarAtSOX, CollarAtJW26, CollarAtTF24_floor,
+                    CollarAtLeastCost };
 
 // ⚠️ EVERY PER-SOLVER ARRAY IS SIZED FROM THIS, never from a literal. Those arrays
 // are indexed by the enum VALUE, so a hardcoded bound is an out-of-bounds write the
 // moment a solver is appended -- which is exactly the bug bench_gradient carried
 // through three trait-count changes before ASan named it. Keep it last-member + 1.
-constexpr int kNSolvers = static_cast<int>(Solver::CollarLeastCostInterior) + 1;
+constexpr int kNSolvers = static_cast<int>(Solver::CollarAtLeastCost) + 1;
 enum class Topology { Single, Multi1, Multi3 };
 
 const char *solver_name(Solver s) {
@@ -739,6 +754,24 @@ const char *solver_name(Solver s) {
     case Solver::CollarLeastCost:  return "collar_LeastCost";
     case Solver::LeastCostInterior:       return "LeastCost_b2";
     case Solver::CollarLeastCostInterior: return "collar_LeastCost_b2";
+    case Solver::AtTF24:             return "at_TF24";
+    case Solver::AtProfitMax:        return "at_ProfitMax";
+    case Solver::AtCF77:             return "at_CF77";
+    case Solver::AtJS22:             return "at_JS22";
+    case Solver::AtCMax:             return "at_CMax";
+    case Solver::AtSOX:              return "at_SOX";
+    case Solver::AtJW26:             return "at_JW26";
+    case Solver::AtTF24_floor:       return "at_TF24_floor";
+    case Solver::AtLeastCost:        return "at_LeastCost";
+    case Solver::CollarAtTF24:       return "collar_at_TF24";
+    case Solver::CollarAtProfitMax:  return "collar_at_ProfitMax";
+    case Solver::CollarAtCF77:       return "collar_at_CF77";
+    case Solver::CollarAtJS22:       return "collar_at_JS22";
+    case Solver::CollarAtCMax:       return "collar_at_CMax";
+    case Solver::CollarAtSOX:        return "collar_at_SOX";
+    case Solver::CollarAtJW26:       return "collar_at_JW26";
+    case Solver::CollarAtTF24_floor: return "collar_at_TF24_floor";
+    case Solver::CollarAtLeastCost:  return "collar_at_LeastCost";
   }
   return "unknown";
 }
@@ -850,9 +883,35 @@ void blank_outputs(OptRow &r) {
   r.carbon_gain = r.hydraulic_cost_norm = r.thermal_cost_out = n;
 }
 
+// A prescribed row's point: a quarter of the way from the wet end of the curve's
+// own interval on that route. It is placed on a copy, so the leaf under test is
+// written by the evaluator alone and the reuse pass's poison still shows what it
+// leaves stale. With no interval (a shut leaf on the collar route, or the stem
+// route on layers) the target is NaN, and a stem-route leaf whose wet end is past
+// its dry end gets one outside it; the evaluator ignores or refuses either.
+template <phylloptim::Leaf::CostCurve K>
+void evaluate_at_quarter(phylloptim::Leaf &l, bool collar) {
+  phylloptim::Leaf probe = l;
+  double target = std::numeric_limits<double>::quiet_NaN();
+  if (collar) {
+    double a = target, b = target;
+    if (probe.prepare_collar_solve<K>(a, b)) {
+      target = a + 0.25 * (b - a);
+    }
+    l.evaluate_root_collar_psi_for<K>(target);
+  } else {
+    if (probe.supply_is_single_layer()) {
+      const double wet = probe.stem_wet_bound(probe.supply_psi_soil_scalar());
+      target = wet + 0.25 * (probe.dry_end<K>() - wet);
+    }
+    l.evaluate_psi_stem<K>(target);
+  }
+}
+
 // Run one solver on an already-configured leaf. Separated from configuration so
 // the reuse pass can drive one Leaf through many rows.
 void dispatch(phylloptim::Leaf &l, Solver s) {
+  using CostCurve = phylloptim::Leaf::CostCurve;
   switch (s) {
     case Solver::TF:        l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::TF24>();        break;
     case Solver::ProfitMax: l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::ProfitMax>(); break;
@@ -911,6 +970,36 @@ void dispatch(phylloptim::Leaf &l, Solver s) {
     case Solver::CollarLeastCostInterior:
                             l.LeastCost_beta = kBetaLeastCostInterior;
                             l.find_root_collar_psi_for<phylloptim::Leaf::CostCurve::LeastCost>(); break;
+    // A prescribed point on each route, each curve with the input its solved
+    // arms set.
+    case Solver::AtTF24:      evaluate_at_quarter<CostCurve::TF24>(l, false); break;
+    case Solver::AtProfitMax: evaluate_at_quarter<CostCurve::ProfitMax>(l, false); break;
+    case Solver::AtCF77:      l.CF77_lambda_ = kLambdaCF77;
+                              evaluate_at_quarter<CostCurve::CF77>(l, false); break;
+    case Solver::AtJS22:      l.JS22_gamma = kGammaJS22;
+                              evaluate_at_quarter<CostCurve::JS22>(l, false); break;
+    case Solver::AtCMax:      l.CMax_a = kCMaxA;
+                              evaluate_at_quarter<CostCurve::CMax>(l, false); break;
+    case Solver::AtSOX:       evaluate_at_quarter<CostCurve::SOX>(l, false); break;
+    case Solver::AtJW26:      evaluate_at_quarter<CostCurve::JW26>(l, false); break;
+    case Solver::AtTF24_floor: l.TF24_floor_lambda_o = kLambdaFloorO;
+                              evaluate_at_quarter<CostCurve::TF24_floor>(l, false); break;
+    case Solver::AtLeastCost: l.LeastCost_beta = kBetaLeastCost;
+                              evaluate_at_quarter<CostCurve::LeastCost>(l, false); break;
+    case Solver::CollarAtTF24:      evaluate_at_quarter<CostCurve::TF24>(l, true); break;
+    case Solver::CollarAtProfitMax: evaluate_at_quarter<CostCurve::ProfitMax>(l, true); break;
+    case Solver::CollarAtCF77:      l.CF77_lambda_ = kLambdaCF77;
+                                    evaluate_at_quarter<CostCurve::CF77>(l, true); break;
+    case Solver::CollarAtJS22:      l.JS22_gamma = kGammaJS22;
+                                    evaluate_at_quarter<CostCurve::JS22>(l, true); break;
+    case Solver::CollarAtCMax:      l.CMax_a = kCMaxA;
+                                    evaluate_at_quarter<CostCurve::CMax>(l, true); break;
+    case Solver::CollarAtSOX:       evaluate_at_quarter<CostCurve::SOX>(l, true); break;
+    case Solver::CollarAtJW26:      evaluate_at_quarter<CostCurve::JW26>(l, true); break;
+    case Solver::CollarAtTF24_floor: l.TF24_floor_lambda_o = kLambdaFloorO;
+                                    evaluate_at_quarter<CostCurve::TF24_floor>(l, true); break;
+    case Solver::CollarAtLeastCost: l.LeastCost_beta = kBetaLeastCost;
+                                    evaluate_at_quarter<CostCurve::LeastCost>(l, true); break;
   }
 }
 
@@ -948,7 +1037,15 @@ const Solver kSolvers[] = {Solver::TF, Solver::ProfitMax,
                            Solver::CollarCMax, Solver::CollarSOX,
                            Solver::CollarJW26, Solver::CollarTF24_floor,
                            Solver::CollarLeastCost, Solver::LeastCostInterior,
-                           Solver::CollarLeastCostInterior};
+                           Solver::CollarLeastCostInterior, Solver::AtTF24,
+                           Solver::AtProfitMax, Solver::AtCF77, Solver::AtJS22,
+                           Solver::AtCMax, Solver::AtSOX, Solver::AtJW26,
+                           Solver::AtTF24_floor, Solver::AtLeastCost,
+                           Solver::CollarAtTF24, Solver::CollarAtProfitMax,
+                           Solver::CollarAtCF77, Solver::CollarAtJS22,
+                           Solver::CollarAtCMax, Solver::CollarAtSOX,
+                           Solver::CollarAtJW26, Solver::CollarAtTF24_floor,
+                           Solver::CollarAtLeastCost};
 static_assert(sizeof(kSolvers) / sizeof(kSolvers[0]) == kNSolvers,
               "kSolvers must list every Solver exactly once");
 const Topology kTopologies[] = {Topology::Single, Topology::Multi1,

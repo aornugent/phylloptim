@@ -10,7 +10,7 @@ ref_gc <- function(model, ...) {
 test_that("align_curves() reproduces the shipped defaults", {
   # ⚠️ IF THIS FAILS AFTER A MODEL CHANGE, RE-ALIGN; DO NOT LOOSEN IT. A change
   # that moves TF24 or one of these curves at the reference moves the aligned
-  # values, and the defaults in leaf.hpp, leaf_traits(),
+  # values, and the defaults in leaf_cost_curves.hpp, leaf_traits(),
   # .leaf_trait_defaults and .level_defaults must follow, ten significant
   # figures each.
   a <- align_curves()
@@ -47,8 +47,8 @@ test_that("CF77 aligned to TF24 is TF24's emergent lambda", {
 })
 
 test_that("the R defaults are the leaf's own", {
-  # .level_defaults is the R copy of two in-class initialisers in
-  # leaf.hpp; a fresh leaf reads the C++ ones.
+  # .level_defaults is the R copy of two curve definitions' defaults in
+  # leaf_cost_curves.hpp; a fresh leaf reads the C++ ones.
   l <- leaf_model()
   expect_identical(l$CF77_lambda_, .level_defaults[["CF77_lambda_"]])
   expect_identical(l$LeastCost_beta, .level_defaults[["LeastCost_beta"]])

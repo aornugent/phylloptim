@@ -128,6 +128,43 @@ void test_defaults_are_unset() {
   ok(l.use_energy_balance_ == false, "energy balance defaults off");
 }
 
+// A curve's definition is what the leaf runs on: set_model() seats it by its
+// name, a fresh Leaf holds each of its parameters' defaults, and each parameter's
+// member is the one the pack reads at its slot. Returns how many it checked.
+template <phylloptim::Leaf::CostCurve K>
+int check_curve_definition() {
+  using C = phylloptim::Curve<K>;
+  const std::string name(C::name);
+  phylloptim::Leaf l;
+  l.set_model(name, "stem");
+  ok(l.cost_curve_ == K, name + ": set_model() seats it by that name");
+  for (const phylloptim::CurveParameter &p : C::parameters) {
+    const double got = l.*(p.member);
+    ok(std::isnan(p.default_value) ? std::isnan(got) : got == p.default_value,
+       name + ": a fresh Leaf holds " + p.field + "'s default");
+    ok(p.slot >= 0 && p.slot < phylloptim::par_PPFD,
+       name + ": " + p.field + " is a fitted slot");
+    const double marker = 0.125 + p.slot;
+    l.*(p.member) = marker;
+    ok(l.passive_pars()[p.slot] == marker,
+       name + ": the pack reads " + p.field + " at its slot");
+  }
+  return static_cast<int>(C::parameters.size());
+}
+
+void test_curve_definitions_are_the_leaf() {
+  printf("each curve's definition is what a fresh Leaf holds\n");
+  int parameters = 0;
+  for (int i = 0; i < phylloptim::Leaf::n_cost_curves; ++i) {
+    parameters += phylloptim::Leaf::with_curve(
+        static_cast<phylloptim::Leaf::CostCurve>(i),
+        [](auto tag) { return check_curve_definition<tag.value>(); });
+  }
+  printf("    %d curves, %d parameters\n", phylloptim::Leaf::n_cost_curves,
+         parameters);
+  ok(parameters > 0, "the check reached the definitions' parameters");
+}
+
 void test_vulnerability_curve() {
   printf("xylem vulnerability curve\n");
   phylloptim::Leaf l;
@@ -11397,6 +11434,7 @@ int main(int argc, char **argv) {
     return failures == 0 ? 0 : 1;
   }
   test_defaults_are_unset();
+  test_curve_definitions_are_the_leaf();
   test_vulnerability_curve();
   test_vulnerability_integral_derivatives();
   test_vulnerability_complement_derivatives();

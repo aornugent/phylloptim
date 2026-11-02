@@ -379,8 +379,12 @@ inline bool within_guard(const Leaf &l, const Solution &s) {
 template <Leaf::CostCurve K>
 inline void optimise_into(Leaf &l) {
   using CostCurve = Leaf::CostCurve;
-  if constexpr (K == CostCurve::TF24 || K == CostCurve::CF77 ||
-                K == CostCurve::TF24_floor) {
+  if constexpr (Curve<K>::closed_form == ClosedForm::Implemented) {
+    // Frozen: these three have per-curve solvers below, and no new curve adds one.
+    static_assert(K == CostCurve::TF24 || K == CostCurve::CF77 ||
+                      K == CostCurve::TF24_floor,
+                  "the closed form's per-curve solvers are TF24's, CF77's and "
+                  "TF24_floor's alone");
     l.clear_collar_solve_state();
     l.check_cost_parameters<K>();
     ++l.closed_form_calls_;
@@ -447,8 +451,7 @@ inline void optimise_into(Leaf &l) {
     l.opt_psi_stem_ = psi;
     l.profit_ = l.profit_psi_stem_for<K>(psi, psi_soil);
     l.lambda_emergent_ = l.lambda_for<K>(psi, psi_soil);
-  } else if constexpr (K == CostCurve::JS22 || K == CostCurve::CMax ||
-                       K == CostCurve::ProfitMax) {
+  } else if constexpr (Curve<K>::closed_form == ClosedForm::Unwritten) {
     // Feasible, not implemented: each needs a `dlambda_*` for the Newton step, and
     // ProfitMax the |A|max rescaling of lambda (`profitmax_A_max_` and
     // `profitmax_k_span_` are already computed).
@@ -462,11 +465,8 @@ inline void optimise_into(Leaf &l) {
                "rescaling. Use method \"exact\", or add the derivative to "
                "closed_form.hpp.");
   } else {
-    static_assert(K == CostCurve::SOX || K == CostCurve::JW26 ||
-                      K == CostCurve::LeastCost,
-                  "unhandled CostCurve in closed_form::optimise_into");
-    // Impossible, not missing: the Log link makes lambda carry A, a fixed point.
-    // LeastCost's published closed form (Prentice et al. 2014) solves the
+    // ClosedForm::Impossible, not missing: the Log link makes lambda carry A, a
+    // fixed point. LeastCost's published closed form (Prentice et al. 2014) solves the
     // first-order condition in ci, where A cancels; this routine inverts lambda
     // into a potential, which the fixed point blocks. The exact solve is checked
     // against that form in `test_leastcost_matches_prentice_closed_form`.
