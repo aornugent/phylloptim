@@ -32,7 +32,9 @@
 //   - `curvature` is profit_curvature_at_collar<K>() at an Interior point, and is
 //     not read at any other kind or at double; operating_collar refuses one that
 //     is not negative or lies inside Leaf::interior_curvature_floor;
-//   - the thermal-damage layer is off (checked): the kernels read do not apply it.
+//   - the thermal-damage layer is off (checked): the kernels read do not apply it;
+//   - the energy balance is off (checked): leaf temperature is held at the
+//     solve's value, and none of its terms is carried.
 //
 // operating_point_kind() says which condition placed the point. Branch on it,
 // never on a returned value. What operating_collar does at each:
@@ -63,6 +65,7 @@ inline Leaf::CollarCoords<S> Leaf::collar_coords_at(
     double sigma_star, double ci_star, const S& collar,
     const SupplyDraw<S>& draw, const leaf_pars<S>& pars,
     const PhotoCapacity<S>& cap, bool collar_moves) const {
+  refuse_energy_balance("Leaf::collar_coords_at");
   S sigma_h, gc, ci_h;
   held_coords_at<S>(sigma_star, ci_star, collar, draw, pars, cap, sigma_h, gc,
                     ci_h);
@@ -320,6 +323,7 @@ inline Leaf::BilledOutputs<S> Leaf::billed_outputs_at(const S& collar,
                                                       const HeldCoords<S>* placed) const {
   using odelia::util::to_passive;
   refuse_thermal_damage("Leaf::billed_outputs_at");
+  refuse_energy_balance("Leaf::billed_outputs_at");
   check_surface_curve<K>("Leaf::billed_outputs_at");
   check_draw(to_passive(collar), draw);
   // Placed coordinates hold only at an interior point and at the collar
@@ -531,6 +535,7 @@ inline S Leaf::operating_collar(const SupplyDraw<S>& draw, const leaf_pars<S>& p
   // Refused at every kind, not only where the kernels are read: a surface that
   // answers at some kinds and not others is one a caller cannot plan around.
   refuse_thermal_damage("Leaf::operating_collar");
+  refuse_energy_balance("Leaf::operating_collar");
   check_surface_curve<K>("Leaf::operating_collar");
   check_draw(opt_root_psi_, draw);
   // Unplaced until the interior arm places it, so coordinates left from an

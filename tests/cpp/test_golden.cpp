@@ -354,9 +354,18 @@ const Tolerance kExact{-1.0, -1.0};
 //   operating_points.tsv
 //     profit                 2.13e-11        1e-9         47x
 //     argmax-derived         8.6e-8          5e-6         58x
-//   psi_stem_optima.tsv
-//     profit                 2.01e-12        1e-10        50x
-//     argmax-derived         1.33e-9         1e-7         75x
+//   psi_stem_optima.tsv, the original ten solvers
+//     profit                 3.87e-12        1e-10        26x
+//     argmax-derived         1.24e-9         1e-7         81x
+//   psi_stem_optima.tsv, the solvers appended from CollarProfitMax on
+//     profit                 2.42e-9         1e-7         41x
+//     argmax-derived         1.97e-7         1e-5         51x
+//
+// Only the appended rows get the looser pair, so a Linux-only change to the
+// routes the original rows cover still shows. Theirs is set by genuine profits as
+// small as 1e-7, the difference of terms that nearly cancel, and by a leaf all
+// but shut in a hot, dark, dry soil with the energy balance on (collar_JS22, 3
+// layers), whose flux is ~1e-10.
 //
 // The psi_stem argmax class was 6.63e-6 until 0.19.0: its worst cells were a
 // shut leaf's `assim`, a root-find's residue around zero that cancelled in the
@@ -369,6 +378,7 @@ const Tolerance kExact{-1.0, -1.0};
 // re-measured off the summary lines, not widened until they pass.
 const Tolerance kCrossPlatform{1e-9, 5e-6};
 const Tolerance kCrossPlatformOptima{1e-10, 1e-7};
+const Tolerance kCrossPlatformOptimaAppended{1e-7, 1e-5};
 
 // `profit` is the only reported field that is the maximum itself; every other
 // field is evaluated at the argmax and so inherits its displacement.
@@ -632,6 +642,9 @@ int compare(Tolerance tol) {
 //             and the gap does not close as the root resistance goes to zero,
 //             where the collar parameterises the flux ever more poorly.
 //             Neither arm is a check on the other.
+//             Every curve runs on both: `collar` is TF24's collar route and
+//             `collar_<curve>` each other curve's, the only golden rows on the
+//             collar route for any curve but TF24.
 //   topology  single-potential supply, or a multi-layer profile at 1 or 3
 //             layers. The three psi_stem solvers refuse 3 layers; the refusal
 //             is RECORDED rather than skipped, so a change that lifts it shows
@@ -664,6 +677,10 @@ const double kLambdaFloorO = 1.5e5;
 // published value. A beta derived against this package's kg H2O and umol CO2
 // rather than mol and mol would be out by 5.6e7 and would still solve.
 const double kBetaLeastCost = 146.0;
+// A second beta, at which LeastCost's optimum is interior on the wet soils: at
+// 146 no collar-route row is interior and only a few stem rows lie inside
+// psi_crit, so those rows can barely see a wrong LeastCost slope.
+const double kBetaLeastCostInterior = 2.0;
 // JS22's and CMax's level parameters, at the class defaults these rows were
 // generated with. Pinned here because the defaults are now ALIGNED (#156) and
 // move whenever TF24 moves at the reference; this file tests the solver, so its
@@ -686,13 +703,18 @@ void clear_aligned_inputs(phylloptim::Leaf &l) {
 // Appending leaves every existing row byte-identical, which is the check when this
 // file is regenerated.
 enum class Solver { TF, ProfitMax, CF77, Collar, JS22, CMax, SOX, JW26, TF24_floor,
-                    LeastCost };
+                    LeastCost,
+                    // Each other curve on the collar route, `Collar` being TF24's.
+                    CollarProfitMax, CollarCF77, CollarJS22, CollarCMax, CollarSOX,
+                    CollarJW26, CollarTF24_floor, CollarLeastCost,
+                    // LeastCost at the beta that leaves it interior, on each route.
+                    LeastCostInterior, CollarLeastCostInterior };
 
 // ⚠️ EVERY PER-SOLVER ARRAY IS SIZED FROM THIS, never from a literal. Those arrays
 // are indexed by the enum VALUE, so a hardcoded bound is an out-of-bounds write the
 // moment a solver is appended -- which is exactly the bug bench_gradient carried
 // through three trait-count changes before ASan named it. Keep it last-member + 1.
-constexpr int kNSolvers = static_cast<int>(Solver::LeastCost) + 1;
+constexpr int kNSolvers = static_cast<int>(Solver::CollarLeastCostInterior) + 1;
 enum class Topology { Single, Multi1, Multi3 };
 
 const char *solver_name(Solver s) {
@@ -707,6 +729,16 @@ const char *solver_name(Solver s) {
     case Solver::JW26:          return "JW26";
     case Solver::TF24_floor:       return "TF24_floor";
     case Solver::LeastCost:        return "LeastCost";
+    case Solver::CollarProfitMax:  return "collar_ProfitMax";
+    case Solver::CollarCF77:       return "collar_CF77";
+    case Solver::CollarJS22:       return "collar_JS22";
+    case Solver::CollarCMax:       return "collar_CMax";
+    case Solver::CollarSOX:        return "collar_SOX";
+    case Solver::CollarJW26:       return "collar_JW26";
+    case Solver::CollarTF24_floor: return "collar_TF24_floor";
+    case Solver::CollarLeastCost:  return "collar_LeastCost";
+    case Solver::LeastCostInterior:       return "LeastCost_b2";
+    case Solver::CollarLeastCostInterior: return "collar_LeastCost_b2";
   }
   return "unknown";
 }
@@ -850,6 +882,35 @@ void dispatch(phylloptim::Leaf &l, Solver s) {
     case Solver::LeastCost:
                             l.LeastCost_beta = kBetaLeastCost;
                             l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::LeastCost>(); break;
+    // The collar route, each with the input its stem arm sets: the same values,
+    // so the reuse pass sees nothing it did not see before these were appended.
+    case Solver::CollarProfitMax:
+                            l.find_root_collar_psi_for<phylloptim::Leaf::CostCurve::ProfitMax>(); break;
+    case Solver::CollarCF77:
+                            l.CF77_lambda_ = kLambdaCF77;
+                            l.find_root_collar_psi_for<phylloptim::Leaf::CostCurve::CF77>(); break;
+    case Solver::CollarJS22:
+                            l.JS22_gamma = kGammaJS22;
+                            l.find_root_collar_psi_for<phylloptim::Leaf::CostCurve::JS22>(); break;
+    case Solver::CollarCMax:
+                            l.CMax_a = kCMaxA;
+                            l.find_root_collar_psi_for<phylloptim::Leaf::CostCurve::CMax>(); break;
+    case Solver::CollarSOX:
+                            l.find_root_collar_psi_for<phylloptim::Leaf::CostCurve::SOX>(); break;
+    case Solver::CollarJW26:
+                            l.find_root_collar_psi_for<phylloptim::Leaf::CostCurve::JW26>(); break;
+    case Solver::CollarTF24_floor:
+                            l.TF24_floor_lambda_o = kLambdaFloorO;
+                            l.find_root_collar_psi_for<phylloptim::Leaf::CostCurve::TF24_floor>(); break;
+    case Solver::CollarLeastCost:
+                            l.LeastCost_beta = kBetaLeastCost;
+                            l.find_root_collar_psi_for<phylloptim::Leaf::CostCurve::LeastCost>(); break;
+    case Solver::LeastCostInterior:
+                            l.LeastCost_beta = kBetaLeastCostInterior;
+                            l.optimise_psi_stem_single<phylloptim::Leaf::CostCurve::LeastCost>(); break;
+    case Solver::CollarLeastCostInterior:
+                            l.LeastCost_beta = kBetaLeastCostInterior;
+                            l.find_root_collar_psi_for<phylloptim::Leaf::CostCurve::LeastCost>(); break;
   }
 }
 
@@ -882,7 +943,12 @@ const Solver kSolvers[] = {Solver::TF, Solver::ProfitMax,
                            Solver::CF77, Solver::Collar,
                            Solver::JS22, Solver::CMax, Solver::SOX,
                            Solver::JW26, Solver::TF24_floor,
-                           Solver::LeastCost};
+                           Solver::LeastCost, Solver::CollarProfitMax,
+                           Solver::CollarCF77, Solver::CollarJS22,
+                           Solver::CollarCMax, Solver::CollarSOX,
+                           Solver::CollarJW26, Solver::CollarTF24_floor,
+                           Solver::CollarLeastCost, Solver::LeastCostInterior,
+                           Solver::CollarLeastCostInterior};
 static_assert(sizeof(kSolvers) / sizeof(kSolvers[0]) == kNSolvers,
               "kSolvers must list every Solver exactly once");
 const Topology kTopologies[] = {Topology::Single, Topology::Multi1,
@@ -1053,7 +1119,7 @@ int compare_optima(Tolerance tol) {
       if (r > rel) { rel = r; rel_at = at; }
       if (a > abs) { abs = a; abs_at = at; }
     }
-  } worst_max, worst_argmax;
+  } worst_max, worst_argmax, worst_max_app, worst_argmax_app;
 
   size_t i = 0;
   for (; i < rows.size(); ++i) {
@@ -1115,8 +1181,8 @@ int compare_optima(Tolerance tol) {
       //
       // The threshold sits in an EMPTY BAND, which is what makes it safe rather
       // than convenient. Measured over the whole file: the noise cluster tops
-      // out at 1.13e-16 (76 values) and the smallest genuine magnitude in either
-      // column is >= 1e-4 (796 values) -- NOTHING lies between 1e-12 and 1e-4.
+      // out at 1.13e-16 (80 values) and the smallest genuine magnitude in either
+      // column is 1.81e-8 -- NOTHING lies between 1e-12 and 1.8e-8.
       // So this cannot mask a real difference; it can only stop a zero being
       // compared as though it had a scale. Re-measure the band before moving it.
       if (!exact_mode && std::fabs(got[j]) < kOptNegligible &&
@@ -1126,8 +1192,13 @@ int compare_optima(Tolerance tol) {
       }
       const double rel = rel_diff(got[j], want[j]);
       const bool is_max = is_maximum_field(kOptFieldNames[j]);
-      const double limit = is_max ? tol.maximum : tol.argmax;
-      (is_max ? worst_max : worst_argmax)
+      // The appended solvers have their own pair; see kCrossPlatformOptima.
+      const bool appended = static_cast<int>(r.solver) >=
+                            static_cast<int>(Solver::CollarProfitMax);
+      const Tolerance t = exact_mode || !appended ? tol : kCrossPlatformOptimaAppended;
+      const double limit = is_max ? t.maximum : t.argmax;
+      (appended ? (is_max ? worst_max_app : worst_argmax_app)
+                : (is_max ? worst_max : worst_argmax))
           .see(rel, std::fabs(got[j] - want[j]),
                std::string(tag) + " " + kOptFieldNames[j]);
       if (!exact_mode && rel <= limit) {
@@ -1160,6 +1231,10 @@ int compare_optima(Tolerance tol) {
                          "profit  (the maximum)    ");
       print_optima_worst(stdout, worst_argmax, tol.argmax,
                          "others  (from the argmax)");
+      print_optima_worst(stdout, worst_max_app, kCrossPlatformOptimaAppended.maximum,
+                         "profit, appended solvers ");
+      print_optima_worst(stdout, worst_argmax_app, kCrossPlatformOptimaAppended.argmax,
+                         "others, appended solvers ");
     }
     // Never silent: an exempted cell is a cell nothing checked.
     if (!exact_mode && negligible > 0) {
@@ -1174,6 +1249,12 @@ int compare_optima(Tolerance tol) {
                      "profit  (the maximum)    ");
   print_optima_worst(stderr, worst_argmax, tol.argmax,
                      "others  (from the argmax)");
+  if (!exact_mode) {
+    print_optima_worst(stderr, worst_max_app, kCrossPlatformOptimaAppended.maximum,
+                       "profit, appended solvers ");
+    print_optima_worst(stderr, worst_argmax_app, kCrossPlatformOptimaAppended.argmax,
+                       "others, appended solvers ");
+  }
   if (exact_mode) {
     fprintf(stderr,
             "If this change was intended, regenerate with `make psi-stem-golden` "

@@ -326,7 +326,8 @@ leaf_gradient_batch <- function(batch,
 
   # The same route object leaf_gradient() uses, so the two cannot disagree about
   # what a model name selects, its `fd_step` or the supply path it needs. Built
-  # only for those; C++ seats the model itself (`gradient::route_seat`).
+  # for those; it seats the batch's leaf too, which C++ re-seats for every row
+  # (`gradient::route_seat`).
   route <- .gradient_route(batch$leaf, model, list(kind = batch$supply_kind))
   # The curve as an index into cost_curve_names(), -1 for the collar route:
   # C++'s `gradient::Settings::curve`, never seen by an R caller.
@@ -335,6 +336,9 @@ leaf_gradient_batch <- function(batch,
   } else {
     as.integer(match(model, cost_curve_names()) - 1L)
   }
+  # The finite-difference arm's step: the caller's if named, as in
+  # leaf_gradient(), otherwise the route's, which clears the solver's resolution.
+  fd_step <- if (missing(step)) route$fd_step else step
   # ProfitMax's normaliser is cleared at every perturbation, so C++ re-solves it,
   # as `.gradient_route()` does in R. A boolean passed as a double.
   reseat_profitmax <- if (identical(model, "ProfitMax")) 1 else 0
@@ -367,7 +371,7 @@ leaf_gradient_batch <- function(batch,
   res <- with_phylloptim_conditions(gradient_batch_run(batch$leaf, batch$drivers, theta,
                             match(pars, par_names) - 1L, step,
                             stationarity_tol, method, fast_stem_curve,
-                            psi, dpsi_dtheta, curve, route$fd_step,
+                            psi, dpsi_dtheta, curve, fd_step,
                             reseat_profitmax))
 
   dimnames(res$gradient) <- list(NULL, pars, .gradient_output_names())

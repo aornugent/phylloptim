@@ -212,7 +212,7 @@ S    psi  = l.operating_collar<K, S>(draw, pars, curvature);  // the collar, car
 auto out  = l.billed_outputs_at<K, S>(psi, draw, pars);       // profit, per-layer uptake, residual flux
 ```
 
-`l.operating_point_kind()` says which condition placed the point, and decides what `operating_collar` does; a consumer branches on it. The preconditions, the kinds, and a compiled example are at the top of `inst/include/phylloptim/leaf_derivative_surface.hpp`; `vignette("derivative-surface")` explains the design. The surface is implemented for the TF24 and TF24_floor curves and the multi-layer supply.
+`l.operating_point_kind()` says which condition placed the point, and decides what `operating_collar` does; a consumer branches on it. The preconditions, the kinds, and a compiled example are at the top of `inst/include/phylloptim/leaf_derivative_surface.hpp`; `vignette("derivative-surface")` explains the design. The surface is implemented for the TF24 and TF24_floor curves and the multi-layer supply, and refuses a leaf with the energy balance or the thermal-damage layer on.
 
 A consumer that records on an adjoint tape also compiles with `-DXAD_NO_THREADLOCAL -DXAD_USE_STRONG_INLINE`, matching odelia's and every other package sharing that tape, and links odelia's `src/Tape.cpp` once (an R package gets it from odelia's DLL). The defines are not carried by the CMake target; a mismatch is not diagnosed.
 

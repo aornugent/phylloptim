@@ -103,7 +103,11 @@ std::vector<Point> grid() {
 // timing them would dilute the signal. set_physiology is left in, because plant
 // does call it once per solve and it invalidates the caches -- which is what
 // keeps each timed solve a genuine cold solve rather than a memo hit.
-double pass(std::vector<phylloptim::Leaf> &leaves, const std::vector<Point> &pts) {
+// `solve` is the collar solve under timing, inlined: the history line's is
+// find_root_collar_psi() on the default leaf.
+template <class Solve>
+double pass(std::vector<phylloptim::Leaf> &leaves, const std::vector<Point> &pts,
+            Solve solve) {
   double checksum = 0.0;
   // ONE reused RootNetwork, refilled in place per point. This is deliberately
   // what plant does since #33 -- it holds the network as a TF24_Strategy member,
@@ -119,7 +123,7 @@ double pass(std::vector<phylloptim::Leaf> &leaves, const std::vector<Point> &pts
                                         fixture::beta_R_H, fixture::beta_R_V, net);
     l.set_physiology(net, pt.ppfd, pt.ps, pt.depth, kKs * kTheta / kH,
                      pt.vpd, kCa, kTleaf, kO2, kPatm);
-    l.find_root_collar_psi();
+    solve(l);
     for (double v : {l.opt_psi_stem_, l.opt_root_psi_, l.ci_,
                      l.assim_colimited_, l.transpiration_, l.stom_cond_CO2_,
                      l.profit_, l.E_up_}) {
@@ -243,13 +247,31 @@ int main(int argc, char **argv) {
   double best = 1e300;
   for (int r = 0; r < reps; ++r) {
     const auto t0 = std::chrono::steady_clock::now();
-    checksum = pass(leaves, pts);
+    checksum = pass(leaves, pts, [](phylloptim::Leaf &l) { l.find_root_collar_psi(); });
     const auto t1 = std::chrono::steady_clock::now();
     best = std::min(best, std::chrono::duration<double>(t1 - t0).count());
   }
 
   printf("%-22s  %8.2f us/solve   (%zu points, best of %d)   checksum %.17g\n",
          PHYLLOPTIM_BENCH_LABEL, best / pts.size() * 1e6, pts.size(), reps, checksum);
+
+  // TF24_floor's collar solve at a price, plant's production path, on the same
+  // grid. Printed per call, so the history's one `us/solve` line stays the one
+  // tools/bench_history.sh reads.
+  double floor_checksum = 0.0;
+  double floor_best = 1e300;
+  for (int r = 0; r < reps; ++r) {
+    const auto t0 = std::chrono::steady_clock::now();
+    floor_checksum = pass(leaves, pts, [](phylloptim::Leaf &l) {
+      l.TF24_floor_lambda_o = kLambdaFloorO;
+      l.find_root_collar_psi_for<phylloptim::Leaf::CostCurve::TF24_floor>();
+    });
+    const auto t1 = std::chrono::steady_clock::now();
+    floor_best = std::min(floor_best, std::chrono::duration<double>(t1 - t0).count());
+  }
+  printf("%-22s  %8.2f us/call    (%zu points, best of %d)   checksum %.17g\n",
+         "collar:TF24_floor", floor_best / pts.size() * 1e6, pts.size(), reps,
+         floor_checksum);
 
   // --- the single-layer optimisers, on the 1-layer subset -------------------
   std::vector<Point> one;

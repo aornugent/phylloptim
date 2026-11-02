@@ -9598,6 +9598,52 @@ void test_collar_profit_is_its_own_curve() {
   ok(distinct >= 4, "and their profits genuinely differ, so the check has teeth");
 }
 
+// find_root_collar_psi() solves the seated curve, so a leaf seated on K and solved
+// through it is bit-identical to find_root_collar_psi_for<K>(). A shorthand fixed
+// to one curve hands a gradient on another curve a point that curve did not
+// choose, which the gradient then reads as pinned.
+void test_collar_shorthand_solves_the_seated_curve() {
+  printf("find_root_collar_psi() solves the seated curve\n");
+  Drivers d;
+  d.PPFD = 900.0;
+  int checked = 0, distinct = 0;
+  double tf_collar = 0.0;
+  for (int c = 0; c < phylloptim::Leaf::n_cost_curves; ++c) {
+    const auto K = static_cast<phylloptim::Leaf::CostCurve>(c);
+    phylloptim::Leaf a = make_single_leaf(d, 1.0);
+    phylloptim::Leaf b = make_single_leaf(d, 1.0);
+    for (phylloptim::Leaf* l : {&a, &b}) {
+      l->CF77_lambda_ = 1.5e5;
+      l->TF24_floor_lambda_o = kFloorLambdaO;
+      l->LeastCost_beta = 146.0;
+      l->set_model(K, true);
+    }
+    try {
+      a.find_root_collar_psi();
+      phylloptim::Leaf::with_curve(K, [&](auto tag) {
+        b.find_root_collar_psi_for<tag.value>();
+      });
+    } catch (const std::exception&) {
+      continue;   // a curve that refuses this configuration says so elsewhere
+    }
+    const std::string name = phylloptim::Leaf::curve_name(c);
+    ok(same_bits(a.opt_root_psi_, b.opt_root_psi_) &&
+           same_bits(a.opt_psi_stem_, b.opt_psi_stem_) &&
+           same_bits(a.profit_, b.profit_) &&
+           same_bits(a.lambda_emergent_, b.lambda_emergent_) &&
+           a.operating_point_kind() == b.operating_point_kind(),
+       "the shorthand on " + name + " is find_root_collar_psi_for<" + name + ">");
+    ++checked;
+    if (c == 0) { tf_collar = a.opt_root_psi_; }
+    if (c > 0 && a.opt_root_psi_ != tf_collar) { ++distinct; }
+  }
+  // The premise: the curves must place different collars here, or a shorthand
+  // that solved TF24 on every curve would pass.
+  printf("    %d curves solved | %d at a collar other than TF24's\n", checked, distinct);
+  ok(checked >= 5, "most curves solve on the collar route at these drivers");
+  ok(distinct >= 4, "and their collars differ, so the check has teeth");
+}
+
 void benchmark() {
   printf("\ntiming\n");
   Drivers d;
@@ -10937,9 +10983,9 @@ void test_smoothness_sweep() {
       SweepPoint p{l.profit_, l.assim_colimited_, l.transpiration_, l.opt_psi_stem_,
                    l.lambda_emergent_, NAN, NAN, l.operating_point_kind_name(l.operating_point_kind())};
       ++kinds[p.kind];
-      // The derivative rows, off the thermal-damage layer, which the surface
-      // refuses, and with a residual conductance to differentiate.
-      if (!c.damage && c.g_min > 0.0 &&
+      // The derivative rows, off the thermal-damage layer and the energy balance,
+      // which the surface refuses, and with a residual conductance to differentiate.
+      if (!c.damage && !c.eb && c.g_min > 0.0 &&
           (l.operating_point_kind() == Kind::Interior || l.operating_point_kind() == Kind::BoundarySoil ||
                         l.operating_point_kind() == Kind::HydraulicShutdown)) {
         p.row_vcmax = profit_row_at_current_point(l, phylloptim::par_vcmax_25);
@@ -10961,7 +11007,7 @@ void test_smoothness_sweep() {
       sweep_kinks(x, o, &SweepPoint::E, "E", w, 0.05, at);
       sweep_kinks(x, o, &SweepPoint::psi, "psi_stem", w, 0.05, at);
       sweep_kinks(x, o, &SweepPoint::lambda, "lambda", w, 0.05, at);
-      if (!c.damage && c.g_min > 0.0) {
+      if (!c.damage && !c.eb && c.g_min > 0.0) {
         sweep_kinks(x, o, &SweepPoint::row_vcmax, "d/dvcmax", w, 0.05, at);
         sweep_kinks(x, o, &SweepPoint::row_gmin, "d/dg_min", w, 0.05, at);
       }
@@ -10979,6 +11025,40 @@ void test_smoothness_sweep() {
          g_sweep_asserted, g_sweep_corner);
   for (const auto &kv : kinds) printf(" %s %ld", kv.first.c_str(), kv.second);
   printf("\n");
+}
+
+// The derivative surface refuses a leaf with the energy balance on, by name, at
+// both entry points: it holds leaf temperature at the solve's value and carries
+// none of its terms, so its collar and uptake rows would be wrong, by up to the
+// whole row in PPFD, which heats the leaf. The supply draw and the curvature read
+// nothing the balance moves through the surface, and still run.
+void test_surface_refuses_the_energy_balance() {
+  printf("the derivative surface refuses the energy balance\n");
+  using CC = phylloptim::Leaf::CostCurve;
+  const std::string refused = "refused with use_energy_balance_ on";
+  Drivers d;
+  d.PPFD = 1500.0;
+  const std::vector<double> psi{1.0, 1.25}, depth{1.0, 2.0};
+  phylloptim::Leaf off = make(d, psi, depth, kGmin, false);
+  off.find_root_collar_psi();
+  ok(std::isfinite(profit_row_at_current_point(off, phylloptim::par_vcmax_25)),
+     "control: the surface answers with the energy balance off");
+  phylloptim::Leaf on = make(d, psi, depth, kGmin, true);
+  on.find_root_collar_psi();
+  ok(on.operating_point_kind() == Kind::Interior,
+     "the gate-on fixture is an interior point");
+  ok(throws_with([&] { profit_row_at_current_point(on, phylloptim::par_vcmax_25); },
+                 "Leaf::operating_collar: " + refused),
+     "operating_collar refuses");
+  const phylloptim::leaf_pars<double> pars = on.passive_pars();
+  const auto draw = on.supply_draw_at<double>(on.opt_root_psi_,
+                                              on.roots_.held_supply());
+  ok(std::isfinite(draw.E_up.value), "supply_draw_at reads no temperature, and runs");
+  ok(std::isfinite(on.profit_curvature_at_collar<CC::TF24>()),
+     "profit_curvature_at_collar differences the solve's own dprofit, and runs");
+  ok(throws_with([&] { on.billed_outputs_at<CC::TF24, double>(on.opt_root_psi_, draw, pars); },
+                 "Leaf::billed_outputs_at: " + refused),
+     "billed_outputs_at refuses");
 }
 
 // #184's first requirement from plant: a leaf forced shut -- by a dry soil, the
@@ -11457,6 +11537,7 @@ int main(int argc, char **argv) {
   test_leastcost_lambda_is_dA_dE();
   test_every_curve_returns_its_own_maximum();
   test_collar_profit_is_its_own_curve();
+  test_collar_shorthand_solves_the_seated_curve();
   test_product_curves_shut_dark_collar_leaves();
   test_thermal_damage_gate_off_is_inert();
   test_thermal_damage_bypasses_the_cache();
@@ -11476,6 +11557,7 @@ int main(int argc, char **argv) {
   residual::test_closed_form_refuses();
   residual::test_light_compensation_corner();
   residual::test_smoothness_sweep();
+  residual::test_surface_refuses_the_energy_balance();
   residual::test_a_shut_leaf_is_a_value_not_an_exception();
   residual::test_the_capped_regime_is_smooth_in_the_soil();
   residual::test_rows_where_the_roots_cap_binds();

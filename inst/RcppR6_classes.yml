@@ -78,8 +78,10 @@ Leaf:
       Set the drivers with `$set_physiology()`, solve with `$optimise()`, then
       read the operating point off the object: `$opt_psi_stem_`, `$profit_`,
       `$assim_colimited_`, `$transpiration_`, `$lambda`, `$g1_eff`.
-      `$find_root_collar_psi()` is the same solve under the default model, kept
-      because that is what `plant`'s own sources spell.
+      `$find_root_collar_psi()` solves the seated curve on the collar route,
+      whatever route and method are seated: on the default model, the same solve
+      as `$optimise()`. It is kept because that is what `plant`'s own sources
+      spell.
 
       **Which model is configuration, not a call argument.** `$set_model(curve,
       route)` seats it and `$optimise()` takes nothing, because the curves'

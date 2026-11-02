@@ -578,12 +578,12 @@ leaf_gradient <- function(psi_soil,
     # Seat a reused leaf with reset(), not set_drivers() alone: it carries its
     # last user's traits, and set_drivers() never touches traits.
     reset(theta)
-    # Leave it solved at the base point, not at the last perturbation (hazard 8);
-    # `on.exit` because paths below stop().
+    # Leave it solved at the base point, not at the last perturbation (hazard 8),
+    # on the model the route seated; `on.exit` because paths below stop().
     on.exit({
       try({
         reset(theta)
-        l$find_root_collar_psi()
+        l$optimise()
       }, silent = TRUE)
     }, add = TRUE)
   }
@@ -751,6 +751,9 @@ leaf_gradient <- function(psi_soil,
 
 .gradient_route <- function(l, model, supply) {
   if (identical(model, .GRADIENT_COLLAR_ROUTE)) {
+    # Seated, as the stem routes are below: the closures read the seated curve,
+    # and a reused leaf may come seated on another.
+    l$set_model("TF24", "collar")
     return(list(
       model = model,
       decision = "collar",

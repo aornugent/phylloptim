@@ -1119,7 +1119,7 @@ public:
   int closed_form_fallbacks_ = 0;
 
   void find_root_collar_psi();
-  // The same solve for any cost curve; find_root_collar_psi() is the TF24 one.
+  // The same solve for a named curve; find_root_collar_psi() is the seated one's.
   template <CostCurve K> void find_root_collar_psi_for();
   // The entry point: curve, route and method by name, never a curve index. `route`
   // is "collar" (soil to collar, any supply) or "stem" (upstream pinned at psi_soil,
@@ -1206,8 +1206,8 @@ public:
   static std::string curve_name(int curve);
 
   // ⚠️ Hazard 17: the derivative surface read on another curve is a wrong,
-  // finite number. Checked against the SEATED curve; find_root_collar_psi()
-  // solves TF24 whatever is seated, so a leaf solved through it on another curve
+  // finite number. Checked against the SEATED curve; find_root_collar_psi_for<K>()
+  // solves K whatever is seated, so a leaf solved through it on another curve
   // passes this check wrongly.
   template <CostCurve K>
   void check_surface_curve(const char* who) const {
@@ -1932,6 +1932,9 @@ public:
   // Throws, naming `who`, when use_thermal_damage_ is on: the paths that read
   // capacities off the parameter pack (vcmax_at and the rest) do not apply it.
   void refuse_thermal_damage(const char* who) const;
+  // Throws, naming `who`, when use_energy_balance_ is on: the derivative surface
+  // holds leaf temperature at the solve's value and carries no temperature term.
+  void refuse_energy_balance(const char* who) const;
 
   // Sperry (2017) ProfitMax, both terms normalised as the paper defines them
   // (notes above optimise_psi_stem_single in leaf_stem_routes.hpp): seeds |A|max

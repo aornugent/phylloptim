@@ -751,6 +751,43 @@ test_that("a reused leaf is differentiated at `traits`, not at its own state", {
   expect_identical(reused$value, fresh$value)
 })
 
+test_that("a reused leaf is differentiated on the route's model, not the one it carries", {
+  # Each route seats its own model before its closures read the seated curve. A
+  # leaf arriving seated on another curve would otherwise be solved on one curve
+  # and tested against the other's first-order condition, and read as pinned.
+  tr <- leaf_traits()
+  args <- list(psi_soil = 1.0, PPFD = 900, traits = tr,
+               pars = c("vcmax_25", "stem_P50"))
+  fresh <- do.call(leaf_gradient, args)
+  seated <- leaf_model(traits = tr)
+  seated$set_model("CF77", "collar")
+  reused <- do.call(leaf_gradient, c(args, list(x = seated)))
+  expect_identical(fresh$status, "interior")
+  expect_identical(reused$status, fresh$status)
+  expect_identical(reused$gradient, fresh$gradient)
+  expect_identical(reused$value, fresh$value)
+  # And it is handed back on the route's model, solved there: TF24's collar.
+  tf <- leaf_model(traits = tr)
+  set_drivers(tf, psi_soil = 1.0, PPFD = 900)
+  tf$optimise()
+  expect_identical(operating_point(seated), operating_point(tf))
+})
+
+test_that("a stem-route gradient leaves the caller's leaf solved on that route", {
+  # The base point is restored on the route's own model: a collar solve here would
+  # hand back a stem-route leaf holding a different operating point.
+  tr <- leaf_traits()
+  sup <- leaf_supply_singlelayer()
+  l <- leaf_model(traits = tr, supply = sup)
+  set_drivers(l, psi_soil = 1.0, PPFD = 900)
+  l$set_model("TF24", "stem")
+  l$optimise()
+  before <- operating_point(l)
+  leaf_gradient(psi_soil = 1.0, PPFD = 900, x = l, traits = tr, model = "TF24",
+                pars = "vcmax_25")
+  expect_identical(operating_point(l), before)
+})
+
 test_that("leaf_gradient(x =) leaves the caller's leaf solved at the base point", {
   # hazard 8: an output no path rewrites reads as the previous caller's. The setter
   # leaves the leaf at the last perturbation, so this function restores it.
