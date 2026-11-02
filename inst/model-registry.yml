@@ -2303,7 +2303,8 @@ equations:
     title: SOX reduction factor
     latex: |
       g_\mathrm{SOX}(\psi) = \max\!\left(\frac{f(\psi) - k_\mathrm{crit}}{1 - k_\mathrm{crit}},\; 0\right)
-    code: phylloptim::Leaf::sox_reduction
+    code: phylloptim::Curve< Leaf::CostCurve::SOX >::gain
+    also: [phylloptim::Leaf::sox_reduction]
     reads: [k_crit_fraction]
     writes: []
     kind: closed_form
@@ -2314,7 +2315,8 @@ equations:
     title: Slope of the SOX reduction factor
     latex: |
       g_\mathrm{SOX}'(\psi) = -\frac{\lvert f'(\psi)\rvert}{1 - k_\mathrm{crit}}, \qquad \lvert f'\rvert = f\,\frac{c}{b}\Big(\frac{\psi}{b}\Big)^{c-1}
-    code: phylloptim::Leaf::sox_reduction_deriv
+    code: phylloptim::Curve< Leaf::CostCurve::SOX >::gain_slope
+    also: [phylloptim::Leaf::sox_reduction_deriv]
     reads: [k_crit_fraction, stem_b, stem_c]
     writes: []
     kind: closed_form
@@ -2325,7 +2327,8 @@ equations:
     title: Jones reduction factor
     latex: |
       g_\mathrm{JW}(\psi) = \max\!\left(1 - \frac{\psi}{\psi_\mathrm{crit}},\; 0\right)
-    code: phylloptim::Leaf::jw26_reduction
+    code: phylloptim::Curve< Leaf::CostCurve::JW26 >::gain
+    also: [phylloptim::Leaf::jw26_reduction]
     reads: [psi_crit]
     writes: []
     kind: closed_form
@@ -2336,7 +2339,8 @@ equations:
     title: Slope of the Jones reduction factor
     latex: |
       g_\mathrm{JW}'(\psi) = \begin{cases} -1/\psi_\mathrm{crit} & \psi \le \psi_\mathrm{crit} \\ 0 & \psi > \psi_\mathrm{crit} \end{cases}
-    code: phylloptim::Leaf::jw26_reduction_deriv
+    code: phylloptim::Curve< Leaf::CostCurve::JW26 >::gain_slope
+    also: [phylloptim::Leaf::jw26_reduction_deriv]
     reads: [psi_crit]
     writes: []
     kind: identity
@@ -2347,7 +2351,8 @@ equations:
     title: Least-cost weighted resource use
     latex: |
       W = \frac{E}{M_w} + \beta_\mathrm{LC}\, V_{cmax} \times 10^{-6}, \qquad C_\mathrm{LC} = \log W
-    code: phylloptim::Leaf::leastcost_flux
+    code: phylloptim::Curve< Leaf::CostCurve::LeastCost >::resource_use
+    also: [phylloptim::Leaf::leastcost_flux]
     reads: [LeastCost_beta, kg_to_mol_h2o, umol_to_mol]
     writes: []
     kind: closed_form
@@ -2382,7 +2387,8 @@ equations:
     title: ProfitMax objective
     latex: |
       CG = \frac{A}{\lvert A\rvert_{\max}}, \qquad HC = \frac{k_s - k_{max} f(\psi)}{k_\mathrm{span}}, \qquad TC = \begin{cases} TC(T_\mathrm{leaf}(E)) & g_\mathrm{EB} = 1 \\ TC(T) & g_\mathrm{EB} = 0 \end{cases}, \qquad J = CG - (HC + TC)
-    code: phylloptim::Leaf::profit_psi_stem_ProfitMax
+    code: phylloptim::Leaf::profit_psi_stem_for
+    also: [phylloptim::Curve< Leaf::CostCurve::ProfitMax >::hydraulic_cost_norm, phylloptim::Leaf::profit_psi_stem_ProfitMax]
     reads: [leaf_specific_conductance_max, use_energy_balance_]
     writes: [carbon_gain_, hydraulic_cost_norm_, thermal_cost_]
     kind: closed_form
@@ -2395,11 +2401,11 @@ equations:
       J_K(\psi) = h_K(A) - C_K(\psi) \;\text{in the form}\;
       \begin{cases} A - C_K & \text{TF24, CF77, JS22, CMax, TF24\_floor} \\ A\, g_K(\psi) & \text{SOX, JW26} \;(h = \log,\ C = -\log g) \\ A / W & \text{LeastCost} \;(h = \log,\ C = \log W) \\ CG - (HC + TC) & \text{ProfitMax} \;(h = A/\lvert A\rvert_{\max}) \end{cases}
     code: phylloptim::Leaf::profit_psi_stem_for
-    also: [phylloptim::Leaf::benefit_link, phylloptim::Leaf::profit_psi_stem_TF, phylloptim::Leaf::profit_psi_stem_CF77, phylloptim::Leaf::profit_psi_stem_JS22, phylloptim::Leaf::profit_psi_stem_CMax, phylloptim::Leaf::profit_psi_stem_SOX, phylloptim::Leaf::profit_psi_stem_JW26, phylloptim::Leaf::profit_psi_stem_TF24_floor, phylloptim::Leaf::profit_psi_stem_LeastCost, phylloptim::Leaf::profit_psi_stem_ProfitMax]
+    also: [phylloptim::Leaf::benefit_link, phylloptim::Curve< Leaf::CostCurve::SOX >::gain, phylloptim::Curve< Leaf::CostCurve::JW26 >::gain, phylloptim::Curve< Leaf::CostCurve::LeastCost >::resource_use, phylloptim::Curve< Leaf::CostCurve::ProfitMax >::hydraulic_cost_norm, phylloptim::Leaf::profit_psi_stem_TF, phylloptim::Leaf::profit_psi_stem_CF77, phylloptim::Leaf::profit_psi_stem_JS22, phylloptim::Leaf::profit_psi_stem_CMax, phylloptim::Leaf::profit_psi_stem_SOX, phylloptim::Leaf::profit_psi_stem_JW26, phylloptim::Leaf::profit_psi_stem_TF24_floor, phylloptim::Leaf::profit_psi_stem_LeastCost, phylloptim::Leaf::profit_psi_stem_ProfitMax]
     reads: []
     writes: []
     kind: closed_form
-    note: 'The value `profit_` reports. The product and ratio curves are evaluated in that form, not as $\log A \pm \log(\cdot)$, because at closure $A \le 0$ can hold (a net source, or zero in light at $g_\min = 0$) and the endpoint must stay a candidate; `log` is monotone so the argmax is shared. Only the five difference curves are carbon fluxes; the product, ratio and normalised values must not be compared with them. The product and ratio curves set `hydraulic_cost_` to NA.'
+    note: 'The value `profit_` reports. The product and ratio curves are evaluated in that form, not as $\log A \pm \log(\cdot)$, because at closure $A \le 0$ can hold (a net source, or zero in light at $g_\min = 0$) and the endpoint must stay a candidate; `log` is monotone so the argmax is shared. Only the five difference curves are carbon fluxes; the product, ratio and normalised values must not be compared with them. Each curve states its shape (`ObjectiveShape`) and supplies the factor that shape composes with $A$; the product and ratio curves set `hydraulic_cost_` to NA.'
   benefit_link_deriv:
     section: costs
     title: Slope of the benefit link
@@ -2427,7 +2433,7 @@ equations:
       k_{max}\lvert f'\rvert / k_\mathrm{span} & \text{ProfitMax}
       \end{cases}
     code: phylloptim::Leaf::cost_deriv
-    also: [phylloptim::Leaf::cf77_price, phylloptim::Leaf::hydraulic_cost_TF_kernel, phylloptim::Leaf::leastcost_flux, phylloptim::Curve< Leaf::CostCurve::TF24 >::cost_slope, phylloptim::Curve< Leaf::CostCurve::CF77 >::cost_slope, phylloptim::Curve< Leaf::CostCurve::JS22 >::cost_slope, phylloptim::Curve< Leaf::CostCurve::CMax >::cost_slope, phylloptim::Curve< Leaf::CostCurve::SOX >::cost_slope, phylloptim::Curve< Leaf::CostCurve::JW26 >::cost_slope, phylloptim::Curve< Leaf::CostCurve::ProfitMax >::cost_slope, phylloptim::Curve< Leaf::CostCurve::TF24_floor >::cost_slope, phylloptim::Curve< Leaf::CostCurve::LeastCost >::cost_slope]
+    also: [phylloptim::Leaf::cf77_price, phylloptim::Leaf::hydraulic_cost_TF_kernel, phylloptim::Curve< Leaf::CostCurve::LeastCost >::resource_use, phylloptim::Curve< Leaf::CostCurve::TF24 >::cost_slope, phylloptim::Curve< Leaf::CostCurve::CF77 >::cost_slope, phylloptim::Curve< Leaf::CostCurve::JS22 >::cost_slope, phylloptim::Curve< Leaf::CostCurve::CMax >::cost_slope, phylloptim::Curve< Leaf::CostCurve::SOX >::cost_slope, phylloptim::Curve< Leaf::CostCurve::JW26 >::cost_slope, phylloptim::Curve< Leaf::CostCurve::ProfitMax >::cost_slope, phylloptim::Curve< Leaf::CostCurve::TF24_floor >::cost_slope, phylloptim::Curve< Leaf::CostCurve::LeastCost >::cost_slope]
     reads: [TF24_cost_scale, TF24_beta2, CF77_lambda_, JS22_gamma, CMax_a, CMax_b, TF24_floor_lambda_o, LeastCost_beta, kg_to_mol_h2o, leaf_specific_conductance_max, stem_b, stem_c, psi_crit]
     writes: []
     kind: identity
@@ -2445,7 +2451,7 @@ equations:
       0 & \text{TF24, SOX, JW26, ProfitMax}
       \end{cases}
     code: phylloptim::Leaf::cost_deriv_upstream
-    also: [phylloptim::Leaf::cost_reads_upstream, phylloptim::Leaf::cf77_price, phylloptim::Leaf::leastcost_flux, phylloptim::Curve< Leaf::CostCurve::CF77 >::cost_slope_upstream, phylloptim::Curve< Leaf::CostCurve::JS22 >::cost_slope_upstream, phylloptim::Curve< Leaf::CostCurve::CMax >::cost_slope_upstream, phylloptim::Curve< Leaf::CostCurve::TF24_floor >::cost_slope_upstream, phylloptim::Curve< Leaf::CostCurve::LeastCost >::cost_slope_upstream]
+    also: [phylloptim::Leaf::cost_reads_upstream, phylloptim::Leaf::cf77_price, phylloptim::Curve< Leaf::CostCurve::LeastCost >::resource_use, phylloptim::Curve< Leaf::CostCurve::CF77 >::cost_slope_upstream, phylloptim::Curve< Leaf::CostCurve::JS22 >::cost_slope_upstream, phylloptim::Curve< Leaf::CostCurve::CMax >::cost_slope_upstream, phylloptim::Curve< Leaf::CostCurve::TF24_floor >::cost_slope_upstream, phylloptim::Curve< Leaf::CostCurve::LeastCost >::cost_slope_upstream]
     reads: [CF77_lambda_, JS22_gamma, CMax_a, CMax_b, TF24_floor_lambda_o, kg_to_mol_h2o, leaf_specific_conductance_max]
     writes: []
     kind: identity
@@ -2505,7 +2511,7 @@ equations:
     latex: |
       \lambda_\mathrm{SOX} = \frac{-A\,(g'/g)}{k_{max} f(\psi)}
     code: phylloptim::Curve< Leaf::CostCurve::SOX >::lambda
-    also: [phylloptim::Leaf::lambda_SOX, phylloptim::Leaf::sox_reduction, phylloptim::Leaf::sox_reduction_deriv]
+    also: [phylloptim::Leaf::lambda_SOX, phylloptim::Curve< Leaf::CostCurve::SOX >::gain, phylloptim::Curve< Leaf::CostCurve::SOX >::gain_slope]
     reads: [leaf_specific_conductance_max]
     writes: []
     kind: closed_form
@@ -2542,7 +2548,7 @@ equations:
     latex: |
       \lambda_\mathrm{LC} = h'(A)^{-1}\,\frac{d\log W}{dE} = \frac{A}{M_w\, W}
     code: phylloptim::Curve< Leaf::CostCurve::LeastCost >::lambda
-    also: [phylloptim::Leaf::lambda_LeastCost, phylloptim::Leaf::leastcost_flux]
+    also: [phylloptim::Leaf::lambda_LeastCost, phylloptim::Curve< Leaf::CostCurve::LeastCost >::resource_use]
     reads: [kg_to_mol_h2o]
     writes: []
     kind: closed_form

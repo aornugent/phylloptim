@@ -1738,9 +1738,10 @@ public:
   // as well as flux (theory manuscript S1.4). The only penalty here carrying
   // something other than water.
 
-  // The weighted resource use `W = E_mol + beta*Vcmax_mol`, mol m^-2 s^-1: the
-  // one place both unit conversions live, read by the cost, its derivative, the
-  // objective and the price so they agree on the units beta is dimensionless in.
+  // The weighted resource use `W = E_mol + beta*Vcmax_mol`, mol m^-2 s^-1, as
+  // `Curve<LeastCost>::resource_use`: the one place both unit conversions live,
+  // read by the cost's slopes, the objective and the price so they agree on the
+  // units beta is dimensionless in.
   double leastcost_flux(double psi_stem, double psi_upstream);
 
   // A ratio, `A/W` (umol C per mol of weighted resource), not a carbon flux:

@@ -1,3 +1,7 @@
+# phylloptim 0.27.5
+
+- For C++ users, each curve's `Curve<K>` states the shape of its objective (a difference, a product, a ratio or a normalised value) and holds the factor that shape composes with assimilation: SOX's and JW26's reduction factors, LeastCost's weighted resource use and ProfitMax's normalised hydraulic cost. One evaluator per shape computes every curve's profit. No result changes and every bound method keeps its name ([#228](https://github.com/traitecoevo/phylloptim/issues/228)).
+
 # phylloptim 0.27.4
 
 - For C++ users, each cost curve is one definition, `phylloptim::Curve<K>` in `leaf_cost_curves.hpp`: its name, the parameters it owns and their defaults, its properties, and its cost, the cost's slopes and its marginal cost of water. A curve missing a piece is a compile error naming it. No result changes and every bound method keeps its name ([#226](https://github.com/traitecoevo/phylloptim/issues/226)).
